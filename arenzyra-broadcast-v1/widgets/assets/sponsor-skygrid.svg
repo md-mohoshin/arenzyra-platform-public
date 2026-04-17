@@ -1,0 +1,16 @@
+<svg width="420" height="140" viewBox="0 0 420 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="skygrid-accent" x1="34" y1="28" x2="140" y2="114" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#49E3FF"/>
+      <stop offset="1" stop-color="#C4FBFF"/>
+    </linearGradient>
+  </defs>
+  <rect x="28" y="30" width="84" height="84" rx="22" fill="#0B131C" fill-opacity="0.94" stroke="url(#skygrid-accent)" stroke-width="4"/>
+  <path d="M48 50H92" stroke="#49E3FF" stroke-width="4"/>
+  <path d="M48 72H92" stroke="#49E3FF" stroke-width="4"/>
+  <path d="M48 94H92" stroke="#49E3FF" stroke-width="4"/>
+  <path d="M60 42V102" stroke="#EAFDFF" stroke-width="4"/>
+  <path d="M80 42V102" stroke="#EAFDFF" stroke-width="4"/>
+  <text x="134" y="72" fill="#F3FDFF" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="800" letter-spacing="3">SKYGRID</text>
+  <text x="134" y="103" fill="#93EEFF" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="7">MOBILE</text>
+</svg>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Team Cards Overlay</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/common.js"></script>
+    <style>
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 10px;
+      }
+      .card {
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: linear-gradient(145deg, rgba(37, 99, 235, 0.08), rgba(17, 24, 39, 0.9));
+      }
+      .logo {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        object-fit: contain;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="badge" style="margin-bottom: 10px">Team Cards</div>
+      <div id="cards" class="grid"></div>
+    </div>
+    <script>
+      const cardsEl = document.getElementById("cards");
+      const render = (data) => {
+        const teams = Array.isArray(data?.teams) ? data.teams : [];
+        cardsEl.innerHTML = teams
+          .map(
+            (t) => `
+          <div class="card fade-in">
+            <div style="display:flex; align-items:center; gap:10px;">
+              ${t.logoUrl ? `<img class="logo" src="${t.logoUrl}" />` : `<div class="logo"></div>`}
+              <div>
+                <div style="font-weight:600">${t.tag || t.name || t.id}</div>
+                <div style="font-size:12px;color:#9ca3af">Slot ${t.slot ?? "?"} · ${t.kills ?? 0} K · Pts ${t.points ?? 0}</div>
+              </div>
+            </div>
+          </div>`,
+          )
+          .join("");
+      };
+      window.overlayBus.on((payload) => {
+        if (!payload || payload.overlay !== "teamcards") return;
+        if (payload.type === "overlay:hide") {
+          cardsEl.innerHTML = "";
+          return;
+        }
+        render(payload.data);
+      });
+    </script>
+  </body>
+</html>

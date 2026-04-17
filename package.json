@@ -1,0 +1,13 @@
+{
+  "name": "arenzyra-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "dependencies": {
+    "axios": "^0.27.2",
+    "express": "^5.2.1",
+    "socket.io-client": "4.8.3"
+  }
+}

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Arenzyra Session Standings</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: {{background}};
+        color: {{textPrimary}};
+      }
+      .frame {
+        width: 100%;
+        height: 100%;
+        padding: 32px;
+        position: relative;
+      }
+      .shell {
+        height: 100%;
+        border-radius: 28px;
+        padding: 28px;
+        border: 1px solid {{border}};
+        background:
+          linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0)),
+          rgba(6, 10, 16, 0.68);
+        box-shadow: {{shadow}};
+      }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 24px;
+        margin-bottom: 18px;
+      }
+      .eyebrow {
+        display: inline-block;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid {{border}};
+        color: {{primaryColor}};
+        background: rgba(0, 0, 0, 0.24);
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .title {
+        margin: 14px 0 0;
+        font-size: 42px;
+        font-weight: 800;
+        line-height: 1.04;
+        letter-spacing: -0.03em;
+      }
+      .brand-logo {
+        width: 96px;
+        height: 96px;
+        object-fit: contain;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid {{border}};
+        padding: 16px;
+      }
+      .brand-logo--empty {
+        background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
+      }
+      .board {
+        display: grid;
+        gap: 12px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 88px 1fr auto;
+        align-items: center;
+        gap: 16px;
+        min-height: 44px;
+        padding: 14px 18px;
+        border-radius: 18px;
+        background: {{panel}};
+        border: 1px solid {{border}};
+      }
+      .row-rank {
+        color: {{primaryColor}};
+        font-size: 28px;
+        font-weight: 800;
+      }
+      .row-tag {
+        font-size: 23px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .row-meta {
+        margin-top: 4px;
+        color: {{textMuted}};
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+      .row-points {
+        color: {{primaryColor}};
+        font-size: 24px;
+        font-weight: 800;
+      }
+      .footer {
+        position: absolute;
+        left: 60px;
+        right: 60px;
+        bottom: 26px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        color: {{textMuted}};
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .footer-mark {
+        color: {{primaryColor}};
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <div class="shell">
+        <div class="header">
+          <div>
+            <div class="eyebrow">Arenzyra Standings</div>
+            <div class="title">{{sessionName}}</div>
+          </div>
+          {{logoHtml}}
+        </div>
+        <div class="board">{{rowsHtml}}</div>
+      </div>
+      <div class="footer">
+        <span>{{footer}}</span>
+        <span class="footer-mark">Backend Rendered PNG</span>
+      </div>
+    </div>
+  </body>
+  </html>

@@ -1,0 +1,253 @@
+:root {
+  color-scheme: dark;
+  font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  position: relative;
+}
+
+.obs-zone-timer-root,
+.obs-zone-alert-root {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 160ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 160ms ease;
+}
+
+.obs-zone-timer-root {
+  transform: translate3d(-50%, -10px, 0);
+}
+
+.obs-zone-alert-root {
+  transform: translate3d(-50%, -14px, 0);
+}
+
+.obs-zone-timer-root[hidden],
+.obs-zone-alert-root[hidden] {
+  display: none;
+}
+
+.obs-zone-timer-root.is-visible,
+.obs-zone-alert-root.is-visible {
+  opacity: 1;
+  transform: translate3d(-50%, 0, 0);
+}
+
+.obs-zone-timer-root[data-stale="true"],
+.obs-zone-alert-root[data-stale="true"] {
+  filter: saturate(0.82);
+}
+
+.obs-zone-timer-root[data-mode="waiting"] .zone-timer-card {
+  --zone-accent: #49a8ff;
+  --zone-border: rgba(73, 168, 255, 0.28);
+  --zone-surface: rgba(7, 19, 34, 0.94);
+  --zone-glow: rgba(73, 168, 255, 0.16);
+}
+
+.obs-zone-timer-root[data-mode="closing"] .zone-timer-card {
+  --zone-accent: #ef5b5b;
+  --zone-border: rgba(239, 91, 91, 0.34);
+  --zone-surface: rgba(38, 10, 14, 0.94);
+  --zone-glow: rgba(239, 91, 91, 0.18);
+}
+
+.obs-zone-timer-root[data-mode="unknown"] .zone-timer-card {
+  --zone-accent: #95a7bd;
+  --zone-border: rgba(149, 167, 189, 0.24);
+  --zone-surface: rgba(12, 18, 27, 0.94);
+  --zone-glow: rgba(149, 167, 189, 0.12);
+}
+
+.zone-timer-card {
+  --zone-accent: #49a8ff;
+  --zone-border: rgba(73, 168, 255, 0.28);
+  --zone-surface: rgba(7, 19, 34, 0.94);
+  --zone-glow: rgba(73, 168, 255, 0.16);
+  min-width: 346px;
+  border-radius: 24px;
+  border: 1px solid var(--zone-border);
+  background:
+    radial-gradient(circle at 50% 0%, var(--zone-glow), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
+    var(--zone-surface);
+  box-shadow:
+    0 24px 58px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  padding: 18px 22px 20px;
+  text-align: center;
+}
+
+.zone-timer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  text-align: left;
+}
+
+.zone-timer-eyebrow {
+  color: rgba(227, 238, 246, 0.56);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+}
+
+.zone-timer-phase {
+  margin-top: 7px;
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.zone-timer-status,
+.zone-alert-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 165, 36, 0.32);
+  background: rgba(77, 47, 5, 0.74);
+  color: #ffd89a;
+  padding: 5px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.zone-timer-status[hidden],
+.zone-alert-status[hidden] {
+  display: none;
+}
+
+.zone-timer-mode {
+  margin-top: 16px;
+  color: var(--zone-accent);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.zone-timer-countdown {
+  margin-top: 10px;
+  color: #ffffff;
+  font-size: 58px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-shadow: 0 0 22px var(--zone-glow);
+}
+
+.obs-zone-alert-root[data-alert="warning"] .zone-alert-banner {
+  --alert-accent: #f5a524;
+  --alert-border: rgba(245, 165, 36, 0.34);
+  --alert-surface: rgba(50, 26, 6, 0.94);
+  --alert-glow: rgba(245, 165, 36, 0.24);
+}
+
+.obs-zone-alert-root[data-alert="closing"] .zone-alert-banner {
+  --alert-accent: #ef5b5b;
+  --alert-border: rgba(239, 91, 91, 0.36);
+  --alert-surface: rgba(50, 10, 14, 0.95);
+  --alert-glow: rgba(239, 91, 91, 0.24);
+  animation: zoneAlertClosingPulse 900ms ease-in-out infinite;
+}
+
+.zone-alert-banner {
+  --alert-accent: #f5a524;
+  --alert-border: rgba(245, 165, 36, 0.34);
+  --alert-surface: rgba(50, 26, 6, 0.94);
+  --alert-glow: rgba(245, 165, 36, 0.24);
+  min-width: 520px;
+  border-radius: 22px;
+  border: 1px solid var(--alert-border);
+  background:
+    radial-gradient(circle at 50% 0%, var(--alert-glow), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
+    var(--alert-surface);
+  box-shadow:
+    0 28px 68px rgba(0, 0, 0, 0.36),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  padding: 16px 22px 18px;
+}
+
+.zone-alert-kicker {
+  color: var(--alert-accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+}
+
+.zone-alert-title {
+  margin-top: 8px;
+  color: #ffffff;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.zone-alert-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.zone-alert-phase {
+  color: rgba(236, 242, 247, 0.84);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.zone-alert-countdown {
+  margin-left: auto;
+  color: #ffffff;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-shadow: 0 0 20px var(--alert-glow);
+}
+
+@keyframes zoneAlertClosingPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 28px 68px rgba(0, 0, 0, 0.36),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  }
+  50% {
+    transform: scale(1.018);
+    box-shadow:
+      0 32px 74px rgba(0, 0, 0, 0.4),
+      0 0 26px var(--alert-glow),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+}

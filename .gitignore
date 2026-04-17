@@ -1,0 +1,93 @@
+# Dependencies
+node_modules/
+apps/*/node_modules/
+packages/*/node_modules/
+
+# Build output
+dist/
+build/
+.next/
+.next-build/
+coverage/
+test-results/
+
+# Runtime and temp directories
+.tmp/
+tmp/
+chrome-cdp-profile/
+__pycache__/
+venv/
+.venv/
+apps/*/venv/
+apps/*/.venv/
+apps/shadow_api/Lib/
+apps/shadow_api/Scripts/
+apps/shadow_api/pyvenv.cfg
+
+# Logs
+*.log
+*.err.log
+*.out.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.publish
+**/.env
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+**/.env.publish
+!infra/.env.example
+!infra/.env.publish.example
+!apps/api/.env.example
+!apps/discord-bot/.env.example
+!apps/match-state-service/.env.example
+
+# Backups, dumps, and local archives
+*.dump
+*.sql
+*.sqlite
+*.sqlite3
+*.bak
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# Local certificates and keys
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+*.cer
+
+# Editor and local tooling
+.vscode/
+.vercel/
+tmp-cookies.txt
+
+# Embedded repo metadata
+apps/api/.git/
+apps/arenzyra-web/.git/
+
+# Local runtime data that should not go to GitHub
+apps/api/uploads/
+apps/api/storage/
+apps/api/public/assets/players/player_*
+apps/desktop/dist/
+apps/arenzyra-web/.dev-web.log
+apps/arenzyra-web/dev-server.log
+apps/arenzyra-web/dev-server.err.log
+apps/arenzyra-web/tmp-dev.err.log
+apps/arenzyra-web/tmp-dev.out.log

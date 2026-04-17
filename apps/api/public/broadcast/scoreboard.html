@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Arenzyra Broadcast Scoreboard</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: rgba(7, 12, 24, 0.05);
+        --panel: rgba(8, 15, 30, 0.65);
+        --border: rgba(255, 255, 255, 0.08);
+        --accent: #38bdf8;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --danger: #f87171;
+        --ok: #34d399;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
+        background: transparent;
+        color: var(--text);
+      }
+      .status {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-size: 12px;
+        backdrop-filter: blur(6px);
+      }
+      .debug {
+        position: fixed;
+        bottom: 12px;
+        left: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-size: 12px;
+        line-height: 1.4;
+        min-width: 220px;
+        backdrop-filter: blur(6px);
+      }
+      .hidden {
+        display: none;
+      }
+      #scoreboard {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+      }
+      .team {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        backdrop-filter: blur(8px);
+        min-height: 70px;
+      }
+      .logo {
+        width: 48px;
+        height: 48px;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.05);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .logo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .meta {
+        flex: 1;
+        min-width: 0;
+      }
+      .name {
+        font-weight: 700;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sub {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .pill {
+        font-size: 11px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .alive {
+        color: var(--ok);
+        border-color: rgba(52, 211, 153, 0.4);
+      }
+      .out {
+        color: var(--danger);
+        border-color: rgba(248, 113, 113, 0.5);
+      }
+      .kills {
+        font-weight: 800;
+        font-size: 20px;
+        color: var(--accent);
+      }
+      .row-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+    </style>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <div id="status" class="status">Connectingâ€¦</div>
+    <div id="debug" class="debug hidden"></div>
+    <div id="scoreboard"></div>
+
+    <script>
+      (function () {
+        const params = new URLSearchParams(window.location.search);
+        const matchId = params.get("matchId") || "";
+        const debug = params.get("debug") === "true";
+        const apiHost = params.get("api") || window.location.origin;
+        const statusEl = document.getElementById("status");
+        const debugEl = document.getElementById("debug");
+        const boardEl = document.getElementById("scoreboard");
+        const fallbackLogo = "/assets/logos/default-logo.svg";
+
+        if (debug) {
+          debugEl.classList.remove("hidden");
+        }
+
+        let socket = null;
+
+        function connect() {
+          statusEl.textContent = "Connectingâ€¦";
+          socket = io(apiHost, {
+            path: "/broadcast/socket.io",
+            transports: ["websocket"],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            query: matchId ? { matchId } : undefined,
+          });
+
+          socket.on("connect", () => {
+            statusEl.textContent = "Connected";
+            if (matchId) {
+              socket.emit("broadcast:join", { matchId });
+            }
+          });
+
+          socket.on("connect_error", () => {
+            statusEl.textContent = "Connection error";
+          });
+
+          socket.on("disconnect", () => {
+            statusEl.textContent = "Disconnected. Reconnectingâ€¦";
+          });
+
+          socket.on("broadcast:state", (state) => {
+            renderState(state || {});
+          });
+        }
+
+        function renderState(state) {
+          statusEl.textContent = `Live â€¢ ${new Date(state.updatedAt || Date.now()).toLocaleTimeString()}`;
+          renderTeams(Array.isArray(state.teams) ? state.teams : []);
+          if (debug) {
+            renderDebug(state);
+          }
+        }
+
+        function renderTeams(teams) {
+          const sorted = [...teams].sort((a, b) => {
+            const aliveDiff = Number(b.alive || 0) - Number(a.alive || 0);
+            if (aliveDiff !== 0) return aliveDiff;
+            const killDiff = Number(b.kills || 0) - Number(a.kills || 0);
+            if (killDiff !== 0) return killDiff;
+            return (a.name || a.teamId || "").localeCompare(b.name || b.teamId || "");
+          });
+
+          boardEl.innerHTML = "";
+          sorted.forEach((team, idx) => {
+            const item = document.createElement("div");
+            item.className = "team";
+
+            const logo = document.createElement("div");
+            logo.className = "logo";
+            const img = document.createElement("img");
+            img.src = team.logoUrl || fallbackLogo;
+            img.alt = team.name || team.teamId || "Team";
+            img.onerror = () => {
+              if (img.src !== fallbackLogo) img.src = fallbackLogo;
+            };
+            logo.appendChild(img);
+
+            const meta = document.createElement("div");
+            meta.className = "meta";
+            const name = document.createElement("div");
+            name.className = "name";
+            name.textContent = team.name || team.teamId || `Team ${idx + 1}`;
+            const sub = document.createElement("div");
+            sub.className = "sub";
+            sub.textContent = `Slot ${team.slot || idx + 1}`;
+            meta.appendChild(name);
+            meta.appendChild(sub);
+
+            const right = document.createElement("div");
+            right.className = "row-right";
+            const status = document.createElement("div");
+            status.className = `pill ${team.alive ? "alive" : "out"}`;
+            status.textContent = team.alive ? "Alive" : "Out";
+            const kills = document.createElement("div");
+            kills.className = "kills";
+            kills.textContent = `${team.kills ?? 0}`;
+            right.appendChild(status);
+            right.appendChild(kills);
+
+            item.appendChild(logo);
+            item.appendChild(meta);
+            item.appendChild(right);
+            boardEl.appendChild(item);
+          });
+        }
+
+        function renderDebug(state) {
+          const health = state.health || {};
+          const latency = health.avgLatencyMs != null ? `${health.avgLatencyMs} ms` : "n/a";
+          const last = health.lastTelemetryAt ? new Date(health.lastTelemetryAt).toLocaleTimeString() : "n/a";
+          const rate = health.eventsPerSec ? health.eventsPerSec.toFixed(2) : "0";
+          const status = (health.status || "down").toUpperCase();
+          debugEl.innerHTML = `
+            <div><strong>Status:</strong> ${status}</div>
+            <div><strong>Latency:</strong> ${latency}</div>
+            <div><strong>Last packet:</strong> ${last}</div>
+            <div><strong>Rate:</strong> ${rate} evt/s</div>
+            <div><strong>Client:</strong> ${health.clientId || "n/a"}</div>
+          `;
+        }
+
+        connect();
+      })();
+    </script>
+  </body>
+</html>

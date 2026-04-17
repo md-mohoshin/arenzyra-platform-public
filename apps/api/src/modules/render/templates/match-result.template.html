@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Arenzyra Match Result</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: {{background}};
+        color: {{textPrimary}};
+      }
+      .frame {
+        width: 100%;
+        height: 100%;
+        padding: 32px;
+        position: relative;
+        overflow: hidden;
+      }
+      .frame::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at top right, rgba(255,255,255,0.08), transparent 28%),
+          linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+        pointer-events: none;
+      }
+      .shell {
+        position: relative;
+        height: 100%;
+        border: 1px solid {{border}};
+        border-radius: 28px;
+        background: rgba(6, 10, 16, 0.66);
+        box-shadow: {{shadow}};
+        padding: 28px;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 22px;
+      }
+      .eyebrow {
+        display: inline-block;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.24);
+        border: 1px solid {{border}};
+        color: {{primaryColor}};
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .title {
+        margin: 14px 0 0;
+        font-size: 42px;
+        font-weight: 800;
+        line-height: 1.04;
+        letter-spacing: -0.03em;
+      }
+      .brand-logo {
+        width: 96px;
+        height: 96px;
+        object-fit: contain;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid {{border}};
+        padding: 16px;
+      }
+      .brand-logo--empty {
+        background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
+      }
+      .board {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px 16px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 78px 1fr auto;
+        align-items: center;
+        gap: 14px;
+        min-height: 52px;
+        padding: 12px 16px;
+        border-radius: 18px;
+        background: {{panel}};
+        border: 1px solid {{border}};
+      }
+      .row-rank {
+        color: {{primaryColor}};
+        font-size: 26px;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+      }
+      .row-main {
+        min-width: 0;
+      }
+      .row-tag {
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+      .row-meta {
+        margin-top: 4px;
+        color: {{textMuted}};
+        font-size: 14px;
+      }
+      .row-points {
+        color: {{primaryColor}};
+        font-size: 24px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .footer {
+        position: absolute;
+        left: 28px;
+        right: 28px;
+        bottom: 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        color: {{textMuted}};
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .footer-mark {
+        color: {{primaryColor}};
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <div class="shell">
+        <div class="header">
+          <div>
+            <div class="eyebrow">Arenzyra Results</div>
+            <div class="title">{{matchName}}</div>
+          </div>
+          {{logoHtml}}
+        </div>
+        <div class="board">{{rowsHtml}}</div>
+        <div class="footer">
+          <span>{{footer}}</span>
+          <span class="footer-mark">Backend Rendered PNG</span>
+        </div>
+      </div>
+    </div>
+  </body>
+  </html>
