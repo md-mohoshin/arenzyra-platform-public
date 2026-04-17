@@ -28,7 +28,7 @@ if (-not $databaseUrl) {
   exit 1
 }
 
-Write-Host "DATABASE_URL detected: $databaseUrl"
+Write-Host "DATABASE_URL detected"
 
 function Invoke-Step($label, $command) {
   Write-Host "---- $label"
