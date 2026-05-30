@@ -1,0 +1,29 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$PUBLIC_WEB_HOST} {
+	encode gzip zstd
+	header {
+		-Server
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Content-Type-Options nosniff
+	}
+	reverse_proxy web:3005
+}
+
+www.{$PUBLIC_WEB_HOST} {
+	redir https://{$PUBLIC_WEB_HOST}{uri} permanent
+}
+
+{$PUBLIC_API_HOST} {
+	encode gzip zstd
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+	}
+	request_body {
+		max_size 10MB
+	}
+	reverse_proxy api:3000
+}

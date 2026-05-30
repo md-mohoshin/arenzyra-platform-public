@@ -1,0 +1,240 @@
+:root {
+  color-scheme: dark;
+  --accent: #49e3ff;
+  --accent-soft: rgba(73, 227, 255, 0.14);
+  --panel: rgba(7, 12, 18, 0.92);
+  --panel-soft: rgba(13, 23, 34, 0.84);
+  --panel-border: rgba(73, 227, 255, 0.24);
+  --copy-primary: #f2fdff;
+  --copy-secondary: rgba(200, 249, 255, 0.76);
+  --shadow: 0 30px 60px rgba(0, 0, 0, 0.44);
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif;
+}
+
+body {
+  pointer-events: none;
+}
+
+.ranking {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  padding: 28px 28px 28px 0;
+  box-sizing: border-box;
+}
+
+.ranking__panel {
+  position: relative;
+  width: min(420px, calc(100vw - 28px));
+  padding: 20px 18px 18px;
+  border-radius: 28px 0 0 28px;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-right: none;
+  background:
+    radial-gradient(circle at 80% 10%, rgba(73, 227, 255, 0.14), transparent 28%),
+    linear-gradient(180deg, var(--panel), var(--panel-soft));
+  box-shadow:
+    var(--shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(22px) saturate(140%);
+}
+
+.ranking__panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 5px;
+  background: linear-gradient(180deg, rgba(73, 227, 255, 0.96), rgba(73, 227, 255, 0.18));
+  box-shadow: 0 0 18px rgba(73, 227, 255, 0.38);
+}
+
+.ranking__header,
+.ranking__columns,
+.ranking__list {
+  position: relative;
+  z-index: 1;
+}
+
+.ranking__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.ranking__eyebrow {
+  margin: 0 0 6px;
+  color: var(--copy-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+}
+
+.ranking__title {
+  margin: 0;
+  color: var(--copy-primary);
+  font-size: clamp(18px, 2vw, 28px);
+  line-height: 1.02;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.ranking__header-stats {
+  min-width: 86px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  text-align: center;
+  background: rgba(73, 227, 255, 0.08);
+  border: 1px solid rgba(73, 227, 255, 0.18);
+}
+
+.ranking__metric-label {
+  display: block;
+  color: rgba(197, 248, 255, 0.72);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.ranking__metric-value {
+  display: block;
+  margin-top: 4px;
+  color: var(--accent);
+  font-size: 28px;
+  font-weight: 900;
+}
+
+.ranking__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 84px;
+  gap: 10px;
+  padding: 0 12px 8px 56px;
+  color: rgba(200, 249, 255, 0.64);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.ranking__column-value {
+  text-align: center;
+}
+
+.ranking__list {
+  display: grid;
+  gap: 10px;
+}
+
+.ranking__row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 72px 84px;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
+    rgba(6, 10, 16, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.ranking__place {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(73, 227, 255, 0.18), rgba(73, 227, 255, 0.06));
+  border: 1px solid rgba(73, 227, 255, 0.22);
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.ranking__team {
+  min-width: 0;
+}
+
+.ranking__team-name {
+  display: block;
+  color: var(--copy-primary);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ranking__team-tag {
+  display: block;
+  margin-top: 6px;
+  color: rgba(204, 250, 255, 0.64);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.ranking__value {
+  text-align: center;
+  color: var(--copy-primary);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.ranking__value--points {
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .ranking {
+    padding: 12px 12px 12px 0;
+  }
+
+  .ranking__panel {
+    width: min(100vw - 12px, 380px);
+    padding: 16px 14px 14px;
+    border-radius: 20px 0 0 20px;
+  }
+
+  .ranking__header {
+    grid-template-columns: 1fr;
+  }
+
+  .ranking__columns {
+    padding-left: 50px;
+  }
+
+  .ranking__row {
+    grid-template-columns: 38px minmax(0, 1fr) 62px 72px;
+    padding: 10px;
+  }
+
+  .ranking__place {
+    width: 38px;
+    height: 38px;
+  }
+
+  .ranking__team-name {
+    font-size: 16px;
+  }
+}

@@ -1,0 +1,347 @@
+:root {
+  color-scheme: dark;
+  font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  position: relative;
+}
+
+.obs-team-status-root {
+  position: absolute;
+  left: 24px;
+  bottom: 24px;
+  width: 936px;
+  opacity: 0;
+  transform: translate3d(0, 22px, 0);
+  transition:
+    opacity 180ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.obs-team-status-root[hidden] {
+  display: none;
+}
+
+.obs-team-status-root.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.team-status-shell {
+  overflow: hidden;
+  border-radius: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(48, 132, 255, 0.16), transparent 36%),
+    linear-gradient(135deg, rgba(7, 14, 24, 0.96), rgba(4, 9, 16, 0.94));
+  box-shadow:
+    0 28px 72px rgba(0, 0, 0, 0.36),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  padding: 18px 18px 16px;
+}
+
+.obs-team-status-root[data-offline="true"] .team-status-shell {
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.team-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.team-status-copy {
+  min-width: 0;
+}
+
+.team-status-eyebrow {
+  color: rgba(232, 240, 247, 0.52);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+}
+
+.team-status-team {
+  margin-top: 7px;
+  color: #ffffff;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-status-connection {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  background: rgba(69, 41, 4, 0.72);
+  color: #ffd89a;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.team-status-connection[hidden] {
+  display: none;
+}
+
+.team-status-strip {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.team-status-player {
+  --status-color: #3ad17d;
+  --status-surface: rgba(15, 58, 33, 0.82);
+  --status-border: rgba(58, 209, 125, 0.36);
+  --status-glow: rgba(58, 209, 125, 0.22);
+  --card-accent: rgba(58, 209, 125, 0.16);
+  --hp-color: #3ad17d;
+  position: relative;
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 12px;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 148px;
+  overflow: hidden;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at 0% 18%, var(--card-accent), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.02),
+    0 16px 32px rgba(0, 0, 0, 0.18);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease,
+    filter 160ms ease;
+}
+
+.team-status-player[data-status="knocked"] {
+  --status-color: #f5a524;
+  --status-surface: rgba(78, 38, 6, 0.84);
+  --status-border: rgba(245, 165, 36, 0.38);
+  --status-glow: rgba(245, 165, 36, 0.24);
+  --card-accent: rgba(245, 165, 36, 0.18);
+  --hp-color: #f5a524;
+}
+
+.team-status-player[data-status="eliminated"] {
+  --status-color: #ef5a5a;
+  --status-surface: rgba(76, 12, 18, 0.82);
+  --status-border: rgba(239, 90, 90, 0.32);
+  --status-glow: rgba(239, 90, 90, 0.18);
+  --card-accent: rgba(239, 90, 90, 0.14);
+  --hp-color: #ef5a5a;
+  opacity: 0.76;
+  filter: saturate(0.7);
+}
+
+.team-status-player[data-focused="true"] {
+  transform: scale(1.028);
+  border-color: rgba(89, 179, 255, 0.48);
+  box-shadow:
+    0 0 0 1px rgba(89, 179, 255, 0.22),
+    0 22px 42px rgba(4, 96, 176, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.team-status-player[data-stale="true"] {
+  opacity: 0.9;
+  filter: saturate(0.84);
+}
+
+.team-status-player[data-status="knocked"] .team-status-player-status {
+  animation: team-status-knocked-pulse 1.2s ease-in-out infinite;
+}
+
+.team-status-player-media {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 16%, rgba(255, 255, 255, 0.18), transparent 38%),
+    linear-gradient(180deg, var(--card-accent), rgba(11, 19, 29, 0.94));
+}
+
+.team-status-player-media::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 48%;
+  background: linear-gradient(180deg, transparent, rgba(4, 10, 17, 0.92));
+  pointer-events: none;
+}
+
+.team-status-player-media img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center top;
+}
+
+.team-status-player-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 14px 14px 14px 0;
+}
+
+.team-status-player-name {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-status-player-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.team-status-player-kills {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.team-status-player-kills-value {
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.team-status-player-kills-label {
+  color: rgba(232, 240, 247, 0.58);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.team-status-player-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--status-border);
+  background: var(--status-surface);
+  color: #ffffff;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  box-shadow: 0 0 18px var(--status-glow);
+}
+
+.team-status-player-hp {
+  margin-top: 14px;
+}
+
+.team-status-player-hp-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.team-status-player-hp-label {
+  color: rgba(232, 240, 247, 0.48);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.team-status-player-hp-value {
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.team-status-player-hp-rail {
+  position: relative;
+  margin-top: 8px;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.team-status-player-hp-fill {
+  position: relative;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.9), var(--hp-color)),
+    var(--hp-color);
+  box-shadow: 0 0 20px var(--status-glow);
+  transform-origin: left center;
+}
+
+.team-status-player-hp-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 72%);
+}
+
+.team-status-player[data-hp-known="false"] .team-status-player-hp-rail {
+  opacity: 0.42;
+}
+
+.team-status-player[data-hp-known="false"] .team-status-player-hp-fill {
+  box-shadow: none;
+}
+
+@keyframes team-status-knocked-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 12px var(--status-glow);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 22px var(--status-glow);
+    transform: scale(1.04);
+  }
+}

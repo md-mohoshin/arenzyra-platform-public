@@ -1,0 +1,50 @@
+{
+  "name": "arenzyra-launcher",
+  "version": "1.0.0",
+  "description": "System control launcher for the Arenzyra service stack",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "sync:branding": "node ../../scripts/sync-brand-icons.cjs",
+    "dist": "npm run sync:branding && electron-builder -w",
+    "test": "echo \"No tests configured\" && exit 0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "private": true,
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^40.2.1",
+    "electron-builder": "^26.7.0"
+  },
+  "build": {
+    "appId": "com.arenzyra.launcher",
+    "productName": "Arenzyra Launcher",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "../../infra/health.ps1",
+        "to": "health.ps1"
+      }
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": "nsis"
+    }
+  }
+}

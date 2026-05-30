@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Player Card Overlay</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/common.js"></script>
+    <style>
+      .card {
+        max-width: 420px;
+        margin: 0 auto;
+        padding: 16px;
+        border-radius: 14px;
+        background: radial-gradient(circle at 20% 20%, rgba(59, 130, 246, 0.25), rgba(17, 24, 39, 0.95));
+        border: 1px solid rgba(59, 130, 246, 0.35);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+      }
+      .avatar {
+        width: 72px;
+        height: 72px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.08);
+        object-fit: cover;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="badge" style="margin-bottom: 10px">Player Card</div>
+      <div id="container"></div>
+    </div>
+    <script>
+      const container = document.getElementById("container");
+      const render = (data) => {
+        const p = data?.player || data;
+        if (!p) {
+          container.innerHTML = "<div class='fade-in' style='color:#9ca3af'>Waiting…</div>";
+          return;
+        }
+        container.innerHTML = `
+          <div class="card fade-in">
+            <div style="display:flex; align-items:center; gap:12px;">
+              ${p.photoUrl ? `<img src="${p.photoUrl}" class="avatar" />` : `<div class="avatar"></div>`}
+              <div>
+                <div style="font-size:22px;font-weight:700">${p.ign || p.name || "Player"}</div>
+                <div style="font-size:13px;color:#cbd5e1">Team: ${p.teamTag || p.teamName || p.teamId || "—"}</div>
+                <div style="font-size:12px;color:#94a3b8; margin-top:4px;">Kills: ${p.kills ?? 0} · HP: ${p.hp ?? "—"}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      };
+      window.overlayBus.on((payload) => {
+        if (!payload || payload.overlay !== "playercard") return;
+        if (payload.type === "overlay:hide") {
+          container.innerHTML = "";
+          return;
+        }
+        render(payload.data);
+      });
+    </script>
+  </body>
+</html>

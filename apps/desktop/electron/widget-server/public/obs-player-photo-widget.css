@@ -1,0 +1,99 @@
+:root {
+  color-scheme: dark;
+  font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  position: relative;
+}
+
+.obs-player-photo-root {
+  position: absolute;
+  left: calc(50% + clamp(250px, 17vw, 340px));
+  bottom: 0;
+  width: clamp(124px, 7.8vw, 154px);
+  opacity: 0;
+  transform: translate3d(14px, 0, 0) scale(0.96);
+  transform-origin: 0 100%;
+  transition:
+    opacity 180ms ease-out,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 180ms ease-out;
+  pointer-events: none;
+  z-index: 3;
+  filter: none;
+}
+
+.obs-player-photo-root[hidden] {
+  display: none;
+}
+
+.obs-player-photo-root.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.player-photo-shell {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 0.78;
+}
+
+.player-photo-shell::before {
+  content: none;
+}
+
+.player-photo-shell::after {
+  content: none;
+}
+
+.player-photo-frame {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  isolation: auto;
+}
+
+.player-photo-frame::before {
+  content: none;
+}
+
+.player-photo-frame::after {
+  content: none;
+}
+
+.player-photo-frame img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  object-position: center bottom;
+  transform: none;
+  filter: none;
+}
+
+.obs-player-photo-root[data-offline="true"] {
+  filter: none;
+}
+
+.obs-player-photo-root[data-stale="true"] .player-photo-frame img {
+  filter: none;
+}
+
+.obs-player-photo-root[data-status="eliminated"] .player-photo-frame img {
+  filter: none;
+}

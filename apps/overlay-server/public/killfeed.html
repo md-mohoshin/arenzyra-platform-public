@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Killfeed Overlay</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/common.js"></script>
+    <style>
+      #feed {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .event {
+        padding: 8px 12px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="badge" style="margin-bottom: 8px">Killfeed</div>
+      <div id="feed"></div>
+    </div>
+    <script>
+      const feedEl = document.getElementById("feed");
+      const render = (data) => {
+        const events = Array.isArray(data?.events ?? data?.kills) ? data.events ?? data.kills : [];
+        feedEl.innerHTML = events
+          .slice(-20)
+          .reverse()
+          .map((e) => {
+            const killer = e.killerTag || e.killerTeamId || e.killerName || "??";
+            const victim = e.victimTag || e.victimTeamId || e.victimName || "??";
+            return `<div class="event fade-in">${killer} → ${victim} ${e.weapon ? "(" + e.weapon + ")" : ""}</div>`;
+          })
+          .join("");
+      };
+      window.overlayBus.on((payload) => {
+        if (!payload || payload.overlay !== "killfeed") return;
+        if (payload.type === "overlay:hide") {
+          feedEl.innerHTML = "";
+          return;
+        }
+        render(payload.data);
+      });
+    </script>
+  </body>
+</html>

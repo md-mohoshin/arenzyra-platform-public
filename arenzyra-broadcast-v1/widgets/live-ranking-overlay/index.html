@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arenzyra Live Ranking Overlay</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="ranking" id="rankingOverlay">
+      <section class="ranking__panel" aria-live="polite">
+        <header class="ranking__header">
+          <div>
+            <p class="ranking__eyebrow">Live Ranking</p>
+            <h1 class="ranking__title">Arenzyra Summer Invitational 2026</h1>
+          </div>
+          <div class="ranking__header-stats">
+            <span class="ranking__metric-label">Teams</span>
+            <strong class="ranking__metric-value" id="rankingTeamCount">0</strong>
+          </div>
+        </header>
+
+        <div class="ranking__columns" aria-hidden="true">
+          <span class="ranking__column-name">Team</span>
+          <span class="ranking__column-value">Kills</span>
+          <span class="ranking__column-value">Points</span>
+        </div>
+
+        <div class="ranking__list" id="rankingList"></div>
+      </section>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>

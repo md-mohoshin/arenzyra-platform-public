@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arenzyra Match Start Overlay</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="match-start" id="matchStart" data-state="idle">
+      <section class="match-start__card" aria-live="polite">
+        <div class="match-start__topline">
+          <span class="match-start__status" id="matchStatus">MATCH START</span>
+          <span class="match-start__signal"></span>
+        </div>
+
+        <div class="match-start__content">
+          <figure class="match-start__logo-shell">
+            <img
+              class="match-start__logo"
+              src="../assets/tournament-logo.svg"
+              alt="Tournament logo"
+              draggable="false"
+            />
+          </figure>
+
+          <div class="match-start__copy">
+            <p class="match-start__eyebrow" id="matchEyebrow">Official Broadcast</p>
+            <h1 class="match-start__title" id="matchTitle">Arenzyra Summer Invitational 2026</h1>
+            <p class="match-start__subtitle" id="matchSubtitle">Stage Alpha | Live in 3... 2... 1...</p>
+          </div>
+
+          <figure class="match-start__logo-shell match-start__logo-shell--channel">
+            <img
+              class="match-start__logo"
+              src="../assets/channel-logo.svg"
+              alt="Arenzyra channel logo"
+              draggable="false"
+            />
+          </figure>
+        </div>
+      </section>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>

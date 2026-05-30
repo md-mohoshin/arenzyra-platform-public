@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Scoreboard Overlay</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/common.js"></script>
+    <style>
+      body {
+        padding: 12px;
+      }
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      .table th,
+      .table td {
+        padding: 8px 10px;
+        text-align: left;
+      }
+      .table thead {
+        background: rgba(37, 99, 235, 0.15);
+      }
+      .table tbody tr:nth-child(every) {
+        background: rgba(255, 255, 255, 0.02);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px">
+        <div>
+          <div class="badge">Scoreboard</div>
+          <div id="overlayName" style="font-size: 12px; color: #9ca3af; margin-top: 6px">Waiting for data…</div>
+        </div>
+        <div id="status" class="badge" style="opacity: 0.75">Idle</div>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Team</th>
+            <th>K</th>
+            <th>Pts</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <script>
+      const rowsEl = document.getElementById("rows");
+      const statusEl = document.getElementById("status");
+      const nameEl = document.getElementById("overlayName");
+      const render = (data) => {
+        const teams = Array.isArray(data?.teams) ? data.teams : [];
+        rowsEl.innerHTML = teams
+          .map(
+            (t, idx) => `
+          <tr class="fade-in">
+            <td>${idx + 1}</td>
+            <td>${t.tag || t.name || t.id || ""}</td>
+            <td>${t.kills ?? 0}</td>
+            <td>${t.points ?? 0}</td>
+          </tr>`,
+          )
+          .join("");
+      };
+      window.overlayBus.on((payload) => {
+        if (!payload || payload.overlay !== "scoreboard") return;
+        nameEl.textContent = payload.overlay;
+        statusEl.textContent = payload.type;
+        statusEl.classList.add("fade-in");
+        if (payload.type === "overlay:hide") {
+          rowsEl.innerHTML = "";
+          return;
+        }
+        render(payload.data);
+      });
+    </script>
+  </body>
+</html>

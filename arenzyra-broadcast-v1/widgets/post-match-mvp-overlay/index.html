@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arenzyra Post Match MVP Overlay</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="mvp" id="mvpOverlay" data-state="idle">
+      <section class="mvp__card" aria-live="polite">
+        <div class="mvp__portrait-shell">
+          <img class="mvp__portrait" id="playerPhoto" alt="" draggable="false" />
+          <div class="mvp__portrait-fallback" id="playerFallback">MVP</div>
+        </div>
+
+        <div class="mvp__content">
+          <div class="mvp__topline">
+            <span class="mvp__label" id="label">MATCH MVP</span>
+            <span class="mvp__divider"></span>
+            <figure class="mvp__logo-shell">
+              <img
+                class="mvp__logo"
+                id="teamLogo"
+                src="../assets/tournament-logo.svg"
+                alt="Team logo"
+                draggable="false"
+              />
+            </figure>
+          </div>
+
+          <p class="mvp__team" id="teamName">Arenzyra Esports</p>
+          <h1 class="mvp__player" id="playerName">RAVEN</h1>
+
+          <div class="mvp__stats" aria-label="MVP stats">
+            <div class="mvp__stat">
+              <span class="mvp__stat-value" id="kills">12</span>
+              <span class="mvp__stat-label">Kills</span>
+            </div>
+            <div class="mvp__stat">
+              <span class="mvp__stat-value" id="damage">1840</span>
+              <span class="mvp__stat-label">Damage</span>
+            </div>
+            <div class="mvp__stat">
+              <span class="mvp__stat-value" id="placement">#1</span>
+              <span class="mvp__stat-label">Place</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>
