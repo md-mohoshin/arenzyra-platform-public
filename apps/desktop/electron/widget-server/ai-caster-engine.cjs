@@ -83,7 +83,7 @@ const LINE_VARIANTS = Object.freeze({
   standbyActive: Object.freeze([
     ({ teams, players }) => `${teams} teams active with ${players} players alive. Waiting for a high-value moment.`,
     ({ teams, players }) => `${players} players remain across ${teams} teams. Holding commentary for the next trigger.`,
-    ({ teams, players }) => `${teams} teams still in play. The caster is watching for fights, zone pressure, or knocks.`,
+    ({ teams }) => `${teams} teams still in play. The caster is watching for fights, zone pressure, or knocks.`,
   ]),
 });
 

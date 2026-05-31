@@ -899,6 +899,7 @@ export class ScrimDiscordSetupService {
       managedMessageId(config, "managedSlotListMessageId"),
       marker(session.id, "slots"),
       slotListPayload,
+      (message) => this.managedListMessageMatches(message, "slot-list"),
     );
     await this.syncPlayConfirmationReactions(slotListMessage, config);
     const confirmationMessage = await this.syncPlayConfirmationMessage(
@@ -972,6 +973,7 @@ export class ScrimDiscordSetupService {
       managedMessageId(config, "managedSlotListMessageId"),
       marker(session.id, "slots"),
       slotListPayload,
+      (message) => this.managedListMessageMatches(message, "slot-list"),
     );
     await this.syncPlayConfirmationReactions(slotListMessage, config);
     await this.cleanupStaleManagedListMessages(
@@ -1052,6 +1054,7 @@ export class ScrimDiscordSetupService {
       managedMessageId(config, "managedSlotListMessageId"),
       marker(session.id, "slots"),
       slotListPayload,
+      (message) => this.managedListMessageMatches(message, "slot-list"),
     );
     await this.syncPlayConfirmationReactions(slotListMessage, config);
     const confirmationMessage = await this.syncPlayConfirmationMessage(
@@ -2278,6 +2281,13 @@ export class ScrimDiscordSetupService {
       return true;
     }
 
+    return this.managedListMessageMatches(message, kind);
+  }
+
+  private managedListMessageMatches(
+    message: Message,
+    kind: "slot-list" | "waitlist",
+  ) {
     const text = this.managedListMessageText(message);
     if (kind === "slot-list") {
       return /\bslot\s+list\s*\(/i.test(text);
@@ -2330,6 +2340,14 @@ export class ScrimDiscordSetupService {
     matchExisting?: ManagedMessageMatcher,
   ): Promise<Message> {
     const botUserId = channel.client.user?.id;
+    const pinIfNeeded = async (message: Message) => {
+      if (!message.pinned) {
+        await message
+          .pin("Pin Arenzyra scrim automation message")
+          .catch(() => undefined);
+      }
+      return message;
+    };
     const stored = messageId
       ? await channel.messages.fetch(messageId).catch(() => null)
       : null;
@@ -2346,12 +2364,12 @@ export class ScrimDiscordSetupService {
         },
       );
       if (edited) {
-        return edited;
+        return pinIfNeeded(edited);
       }
     }
 
     const pinned = await channel.messages.fetchPinned().catch(() => null);
-    const existing = pinned?.find(
+    let existing = pinned?.find(
       (message) =>
         message.author.id === botUserId &&
         (message.embeds.some((messageEmbed) =>
@@ -2359,6 +2377,20 @@ export class ScrimDiscordSetupService {
         ) ||
           matchExisting?.(message)),
     );
+    if (!existing) {
+      const recent = await channel.messages
+        .fetch({ limit: 100 })
+        .catch(() => null);
+      existing = recent?.find(
+        (message) =>
+          message.author.id === botUserId &&
+          message.type !== MessageType.ChannelPinnedMessage &&
+          (message.embeds.some((messageEmbed) =>
+            legacyEmbedHasMarker(messageEmbed, footerMarker),
+          ) ||
+            matchExisting?.(message)),
+      );
+    }
 
     if (existing) {
       const edited = await this.editManagedMessage(existing, payload).catch(
@@ -2373,7 +2405,7 @@ export class ScrimDiscordSetupService {
         },
       );
       if (edited) {
-        return edited;
+        return pinIfNeeded(edited);
       }
     }
 
@@ -2383,10 +2415,7 @@ export class ScrimDiscordSetupService {
         ? sendRest
         : { ...sendRest, content };
     const sent = await channel.send(sendPayload);
-    await sent
-      .pin("Pin Arenzyra scrim automation message")
-      .catch(() => undefined);
-    return sent;
+    return pinIfNeeded(sent);
   }
 
   private async upsertManagedMessage(

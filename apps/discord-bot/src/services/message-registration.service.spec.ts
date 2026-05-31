@@ -3327,6 +3327,8 @@ test("automatic result apply button applies the stored screenshot", async () => 
       slotNumber: 3,
       status: "OK",
       include: true,
+      ocrTag: "DXB",
+      ocrPlayerNames: [],
     },
   ]);
   assert.match(finalEdit.content, /Results applied/);

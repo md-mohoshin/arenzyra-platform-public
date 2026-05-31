@@ -221,6 +221,7 @@ services:
     environment:
       NODE_ENV: production
       ARENZYRA_API_BASE_URL: "http://api:3000"
+      DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
     volumes:
       - ../apps/discord-bot/.env:/repo/apps/discord-bot/.env
     depends_on:

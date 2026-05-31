@@ -721,17 +721,6 @@ function pickCirclePayloadNumber(circlePayload, keys) {
   return null;
 }
 
-function pickCirclePayloadString(circlePayload, keys) {
-  for (const record of getCirclePayloadRecords(circlePayload)) {
-    const value = pickFirstString(record, keys);
-    if (value) {
-      return value;
-    }
-  }
-
-  return null;
-}
-
 function pickCirclePayloadStatus(circlePayload, keys) {
   for (const record of getCirclePayloadRecords(circlePayload)) {
     const value = pickFirstStatus(record, keys);

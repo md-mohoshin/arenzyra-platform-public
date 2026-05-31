@@ -12,6 +12,16 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function requireAnyEnv(...names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  throw new Error(`Missing required environment variable: ${names.join(' or ')}`);
+}
+
 function optionalEnv(name: string): string | null {
   const value = process.env[name]?.trim();
   return value ? value : null;
@@ -27,7 +37,7 @@ function optionalBooleanEnv(name: string, fallback: boolean): boolean {
 
 export const botConfig = {
   envFilePath,
-  discordToken: requireEnv('DISCORD_TOKEN'),
+  discordToken: requireAnyEnv('DISCORD_BOT_TOKEN', 'DISCORD_TOKEN'),
   discordClientId: requireEnv('DISCORD_CLIENT_ID'),
   discordGuildId: optionalEnv('DISCORD_GUILD_ID'),
   messageContentIntent: optionalBooleanEnv('DISCORD_MESSAGE_CONTENT_INTENT', false),

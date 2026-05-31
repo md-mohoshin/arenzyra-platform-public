@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChannelType, Collection } from "discord.js";
+import { ChannelType, Collection, MessageType } from "discord.js";
 import { ScrimDiscordSetupService } from "./scrim-discord-setup.service";
 
 function setupPayload() {
@@ -225,6 +225,85 @@ test("configured existing channel is not edited while preserving existing channe
   assert.equal(result, channel);
   assert.equal(editCount, 0);
   assert.equal(createCount, 0);
+});
+
+test("slot-list sync reuses an existing plain bot message when saved id is stale", async () => {
+  const service = new ScrimDiscordSetupService() as any;
+  let editPayload: any = null;
+  let pinCount = 0;
+  let sendCount = 0;
+  const message = {
+    id: "existing-slot-list",
+    type: MessageType.Default,
+    author: { id: "bot-user" },
+    content: "**Slot List (0/25)**\nOld slot list",
+    embeds: [],
+    components: [],
+    pinned: false,
+    client: { user: { id: "bot-user" } },
+    edit: async (payload: any) => {
+      editPayload = payload;
+      message.content = payload.content;
+      return message;
+    },
+    pin: async () => {
+      pinCount += 1;
+      message.pinned = true;
+      return message;
+    },
+    delete: async () => {
+      throw new Error("managed message should not be deleted");
+    },
+  };
+  const messages = new Collection<string, any>([[message.id, message]]);
+  const channel = {
+    id: "slot-list-channel",
+    client: { user: { id: "bot-user" } },
+    messages: {
+      fetch: async (arg: any) => {
+        if (typeof arg === "string") {
+          throw new Error("saved message id is stale");
+        }
+        return messages;
+      },
+      fetchPinned: async () => new Collection<string, any>(),
+    },
+    send: async () => {
+      sendCount += 1;
+      throw new Error("existing slot list should be reused");
+    },
+  };
+  service.fetchTextChannel = async () => channel;
+  service.resolveTeamLogoEmojis = async () => ({});
+  service.syncPlayConfirmationReactions = async () => undefined;
+
+  const synced = await service.syncSlotListMessage(
+    {
+      id: "guild-1",
+      emojis: { cache: new Collection(), fetch: async () => null },
+    },
+    setupPayload(),
+    { ...sessionPayload(), slotCount: 25 },
+    [
+      {
+        ...registrationPayload(),
+        status: "CONFIRMED",
+        slotNumber: 3,
+        waitlistPosition: null,
+      },
+    ],
+    {
+      emojis: {
+        managedSlotListMessageId: "deleted-message",
+        slotListMessageMode: "plain",
+      },
+    },
+  );
+
+  assert.equal(synced.id, message.id);
+  assert.equal(sendCount, 0);
+  assert.equal(pinCount, 1);
+  assert.match(editPayload.content, /Slot List \(1\/\d+\)/);
 });
 
 test("existing channel sync does not rewrite permission overwrites by default", async () => {

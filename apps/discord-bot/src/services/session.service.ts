@@ -220,6 +220,8 @@ export type AutomaticResultPreviewResponse = {
 export type ReviewedResultRow = ScreenshotPreviewEntry & {
   include: boolean;
   edited?: boolean;
+  ocrTag?: string | null;
+  ocrPlayerNames?: string[];
 };
 
 type ResultSummaryEntry = Pick<
@@ -1924,6 +1926,9 @@ export class DiscordSessionService {
         tag: entry.tag,
         kills: entry.kills,
         players: entry.players ?? [],
+        playerNames: entry.playerNames ?? [],
+        ocrTag: entry.tag,
+        ocrPlayerNames: entry.playerNames ?? [],
         teamId: entry.teamId,
         slotId: entry.slotId,
         status: entry.status,
@@ -1946,6 +1951,10 @@ export class DiscordSessionService {
           tag: entry.tag,
           kills: entry.kills,
           players: entry.players ?? [],
+          playerNames: entry.playerNames ?? [],
+          ocrTag: entry.ocrTag ?? entry.tag,
+          ocrPlayerNames: entry.ocrPlayerNames ?? entry.playerNames ?? [],
+          edited: entry.edited ?? false,
           teamId: entry.teamId,
           slotId: entry.slotId,
           status: entry.status,
@@ -6935,6 +6944,25 @@ export class DiscordSessionService {
         return true;
       }
       return false;
+    }
+
+    if (isSlotList && (stalePlayControl || unexpectedPlayButtons)) {
+      const freshMessage = await message.channel.messages
+        .fetch(message.id)
+        .catch(() => message);
+      const freshState = this.slotListPlayControlState(
+        freshMessage,
+        resolved.session.id,
+        buttonsAllowed,
+      );
+      if (!freshState.stalePlayControl && !freshState.unexpectedPlayButtons) {
+        return false;
+      }
+      await freshMessage.edit({ components: [] }).catch(() => undefined);
+      console.warn(
+        `[DiscordCleanup] removed unexpected slot-list buttons session=${resolved.session.id} channel=${message.channelId} message=${message.id}`,
+      );
+      return true;
     }
 
     if (

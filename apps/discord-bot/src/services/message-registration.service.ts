@@ -1920,6 +1920,8 @@ export class MessageRegistrationService {
     return (preview.preview?.preview ?? []).map((entry) => ({
       ...entry,
       include: entry.status === "OK",
+      ocrTag: entry.tag,
+      ocrPlayerNames: entry.playerNames ?? [],
     }));
   }
 
@@ -3323,6 +3325,8 @@ export class MessageRegistrationService {
           position: position.value,
           kills: kills.value,
           players: players.players,
+          ocrTag: current.ocrTag ?? current.tag,
+          ocrPlayerNames: current.ocrPlayerNames ?? current.playerNames ?? [],
           edited: true,
         },
       };
@@ -3369,6 +3373,8 @@ export class MessageRegistrationService {
         position: position.value,
         kills: kills.value,
         players: players.players,
+        ocrTag: current.ocrTag ?? current.tag,
+        ocrPlayerNames: current.ocrPlayerNames ?? current.playerNames ?? [],
         slotId,
         teamId,
         slotNumber: slotNumberResult.value,

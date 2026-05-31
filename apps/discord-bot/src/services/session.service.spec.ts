@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Collection, type Guild } from "discord.js";
+import { Collection, MessageType, type Guild } from "discord.js";
 import type {
   DiscordConfigResponse,
   RegisterDiscordTeamResponse,
@@ -4883,6 +4883,56 @@ test("scheduled auto cleanup deletes only unprotected channel messages once per 
   assert.equal(logMessages.length, 1);
   assert.match(logMessages[0].content, /Deleted: 1/);
   assert.doesNotMatch(logMessages[0].content, /protected-1/);
+});
+
+test("slot-list cleanup preserves real slot-list messages while removing stale buttons", async () => {
+  const service = new DiscordSessionService(createApi({}) as any) as any;
+  let deleted = false;
+  let editPayload: any = null;
+  const message: any = {
+    id: "new-slot-list",
+    type: MessageType.Default,
+    guild: { id: "guild-1" },
+    author: { id: "bot-user" },
+    client: { user: { id: "bot-user" } },
+    channelId: "slot-list-channel",
+    content: "**Slot List (1/20)**\n#1 Team",
+    embeds: [],
+    components: [
+      {
+        components: [{ customId: "play:confirm:old-session" }],
+      },
+    ],
+    edit: async (payload: any) => {
+      editPayload = payload;
+      message.components = payload.components;
+      return message;
+    },
+    delete: async () => {
+      deleted = true;
+    },
+  };
+  message.channel = {
+    messages: {
+      fetch: async () => message,
+    },
+  };
+  service.resolveDiscordChannel = async () => ({
+    session: { id: "session-1", type: "SCRIM" },
+    channelKind: "slot-list",
+    config: createSessionDiscordConfig({
+      emojis: {
+        managedSlotListMessageId: "old-managed-message",
+        playControlMode: "buttons",
+      },
+    }),
+  });
+
+  const handled = await service.cleanupStaleManagedBotMessage(message);
+
+  assert.equal(handled, true);
+  assert.equal(deleted, false);
+  assert.deepEqual(editPayload, { components: [] });
 });
 
 test("scheduled auto cleanup accepts a missed-minute catch-up window", () => {

@@ -660,6 +660,10 @@ export type ApplyScreenshotResultsPayload = {
     tag: string;
     kills: number;
     players?: ScreenshotPlayerKillEntry[];
+    playerNames?: string[];
+    ocrTag?: string | null;
+    ocrPlayerNames?: string[];
+    edited?: boolean;
     teamId?: string | null;
     slotId?: string | null;
     status: ScreenshotPreviewStatus;
