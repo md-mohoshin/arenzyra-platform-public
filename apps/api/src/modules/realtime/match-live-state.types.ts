@@ -1,4 +1,5 @@
 import { MatchStatus } from '@prisma/client';
+import type { MatchStateTeamBackpack } from '../match-control/state.store';
 
 export type LiveStatePlayer = {
   playerId: string;
@@ -6,7 +7,10 @@ export type LiveStatePlayer = {
   isAlive: boolean;
   alive: boolean;
   knocked: boolean;
+  health?: number | null;
   kills: number;
+  assists?: number;
+  lifeTelemetryFresh?: boolean;
 };
 
 export type LiveStateTeam = {
@@ -21,6 +25,8 @@ export type LiveStateTeam = {
   points?: number | null;
   alivePlayers?: number | null;
   totalPlayers?: number | null;
+  backpack?: MatchStateTeamBackpack | null;
+  equipment?: MatchStateTeamBackpack | null;
   players: LiveStatePlayer[];
 };
 

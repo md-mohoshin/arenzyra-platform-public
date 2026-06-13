@@ -1,17 +1,23 @@
 import { DataMode, MatchDataSource } from '@prisma/client';
-import { PCOB_ADAPTER_KEY } from './pcob-binding.util';
+import {
+  hasPcobAdapterBindingSignal,
+  PCOB_ADAPTER_KEY,
+} from './pcob-binding.util';
 
-export const DS_AUTO = 'AUTO' as unknown as MatchDataSource;
+export const DS_AUTO = MatchDataSource.API;
 
 export const TELEMETRY_PROVIDERS = [
   MatchDataSource.MANUAL,
   MatchDataSource.API,
-  MatchDataSource.SHADOW,
-  MatchDataSource.PCOB,
 ] as const;
 
-export type TelemetryProvider = (typeof TELEMETRY_PROVIDERS)[number];
-export type DerivedSourceMode = 'MANUAL' | 'AUTO';
+export type TelemetryProvider =
+  | (typeof TELEMETRY_PROVIDERS)[number]
+  | (typeof MatchDataSource)['PCOB'];
+export type DerivedSourceMode = 'MANUAL' | 'API';
+export type ExposedTelemetryProvider = (typeof TELEMETRY_PROVIDERS)[number];
+export type ExposedSourceMode = DerivedSourceMode;
+export type PcobCompatibilityMode = 'MANUAL' | 'API' | 'PCOB';
 
 type MatchTelemetryProviderLike = {
   dataSource?: unknown;
@@ -29,18 +35,28 @@ const normalizeString = (value: unknown): string | null => {
   return trimmed ? trimmed.toUpperCase() : null;
 };
 
+const normalizeRawString = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+
 export const normalizeTelemetryProvider = (
   value: unknown,
 ): TelemetryProvider | null => {
   const normalized = normalizeString(value);
   if (!normalized) return null;
+  if (normalized === MatchDataSource.MANUAL) {
+    return MatchDataSource.MANUAL;
+  }
   if (
-    normalized === MatchDataSource.MANUAL ||
+    normalized === 'AUTO' ||
     normalized === MatchDataSource.API ||
     normalized === MatchDataSource.SHADOW ||
-    normalized === MatchDataSource.PCOB
+    normalized === MatchDataSource.PCOB ||
+    normalized === 'SIMULATOR'
   ) {
-    return normalized;
+    return MatchDataSource.API;
   }
   return null;
 };
@@ -50,29 +66,18 @@ export const resolveCanonicalTelemetryProvider = (
 ): TelemetryProvider => {
   const dataSource = normalizeString(match.dataSource);
   const canonicalSource = normalizeTelemetryProvider(dataSource);
-  if (canonicalSource) {
-    return canonicalSource;
-  }
-
   const dataMode = normalizeString(match.dataMode);
-  const hasPcobSession =
-    typeof match.pcobSessionId === 'string' &&
-    match.pcobSessionId.trim().length > 0;
-  const adapterKey = normalizeString(match.adapterKey);
+  const hasPcobSignal = dataMode === DataMode.PCOB || match.pcobMode === true;
 
-  if (dataSource === 'AUTO') {
-    if (dataMode === DataMode.PCOB || match.pcobMode === true) {
-      return hasPcobSession || adapterKey === PCOB_ADAPTER_KEY.toUpperCase()
-        ? MatchDataSource.PCOB
-        : MatchDataSource.SHADOW;
-    }
+  if (canonicalSource === MatchDataSource.API) {
     return MatchDataSource.API;
   }
+  if (canonicalSource === MatchDataSource.MANUAL) {
+    return MatchDataSource.MANUAL;
+  }
 
-  if (dataMode === DataMode.PCOB) {
-    return hasPcobSession || adapterKey === PCOB_ADAPTER_KEY.toUpperCase()
-      ? MatchDataSource.PCOB
-      : MatchDataSource.SHADOW;
+  if (hasPcobSignal) {
+    return MatchDataSource.API;
   }
 
   return MatchDataSource.MANUAL;
@@ -81,7 +86,52 @@ export const resolveCanonicalTelemetryProvider = (
 export const deriveSourceMode = (
   provider: TelemetryProvider,
 ): DerivedSourceMode =>
-  provider === MatchDataSource.MANUAL ? 'MANUAL' : 'AUTO';
+  provider === MatchDataSource.MANUAL ? 'MANUAL' : 'API';
+
+export const exposeTelemetryProvider = (
+  provider: TelemetryProvider,
+): ExposedTelemetryProvider =>
+  provider === MatchDataSource.MANUAL
+    ? MatchDataSource.MANUAL
+    : MatchDataSource.API;
+
+export const exposeSourceMode = (
+  provider: TelemetryProvider,
+): ExposedSourceMode =>
+  provider === MatchDataSource.MANUAL
+    ? MatchDataSource.MANUAL
+    : MatchDataSource.API;
+
+export const exposeCanonicalTelemetryProvider = (
+  match: MatchTelemetryProviderLike,
+): ExposedTelemetryProvider =>
+  exposeTelemetryProvider(resolveCanonicalTelemetryProvider(match));
+
+export const resolvePcobCompatibilityMode = (
+  match: MatchTelemetryProviderLike,
+): PcobCompatibilityMode => {
+  const dataSource = normalizeString(match.dataSource);
+  const dataMode = normalizeString(match.dataMode);
+  const hasLegacyPcobProvider =
+    dataSource === MatchDataSource.PCOB ||
+    dataMode === DataMode.PCOB ||
+    match.pcobMode === true;
+  if (hasLegacyPcobProvider && hasPcobAdapterBindingSignal(match)) {
+    return 'API';
+  }
+  const telemetryProvider = resolveCanonicalTelemetryProvider(match);
+  if (
+    telemetryProvider === MatchDataSource.API &&
+    hasPcobAdapterBindingSignal(match)
+  ) {
+    return 'API';
+  }
+  return 'MANUAL';
+};
+
+export const isPcobCompatibilityMatch = (
+  match: MatchTelemetryProviderLike,
+): boolean => resolvePcobCompatibilityMode(match) !== 'MANUAL';
 
 export const resolveTelemetryProviderInput = (params: {
   dataSource?: unknown;
@@ -89,16 +139,22 @@ export const resolveTelemetryProviderInput = (params: {
   currentProvider?: TelemetryProvider | null;
   defaultAutoProvider?: TelemetryProvider;
 }): TelemetryProvider | null => {
-  const defaultAutoProvider = params.defaultAutoProvider ?? MatchDataSource.API;
+  const defaultAutoProvider = params.defaultAutoProvider ?? DS_AUTO;
   const currentProvider = params.currentProvider ?? null;
   const dataSource = normalizeString(params.dataSource);
-  if (dataSource === 'SIMULATOR') {
-    return MatchDataSource.SHADOW;
+  if (dataSource === MatchDataSource.API) {
+    return defaultAutoProvider;
   }
-  if (dataSource === 'AUTO') {
-    return currentProvider && currentProvider !== MatchDataSource.MANUAL
-      ? currentProvider
-      : defaultAutoProvider;
+  if (dataSource === MatchDataSource.MANUAL) {
+    return MatchDataSource.MANUAL;
+  }
+  if (
+    dataSource === MatchDataSource.PCOB ||
+    dataSource === MatchDataSource.SHADOW ||
+    dataSource === 'SIMULATOR' ||
+    dataSource === 'AUTO'
+  ) {
+    return null;
   }
 
   const explicitProvider = normalizeTelemetryProvider(dataSource);
@@ -108,7 +164,7 @@ export const resolveTelemetryProviderInput = (params: {
 
   const dataMode = normalizeString(params.dataMode);
   if (dataMode === DataMode.PCOB) {
-    return MatchDataSource.PCOB;
+    return null;
   }
   if (dataMode === DataMode.MANUAL) {
     return currentProvider ?? MatchDataSource.MANUAL;
@@ -123,27 +179,33 @@ export const derivePcobBindingFlags = (
 ) => {
   const telemetryProvider = resolveCanonicalTelemetryProvider(match);
   const sourceMode = deriveSourceMode(telemetryProvider);
-  const adapterKey =
-    typeof match.adapterKey === 'string' && match.adapterKey.trim()
-      ? match.adapterKey.trim()
-      : null;
-  const pcobSessionId =
-    typeof match.pcobSessionId === 'string' && match.pcobSessionId.trim()
-      ? match.pcobSessionId.trim()
-      : null;
-  const pcobConfigured =
-    telemetryProvider === MatchDataSource.PCOB &&
-    adapterKey === PCOB_ADAPTER_KEY &&
-    !!pcobSessionId;
-  const pcobBound = pcobConfigured && !!match.pcobBoundAt;
   const lifecycleStatus = normalizeString(options.lifecycleStatus);
-  const pcobReady = pcobBound && lifecycleStatus === 'LIVE';
+  const explicitAdapterKey = normalizeRawString(match.adapterKey);
+  const pcobSessionId = normalizeRawString(match.pcobSessionId);
+  const hasSessionBindingSignal = hasPcobAdapterBindingSignal(match);
+  let adapterKey: string | null = null;
+  if (sourceMode === 'API') {
+    adapterKey = 'ob.js';
+  }
+  const hasAutomaticProvider = telemetryProvider === MatchDataSource.API;
+  const isReadyLifecycle =
+    lifecycleStatus === 'LIVE' ||
+    lifecycleStatus === 'FINISH_PENDING' ||
+    lifecycleStatus === 'FINISHED';
+  const pcobConfigured =
+    hasAutomaticProvider &&
+    hasSessionBindingSignal &&
+    explicitAdapterKey === PCOB_ADAPTER_KEY;
+  const pcobBound = Boolean(pcobConfigured && match.pcobBoundAt);
+  const pcobReady = Boolean(
+    pcobBound && (match.pcobLastSeenAt || isReadyLifecycle),
+  );
 
   return {
     telemetryProvider,
     sourceMode,
     adapterKey,
-    pcobSessionId,
+    pcobSessionId: pcobConfigured ? pcobSessionId : null,
     pcobConfigured,
     pcobBound,
     pcobReady,

@@ -4,10 +4,15 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { OrganizationStatus, Role, PlayerSource } from '@prisma/client';
+import {
+  OrganizationStatus,
+  Role,
+  PlayerSource,
+  SessionRegistrationStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../db/prisma.service';
 import type { AuthUser } from '../../common/auth/auth.types';
-import type { Prisma, Team, Player } from '@prisma/client';
+import type { Prisma, Team } from '@prisma/client';
 import {
   effectiveOrganizationId,
   requireOrgMatch,
@@ -341,7 +346,7 @@ export class TeamsService {
       body.textOnLight ||
       body.textOnDark
     ) {
-      this.emitBrandUpdate(created as TeamWithBranding);
+      this.emitBrandUpdate(created);
     }
     return created;
   }
@@ -407,7 +412,7 @@ export class TeamsService {
     });
 
     if (brandTouched) {
-      this.emitBrandUpdate(updated as TeamWithBranding);
+      this.emitBrandUpdate(updated);
     }
     return {
       ...updated,
@@ -422,6 +427,26 @@ export class TeamsService {
     if (!existing) throw new NotFoundException('Team not found');
     if (!this.canEdit(actor, existing.ownerUserId)) {
       throw new NotFoundException('Team not found');
+    }
+
+    const activeRegistration = await this.prisma.sessionRegistration.findFirst({
+      where: {
+        teamId,
+        organizationId: existing.organizationId,
+        deletedAt: null,
+        status: {
+          notIn: [
+            SessionRegistrationStatus.REMOVED,
+            SessionRegistrationStatus.DECLINED,
+          ],
+        },
+      },
+      select: { id: true },
+    });
+    if (activeRegistration) {
+      throw new BadRequestException(
+        'Team has an active session registration. Remove it from the session before deleting the team.',
+      );
     }
 
     return this.prisma.team.update({
@@ -817,19 +842,10 @@ export class TeamsService {
         role: body?.role ?? player.role,
         photoUrl: body?.photoUrl ?? player.photoUrl,
         country: body?.country ?? player.country,
-        pubgPlayerId: pubgIdProvided
-          ? pubgIdValue
-          : (player as Player & { pubgPlayerId?: string | null }).pubgPlayerId,
-        inGameId: pubgIdProvided
-          ? (pubgIdValue ?? undefined)
-          : (player as Player & { inGameId?: string | null }).inGameId,
-        ignSource:
-          body?.ign !== undefined
-            ? 'MANUAL'
-            : (player as Player & { ignSource?: string }).ignSource,
-        pubgIdSource: pubgIdProvided
-          ? 'MANUAL'
-          : (player as Player & { pubgIdSource?: string }).pubgIdSource,
+        pubgPlayerId: pubgIdProvided ? pubgIdValue : player.pubgPlayerId,
+        inGameId: pubgIdProvided ? (pubgIdValue ?? undefined) : player.inGameId,
+        ignSource: body?.ign !== undefined ? 'MANUAL' : player.ignSource,
+        pubgIdSource: pubgIdProvided ? 'MANUAL' : player.pubgIdSource,
         source:
           sourceUpdate !== undefined
             ? sourceUpdate

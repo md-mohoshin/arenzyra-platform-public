@@ -78,6 +78,198 @@ describe('PcobAdapter canonical binding', () => {
     expect(telemetry?.teams[0]?.players?.[0]?.teamId).toBe('team-uuid-9');
   });
 
+  it('attaches pushed team backpack utility data to canonical teams', async () => {
+    const prisma = createPrisma({
+      matchSlots: [
+        {
+          slotNumber: 9,
+          team: {
+            id: 'team-uuid-9',
+            name: 'Team 9',
+            tag: 'T9',
+            logoUrl: null,
+          },
+        },
+      ],
+      slotResults: [],
+    });
+
+    const adapter = new PcobAdapter(prisma);
+    const telemetry = await adapter.normalizeTelemetryEnvelope(
+      'match-1',
+      {
+        payload: {
+          teams: [
+            {
+              teamId: 9,
+              teamName: 'Team 9',
+              liveMemberNum: 2,
+            },
+          ],
+          players: [],
+          backpacks: [
+            {
+              TeamId: 9,
+              Items: {
+                SmokeGrenade: 3,
+                FragGrenade: 1,
+              },
+            },
+          ],
+        },
+      },
+      {},
+    );
+
+    expect(telemetry?.teams[0]).toMatchObject({
+      teamId: 'team-uuid-9',
+      backpack: {
+        teamId: 'team-uuid-9',
+        slot: 9,
+        itemCount: 4,
+        items: expect.arrayContaining([
+          expect.objectContaining({ name: 'SmokeGrenade', count: 3 }),
+          expect.objectContaining({ name: 'FragGrenade', count: 1 }),
+        ]),
+      },
+      equipment: {
+        teamId: 'team-uuid-9',
+        slot: 9,
+      },
+    });
+  });
+
+  it('aggregates per-player backpack rows by team slot', async () => {
+    const prisma = createPrisma({
+      matchSlots: [
+        {
+          slotNumber: 11,
+          team: {
+            id: 'team-uuid-11',
+            name: 'Team 11',
+            tag: 'T11',
+            logoUrl: null,
+          },
+        },
+      ],
+      slotResults: [],
+    });
+
+    const adapter = new PcobAdapter(prisma);
+    const telemetry = await adapter.normalizeTelemetryEnvelope(
+      'match-1',
+      {
+        payload: {
+          teams: [
+            {
+              teamId: 11,
+              teamName: 'Team 11',
+              liveMemberNum: 4,
+            },
+          ],
+          players: [],
+          backpacks: [
+            {
+              TeamID: 11,
+              PlayerKey: 101,
+              '602002': 'Quality:0,Num:2,Worth:0',
+            },
+            {
+              TeamID: 11,
+              PlayerKey: 102,
+              '602002': 'Quality:0,Num:3,Worth:0',
+              '602004': 'Quality:0,Num:1,Worth:0',
+            },
+          ],
+        },
+      },
+      {},
+    );
+
+    expect(telemetry?.backpacks).toHaveLength(1);
+    expect(telemetry?.teams[0]).toMatchObject({
+      teamId: 'team-uuid-11',
+      backpack: {
+        teamId: 'team-uuid-11',
+        slot: 11,
+        playerId: null,
+        itemCount: 6,
+        items: expect.arrayContaining([
+          expect.objectContaining({ itemId: '602002', count: 5 }),
+          expect.objectContaining({ itemId: '602004', count: 1 }),
+        ]),
+      },
+    });
+  });
+
+  it('prefers normalized team backpack snapshots over raw duplicate rows', async () => {
+    const prisma = createPrisma({
+      matchSlots: [
+        {
+          slotNumber: 11,
+          team: {
+            id: 'team-uuid-11',
+            name: 'Team 11',
+            tag: 'T11',
+            logoUrl: null,
+          },
+        },
+      ],
+      slotResults: [],
+    });
+
+    const adapter = new PcobAdapter(prisma);
+    const telemetry = await adapter.normalizeTelemetryEnvelope(
+      'match-1',
+      {
+        payload: {
+          teams: [
+            {
+              teamId: 11,
+              teamName: 'Team 11',
+              liveMemberNum: 4,
+            },
+          ],
+          players: [],
+          TeamBackpackInfo: [
+            {
+              TeamID: 11,
+              PlayerKey: 101,
+              '602002': 'Quality:0,Num:5,Worth:0',
+            },
+            {
+              TeamID: 11,
+              '602002': 'Quality:0,Num:5,Worth:0',
+            },
+          ],
+          backpacks: [
+            {
+              teamId: '11',
+              slot: 11,
+              items: [
+                {
+                  name: 'smoke',
+                  itemId: '602002',
+                  count: 2,
+                },
+              ],
+              itemCount: 2,
+            },
+          ],
+        },
+      },
+      {},
+    );
+
+    expect(telemetry?.backpacks).toHaveLength(1);
+    expect(telemetry?.teams[0]?.backpack).toMatchObject({
+      teamId: 'team-uuid-11',
+      slot: 11,
+      itemCount: 2,
+      items: [expect.objectContaining({ itemId: '602002', count: 2 })],
+    });
+  });
+
   it('honors explicit isAlive=false in pushed observer snapshots', async () => {
     const prisma = createPrisma({
       matchSlots: [
@@ -129,6 +321,61 @@ describe('PcobAdapter canonical binding', () => {
       alive: false,
       knocked: false,
       eliminated: true,
+    });
+  });
+
+  it('binds the observed player to canonical player and team ids', async () => {
+    const prisma = createPrisma({
+      matchSlots: [
+        {
+          slotNumber: 7,
+          team: {
+            id: 'team-7',
+            name: 'Arenzyra',
+            tag: 'AZ',
+            logoUrl: 'https://cdn.example.com/team-7.png',
+            players: [
+              {
+                id: 'player-db-1',
+                ign: 'LxAIMGOAT',
+                realName: 'Aim Goat',
+                externalPlayerId: 'ext-1',
+                playerOpenId: 'open-1',
+                inGameId: 'ingame-1',
+                pubgPlayerId: 'pubg-1',
+              },
+            ],
+          },
+        },
+      ],
+      slotResults: [],
+    });
+
+    const adapter = new PcobAdapter(prisma);
+    const telemetry = await adapter.normalizeTelemetryEnvelope(
+      'match-1',
+      {
+        payload: {
+          observer: {
+            playerName: 'LxAIMGOAT',
+            playerOpenId: 'open-1',
+            teamId: 7,
+            teamName: 'Arenzyra',
+          },
+        },
+      },
+      {},
+    );
+
+    expect(telemetry?.observedPlayer).toMatchObject({
+      playerId: 'player-db-1',
+      externalPlayerId: 'open-1',
+      pubgPlayerId: 'open-1',
+      playerName: 'LxAIMGOAT',
+      teamId: 'team-7',
+      teamName: 'Arenzyra',
+      teamTag: 'AZ',
+      teamLogoUrl: 'https://cdn.example.com/team-7.png',
     });
   });
 
@@ -234,6 +481,7 @@ describe('PcobAdapter canonical binding', () => {
       alive: false,
       knocked: false,
       eliminated: true,
+      health: 0,
     });
     expect(telemetry?.teams[0]).toMatchObject({
       teamId: 'team-1',
@@ -385,6 +633,59 @@ describe('PcobAdapter canonical binding', () => {
     ).toBe(true);
   });
 
+  it('preserves kill item metadata used by post-match special-kill summaries', async () => {
+    const prisma = createPrisma({
+      matchSlots: [
+        {
+          slotNumber: 7,
+          team: {
+            id: 'team-7',
+            name: 'Team 7',
+            tag: 'T7',
+            logoUrl: null,
+          },
+        },
+      ],
+    });
+
+    const adapter = new PcobAdapter(prisma);
+    const telemetry = await adapter.normalizeTelemetryEnvelope(
+      'match-1',
+      {
+        payload: {
+          teams: [{ teamId: 7, teamName: 'Team 7', liveMemberNum: 1 }],
+          players: [
+            {
+              teamId: 7,
+              playerId: 'killer-1',
+              playerName: 'Killer',
+              liveState: 0,
+            },
+          ],
+          events: [
+            {
+              type: 'KILL',
+              timestamp: 3000,
+              killer: { teamId: 7, playerId: 'killer-1', playerName: 'Killer' },
+              victim: { teamId: 8, playerId: 'victim-1', playerName: 'Victim' },
+              ItemID: 602004,
+              DamageCauserName: 'BP_Grenade_Shoulei_C',
+              DamageTypeCategory: 'Damage_GroggyOrDead',
+            },
+          ],
+        },
+      },
+      {},
+    );
+
+    expect(telemetry?.events[0]?.payload).toMatchObject({
+      itemId: '602004',
+      weapon: 'BP_Grenade_Shoulei_C',
+      damageCauserName: 'BP_Grenade_Shoulei_C',
+      damageTypeCategory: 'Damage_GroggyOrDead',
+    });
+  });
+
   it('binds telemetry players against match slot roster players before slot results exist', async () => {
     const prisma = createPrisma({
       matchSlots: [
@@ -512,7 +813,92 @@ describe('PcobAdapter canonical binding', () => {
     expect(telemetry?.players[0]).toMatchObject({
       playerId: 'player-uuid-1',
       externalPlayerId: 'shadow-uid-1',
+      pubgPlayerId: 'shadow-uid-1',
       teamId: 'team-1',
+    });
+  });
+
+  it('keeps Shadow uId as the PUBG player id and playerOpenId as the OpenID', async () => {
+    const prisma = createPrisma({
+      matchSlots: [
+        {
+          slotNumber: 1,
+          team: {
+            id: 'team-1',
+            name: 'Team 1',
+            tag: 'T1',
+            logoUrl: null,
+          },
+        },
+      ],
+      slotResults: [
+        {
+          slotNumber: 1,
+          teamId: 'team-1',
+          team: {
+            id: 'team-1',
+            name: 'Team 1',
+            tag: 'T1',
+            logoUrl: null,
+          },
+          players: [
+            {
+              id: 'player-result-1',
+              playerId: 'player-uuid-1',
+              playerName: 'Alpha',
+              externalPlayerId: '5381251581',
+              pubgAccountId: '23439696441247016',
+              player: {
+                externalPlayerId: '5381251581',
+                playerOpenId: '23439696441247016',
+                inGameId: '5381251581',
+                pubgPlayerId: '5381251581',
+                ign: 'Alpha',
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const adapter = new PcobAdapter(prisma);
+    const telemetry = await adapter.normalizeTelemetryEnvelope(
+      'match-1',
+      {
+        payload: {
+          teams: [
+            {
+              teamId: 1,
+              teamName: 'Team 1',
+              liveMemberNum: 1,
+            },
+          ],
+          players: [
+            {
+              teamId: 1,
+              uId: 5381251581,
+              playerOpenId: '23439696441247016',
+              playerName: 'Alpha',
+              liveState: 0,
+            },
+          ],
+        },
+      },
+      {},
+    );
+
+    expect(telemetry?.players[0]).toMatchObject({
+      playerId: 'player-uuid-1',
+      externalPlayerId: '5381251581',
+      pubgPlayerId: '5381251581',
+      pubgAccountId: '23439696441247016',
+      teamId: 'team-1',
+    });
+    expect(telemetry?.teams[0]?.players?.[0]).toMatchObject({
+      playerId: 'player-uuid-1',
+      externalPlayerId: '5381251581',
+      pubgPlayerId: '5381251581',
+      pubgAccountId: '23439696441247016',
     });
   });
 

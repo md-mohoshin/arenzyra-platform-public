@@ -7,6 +7,7 @@ import {
   LobbyStatus,
   MatchDataSource,
   MatchStatus,
+  OrganizationStatus,
   Role,
   TournamentStatus,
 } from '@prisma/client';
@@ -272,6 +273,7 @@ const connectRealtime = async (
 const waitForSocketVersion = async (
   socket: Socket,
   afterVersion: number,
+  predicate: (payload: RealtimeMatchState) => boolean = () => true,
 ): Promise<RealtimeMatchState> =>
   new Promise<RealtimeMatchState>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -287,7 +289,8 @@ const waitForSocketVersion = async (
       if (
         payload &&
         typeof payload.version === 'number' &&
-        payload.version > afterVersion
+        payload.version > afterVersion &&
+        predicate(payload)
       ) {
         clearTimeout(timer);
         socket.off('match_state_updated', handleUpdate);
@@ -409,12 +412,6 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
     );
     expect(response.status).toBe(200);
     return response.body as WidgetStateResponse;
-  };
-
-  const getCanonicalRealtimeState = async (): Promise<RealtimeMatchState> => {
-    const response = await api().get(`/api/matches/${fixture.matchId}/state`);
-    expect(response.status).toBe(200);
-    return response.body as RealtimeMatchState;
   };
 
   const getControlSummary = async (): Promise<{
@@ -686,6 +683,7 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
         id: fixture.orgId,
         name: `Phase 8 Org ${suffix}`,
         slug: fixture.orgSlug,
+        status: OrganizationStatus.APPROVED,
       },
     });
     await prisma.user.create({
@@ -824,6 +822,7 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
         liveState: LiveState.UPCOMING,
         dataMode: DataMode.MANUAL,
         dataSource: MatchDataSource.PCOB,
+        adapterKey: 'pubgm-pcob',
         slotCount: 25,
         matchNumber: 1,
         pcobSessionId: fixture.sessionId,
@@ -872,7 +871,6 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
       .send({
         email: fixture.email,
         password: fixture.password,
-        organizationId: fixture.orgId,
       })
       .expect(201);
     accessToken = String(loginResponse.body.access_token || '');
@@ -1052,7 +1050,14 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
       },
     ];
 
-    const firstRealtimeUpdatePromise = waitForSocketVersion(socket, -1);
+    const firstRealtimeUpdatePromise = waitForSocketVersion(
+      socket,
+      -1,
+      (payload) =>
+        payload.teams.some(
+          (team) => team.teamId === fixture.teamA.id && team.kills === 1,
+        ),
+    );
     await postTelemetry(baselineTelemetry);
     const firstRealtimeUpdate = await firstRealtimeUpdatePromise;
     expect(firstRealtimeUpdate.matchId).toBe(fixture.matchId);
@@ -1161,12 +1166,14 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
     const secondRealtimeUpdatePromise = waitForSocketVersion(
       socket,
       firstRealtimeUpdate.version,
+      (payload) =>
+        payload.teams.some(
+          (team) => team.teamId === fixture.teamA.id && team.kills === 7,
+        ),
     );
     await postTelemetry(secondTelemetry);
     const secondRealtime = await secondRealtimeUpdatePromise;
-    expect(secondRealtime.version).toBeGreaterThan(
-      firstRealtimeUpdate.version,
-    );
+    expect(secondRealtime.version).toBeGreaterThan(firstRealtimeUpdate.version);
     expect(findRealtimeTeam(secondRealtime, fixture.teamA.id).kills).toBe(7);
 
     await waitFor(
@@ -1288,6 +1295,10 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
     const reconnectRealtimePromise = waitForSocketVersion(
       socket,
       secondRealtime.version,
+      (payload) =>
+        payload.teams.some(
+          (team) => team.teamId === fixture.teamA.id && team.kills === 10,
+        ),
     );
     await postTelemetry(reconnectTelemetry);
     const reconnectRealtime = await reconnectRealtimePromise;
@@ -1351,6 +1362,11 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
     const winnerRealtimePromise = waitForSocketVersion(
       socket,
       reconnectRealtime.version,
+      (payload) =>
+        payload.summary?.winnerTeamId === fixture.teamA.id &&
+        payload.teams.some(
+          (team) => team.teamId === fixture.teamB.id && team.alivePlayers === 0,
+        ),
     );
     await postTelemetry(terminalTelemetry);
     const winnerRealtime = await winnerRealtimePromise;
@@ -1363,9 +1379,9 @@ describe('Match Control Phase 8 controlled workflow (e2e)', () => {
     ).expect(201);
 
     const endedControl = await waitFor(
-      'ENDED control summary',
+      'FINISH_PENDING control summary',
       async () => getControlSummary(),
-      (body) => body.control.lifecycleStatus === 'ENDED',
+      (body) => body.control.lifecycleStatus === 'FINISH_PENDING',
     );
     expect(endedControl.control.lifecycleLocked).toBe(true);
     expect(endedControl.control.slotLocked).toBe(true);

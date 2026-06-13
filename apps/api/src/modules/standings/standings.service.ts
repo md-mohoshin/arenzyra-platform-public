@@ -14,9 +14,18 @@ import {
 } from '@prisma/client';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { requireOrgMatch } from '../../common/org/org.util';
+import { compareRankingRows } from '../../common/ranking-tiebreakers.util';
 import { isPresentInMatch } from '../../common/results-presence.util';
+import {
+  applyMatchScoreAdjustments,
+  type ScoreAdjustmentRecord,
+} from '../../common/admin-adjustments.util';
 import { PrismaService } from '../../db/prisma.service';
 import { resolveMatchDataSource } from '../matches/match-datasource.util';
+import {
+  defaultKillPointsForGame,
+  defaultPlacementPointsForGame,
+} from '../../common/game-rules.util';
 
 type RuleConfig = {
   placementPoints?: Record<number, number>;
@@ -53,6 +62,9 @@ type MatchLite = {
   id: string;
   organizationId: string | null;
   tournamentId: string;
+  stageId?: string | null;
+  groupId?: string | null;
+  sessionId?: string | null;
   status: MatchStatus | null;
   liveState: LiveState | null;
   dataSource: string | null;
@@ -108,19 +120,9 @@ export class StandingsService {
   }
 
   private defaultRuleset(game?: GameKey | null): RuleConfig {
-    void game; // keep hook for future game-specific defaults
     return {
-      placementPoints: {
-        1: 10,
-        2: 6,
-        3: 5,
-        4: 4,
-        5: 3,
-        6: 2,
-        7: 1,
-        8: 1,
-      },
-      killPoints: 1,
+      placementPoints: defaultPlacementPointsForGame(game),
+      killPoints: defaultKillPointsForGame(game),
     };
   }
 
@@ -130,6 +132,33 @@ export class StandingsService {
   ): number {
     if (!placement || placement <= 0) return 0;
     return table[placement] ?? 0;
+  }
+
+  private normalizeRulesetConfig(
+    value: unknown,
+    game?: GameKey | null,
+  ): RuleConfig {
+    const base = this.defaultRuleset(game);
+    const cfg = asJsonRecord(value);
+    if (!cfg) return base;
+    const placement = asJsonRecord(cfg.placementPoints);
+    const placementPoints = placement
+      ? (Object.fromEntries(
+          Object.entries(placement)
+            .map(([rank, points]) => [Number(rank), Number(points)])
+            .filter(
+              ([rank, points]) =>
+                Number.isInteger(rank) && Number.isFinite(points),
+            ),
+        ) as Record<number, number>)
+      : base.placementPoints;
+    return {
+      placementPoints,
+      killPoints:
+        typeof cfg.killPoints === 'number' && Number.isFinite(cfg.killPoints)
+          ? cfg.killPoints
+          : base.killPoints,
+    };
   }
 
   private isManualSource(match: {
@@ -191,9 +220,9 @@ export class StandingsService {
 
   private async resolveRuleset(match: MatchLite): Promise<RuleConfig> {
     if (match.ruleset?.config) {
-      return (
-        (match.ruleset.config as RuleConfig) ??
-        this.defaultRuleset(match.tournament.game)
+      return this.normalizeRulesetConfig(
+        match.ruleset.config,
+        match.ruleset.gameKey ?? match.tournament.game,
       );
     }
     if (match.tournament.rulesetId) {
@@ -202,13 +231,13 @@ export class StandingsService {
         select: { config: true, gameKey: true },
       });
       if (rs?.config) {
-        return (rs.config as RuleConfig) ?? this.defaultRuleset(rs.gameKey);
+        return this.normalizeRulesetConfig(rs.config, rs.gameKey);
       }
     }
     if (match.tournament.ruleset) {
-      return (
-        (match.tournament.ruleset as RuleConfig) ??
-        this.defaultRuleset(match.tournament.game)
+      return this.normalizeRulesetConfig(
+        match.tournament.ruleset,
+        match.tournament.game,
       );
     }
     return this.defaultRuleset(match.tournament.game);
@@ -235,6 +264,9 @@ export class StandingsService {
         id: true,
         organizationId: true,
         tournamentId: true,
+        stageId: true,
+        groupId: true,
+        sessionId: true,
         status: true,
         liveState: true,
         dataSource: true,
@@ -519,27 +551,77 @@ export class StandingsService {
         { totalKills: 'desc' },
       ],
     });
+    const adjustments: ScoreAdjustmentRecord[] =
+      await this.prisma.adminAdjustment.findMany({
+        where: {
+          deletedAt: null,
+          revokedAt: null,
+          OR: [
+            { matchId },
+            ...(match.groupId ? [{ groupId: match.groupId }] : []),
+            ...(match.stageId ? [{ stageId: match.stageId }] : []),
+            ...(match.tournamentId
+              ? [{ tournamentId: match.tournamentId }]
+              : []),
+            ...(match.sessionId ? [{ sessionId: match.sessionId }] : []),
+          ],
+        },
+        select: {
+          teamId: true,
+          pointsDelta: true,
+          scope: true,
+          type: true,
+          matchId: true,
+          groupId: true,
+          stageId: true,
+          tournamentId: true,
+          sessionId: true,
+          deletedAt: true,
+          revokedAt: true,
+        },
+      });
+    const adjustmentsByTeam = new Map<string, ScoreAdjustmentRecord[]>();
+    adjustments.forEach((adjustment) => {
+      const list = adjustmentsByTeam.get(adjustment.teamId) ?? [];
+      list.push(adjustment);
+      adjustmentsByTeam.set(adjustment.teamId, list);
+    });
+    const matchContext = {
+      id: match.id,
+      tournamentId: match.tournamentId,
+      stageId: match.stageId ?? null,
+      groupId: match.groupId ?? null,
+      sessionId: match.sessionId ?? null,
+    };
 
     const rows: StandingRow[] = slotResults
       .filter((sr) => Boolean(sr.teamId))
       .map((sr) => {
         const totals = this.slotTotals(sr, ruleConfig);
+        const killPoints =
+          typeof ruleConfig.killPoints === 'number' ? ruleConfig.killPoints : 1;
+        const baseTotal = totals.placementPoints + totals.kills * killPoints;
+        const adjusted = applyMatchScoreAdjustments(
+          baseTotal,
+          adjustmentsByTeam.get(sr.teamId as string) ?? [],
+          matchContext,
+        );
         return {
           rank: 0,
           teamId: sr.teamId as string,
           placement: totals.placement,
           placementPoints: totals.placementPoints,
           totalKills: totals.kills,
-          totalPoints: totals.totalPoints,
+          totalPoints: adjusted.totalPoints,
           bonusPoints: 0,
-          penaltyPoints: 0,
+          penaltyPoints: Math.min(0, adjusted.totalPoints - baseTotal),
           team: sr.team ?? null,
         };
       });
 
     rows.sort((a, b) => {
-      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-      if (b.totalKills !== a.totalKills) return b.totalKills - a.totalKills;
+      const rankingOrder = compareRankingRows(a, b);
+      if (rankingOrder !== 0) return rankingOrder;
       if (a.placement && b.placement) return a.placement - b.placement;
       return 0;
     });

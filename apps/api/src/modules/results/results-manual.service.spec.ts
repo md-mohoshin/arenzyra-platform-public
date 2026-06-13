@@ -173,6 +173,7 @@ describe('ResultsManualService session compatibility', () => {
         teamId: 'team-1',
         placementManual: 1,
         killsManual: 4,
+        reason: 'test adjustment',
       }),
     ).resolves.toMatchObject({
       updated: expect.objectContaining({
@@ -182,7 +183,9 @@ describe('ResultsManualService session compatibility', () => {
         totalKills: 4,
       }),
     });
-    expect((resultsService as any).assertSlotPresentForMutation).toHaveBeenCalledWith(
+    expect(
+      (resultsService as any).assertSlotPresentForMutation,
+    ).toHaveBeenCalledWith(
       {
         id: 'slot-1',
         matchId: 'match-session-1',

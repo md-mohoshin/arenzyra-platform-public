@@ -3,9 +3,9 @@ import { RankingEmitterService } from './ranking-emitter.service';
 
 describe('RankingEmitterService', () => {
   it('computes live ranking for a session match without a tournament relation', async () => {
-    const io = {
-      to: jest.fn().mockReturnThis(),
-      emit: jest.fn(),
+    const realtime = {
+      emitMatchScopedEvent: jest.fn(),
+      emitTournamentScopedEvent: jest.fn(),
     };
     const prisma = {
       match: {
@@ -59,7 +59,7 @@ describe('RankingEmitterService', () => {
       },
     } as any;
 
-    const service = new RankingEmitterService(prisma, { io } as any);
+    const service = new RankingEmitterService(prisma, realtime as any);
 
     const payload = await service.emitLiveRanking('match-session-1', {
       force: true,
@@ -77,14 +77,28 @@ describe('RankingEmitterService', () => {
         },
       ],
     });
-    expect(prisma.adminAdjustment.findMany).not.toHaveBeenCalled();
+    expect(prisma.adminAdjustment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ matchId: 'match-session-1' }],
+        }),
+      }),
+    );
     expect(prisma.ruleset.findUnique).not.toHaveBeenCalled();
+    expect(realtime.emitMatchScopedEvent).toHaveBeenCalledWith(
+      'match-session-1',
+      'match:live-ranking',
+      expect.objectContaining({
+        matchId: 'match-session-1',
+      }),
+      'org-1',
+    );
   });
 
   it('omits NO_SHOW teams from live ranking payloads', async () => {
-    const io = {
-      to: jest.fn().mockReturnThis(),
-      emit: jest.fn(),
+    const realtime = {
+      emitMatchScopedEvent: jest.fn(),
+      emitTournamentScopedEvent: jest.fn(),
     };
     const prisma = {
       match: {
@@ -148,7 +162,7 @@ describe('RankingEmitterService', () => {
       },
     } as any;
 
-    const service = new RankingEmitterService(prisma, { io } as any);
+    const service = new RankingEmitterService(prisma, realtime as any);
 
     const payload = await service.emitLiveRanking('match-session-1', {
       force: true,
@@ -169,6 +183,14 @@ describe('RankingEmitterService', () => {
           wasPresentInMatch: true,
         }),
       }),
+    );
+    expect(realtime.emitMatchScopedEvent).toHaveBeenCalledWith(
+      'match-session-1',
+      'match:live-ranking',
+      expect.objectContaining({
+        matchId: 'match-session-1',
+      }),
+      'org-1',
     );
   });
 });

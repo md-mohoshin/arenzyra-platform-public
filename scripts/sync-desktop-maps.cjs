@@ -30,13 +30,34 @@ function getMapBaseName(definition) {
   return path.parse(String(definition?.imagePath || definition?.key || "").trim()).name;
 }
 
-function findSourceAsset(baseName) {
+function getPreferredExtensions(definition) {
+  const preferredExtension = path
+    .extname(String(definition?.imagePath || "").trim())
+    .toLowerCase();
+  const extensions = [];
+
+  if (SUPPORTED_MAP_ASSET_EXTENSIONS.includes(preferredExtension)) {
+    extensions.push(preferredExtension);
+  }
+
+  for (const extension of SUPPORTED_MAP_ASSET_EXTENSIONS) {
+    if (!extensions.includes(extension)) {
+      extensions.push(extension);
+    }
+  }
+
+  return extensions;
+}
+
+function findSourceAsset(baseName, definition) {
+  const extensions = getPreferredExtensions(definition);
+
   for (const directory of WEB_MAP_SOURCE_DIRS) {
     if (!fs.existsSync(directory)) {
       continue;
     }
 
-    for (const extension of SUPPORTED_MAP_ASSET_EXTENSIONS) {
+    for (const extension of extensions) {
       const candidatePath = path.join(directory, `${baseName}${extension}`);
       if (fs.existsSync(candidatePath)) {
         return candidatePath;
@@ -80,7 +101,7 @@ function syncDesktopMaps({ log = console.log } = {}) {
       continue;
     }
 
-    const sourceAssetPath = findSourceAsset(baseName);
+    const sourceAssetPath = findSourceAsset(baseName, definition);
     if (!sourceAssetPath) {
       missing.push(definition.key);
       removed.push(...removeStaleAssets(baseName));

@@ -13,6 +13,8 @@ describe('OrgMatchControlController', () => {
 
   const makeMatch = (overrides?: Record<string, unknown>) => ({
     id: 'match-1',
+    organizationId: 'org-1',
+    sessionId: null,
     dataSource: MatchDataSource.MANUAL,
     dataMode: 'MANUAL',
     status: MatchStatus.ENDED,
@@ -32,6 +34,9 @@ describe('OrgMatchControlController', () => {
 
   const createController = (match: Record<string, unknown>) => {
     const typedMatch = match as any;
+    const matches = {
+      setDataSource: jest.fn().mockResolvedValue(undefined),
+    } as any;
     const prisma = {
       match: {
         findFirst: jest.fn().mockResolvedValue(typedMatch),
@@ -57,16 +62,16 @@ describe('OrgMatchControlController', () => {
 
     const controller = new OrgMatchControlController(
       prisma,
-      {} as any,
+      matches,
       {} as any,
       {} as any,
       audit,
     );
 
-    return { controller, prisma, audit };
+    return { controller, prisma, audit, matches };
   };
 
-  it('reports ENDED but not finalized matches as unlocked', async () => {
+  it('reports finish-pending but not finalized matches as unlocked', async () => {
     const { controller } = createController(makeMatch());
 
     await expect(
@@ -75,7 +80,7 @@ describe('OrgMatchControlController', () => {
       expect.objectContaining({
         ok: true,
         control: expect.objectContaining({
-          lifecycleStatus: 'ENDED',
+          lifecycleStatus: 'FINISH_PENDING',
           resultsLocked: false,
           lockState: 'UNLOCKED',
         }),
@@ -112,7 +117,7 @@ describe('OrgMatchControlController', () => {
     );
   });
 
-  it('returns canonical telemetry provider and PCOB readiness flags in control reads', async () => {
+  it('returns canonical telemetry provider and API source mode in control reads', async () => {
     const { controller } = createController(
       makeMatch({
         dataSource: MatchDataSource.PCOB,
@@ -133,21 +138,23 @@ describe('OrgMatchControlController', () => {
       }),
     );
 
-    await expect(
-      controller.getControl('org-1', 'match-1', { user: actor } as any),
-    ).resolves.toEqual(
+    const response = await controller.getControl('org-1', 'match-1', {
+      user: actor,
+    } as any);
+
+    expect(response).toEqual(
       expect.objectContaining({
         ok: true,
         control: expect.objectContaining({
-          telemetryProvider: MatchDataSource.PCOB,
-          sourceMode: 'AUTO',
-          adapterKey: 'pubgm-pcob',
-          pcobConfigured: true,
-          pcobBound: true,
-          pcobReady: true,
+          telemetryProvider: MatchDataSource.API,
+          sourceMode: MatchDataSource.API,
         }),
       }),
     );
+    expect(response.control).not.toHaveProperty('adapterKey');
+    expect(response.control).not.toHaveProperty('pcobConfigured');
+    expect(response.control).not.toHaveProperty('pcobBound');
+    expect(response.control).not.toHaveProperty('pcobReady');
   });
 
   it('rejects explicit results unlock before automatic results are finalized', async () => {
@@ -209,6 +216,79 @@ describe('OrgMatchControlController', () => {
           resultsManualLock: false,
           resultsForceUnlock: true,
         }),
+      }),
+    );
+  });
+
+  it('allows finalized session results to be reopened for placement review', async () => {
+    const { controller, prisma, audit } = createController(
+      makeMatch({
+        tournament: null,
+        sessionId: 'session-1',
+        organizationId: 'org-1',
+        dataSource: MatchDataSource.API,
+        dataMode: 'AUTO',
+        status: MatchStatus.FINISHED,
+        liveState: 'ENDED',
+        controlState: {
+          state: 'ENDED',
+          metaJson: { resultFinalized: true },
+          resultsManualLock: false,
+          resultsForceUnlock: false,
+        },
+      }),
+    );
+
+    await expect(
+      controller.resultsLock('org-1', 'match-1', { user: actor } as any, false),
+    ).resolves.toEqual({
+      ok: true,
+      locked: false,
+      lockState: 'UNLOCKED',
+    });
+
+    expect(prisma.matchControlState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          organizationId: 'org-1',
+          resultsForceUnlock: true,
+        }),
+        update: expect.objectContaining({
+          resultsForceUnlock: true,
+        }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: 'org-1',
+        reason: 'Results reopened for manual editing',
+      }),
+    );
+  });
+
+  it('normalizes AUTO source updates to API in the control setup endpoint', async () => {
+    const { controller, audit, matches } = createController(makeMatch());
+
+    await expect(
+      controller.setDataSource(
+        'org-1',
+        'match-1',
+        { user: actor } as any,
+        'AUTO',
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      dataSource: MatchDataSource.API,
+    });
+
+    expect(matches.setDataSource).toHaveBeenCalledWith(
+      actor,
+      'match-1',
+      MatchDataSource.API,
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: { dataSource: MatchDataSource.API },
       }),
     );
   });

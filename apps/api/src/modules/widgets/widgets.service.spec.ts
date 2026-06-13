@@ -23,6 +23,7 @@ describe('WidgetsService', () => {
 
   const branding = {
     getForOrganization: jest.fn(),
+    getEffectiveBranding: jest.fn(),
   } as any;
 
   const overlayGateway = {
@@ -75,6 +76,7 @@ describe('WidgetsService', () => {
       organizationId: 'org-1',
     });
     branding.getForOrganization.mockResolvedValue({ mode: 'minimal' });
+    branding.getEffectiveBranding.mockResolvedValue({ mode: 'minimal' });
 
     const resolved = await service.resolveInstanceByOrganizationSlug(
       'global-control',

@@ -8,8 +8,6 @@ import { ShadowBrandingService } from './shadow-branding.service';
 import { ObserverWidgetStateService } from './observer-widget-state.service';
 import { MatchStateService } from './match-state.service';
 import { RealtimeModule } from '../../realtime/realtime.module';
-import { ResultsModule } from '../results/results.module';
-import { MatchEngineService } from '../telemetry/match-engine.service';
 import { FightDetectionEngine } from '../telemetry/fight-detection.engine';
 import { ObserverAiService } from './observer-ai.service';
 import { MatchControlModule } from '../match-control/match-control.module';
@@ -24,7 +22,6 @@ import { TelemetryModule } from '../telemetry/telemetry.module';
     forwardRef(() => PcobModule),
     WebhookModule,
     forwardRef(() => RealtimeModule),
-    forwardRef(() => ResultsModule),
     forwardRef(() => MatchControlModule),
     forwardRef(() => GameAdaptersModule),
     forwardRef(() => TelemetryModule),
@@ -37,7 +34,6 @@ import { TelemetryModule } from '../telemetry/telemetry.module';
     ObserverTeamEliminationService,
     ObserverWidgetStateService,
     FightDetectionEngine,
-    MatchEngineService,
     ObserverAiService,
   ],
   controllers: [ObserverController],
@@ -49,7 +45,6 @@ import { TelemetryModule } from '../telemetry/telemetry.module';
     ObserverTeamEliminationService,
     ObserverWidgetStateService,
     FightDetectionEngine,
-    MatchEngineService,
     ObserverAiService,
   ],
 })

@@ -10,6 +10,7 @@ const buildMatch = (
   slotResults: Array<Record<string, unknown>> | null = null,
 ) => ({
   id: 'match-1',
+  organizationId: 'org-1',
   tournamentId: 'tour-1',
   game: { key: 'PUBG_MOBILE' },
   dataSource: 'API',
@@ -201,5 +202,33 @@ describe('buildWidgetScoreboardSnapshot', () => {
       totalKills: 5,
       totalPoints: 15,
     });
+  });
+
+  it('uses the organization default team logo when a logo snapshot has no team logo', async () => {
+    const prisma = {
+      match: {
+        findFirst: jest.fn().mockResolvedValue(buildMatch(null)),
+      },
+      organizationBranding: {
+        findUnique: jest.fn().mockResolvedValue({
+          defaultTeamLogoUrl:
+            'http://localhost:3000/uploads/defaults/server-logo.png',
+        }),
+      },
+      matchStateSnapshot: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      matchSlotPlayerResult: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    } as unknown as PrismaClient;
+
+    const payload = await buildWidgetScoreboardSnapshot(prisma, 'match-1', {
+      includeLogos: true,
+    });
+
+    expect(payload.rows[0].teamLogoUrl).toMatch(
+      /^\/uploads\/defaults\/server-logo\.png\?v=\d+$/,
+    );
   });
 });

@@ -29,17 +29,18 @@ import {
   deriveMatchLockContract,
   isManualResultsAuthority,
 } from '../../common/match-status.util';
-import { derivePcobBindingFlags } from '../../common/match-telemetry-provider.util';
+import {
+  derivePcobBindingFlags,
+  exposeCanonicalTelemetryProvider,
+  exposeSourceMode,
+  exposeTelemetryProvider,
+} from '../../common/match-telemetry-provider.util';
 
 type ControlSummary = {
   matchId: string;
   dataSource: string | null;
   telemetryProvider?: string | null;
-  sourceMode?: 'MANUAL' | 'AUTO' | null;
-  adapterKey?: string | null;
-  pcobConfigured?: boolean;
-  pcobBound?: boolean;
-  pcobReady?: boolean;
+  sourceMode?: 'MANUAL' | 'API' | null;
   lifecycleStatus?: string | null;
   resultsLocked: boolean;
   slotLocked?: boolean;
@@ -73,12 +74,11 @@ export class OrgMatchControlController {
     private readonly audit: AuditService,
   ) {}
 
-  @Get()
-  async getControl(
-    @Param('orgId') orgId: string,
-    @Param('matchId') matchId: string,
-    @Req() req: AuthenticatedRequest,
-  ): Promise<{ ok: true; control: ControlSummary }> {
+  private async buildControlSummary(
+    orgId: string,
+    matchId: string,
+    req: AuthenticatedRequest,
+  ): Promise<ControlSummary> {
     const match = await this.ensureOrgMatch(orgId, matchId, req.user);
     const lastResyncAt = await this.lastResyncAt(matchId);
     const liveState = match.liveState ?? match.controlState?.state ?? null;
@@ -98,29 +98,95 @@ export class OrgMatchControlController {
       lifecycleStatus: lockContract.lifecycleStatus,
     });
     return {
+      matchId,
+      dataSource: exposeCanonicalTelemetryProvider(match),
+      telemetryProvider: exposeTelemetryProvider(binding.telemetryProvider),
+      sourceMode: exposeSourceMode(binding.telemetryProvider),
+      dataMode: match.dataMode ?? null,
+      lifecycleStatus: lockContract.lifecycleStatus,
+      resultsLocked,
+      slotLocked: lockContract.slotLocked,
+      lifecycleLocked: lockContract.lifecycleLocked,
+      lockState: lockContract.resultLockState,
+      lockReason: reason,
+      manualLock: !!match.controlState?.resultsManualLock,
+      forceUnlock: !!match.controlState?.resultsForceUnlock,
+      status: match.status ?? null,
+      liveState,
+      locks: lockContract,
+      lastResyncAt,
+    };
+  }
+
+  @Get()
+  async getControl(
+    @Param('orgId') orgId: string,
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<{ ok: true; control: ControlSummary }> {
+    return {
+      ok: true,
+      control: await this.buildControlSummary(orgId, matchId, req),
+    };
+  }
+
+  @Get('setup')
+  async getSetupControl(
+    @Param('orgId') orgId: string,
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const control = await this.buildControlSummary(orgId, matchId, req);
+    return {
       ok: true,
       control: {
-        matchId,
-        dataSource: match.dataSource ?? null,
-        telemetryProvider: binding.telemetryProvider,
-        sourceMode: binding.sourceMode,
-        adapterKey: binding.adapterKey,
-        pcobConfigured: binding.pcobConfigured,
-        pcobBound: binding.pcobBound,
-        pcobReady: binding.pcobReady,
-        dataMode: match.dataMode ?? null,
-        lifecycleStatus: lockContract.lifecycleStatus,
-        resultsLocked,
-        slotLocked: lockContract.slotLocked,
-        lifecycleLocked: lockContract.lifecycleLocked,
-        lockState: lockContract.resultLockState,
-        lockReason: reason,
-        manualLock: !!match.controlState?.resultsManualLock,
-        forceUnlock: !!match.controlState?.resultsForceUnlock,
-        status: match.status ?? null,
-        liveState,
-        locks: lockContract,
-        lastResyncAt,
+        matchId: control.matchId,
+        dataSource: control.dataSource,
+        telemetryProvider: control.telemetryProvider,
+        sourceMode: control.sourceMode,
+        lifecycleStatus: control.lifecycleStatus,
+        slotLocked: control.slotLocked,
+        lifecycleLocked: control.lifecycleLocked,
+      },
+    };
+  }
+
+  @Get('live')
+  async getLiveControl(
+    @Param('orgId') orgId: string,
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const control = await this.buildControlSummary(orgId, matchId, req);
+    return {
+      ok: true,
+      control: {
+        matchId: control.matchId,
+        lifecycleStatus: control.lifecycleStatus,
+        sourceMode: control.sourceMode,
+        telemetryProvider: control.telemetryProvider,
+        status: control.status,
+        liveState: control.liveState,
+      },
+    };
+  }
+
+  @Get('results')
+  async getResultsControl(
+    @Param('orgId') orgId: string,
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const control = await this.buildControlSummary(orgId, matchId, req);
+    return {
+      ok: true,
+      control: {
+        matchId: control.matchId,
+        lifecycleStatus: control.lifecycleStatus,
+        resultsLocked: control.resultsLocked,
+        lockState: control.lockState,
+        lockReason: control.lockReason,
+        lastResyncAt: control.lastResyncAt,
       },
     };
   }
@@ -131,29 +197,36 @@ export class OrgMatchControlController {
     @Param('matchId') matchId: string,
     @Req() req: AuthenticatedRequest,
     @Body('dataSource') dataSource: string,
-    @Body('adapterKey') adapterKey?: string,
-  ): Promise<{ ok: true; dataSource: string; adapterKey: string | null }> {
+  ): Promise<{ ok: true; dataSource: string }> {
     const match = await this.ensureOrgMatch(orgId, matchId, req.user);
     if (!dataSource) throw new BadRequestException('dataSource is required');
     const normalized = this.normalizeDataSource(dataSource);
 
     await this.matches.setDataSource(req.user, matchId, normalized);
-    // adapterKey is optional and ignored if the schema does not support it; kept for forward compatibility.
-    const nextAdapter = adapterKey ?? null;
 
     await this.audit.log({
       action: AuditAction.MATCH_STATUS_CHANGE,
       entityType: 'MATCH_CONTROL',
       entityId: matchId,
       userId: req.user.actorId ?? req.user.id,
-      organizationId: match.tournament.organizationId,
-      before: { dataSource: match.dataSource, adapterKey: null },
-      after: { dataSource: normalized, adapterKey: nextAdapter },
+      organizationId: this.resolveMatchOrganizationId(match, orgId),
+      before: { dataSource: match.dataSource },
+      after: { dataSource: normalized },
       source: 'SYSTEM',
       reason: 'Set data source',
     });
 
-    return { ok: true, dataSource: normalized, adapterKey: nextAdapter };
+    return { ok: true, dataSource: normalized };
+  }
+
+  @Post('setup/source')
+  async setSetupSource(
+    @Param('orgId') orgId: string,
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+    @Body('dataSource') dataSource: string,
+  ) {
+    return this.setDataSource(orgId, matchId, req, dataSource);
   }
 
   @Post('resync')
@@ -165,7 +238,7 @@ export class OrgMatchControlController {
   ): Promise<{ ok: true; lastResyncAt: string }> {
     const match = await this.ensureOrgMatch(orgId, matchId, req.user);
     await this.results.recalculateMatchResults(matchId);
-    const slots = await this.results.listSlotResultsPublic(matchId);
+    const slots = await this.results.listSlotResults(req.user, matchId);
     const at = new Date().toISOString();
 
     await this.audit.log({
@@ -173,7 +246,7 @@ export class OrgMatchControlController {
       entityType: 'MATCH_CONTROL',
       entityId: matchId,
       userId: req.user.actorId ?? req.user.id,
-      organizationId: match.tournament.organizationId,
+      organizationId: this.resolveMatchOrganizationId(match, orgId),
       before: null,
       after: { resynced: true, at, slots },
       source: 'SYSTEM',
@@ -195,11 +268,16 @@ export class OrgMatchControlController {
 
   private normalizeDataSource(value: string): MatchDataSource {
     const upper = value.toUpperCase();
-    if (upper === 'SIMULATOR') return MatchDataSource.SHADOW;
-    if (!Object.values(MatchDataSource).includes(upper as MatchDataSource)) {
-      throw new BadRequestException('Invalid dataSource');
+    if (upper === MatchDataSource.MANUAL) {
+      return MatchDataSource.MANUAL;
     }
-    return upper as MatchDataSource;
+    if (upper === MatchDataSource.API) {
+      return MatchDataSource.API;
+    }
+    if (upper === 'AUTO') {
+      return MatchDataSource.API;
+    }
+    throw new BadRequestException('dataSource must be API or MANUAL');
   }
 
   private async setResultsLock(
@@ -209,6 +287,7 @@ export class OrgMatchControlController {
     locked: boolean,
   ): Promise<{ ok: true; locked: boolean; lockState: string }> {
     const match = await this.ensureOrgMatch(orgId, matchId, actor);
+    const organizationId = this.resolveMatchOrganizationId(match, orgId);
     const actorId = actor.actorId ?? actor.id;
     if (!actorId) {
       throw new ForbiddenException('Missing actor context');
@@ -243,7 +322,7 @@ export class OrgMatchControlController {
       },
       create: {
         matchId,
-        organizationId: match.tournament.organizationId ?? orgId,
+        organizationId,
         state: (match.controlState?.state as ControlState | null) ?? 'READY',
         resultsManualLock: manual ? locked : false,
         resultsForceUnlock: manual ? false : !locked,
@@ -267,7 +346,7 @@ export class OrgMatchControlController {
       entityType: 'MATCH_CONTROL',
       entityId: matchId,
       userId: actorId,
-      organizationId: match.tournament.organizationId,
+      organizationId,
       before: {
         manualLock: match.controlState?.resultsManualLock ?? null,
         forceUnlock: match.controlState?.resultsForceUnlock ?? null,
@@ -308,18 +387,25 @@ export class OrgMatchControlController {
     adapterKey: string | null;
     status: string | null;
     liveState: string | null;
+    organizationId: string | null;
+    sessionId: string | null;
     controlState: {
       state: string | null;
       metaJson: unknown;
       resultsManualLock: boolean | null;
       resultsForceUnlock: boolean | null;
     } | null;
-    tournament: { organizationId: string | null; ownerUserId: string | null };
+    tournament: {
+      organizationId: string | null;
+      ownerUserId: string | null;
+    } | null;
   }> {
     const match = await this.prisma.match.findFirst({
       where: { id: matchId, deletedAt: null },
       select: {
         id: true,
+        organizationId: true,
+        sessionId: true,
         dataSource: true,
         dataMode: true,
         pcobSessionId: true,
@@ -341,12 +427,8 @@ export class OrgMatchControlController {
       },
     });
     if (!match) throw new NotFoundException('Match not found');
-    if (!match.tournament) {
-      throw new BadRequestException(
-        'Session matches are not supported by organization match control',
-      );
-    }
-    if (match.tournament.organizationId !== orgId) {
+    const matchOrgId = match.tournament?.organizationId ?? match.organizationId;
+    if (!matchOrgId || matchOrgId !== orgId) {
       throw new ForbiddenException('Match not in organization');
     }
 
@@ -367,14 +449,31 @@ export class OrgMatchControlController {
       adapterKey: string | null;
       status: string | null;
       liveState: string | null;
+      organizationId: string | null;
+      sessionId: string | null;
       controlState: {
         state: string | null;
         metaJson: unknown;
         resultsManualLock: boolean | null;
         resultsForceUnlock: boolean | null;
       } | null;
-      tournament: { organizationId: string | null; ownerUserId: string | null };
+      tournament: {
+        organizationId: string | null;
+        ownerUserId: string | null;
+      } | null;
     };
+  }
+
+  private resolveMatchOrganizationId(
+    match: {
+      organizationId?: string | null;
+      tournament?: { organizationId?: string | null } | null;
+    },
+    fallbackOrgId: string,
+  ): string {
+    return (
+      match.tournament?.organizationId ?? match.organizationId ?? fallbackOrgId
+    );
   }
 
   private async lastResyncAt(matchId: string): Promise<string | null> {

@@ -86,21 +86,56 @@ export const normalizeTelemetrySource = (
       return TelemetrySource.AUTO;
     case TelemetrySource.LAUNCHER:
     case 'OBSERVER':
-      return TelemetrySource.LAUNCHER;
     case TelemetrySource.PCOB:
     case 'PCOB_PUSH':
     case 'PCOB_API':
     case 'PUBGM-PCOB':
     case 'PUBGM_PCOB':
-      return TelemetrySource.PCOB;
     case TelemetrySource.API:
-      return TelemetrySource.API;
     case TelemetrySource.SHADOW:
     case 'SIMULATOR':
-      return TelemetrySource.SHADOW;
+      return TelemetrySource.API;
     default:
       return null;
   }
+};
+
+export const canonicalizeTelemetryRuntimeSource = (
+  value: unknown,
+): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = normalizeUpper(trimmed);
+  switch (normalized) {
+    case TelemetrySource.API:
+    case TelemetrySource.LAUNCHER:
+    case 'OBSERVER':
+    case TelemetrySource.PCOB:
+    case 'PCOB_PUSH':
+    case 'PCOB_API':
+    case 'PUBGM-PCOB':
+    case 'PUBGM_PCOB':
+    case TelemetrySource.SHADOW:
+    case 'SIMULATOR':
+      return TelemetrySource.API;
+    default:
+      return trimmed;
+  }
+};
+
+const hasEquivalentTelemetrySource = (
+  currentValue: unknown,
+  nextValue: TelemetrySource,
+): boolean => {
+  const currentSource = normalizeTelemetrySource(currentValue);
+  return currentSource !== null && currentSource === nextValue;
 };
 
 export const requireTelemetrySource = (value: unknown): TelemetrySource => {
@@ -210,7 +245,9 @@ const persistTelemetrySourceMeta = async (
   );
   const nextMetaInput = toJsonValue(nextMeta);
   const nextMetaJson = nextMetaInput as Prisma.JsonValue;
-  if (currentMeta.telemetrySource === telemetrySource) {
+  if (
+    hasEquivalentTelemetrySource(currentMeta.telemetrySource, telemetrySource)
+  ) {
     return {
       ...match,
       controlState: match.controlState
@@ -247,9 +284,8 @@ const persistTelemetrySourceMeta = async (
     create: {
       matchId: match.id,
       organizationId,
-      state:
-        match.controlState?.state ??
-        deriveControlStateFromMatchStatus(match.status),
+      state: (match.controlState?.state ??
+        deriveControlStateFromMatchStatus(match.status)) as never,
       reason: 'TELEMETRY_SOURCE_LOCK',
       metaJson: nextMetaInput,
     },

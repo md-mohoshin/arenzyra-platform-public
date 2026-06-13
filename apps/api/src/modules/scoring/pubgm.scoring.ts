@@ -1,8 +1,21 @@
 import { GameKey, MatchEventType } from '@prisma/client';
 import { PrismaService } from '../../db/prisma.service';
+import { compareRankingRows } from '../../common/ranking-tiebreakers.util';
+import {
+  aggregatePointDeltaForScope,
+  applyMatchScoreAdjustments,
+  type ScoreAdjustmentMatchContext,
+  type ScoreAdjustmentRecord,
+} from '../../common/admin-adjustments.util';
 import { isPresentInMatch } from '../../common/results-presence.util';
+import {
+  defaultKillPointsForGame,
+  defaultPlacementPointsForGame,
+  resolvePlacementPointsForGame,
+} from '../../common/game-rules.util';
 import { ScoringPlugin, StandingsSnapshotPayload } from './scoring.plugin';
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function placementPoints(place: number): number {
   if (place === 1) return 10;
   if (place === 2) return 6;
@@ -12,14 +25,6 @@ function placementPoints(place: number): number {
   if (place === 6) return 2;
   if (place === 7 || place === 8) return 1;
   return 0; // 9–25 = 0
-}
-
-function defaultPlacementTable(): Record<number, number> {
-  return { 1: 10, 2: 6, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1, 8: 1 };
-}
-
-function defaultKillPoints(): number {
-  return 1;
 }
 
 export class PubgmScoring implements ScoringPlugin {
@@ -50,6 +55,7 @@ export class PubgmScoring implements ScoringPlugin {
   }): Promise<{
     placementTable: Record<number, number>;
     killPoints: number;
+    gameKey: GameKey;
   }> {
     const gameKey =
       match.game?.key ?? match.tournament?.game ?? GameKey.PUBG_MOBILE;
@@ -78,13 +84,13 @@ export class PubgmScoring implements ScoringPlugin {
     const placementTable =
       config.placementPoints && typeof config.placementPoints === 'object'
         ? (config.placementPoints as Record<number, number>)
-        : defaultPlacementTable();
+        : defaultPlacementPointsForGame(gameKey);
     const killPoints =
       typeof config.killPoints === 'number'
         ? config.killPoints
-        : defaultKillPoints();
+        : defaultKillPointsForGame(gameKey);
 
-    return { placementTable, killPoints };
+    return { placementTable, killPoints, gameKey };
   }
 
   private resolveKillTotal(params: {
@@ -252,7 +258,10 @@ export class PubgmScoring implements ScoringPlugin {
           null)
         : null;
       const pPts = pl
-        ? Number(ruleset.placementTable[pl] ?? placementPoints(pl))
+        ? Number(
+            ruleset.placementTable[pl] ??
+              resolvePlacementPointsForGame(pl, ruleset.gameKey),
+          )
         : 0;
       const total = pPts + k * ruleset.killPoints;
 
@@ -332,9 +341,48 @@ export class PubgmScoring implements ScoringPlugin {
 
     const matches = await this.prisma.match.findMany({
       where: { tournamentId, deletedAt: null },
-      select: { id: true },
+      select: {
+        id: true,
+        tournamentId: true,
+        stageId: true,
+        groupId: true,
+        sessionId: true,
+      },
     });
     const matchIds = matches.map((m) => m.id);
+    const stageIds = [
+      ...new Set(
+        matches
+          .map((match) => match.stageId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const groupIds = [
+      ...new Set(
+        matches
+          .map((match) => match.groupId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const sessionIds = [
+      ...new Set(
+        matches
+          .map((match) => match.sessionId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const matchContexts = new Map<string, ScoreAdjustmentMatchContext>(
+      matches.map((match) => [
+        match.id,
+        {
+          id: match.id,
+          tournamentId: match.tournamentId ?? tournamentId,
+          stageId: match.stageId ?? null,
+          groupId: match.groupId ?? null,
+          sessionId: match.sessionId ?? null,
+        },
+      ]),
+    );
 
     const stats = await this.prisma.matchSlotResult.findMany({
       where: {
@@ -343,6 +391,7 @@ export class PubgmScoring implements ScoringPlugin {
         wasPresentInMatch: true,
       },
       select: {
+        matchId: true,
         teamId: true,
         totalPoints: true,
         placementPoints: true,
@@ -352,8 +401,36 @@ export class PubgmScoring implements ScoringPlugin {
     });
 
     const adjustments = await this.prisma.adminAdjustment.findMany({
-      where: { tournamentId, deletedAt: null },
-      select: { teamId: true, pointsDelta: true },
+      where: {
+        deletedAt: null,
+        revokedAt: null,
+        OR: [
+          { tournamentId },
+          { matchId: { in: matchIds } },
+          ...(stageIds.length ? [{ stageId: { in: stageIds } }] : []),
+          ...(groupIds.length ? [{ groupId: { in: groupIds } }] : []),
+          ...(sessionIds.length ? [{ sessionId: { in: sessionIds } }] : []),
+        ],
+      },
+      select: {
+        teamId: true,
+        pointsDelta: true,
+        scope: true,
+        type: true,
+        matchId: true,
+        groupId: true,
+        stageId: true,
+        tournamentId: true,
+        sessionId: true,
+        deletedAt: true,
+        revokedAt: true,
+      },
+    });
+    const adjustmentsByTeam = new Map<string, ScoreAdjustmentRecord[]>();
+    adjustments.forEach((adjustment) => {
+      const list = adjustmentsByTeam.get(adjustment.teamId) ?? [];
+      list.push(adjustment);
+      adjustmentsByTeam.set(adjustment.teamId, list);
     });
 
     type Row = {
@@ -362,6 +439,7 @@ export class PubgmScoring implements ScoringPlugin {
       teamName: string | null;
       logoUrl: string | null;
       total: number;
+      wwcd: number;
       placementPoints: number;
       kills: number;
       bestPlacement: number;
@@ -377,6 +455,7 @@ export class PubgmScoring implements ScoringPlugin {
         teamName: meta?.name ?? null,
         logoUrl: meta?.logoUrl ?? null,
         total: 0,
+        wwcd: 0,
         placementPoints: 0,
         kills: 0,
         bestPlacement: 999,
@@ -391,29 +470,38 @@ export class PubgmScoring implements ScoringPlugin {
 
       const placementPointsValue = s.placementPoints ?? 0;
       const killsValue = s.totalKills ?? 0;
-      const totalPointsValue =
-        s.totalPoints ?? placementPointsValue + killsValue;
+      const totalPointsValue = applyMatchScoreAdjustments(
+        placementPointsValue + killsValue,
+        adjustmentsByTeam.get(s.teamId) ?? [],
+        matchContexts.get(s.matchId) ?? { id: s.matchId, tournamentId },
+      ).totalPoints;
 
       r.total += totalPointsValue;
       r.placementPoints += placementPointsValue;
       r.kills += killsValue;
+      if (s.placement === 1) r.wwcd += 1;
 
       if (s.placement && s.placement < r.bestPlacement)
         r.bestPlacement = s.placement;
       if (killsValue > r.bestKills) r.bestKills = killsValue;
     }
 
-    for (const a of adjustments) {
-      const r = rows.get(a.teamId);
-      if (!r) continue;
-      r.total += a.pointsDelta;
-    }
+    rows.forEach((row, teamId) => {
+      row.total += aggregatePointDeltaForScope(
+        adjustmentsByTeam.get(teamId) ?? [],
+        'TOURNAMENT',
+        tournamentId,
+        {
+          TOURNAMENT: [tournamentId],
+          STAGE: stageIds,
+          GROUP: groupIds,
+        },
+      );
+    });
 
     const sorted = [...rows.values()].sort((a, b) => {
-      if (b.total !== a.total) return b.total - a.total;
-      if (b.placementPoints !== a.placementPoints)
-        return b.placementPoints - a.placementPoints;
-      if (b.kills !== a.kills) return b.kills - a.kills;
+      const rankingOrder = compareRankingRows(a, b);
+      if (rankingOrder !== 0) return rankingOrder;
       if (a.bestPlacement !== b.bestPlacement)
         return a.bestPlacement - b.bestPlacement;
       return b.bestKills - a.bestKills;

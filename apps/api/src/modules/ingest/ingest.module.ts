@@ -3,6 +3,7 @@ import { AuthModule } from '../../auth/auth.module';
 import { CollectorGuard } from '../../common/auth/collector.guard';
 import { ScoringModule } from '../scoring/scoring.module';
 import { ResultsModule } from '../results/results.module';
+import { ResultBackupsModule } from '../result-backups/result-backups.module';
 import { IngestController } from './ingest.controller';
 import { IngestService } from './ingest.service';
 import { ScreenshotIngestController } from './screenshot-ingest.controller';
@@ -10,7 +11,7 @@ import { ScreenshotIngestService } from './screenshot-ingest.service';
 import { ScreenshotParserService } from './screenshot-parser.service';
 
 @Module({
-  imports: [AuthModule, ScoringModule, ResultsModule],
+  imports: [AuthModule, ScoringModule, ResultsModule, ResultBackupsModule],
   controllers: [IngestController, ScreenshotIngestController],
   providers: [
     IngestService,

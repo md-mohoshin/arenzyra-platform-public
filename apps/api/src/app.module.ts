@@ -26,7 +26,6 @@ import { ExportModule } from './modules/export/export.module';
 import { ObserverModule } from './modules/observer/observer.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
 import { MatchControlModule } from './modules/match-control/match-control.module';
-import { ShadowModule } from './modules/shadow/shadow.module';
 import { LiveFeedModule } from './modules/live-feed/live-feed.module';
 import { LiveSyncModule } from './modules/live-sync/live-sync.module';
 import { ResultsModule } from './modules/results/results.module';
@@ -36,7 +35,6 @@ import { AdaptersModule } from './modules/adapters/adapters.module';
 import { ScoreboardModule } from './modules/scoreboard/scoreboard.module';
 import { RulesetsModule } from './modules/rulesets/rulesets.module';
 import { GameAdaptersModule } from './modules/game-adapters/game-adapters.module';
-import { PubgmSimModule } from './modules/adapters/pubgm-sim/pubgm-sim.module';
 import { WidgetsModule } from './modules/widgets/widgets.module';
 import { OrganizationBrandingModule } from './modules/organization-branding/organization-branding.module';
 import { OrganizationDiscordModule } from './modules/organization-discord/organization-discord.module';
@@ -58,7 +56,14 @@ import { TelemetryModule } from './modules/telemetry/telemetry.module';
 import { SuperAdminModule } from './modules/super-admin/super-admin.module';
 import { TournamentRegistrationModule } from './modules/tournament-registration/tournament-registration.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
+import { SessionSponsorsModule } from './modules/session-sponsors/session-sponsors.module';
+import { TeamBansModule } from './modules/team-bans/team-bans.module';
 import { RenderModule } from './modules/render/render.module';
+import { ResultBackupsModule } from './modules/result-backups/result-backups.module';
+import { ControlAutoV2Module } from './modules/control-auto-v2/control-auto-v2.module';
+import { AiCasterModule } from './modules/ai-caster/ai-caster.module';
+import { ClientPortalModule } from './modules/client-portal/client-portal.module';
+import { YoutubeModule } from './modules/youtube/youtube.module';
 
 @Module({
   imports: [
@@ -73,7 +78,14 @@ import { RenderModule } from './modules/render/render.module';
     TournamentsModule,
     TournamentRegistrationModule,
     SessionsModule,
+    SessionSponsorsModule,
+    TeamBansModule,
     RenderModule,
+    ResultBackupsModule,
+    ControlAutoV2Module,
+    AiCasterModule,
+    ClientPortalModule,
+    YoutubeModule,
     StagesModule,
     GroupsModule,
     MatchesModule,
@@ -97,7 +109,6 @@ import { RenderModule } from './modules/render/render.module';
     ObserverModule,
     WebhookModule,
     MatchControlModule,
-    ShadowModule,
     LiveFeedModule,
     LiveSyncModule,
     ResultsModule,
@@ -107,7 +118,6 @@ import { RenderModule } from './modules/render/render.module';
     ScoreboardModule,
     RulesetsModule,
     GameAdaptersModule,
-    PubgmSimModule,
     WidgetsModule,
     OrganizationBrandingModule,
     OrganizationDiscordModule,

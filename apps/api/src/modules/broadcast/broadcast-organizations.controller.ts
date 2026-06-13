@@ -73,9 +73,22 @@ export class BroadcastOrganizationsController {
       await this.broadcast.findLiveMatchForBroadcastOrg(organizationId);
     const branding = await this.broadcast.getBranding(organizationId);
 
+    const liveMatchWithBranding = liveMatch as {
+      tournament?: {
+        sponsors?: unknown[];
+        name?: string | null;
+        logoUrl?: string | null;
+      } | null;
+      session?: {
+        sponsors?: unknown[];
+        name?: string | null;
+        logoUrl?: string | null;
+      } | null;
+    };
     const rawSponsors =
-      (liveMatch as { tournament?: { sponsors?: unknown[] } }).tournament
-        ?.sponsors ?? [];
+      liveMatchWithBranding.session?.sponsors ??
+      liveMatchWithBranding.tournament?.sponsors ??
+      [];
 
     type SponsorLike = {
       id?: unknown;
@@ -88,12 +101,18 @@ export class BroadcastOrganizationsController {
       rotationIntervalSeconds?: unknown;
     };
 
-    const tournamentName = liveMatch.tournament?.name ?? null;
+    const tournamentName =
+      liveMatchWithBranding.session?.name ??
+      liveMatchWithBranding.tournament?.name ??
+      null;
     const matchNumber = liveMatch.matchNumber ?? liveMatch.name ?? null;
     const matchName = liveMatch.name ?? null;
     const groupName = liveMatch.group?.name ?? null;
     const map = liveMatch.map ?? null;
-    const tournamentLogo = liveMatch.tournament?.logoUrl ?? null;
+    const tournamentLogo =
+      liveMatchWithBranding.session?.logoUrl ??
+      liveMatchWithBranding.tournament?.logoUrl ??
+      null;
     const sponsors = Array.isArray(rawSponsors)
       ? rawSponsors.map((sponsor) => {
           if (typeof sponsor !== 'object' || sponsor === null) {
@@ -131,6 +150,7 @@ export class BroadcastOrganizationsController {
       id: liveMatch.id,
       organizationId: liveMatch.organizationId,
       tournamentId: liveMatch.tournamentId,
+      sessionId: liveMatch.sessionId ?? null,
       tournamentName,
       matchNumber,
       matchName,

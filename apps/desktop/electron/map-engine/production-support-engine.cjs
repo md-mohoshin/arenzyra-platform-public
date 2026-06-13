@@ -15,6 +15,7 @@ const { createReplayCandidateStore } = require("./replay-candidate-store.cjs");
 const { createReplayMarkerStore } = require("./replay-marker-store.cjs");
 const { selectFightAlertCandidate } = require("./fight-alert-detector.cjs");
 const { detectTeamSplitRisks } = require("./team-split-risk-detector.cjs");
+const { createTeamLabelResolver } = require("./team-label-resolver.cjs");
 const { summarizeTeams } = require("./team-proximity-utils.cjs");
 const { buildWatchTargetQueue, formatMatchup, formatTeamLabel } = require("./watch-target-queue.cjs");
 
@@ -496,6 +497,7 @@ function buildTeamEliminationMarkers({
   teamSummaries,
   mapKey,
   updatedAt,
+  teamLabelResolver,
 }) {
   const currentActiveTeams = captureActiveTeams(teamSummaries);
 
@@ -526,7 +528,7 @@ function buildTeamEliminationMarkers({
         {
           timestamp: updatedAt,
           type: "TEAM_ELIMINATED",
-          description: `${formatTeamLabel(teamId)} eliminated${
+          description: `${formatTeamLabel(teamId, teamLabelResolver)} eliminated${
             placementText ? ` - ${placementText} place` : ""
           }`,
           teams: [teamId],
@@ -563,8 +565,8 @@ function buildKillStreakSourceKey(event) {
   return null;
 }
 
-function buildKillStreakLabel(event) {
-  return normalizeId(event?.killerName) || normalizeId(event?.killerPlayerId) || formatTeamLabel(event?.killerTeamId) || "Unknown player";
+function buildKillStreakLabel(event, teamLabelResolver = null) {
+  return normalizeId(event?.killerName) || normalizeId(event?.killerPlayerId) || formatTeamLabel(event?.killerTeamId, teamLabelResolver) || "Unknown player";
 }
 
 function compareKillStreakCandidates(left, right) {
@@ -579,7 +581,7 @@ function compareKillStreakCandidates(left, right) {
   );
 }
 
-function detectKillStreakCandidate(combatEvents) {
+function detectKillStreakCandidate(combatEvents, teamLabelResolver = null) {
   const killsBySource = new Map();
 
   for (const event of Array.isArray(combatEvents) ? combatEvents : []) {
@@ -624,7 +626,7 @@ function detectKillStreakCandidate(combatEvents) {
         sourceKey,
         signature: `${sourceKey}:${firstKill.timestamp}:${latestKill.timestamp}:${killCount}`,
         killCount,
-        label: buildKillStreakLabel(latestKill),
+        label: buildKillStreakLabel(latestKill, teamLabelResolver),
         playerId: normalizeId(latestKill.killerPlayerId),
         teamId: normalizeId(latestKill.killerTeamId),
         windowStart: firstKill.timestamp,
@@ -646,6 +648,7 @@ function buildReplayMarkers({
   zonePacket,
   mapKey,
   updatedAt,
+  teamLabelResolver,
 }) {
   buildTeamEliminationMarkers({
     replayMarkerStore,
@@ -653,6 +656,7 @@ function buildReplayMarkers({
     teamSummaries,
     mapKey,
     updatedAt,
+    teamLabelResolver,
   });
 
   if (fightAlertCandidate?.teamIds?.length >= 2) {
@@ -671,7 +675,7 @@ function buildReplayMarkers({
         {
           timestamp: updatedAt,
           type: "MAJOR_FIGHT",
-          description: fightAlertCandidate.matchup || formatMatchup(fightAlertCandidate.teamIds),
+          description: fightAlertCandidate.matchup || formatMatchup(fightAlertCandidate.teamIds, teamLabelResolver),
           teams: fightAlertCandidate.teamIds,
           map: mapKey,
         },
@@ -718,7 +722,10 @@ function buildReplayMarkers({
     }
   }
 
-  const killStreakCandidate = detectKillStreakCandidate(assistSnapshot?.combatEvents);
+  const killStreakCandidate = detectKillStreakCandidate(
+    assistSnapshot?.combatEvents,
+    teamLabelResolver,
+  );
   const activeKillStreakKeys = new Set(
     (Array.isArray(assistSnapshot?.combatEvents) ? assistSnapshot.combatEvents : [])
       .map(buildKillStreakSourceKey)
@@ -878,6 +885,8 @@ function createProductionSupportEngine({ config: configOverrides = null, log = (
   const statesByMap = new Map();
   const pinnedWatchStore = createPinnedWatchStore();
   const replayMarkerStore = createReplayMarkerStore();
+  const teamLabels = createTeamLabelResolver();
+  const resolveTeamLabel = (teamId) => teamLabels.resolve(teamId);
 
   function ensureMapState(mapKey) {
     let state = statesByMap.get(mapKey);
@@ -932,6 +941,7 @@ function createProductionSupportEngine({ config: configOverrides = null, log = (
       teamProximities: state.assistSnapshot?.teamProximities ?? [],
       teamSummaries,
       teamSplitRisks,
+      teamLabelResolver: resolveTeamLabel,
       pinState,
       mapKey: normalizedMapKey,
       config,
@@ -946,6 +956,7 @@ function createProductionSupportEngine({ config: configOverrides = null, log = (
       zone: state.zonePacket,
       config,
       updatedAt,
+      teamLabelResolver: resolveTeamLabel,
     });
     const replayCandidates = state.replayCandidateStore.getCandidates(config, updatedAt);
 
@@ -972,6 +983,7 @@ function createProductionSupportEngine({ config: configOverrides = null, log = (
       teamSummaries,
       config,
       updatedAt,
+      teamLabelResolver: resolveTeamLabel,
     });
     const activeAlerts = decorateActiveAlerts(
       rawActiveAlerts,
@@ -987,6 +999,7 @@ function createProductionSupportEngine({ config: configOverrides = null, log = (
       zonePacket: state.zonePacket,
       mapKey: normalizedMapKey,
       updatedAt,
+      teamLabelResolver: resolveTeamLabel,
     });
     const replayMarkers = replayMarkerStore.getMarkers(
       {
@@ -1452,9 +1465,36 @@ function createProductionSupportEngine({ config: configOverrides = null, log = (
     return recompute(mapKey, mapDefinition, now);
   }
 
+  function setTeamBranding(update) {
+    teamLabels.setTeamBranding(update);
+  }
+
+  function refresh(mapDefinition, mapKeyHint = null) {
+    const mapKey = normalizeMapKey(mapKeyHint || mapDefinition?.key);
+    if (!mapKey || !mapDefinition || !statesByMap.has(mapKey)) {
+      return null;
+    }
+
+    return recompute(mapKey, mapDefinition, Date.now());
+  }
+
+  function clear(mapKey = null) {
+    const normalizedMapKey = normalizeMapKey(mapKey);
+    if (!normalizedMapKey) {
+      statesByMap.clear();
+      pinnedWatchStore.clear();
+      replayMarkerStore.clear();
+      return;
+    }
+
+    statesByMap.delete(normalizedMapKey);
+    replayMarkerStore.clear(normalizedMapKey);
+  }
+
   return {
     acceptCameraRecommendation,
     applyObserverAssist,
+    clear,
     centerAlertById,
     centerReplayCandidateById,
     centerTargetById,
@@ -1465,10 +1505,12 @@ function createProductionSupportEngine({ config: configOverrides = null, log = (
     markReplayById,
     pinTargetById,
     pinTeam,
+    refresh,
     resetCameraAssistHistory,
     selectAlertById,
     selectTargetById,
     setPlayerPositions,
+    setTeamBranding,
     setZoneUpdate,
     suppressTargetById,
     undismissAlertById,

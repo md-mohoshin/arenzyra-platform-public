@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { MatchDataSource, MatchStatus } from '@prisma/client';
 import { TelemetryPhase } from '../../types/telemetry-phase';
+import { PCOB_ADAPTER_KEY } from '../../common/pcob-binding.util';
 
 type HealthRecord = {
   lastTelemetryAt: number;
@@ -58,6 +59,7 @@ export class PcobHealthService {
       sentAt?: string | number | null;
       status?: MatchStatus;
       dataSource?: MatchDataSource;
+      adapterKey?: string | null;
       gameplay?: boolean;
       authoritative?: boolean;
       authoritySource?: string | null;
@@ -113,6 +115,8 @@ export class PcobHealthService {
     const livePcob =
       ctx.status === MatchStatus.LIVE &&
       (ctx.dataSource === MatchDataSource.PCOB ||
+        (ctx.dataSource === MatchDataSource.API &&
+          ctx.adapterKey === PCOB_ADAPTER_KEY) ||
         (ctx.dataSource as any) === 'AUTO');
     if (!livePcob) {
       rec.phase = TelemetryPhase.OFFLINE;

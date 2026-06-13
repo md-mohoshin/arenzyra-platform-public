@@ -238,9 +238,7 @@ export class VisualAssetsService {
         name: params.data.name ?? widget.name,
         description: params.data.description ?? widget.description,
         category: params.data.category ?? widget.category ?? 'utility',
-        config: (params.data.config ?? widget.config ?? Prisma.JsonNull) as
-          | Prisma.InputJsonValue
-          | Prisma.NullableJsonNullValueInput,
+        config: params.data.config ?? widget.config ?? Prisma.JsonNull,
         kind: params.data.kind ?? widget.kind,
       },
     });
@@ -300,9 +298,7 @@ export class VisualAssetsService {
         description: widget.description,
         category: widget.category ?? 'utility',
         kind: widget.kind,
-        config: (widget.config ?? Prisma.JsonNull) as
-          | Prisma.InputJsonValue
-          | Prisma.NullableJsonNullValueInput,
+        config: widget.config ?? Prisma.JsonNull,
       },
     });
 
@@ -314,9 +310,7 @@ export class VisualAssetsService {
         name: p.name,
         description: p.description,
         isDefault: p.isDefault ?? false,
-        config: (p.config ?? Prisma.JsonNull) as
-          | Prisma.InputJsonValue
-          | Prisma.NullableJsonNullValueInput,
+        config: p.config ?? Prisma.JsonNull,
       }));
       await this.prisma.widgetPreset.createMany({ data: copyData });
     }
@@ -508,9 +502,7 @@ export class VisualAssetsService {
         name: params.data.name,
         description: params.data.description ?? null,
         kind: params.data.kind ?? ObsTemplateKind.CUSTOM,
-        config: (params.data.config ?? {}) as
-          | Prisma.InputJsonValue
-          | Prisma.NullableJsonNullValueInput,
+        config: params.data.config ?? {},
       },
     });
 
@@ -520,9 +512,7 @@ export class VisualAssetsService {
           templateId: created.id,
           organizationId: org,
           name: s.name,
-          layout: (s.layout ?? {}) as
-            | Prisma.InputJsonValue
-            | Prisma.NullableJsonNullValueInput,
+          layout: s.layout ?? {},
         })),
       });
     }
@@ -551,9 +541,7 @@ export class VisualAssetsService {
       data: {
         name: params.data.name ?? tpl.name,
         description: params.data.description ?? tpl.description,
-        config: (params.data.config ?? tpl.config ?? Prisma.JsonNull) as
-          | Prisma.InputJsonValue
-          | Prisma.NullableJsonNullValueInput,
+        config: params.data.config ?? tpl.config ?? Prisma.JsonNull,
         kind: params.data.kind ?? tpl.kind,
       },
     });
@@ -613,9 +601,7 @@ export class VisualAssetsService {
         name: `${tpl.name} (Copy)`,
         description: tpl.description,
         kind: tpl.kind,
-        config: (tpl.config ?? Prisma.JsonNull) as
-          | Prisma.InputJsonValue
-          | Prisma.NullableJsonNullValueInput,
+        config: tpl.config ?? Prisma.JsonNull,
       },
     });
 

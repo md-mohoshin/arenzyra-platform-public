@@ -335,15 +335,7 @@ async function resolveLiveMatch(apiBase, accessToken) {
 
 async function getBoundSessionId(apiBase, accessToken, matchId) {
   try {
-    const control = await requestJson(
-      `${apiBase}/me/matches/${encodeURIComponent(matchId)}/control`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      },
-    );
+    const control = await getMatchControlState(apiBase, accessToken, matchId);
     const sessionId = String(
       control?.binding?.sessionId || control?.pcobSessionId || "",
     ).trim();
@@ -353,12 +345,52 @@ async function getBoundSessionId(apiBase, accessToken, matchId) {
   }
 }
 
+async function getMatchControlState(apiBase, accessToken, matchId) {
+  return requestJson(
+    `${apiBase}/me/matches/${encodeURIComponent(matchId)}/control`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  );
+}
+
+function normalizeLifecycleStatus(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized === "DRAFT") {
+    return "READY";
+  }
+  if (normalized === "ENDED") {
+    return "FINISHED";
+  }
+  return normalized;
+}
+
 async function ensureMatchControlStarted(
   apiBase,
   accessToken,
   matchId,
   sessionId,
 ) {
+  const control = await getMatchControlState(apiBase, accessToken, matchId);
+  const lifecycleStatus = normalizeLifecycleStatus(
+    control?.matchStatus || control?.status,
+  );
+  const boundSessionId = String(
+    control?.binding?.sessionId || control?.pcobSessionId || "",
+  ).trim();
+  if (lifecycleStatus === "LIVE" && boundSessionId === sessionId) {
+    return;
+  }
+
   await requestJson(
     `${apiBase}/me/matches/${encodeURIComponent(matchId)}/control/start`,
     {
@@ -367,7 +399,12 @@ async function ensureMatchControlStarted(
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ sessionId }),
+      body: JSON.stringify({
+        sessionId,
+        source: "direct-observer-feed",
+        clientId: `${process.env.COMPUTERNAME || "unknown-host"}:${process.pid}`,
+        requestedMatchId: matchId,
+      }),
     },
   );
 }

@@ -19,7 +19,13 @@ export const applyResultsCommand = {
       option
         .setName('image-url')
         .setDescription('Public screenshot URL')
-        .setRequired(true),
+        .setRequired(false),
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('screenshot')
+        .setDescription('Screenshot image attachment')
+        .setRequired(false),
     ),
   async execute(
     interaction: ChatInputCommandInteraction,
@@ -27,14 +33,26 @@ export const applyResultsCommand = {
   ) {
     await interaction.deferReply();
     const matchId = interaction.options.getString('match-id', true);
-    const imageUrl = interaction.options.getString('image-url', true);
+    const attachment = interaction.options.getAttachment('screenshot');
+    const imageUrl =
+      interaction.options.getString('image-url')?.trim() || attachment?.url;
+    if (!imageUrl) {
+      await interaction.editReply(
+        'Attach a screenshot or provide a public image-url.',
+      );
+      return;
+    }
     const result = await services.sessionService.applyResults(
       matchId,
       imageUrl,
     );
-    const files = result.imageBuffer
-      ? [new AttachmentBuilder(result.imageBuffer, { name: 'result.png' })]
-      : [];
+    const files = result.imageFiles?.length
+      ? result.imageFiles.map(
+          (file) => new AttachmentBuilder(file.buffer, { name: file.name }),
+        )
+      : result.imageBuffer
+        ? [new AttachmentBuilder(result.imageBuffer, { name: 'result.png' })]
+        : [];
     await interaction.editReply({
       content: result.content,
       files,

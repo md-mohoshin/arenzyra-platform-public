@@ -350,64 +350,6 @@ export class TournamentRegistrationService {
     return { stage, group };
   }
 
-  private async assertPlacementCapacity(
-    client: ScopedClient,
-    params: {
-      placement: PlacementRecord;
-      tournamentTeamId: string;
-    },
-  ): Promise<void> {
-    const { placement, tournamentTeamId } = params;
-
-    if (placement.stage.maxTeams && placement.stage.maxTeams > 0) {
-      const [currentCount, existingMembership] = await Promise.all([
-        client.stageTeam.count({
-          where: { stageId: placement.stage.id },
-        }),
-        client.stageTeam.findFirst({
-          where: {
-            stageId: placement.stage.id,
-            tournamentTeamId,
-          },
-          select: { id: true },
-        }),
-      ]);
-
-      if (!existingMembership && currentCount + 1 > placement.stage.maxTeams) {
-        throw new ConflictException(
-          `Stage is full (max ${placement.stage.maxTeams} teams)`,
-        );
-      }
-    }
-
-    if (placement.group?.maxTeams && placement.group.maxTeams > 0) {
-      const [currentCount, existingMembership] = await Promise.all([
-        client.groupTeam.count({
-          where: {
-            groupId: placement.group.id,
-            deletedAt: null,
-          },
-        }),
-        client.groupTeam.findFirst({
-          where: {
-            groupId: placement.group.id,
-            tournamentTeamId,
-          },
-          select: { id: true, deletedAt: true },
-        }),
-      ]);
-
-      if (
-        (!existingMembership || existingMembership.deletedAt) &&
-        currentCount + 1 > placement.group.maxTeams
-      ) {
-        throw new ConflictException(
-          `Group is full (max ${placement.group.maxTeams} teams)`,
-        );
-      }
-    }
-  }
-
   private async attachTournamentTeamPlacement(
     client: ScopedClient,
     params: {
@@ -419,10 +361,6 @@ export class TournamentRegistrationService {
     },
   ): Promise<void> {
     const placement = await this.resolvePlacement(client, params);
-    await this.assertPlacementCapacity(client, {
-      placement,
-      tournamentTeamId: params.tournamentTeamId,
-    });
 
     const existingStageTeam = await client.stageTeam.findFirst({
       where: {

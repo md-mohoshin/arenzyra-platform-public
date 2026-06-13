@@ -27,6 +27,17 @@ async function main() {
   const pcobToken = process.env.PCOB_TOKEN;
   const matchId = process.env.MATCH_ID;
   const pollMs = Number(process.env.POLL_MS ?? 5000);
+  const allowLegacyIngest =
+    String(process.env.ALLOW_LEGACY_PCOB_INGEST || "").trim() === "1";
+
+  console.warn(
+    "[Legacy] run-pcob-poll is a snapshot bridge for old PCOB-style inputs. Canonical live automatic ingest is launcher ob.js -> API.",
+  );
+  if (!allowLegacyIngest) {
+    throw new Error(
+      "Legacy PCOB snapshot ingest is disabled by default. Set ALLOW_LEGACY_PCOB_INGEST=1 only for explicit legacy workflows.",
+    );
+  }
 
   if (!apiToken) {
     throw new Error("REQUIRED ENV VARIABLE MISSING: API_TOKEN");

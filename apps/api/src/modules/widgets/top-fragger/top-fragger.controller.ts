@@ -129,6 +129,27 @@ export class TopFraggerController {
     return this.state(matchId, mode, organizationId, req);
   }
 
+  @Get('top-5')
+  async topFive(
+    @Query('matchId') matchId?: string,
+    @Query('organizationId') organizationId?: string,
+    @Req() req?: Request,
+  ) {
+    if (!matchId) throw new BadRequestException({ error: 'INVALID_MATCH_ID' });
+    const actor = this.actor(req);
+    await requireMatchOrganization(this.prisma, matchId, {
+      organizationId: organizationId ?? null,
+      actor,
+    });
+    const players = await this.svc.topFive(matchId);
+    return {
+      version: 'v1',
+      matchId,
+      players,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   @Post('override')
   async override(
     @Body('matchId') matchId: string,

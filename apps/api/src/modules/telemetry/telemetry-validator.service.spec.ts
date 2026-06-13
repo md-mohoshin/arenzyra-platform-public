@@ -1,7 +1,7 @@
 import { TelemetryValidatorService } from './telemetry-validator.service';
 
 describe('TelemetryValidatorService', () => {
-  it('allows last-alive knock commands to reach canonical normalization', () => {
+  it('allows supported end-match control commands', () => {
     const service = new TelemetryValidatorService();
 
     expect(() =>
@@ -38,10 +38,8 @@ describe('TelemetryValidatorService', () => {
           },
         },
         {
-          type: 'SET_PLAYER_KNOCKED',
+          type: 'END_MATCH',
           matchId: 'match-1',
-          playerId: 'player-1',
-          knocked: true,
         },
       ),
     ).not.toThrow();

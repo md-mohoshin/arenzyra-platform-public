@@ -1,8 +1,15 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
-import { GameKey, MatchStatus } from '@prisma/client';
+import { GameKey, MatchStatus, type Prisma } from '@prisma/client';
 import { PrismaService } from '../db/prisma.service';
 import { RealtimeGateway } from './realtime.gateway';
+import { compareRankingRows } from '../common/ranking-tiebreakers.util';
 import { derivePresenceStatus } from '../common/results-presence.util';
+import {
+  aggregatePointDeltaForScope,
+  applyMatchScoreAdjustments,
+  type ScoreAdjustmentMatchContext,
+  type ScoreAdjustmentRecord,
+} from '../common/admin-adjustments.util';
 import {
   LiveRankingPayload,
   LiveRankingTeam,
@@ -14,6 +21,10 @@ import {
   computeKillPoints,
 } from '../modules/scoring/points-core';
 import { MATCH_ACTIVE_OR_FINISHED_STATUSES } from '../common/match-status.util';
+import {
+  defaultKillPointsForGame,
+  defaultPlacementPointsForGame,
+} from '../common/game-rules.util';
 
 const DEFAULT_WIDGET_TEAM_NAME = 'Arenzyra';
 const DEFAULT_WIDGET_TEAM_TAG = 'AZ';
@@ -82,19 +93,9 @@ export class RankingEmitterService {
   }
 
   private defaultRules(game?: GameKey | null): RuleConfig {
-    void game; // keep hook for future game-specific defaults
     return {
-      placementPoints: {
-        1: 10,
-        2: 6,
-        3: 5,
-        4: 4,
-        5: 3,
-        6: 2,
-        7: 1,
-        8: 1,
-      },
-      killPoints: 1,
+      placementPoints: defaultPlacementPointsForGame(game),
+      killPoints: defaultKillPointsForGame(game),
     };
   }
 
@@ -221,6 +222,9 @@ export class RankingEmitterService {
         select: {
           id: true,
           tournamentId: true,
+          stageId: true,
+          groupId: true,
+          sessionId: true,
           organizationId: true,
           status: true,
           game: { select: { key: true } },
@@ -276,10 +280,7 @@ export class RankingEmitterService {
       match.matchSlots.forEach((slot) => {
         if (!slot.teamId) return;
         teamMeta.set(slot.teamId, {
-          name: this.toTeamName(
-            slot.team,
-            DEFAULT_WIDGET_TEAM_NAME,
-          ),
+          name: this.toTeamName(slot.team, DEFAULT_WIDGET_TEAM_NAME),
           tag: slot.team?.tag ?? DEFAULT_WIDGET_TEAM_TAG,
           logoUrl: slot.team?.logoUrl ?? null,
           slot: slot.slotNumber ?? null,
@@ -320,34 +321,59 @@ export class RankingEmitterService {
       slotResults.forEach((sr) => {
         if (!sr.teamId || teamMeta.has(sr.teamId)) return;
         teamMeta.set(sr.teamId, {
-          name: this.toTeamName(
-            sr.team,
-            DEFAULT_WIDGET_TEAM_NAME,
-          ),
+          name: this.toTeamName(sr.team, DEFAULT_WIDGET_TEAM_NAME),
           tag: sr.team?.tag ?? DEFAULT_WIDGET_TEAM_TAG,
           logoUrl: sr.team?.logoUrl ?? null,
           slot: sr.slotNumber ?? null,
         });
       });
 
-      const adjustmentsRaw = match.tournamentId
+      const adjustmentFilters: Prisma.AdminAdjustmentWhereInput[] = [
+        { matchId },
+      ];
+      if (match.groupId) adjustmentFilters.push({ groupId: match.groupId });
+      if (match.stageId) adjustmentFilters.push({ stageId: match.stageId });
+      if (match.tournamentId) {
+        adjustmentFilters.push({ tournamentId: match.tournamentId });
+      }
+      if (match.sessionId) {
+        adjustmentFilters.push({ sessionId: match.sessionId });
+      }
+      const adjustmentsRaw: ScoreAdjustmentRecord[] = adjustmentFilters.length
         ? await this.prisma.adminAdjustment.findMany({
             where: {
-              matchId,
-              tournamentId: match.tournamentId,
               deletedAt: null,
+              revokedAt: null,
+              OR: adjustmentFilters,
             },
-            select: { teamId: true, pointsDelta: true },
+            select: {
+              teamId: true,
+              pointsDelta: true,
+              scope: true,
+              type: true,
+              matchId: true,
+              groupId: true,
+              stageId: true,
+              tournamentId: true,
+              sessionId: true,
+              deletedAt: true,
+              revokedAt: true,
+            },
           })
         : [];
-      const adjustmentMap = new Map<string, number>();
+      const adjustmentsByTeam = new Map<string, ScoreAdjustmentRecord[]>();
       adjustmentsRaw.forEach((adj) => {
-        if (!adj.teamId) return;
-        adjustmentMap.set(
-          adj.teamId,
-          (adjustmentMap.get(adj.teamId) ?? 0) + adj.pointsDelta,
-        );
+        const list = adjustmentsByTeam.get(adj.teamId) ?? [];
+        list.push(adj);
+        adjustmentsByTeam.set(adj.teamId, list);
       });
+      const matchContext: ScoreAdjustmentMatchContext = {
+        id: matchId,
+        tournamentId: match.tournamentId ?? null,
+        stageId: match.stageId ?? null,
+        groupId: match.groupId ?? null,
+        sessionId: match.sessionId ?? null,
+      };
 
       const ensureTeamMeta = (teamId: string) => {
         if (teamMeta.has(teamId)) return;
@@ -374,8 +400,12 @@ export class RankingEmitterService {
           slot?.placementPoints ??
           resolvePlacementPoints(placement, placementTable);
         const killPoints = computeKillPoints(kills, killPointValue);
-        const totalPoints =
-          placementPoints + killPoints + (adjustmentMap.get(teamId) ?? 0);
+        const adjusted = applyMatchScoreAdjustments(
+          placementPoints + killPoints,
+          adjustmentsByTeam.get(teamId) ?? [],
+          matchContext,
+        );
+        const totalPoints = adjusted.totalPoints;
         teams.push({
           teamId,
           rank: 0,
@@ -384,6 +414,7 @@ export class RankingEmitterService {
           logoUrl: meta.logoUrl ?? null,
           kills,
           placement: placement ?? null,
+          wwcd: placement === 1 ? 1 : 0,
           placementPoints,
           killPoints,
           totalPoints,
@@ -393,9 +424,8 @@ export class RankingEmitterService {
       }
 
       teams.sort((a, b) => {
-        if (b.totalPoints !== a.totalPoints)
-          return b.totalPoints - a.totalPoints;
-        if (b.kills !== a.kills) return b.kills - a.kills;
+        const rankingOrder = compareRankingRows(a, b);
+        if (rankingOrder !== 0) return rankingOrder;
         return a.name.localeCompare(b.name);
       });
 
@@ -410,16 +440,12 @@ export class RankingEmitterService {
         teams: ranked,
       };
 
-      if (this.realtime?.io) {
-        this.realtime.io
-          .to(`match:${matchId}`)
-          .emit('match:live-ranking', payload);
-        if (orgId) {
-          this.realtime.io
-            .to(`org:${orgId}`)
-            .emit('match:live-ranking', payload);
-        }
-      }
+      this.realtime.emitMatchScopedEvent(
+        matchId,
+        'match:live-ranking',
+        payload,
+        orgId,
+      );
       return payload;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -462,7 +488,13 @@ export class RankingEmitterService {
                 in: MATCH_ACTIVE_OR_FINISHED_STATUSES,
               },
             },
-            select: { id: true },
+            select: {
+              id: true,
+              tournamentId: true,
+              stageId: true,
+              groupId: true,
+              sessionId: true,
+            },
           },
           tournamentTeams: {
             where: { deletedAt: null },
@@ -491,6 +523,39 @@ export class RankingEmitterService {
 
       const matchIds = tournament.matches.map((m) => m.id);
       if (!matchIds.length) return null;
+      const stageIds = [
+        ...new Set(
+          tournament.matches
+            .map((match) => match.stageId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const groupIds = [
+        ...new Set(
+          tournament.matches
+            .map((match) => match.groupId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const sessionIds = [
+        ...new Set(
+          tournament.matches
+            .map((match) => match.sessionId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const matchContexts = new Map<string, ScoreAdjustmentMatchContext>(
+        tournament.matches.map((match) => [
+          match.id,
+          {
+            id: match.id,
+            tournamentId: match.tournamentId ?? tournamentId,
+            stageId: match.stageId ?? null,
+            groupId: match.groupId ?? null,
+            sessionId: match.sessionId ?? null,
+          },
+        ]),
+      );
 
       const teamMeta = new Map<
         string,
@@ -518,12 +583,46 @@ export class RankingEmitterService {
           team: { select: { name: true, tag: true, logoUrl: true } },
         },
       });
+      const adjustmentsRaw: ScoreAdjustmentRecord[] =
+        await this.prisma.adminAdjustment.findMany({
+          where: {
+            deletedAt: null,
+            revokedAt: null,
+            OR: [
+              { tournamentId },
+              { matchId: { in: matchIds } },
+              ...(stageIds.length ? [{ stageId: { in: stageIds } }] : []),
+              ...(groupIds.length ? [{ groupId: { in: groupIds } }] : []),
+              ...(sessionIds.length ? [{ sessionId: { in: sessionIds } }] : []),
+            ],
+          },
+          select: {
+            teamId: true,
+            pointsDelta: true,
+            scope: true,
+            type: true,
+            matchId: true,
+            groupId: true,
+            stageId: true,
+            tournamentId: true,
+            sessionId: true,
+            deletedAt: true,
+            revokedAt: true,
+          },
+        });
+      const adjustmentsByTeam = new Map<string, ScoreAdjustmentRecord[]>();
+      adjustmentsRaw.forEach((adj) => {
+        const list = adjustmentsByTeam.get(adj.teamId) ?? [];
+        list.push(adj);
+        adjustmentsByTeam.set(adj.teamId, list);
+      });
       const seenKeys = new Set<string>();
       const aggregates = new Map<
         string,
         {
           matchesPlayed: number;
           kills: number;
+          wwcd: number;
           placementPoints: number;
           killPoints: number;
           totalPoints: number;
@@ -534,6 +633,7 @@ export class RankingEmitterService {
         const current = aggregates.get(teamId) ?? {
           matchesPlayed: 0,
           kills: 0,
+          wwcd: 0,
           placementPoints: 0,
           killPoints: 0,
           totalPoints: 0,
@@ -552,38 +652,28 @@ export class RankingEmitterService {
           this.placementPoints(sr.placement ?? null, placementTable);
         const kills = sr.totalKills ?? 0;
         const killPoints = kills * killPointValue;
+        const adjusted = applyMatchScoreAdjustments(
+          placementPoints + killPoints,
+          adjustmentsByTeam.get(sr.teamId) ?? [],
+          matchContexts.get(sr.matchId) ?? {
+            id: sr.matchId,
+            tournamentId,
+          },
+        );
         const agg = upsertAgg(sr.teamId);
         agg.matchesPlayed += 1;
         agg.kills += kills;
+        if (sr.placement === 1) agg.wwcd += 1;
         agg.placementPoints += placementPoints;
         agg.killPoints += killPoints;
-        agg.totalPoints += placementPoints + killPoints;
+        agg.totalPoints += adjusted.totalPoints;
         if (!teamMeta.has(sr.teamId)) {
           teamMeta.set(sr.teamId, {
-            name: this.toTeamName(
-              sr.team,
-              DEFAULT_WIDGET_TEAM_NAME,
-            ),
+            name: this.toTeamName(sr.team, DEFAULT_WIDGET_TEAM_NAME),
             tag: sr.team?.tag ?? DEFAULT_WIDGET_TEAM_TAG,
             logoUrl: sr.team?.logoUrl ?? null,
           });
         }
-      });
-
-      const adjustmentsRaw = await this.prisma.adminAdjustment.findMany({
-        where: {
-          tournamentId,
-          deletedAt: null,
-        },
-        select: { teamId: true, pointsDelta: true },
-      });
-      const adjustmentMap = new Map<string, number>();
-      adjustmentsRaw.forEach((adj) => {
-        if (!adj.teamId) return;
-        adjustmentMap.set(
-          adj.teamId,
-          (adjustmentMap.get(adj.teamId) ?? 0) + adj.pointsDelta,
-        );
       });
 
       const teams: OverallRankingTeam[] = [];
@@ -593,7 +683,18 @@ export class RankingEmitterService {
           tag: null,
           logoUrl: null,
         };
-        const totalPoints = agg.totalPoints + (adjustmentMap.get(teamId) ?? 0);
+        const totalPoints =
+          agg.totalPoints +
+          aggregatePointDeltaForScope(
+            adjustmentsByTeam.get(teamId) ?? [],
+            'TOURNAMENT',
+            tournamentId,
+            {
+              TOURNAMENT: [tournamentId],
+              STAGE: stageIds,
+              GROUP: groupIds,
+            },
+          );
         teams.push({
           teamId,
           rank: 0,
@@ -601,6 +702,7 @@ export class RankingEmitterService {
           tag: meta.tag ?? DEFAULT_WIDGET_TEAM_TAG,
           logoUrl: meta.logoUrl ?? null,
           matchesPlayed: agg.matchesPlayed,
+          wwcd: agg.wwcd,
           kills: agg.kills,
           placementPoints: agg.placementPoints,
           killPoints: agg.killPoints,
@@ -611,9 +713,8 @@ export class RankingEmitterService {
       });
 
       teams.sort((a, b) => {
-        if (b.totalPoints !== a.totalPoints)
-          return b.totalPoints - a.totalPoints;
-        if (b.kills !== a.kills) return b.kills - a.kills;
+        const rankingOrder = compareRankingRows(a, b);
+        if (rankingOrder !== 0) return rankingOrder;
         return a.name.localeCompare(b.name);
       });
 
@@ -628,16 +729,12 @@ export class RankingEmitterService {
         teams: ranked,
       };
 
-      if (this.realtime?.io) {
-        this.realtime.io
-          .to(`tournament:${tournamentId}`)
-          .emit('tournament:overall-ranking', payload);
-        if (tournament.organizationId) {
-          this.realtime.io
-            .to(`org:${tournament.organizationId}`)
-            .emit('tournament:overall-ranking', payload);
-        }
-      }
+      this.realtime.emitTournamentScopedEvent(
+        tournamentId,
+        'tournament:overall-ranking',
+        payload,
+        tournament.organizationId,
+      );
 
       return payload;
     } catch (err) {

@@ -25,6 +25,12 @@ export class PlayerResultUpdateDto {
   @Min(0)
   kills!: number;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  assists?: number;
+
   @IsBoolean()
   alive!: boolean;
 
@@ -33,6 +39,12 @@ export class PlayerResultUpdateDto {
 }
 
 export class UpdateTeamResultsDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  expectedVersion?: number;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => PlayerResultUpdateDto)

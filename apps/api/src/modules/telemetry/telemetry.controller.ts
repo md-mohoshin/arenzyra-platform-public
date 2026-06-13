@@ -23,6 +23,14 @@ import { ControlCommandDto } from './dto/control-command.dto';
 import { SetTelemetryModeDto } from './dto/set-telemetry-mode.dto';
 import type { ControlCommand } from './telemetry.types';
 import type { LiveMatchState } from '../match-control/state.store';
+import { sanitizeTelemetryPromotionDiagnostics } from './telemetry-promotion-diagnostics.util';
+
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+};
 
 @Controller('api')
 export class TelemetryController {
@@ -32,6 +40,20 @@ export class TelemetryController {
     private readonly engine: TelemetryEngineService,
     private readonly broadcast: TelemetryBroadcastService,
   ) {}
+
+  private hasFreshPlayerTelemetry(state: LiveMatchState | null | undefined) {
+    return (
+      state?.teams?.some((team) =>
+        (team.players ?? []).some(
+          (player) => player.lifeTelemetryFresh === true,
+        ),
+      ) ?? false
+    );
+  }
+
+  private requiresConfirmedTelemetry(state: LiveMatchState | null | undefined) {
+    return state?.status === 'LIVE' || state?.status === 'FINISH_PENDING';
+  }
 
   @Get('matches/:matchId/state')
   @Public()
@@ -44,13 +66,26 @@ export class TelemetryController {
       controlState?.metaJson ?? null,
     ).version;
     const stored = await this.stateStore.get(matchId);
-    if (stored && stored.version >= expectedVersion) {
+    const storedIsCurrent =
+      stored !== null &&
+      stored !== undefined &&
+      stored.version >= expectedVersion;
+    if (
+      storedIsCurrent &&
+      (!this.requiresConfirmedTelemetry(stored) ||
+        this.hasFreshPlayerTelemetry(stored))
+    ) {
       return mapStateToDto(stored);
     }
 
     const state = await this.engine.getState(matchId);
     const liveState = this.broadcast.toLiveMatchState(state);
-    if (stored && stored.version > liveState.version) {
+    if (
+      stored &&
+      stored.version > liveState.version &&
+      (!this.requiresConfirmedTelemetry(stored) ||
+        this.hasFreshPlayerTelemetry(stored))
+    ) {
       return mapStateToDto(stored);
     }
     return mapStateToDto(liveState);
@@ -64,9 +99,20 @@ export class TelemetryController {
     @Req() req: AuthenticatedRequest,
   ) {
     await requireMatchOrganization(this.prisma, matchId, { actor: req.user });
+    const controlState = await this.prisma.matchControlState.findUnique({
+      where: { matchId },
+      select: { metaJson: true },
+    });
     const telemetryState = await this.engine.getState(matchId);
     const liveState = this.broadcast.toLiveMatchState(telemetryState);
-    return this.buildCanonicalDiagnostics(telemetryState, liveState);
+    const controlMeta = asRecord(controlState?.metaJson);
+    return this.buildCanonicalDiagnostics(
+      telemetryState,
+      liveState,
+      sanitizeTelemetryPromotionDiagnostics(
+        controlMeta?.telemetryPromotionDiagnostics ?? null,
+      ),
+    );
   }
 
   @Post('match/command')
@@ -124,40 +170,6 @@ export class TelemetryController {
           timestamp: body.timestamp,
           source: body.source ?? 'MANUAL',
         };
-      case 'LOCK_RESULTS':
-        return {
-          type: body.type,
-          matchId: body.matchId,
-          timestamp: body.timestamp,
-          source: body.source ?? 'MANUAL',
-        };
-      case 'SET_PLAYER_ALIVE':
-        return {
-          type: body.type,
-          matchId: body.matchId,
-          playerId: body.playerId ?? '',
-          alive: body.alive === true,
-          timestamp: body.timestamp,
-          source: body.source ?? 'MANUAL',
-        };
-      case 'SET_PLAYER_KNOCKED':
-        return {
-          type: body.type,
-          matchId: body.matchId,
-          playerId: body.playerId ?? '',
-          knocked: body.knocked === true,
-          timestamp: body.timestamp,
-          source: body.source ?? 'MANUAL',
-        };
-      case 'SET_PLAYER_KILLS':
-        return {
-          type: body.type,
-          matchId: body.matchId,
-          playerId: body.playerId ?? '',
-          kills: body.kills ?? 0,
-          timestamp: body.timestamp,
-          source: body.source ?? 'MANUAL',
-        };
       default:
         throw new Error('Unsupported command');
     }
@@ -166,6 +178,7 @@ export class TelemetryController {
   private buildCanonicalDiagnostics(
     telemetryState: Awaited<ReturnType<TelemetryEngineService['getState']>>,
     liveState: LiveMatchState,
+    promotionDiagnostics: unknown = null,
   ) {
     const ranking = [...(liveState.teams ?? [])].map((team, index) => {
       const eliminated = (team.alivePlayers ?? 0) === 0;
@@ -233,6 +246,7 @@ export class TelemetryController {
           : null,
         teamsAlive: telemetryState.teamsAlive,
       },
+      promotionDiagnostics: promotionDiagnostics ?? null,
       liveSummary: liveState.summary ?? null,
       teams: teamSummaries,
       killFeed: {

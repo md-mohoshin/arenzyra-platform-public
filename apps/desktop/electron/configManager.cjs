@@ -15,6 +15,13 @@ const VALID_CONFIG_KEYS = new Set([
   "settings",
 ]);
 
+function isEnabled(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -144,6 +151,7 @@ function createConfigManager(options) {
     typeof options?.getUserDataPath === "function"
       ? options.getUserDataPath
       : () => process.cwd();
+  const isPackaged = options?.isPackaged === true;
   const env = isPlainObject(options?.env) ? options.env : process.env;
   const log = typeof options?.log === "function" ? options.log : () => {};
 
@@ -174,23 +182,6 @@ function createConfigManager(options) {
     }
   }
 
-  function isLoopbackApiBase(value) {
-    const normalizedValue = tryNormalizeApiBaseCandidate(value, {
-      apiEnvironment: "dev",
-      defaultProtocol: "http:",
-    });
-    if (!normalizedValue) {
-      return false;
-    }
-
-    try {
-      const parsed = new URL(normalizedValue);
-      return ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
-    } catch {
-      return false;
-    }
-  }
-
   function resolveRuntimeApiEnvironment(config) {
     const configuredEnvironment = normalizeApiEnvironment(config?.apiEnvironment);
     if (configuredEnvironment !== "auto") {
@@ -208,13 +199,53 @@ function createConfigManager(options) {
     return String(env.DEV_SERVER_PORT || "").trim() ? "dev" : "production";
   }
 
+  function isLoopbackApiBase(value) {
+    const normalizedValue = tryNormalizeApiBaseCandidate(value, {
+      defaultProtocol: "http:",
+    });
+    if (!normalizedValue) {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(normalizedValue);
+      const hostname = String(parsed.hostname || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^\[|\]$/g, "");
+      return [
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+        "host.docker.internal",
+      ].includes(hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function allowsLoopbackApiBaseOverride(config) {
+    if (!isPackaged) {
+      return true;
+    }
+
+    if (
+      isEnabled(env.ARENZYRA_ALLOW_LOCAL_API_BASE) ||
+      isEnabled(env.ARENZYRA_ALLOW_LOOPBACK_API_BASE)
+    ) {
+      return true;
+    }
+
+    return resolveRuntimeApiEnvironment(config) !== "production";
+  }
+
+  function isBlockedLoopbackApiBase(config, value) {
+    return isLoopbackApiBase(value) && !allowsLoopbackApiBaseOverride(config);
+  }
+
   function shouldResetStaleLocalApiBaseOverride(config) {
-    return (
-      Boolean(config?.apiBase) &&
-      isLoopbackApiBase(config.apiBase) &&
-      normalizeApiEnvironment(config?.apiEnvironment) === "auto" &&
-      resolveRuntimeApiEnvironment(config) === "production"
-    );
+    return Boolean(config?.apiBase) && isBlockedLoopbackApiBase(config, config.apiBase);
   }
 
   function getEnvironmentApiBaseCandidates(apiEnvironment) {
@@ -287,16 +318,25 @@ function createConfigManager(options) {
       apiEnvironment,
       defaultProtocol,
     });
-    const configuredApiBase = tryNormalizeApiBaseCandidate(
+    const configuredApiBaseCandidate = tryNormalizeApiBaseCandidate(
       normalizedConfig.apiBase,
       {
         apiEnvironment,
         defaultProtocol,
       },
     );
+    const configuredApiBase = isBlockedLoopbackApiBase(
+      normalizedConfig,
+      configuredApiBaseCandidate,
+    )
+      ? ""
+      : configuredApiBaseCandidate;
     const environmentApiBase = resolveEnvironmentApiBase(normalizedConfig);
 
-    if (normalizedCandidate) {
+    if (
+      normalizedCandidate &&
+      !isBlockedLoopbackApiBase(normalizedConfig, normalizedCandidate)
+    ) {
       return {
         apiBase: normalizedCandidate,
         source: "explicit",
@@ -482,6 +522,15 @@ function createConfigManager(options) {
         };
       }
 
+      if (isBlockedLoopbackApiBase(readConfig(), normalizedApiBase)) {
+        return {
+          valid: false,
+          key: normalizedKey,
+          error:
+            "Loopback apiBase is blocked in the packaged production launcher. Set ARENZYRA_ALLOW_LOCAL_API_BASE=1 to allow localhost overrides.",
+        };
+      }
+
       return {
         valid: true,
         key: normalizedKey,
@@ -578,6 +627,21 @@ function createConfigManager(options) {
         source: metadata.source || "unknown",
         value: trimmed,
       });
+      return {
+        changed: false,
+        apiBase: resolveApiBase(),
+        config: currentConfig,
+      };
+    }
+
+    if (isBlockedLoopbackApiBase(currentConfig, normalizedApiBase)) {
+      logConfigStep(
+        "[config] rejected loopback api base override for packaged production runtime",
+        {
+          source: metadata.source || "unknown",
+          value: normalizedApiBase,
+        },
+      );
       return {
         changed: false,
         apiBase: resolveApiBase(),

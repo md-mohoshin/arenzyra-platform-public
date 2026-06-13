@@ -6,6 +6,9 @@ const {
   normalizeWorldY,
 } = require("./coordinate-utils.cjs");
 
+const MATCH_OPENING_PHASES = new Set(["plane", "parachuting", "lobby", "waiting"]);
+const FLIGHT_PATH_POST_CIRCLE_RETENTION_MS = 30_000;
+
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -25,6 +28,33 @@ function pickFirstString(record, keys) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) {
       return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function normalizeStatusValue(value) {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+
+  return null;
+}
+
+function pickFirstStatus(record, keys) {
+  if (!record) {
+    return null;
+  }
+
+  for (const key of keys) {
+    const value = normalizeStatusValue(record[key]);
+    if (value) {
+      return value;
     }
   }
 
@@ -277,9 +307,32 @@ function extractWorldPoint(source) {
   return { x, y };
 }
 
-function extractFlightPath(circlePayload, depth = 0) {
-  const root = asRecord(circlePayload);
-  if (!root || depth > 2) {
+function extractFlightPath(source, depth = 0) {
+  if (depth > 2) {
+    return null;
+  }
+
+  if (Array.isArray(source)) {
+    if (source.length >= 2) {
+      const start = extractWorldPoint(source[0]);
+      const end = extractWorldPoint(source[source.length - 1]);
+      if (start && end) {
+        return { start, end };
+      }
+    }
+
+    for (const entry of source) {
+      const nested = extractFlightPath(entry, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  const root = asRecord(source);
+  if (!root) {
     return null;
   }
 
@@ -391,8 +444,18 @@ function extractFlightPath(circlePayload, depth = 0) {
   for (const key of [
     "flightPath",
     "flightpath",
+    "flightLine",
+    "FlightLine",
+    "flightRouteLine",
+    "FlightRouteLine",
+    "planePath",
+    "PlanePath",
     "route",
     "Route",
+    "routePayload",
+    "RoutePayload",
+    "routePayloads",
+    "RoutePayloads",
     "planeRoute",
     "PlaneRoute",
     "flightRoute",
@@ -413,6 +476,84 @@ function extractFlightPath(circlePayload, depth = 0) {
   }
 
   return null;
+}
+
+function clipFlightPathToMapBounds(flightPath, definition, options = {}) {
+  if (!flightPath?.start || !flightPath?.end) {
+    return null;
+  }
+
+  const scaleFactor =
+    Number.isFinite(options.detectedScaleFactor) && options.detectedScaleFactor > 0
+      ? options.detectedScaleFactor
+      : 1;
+  const worldSize = Number.isFinite(definition?.worldSize) && definition.worldSize > 0
+    ? definition.worldSize
+    : 1;
+  const start = {
+    x: toFiniteNumber(flightPath.start.x),
+    y: toFiniteNumber(flightPath.start.y),
+  };
+  const end = {
+    x: toFiniteNumber(flightPath.end.x),
+    y: toFiniteNumber(flightPath.end.y),
+  };
+
+  if (start.x === null || start.y === null || end.x === null || end.y === null) {
+    return null;
+  }
+
+  const x1 = start.x * scaleFactor;
+  const y1 = start.y * scaleFactor;
+  const x2 = end.x * scaleFactor;
+  const y2 = end.y * scaleFactor;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  let minT = 0;
+  let maxT = 1;
+
+  const clipEdge = (p, q) => {
+    if (p === 0) {
+      return q >= 0;
+    }
+    const t = q / p;
+    if (p < 0) {
+      if (t > maxT) {
+        return false;
+      }
+      if (t > minT) {
+        minT = t;
+      }
+    } else {
+      if (t < minT) {
+        return false;
+      }
+      if (t < maxT) {
+        maxT = t;
+      }
+    }
+    return true;
+  };
+
+  if (
+    !clipEdge(-dx, x1) ||
+    !clipEdge(dx, worldSize - x1) ||
+    !clipEdge(-dy, y1) ||
+    !clipEdge(dy, worldSize - y1)
+  ) {
+    return null;
+  }
+
+  return {
+    start: {
+      x: x1 + dx * minT,
+      y: y1 + dy * minT,
+    },
+    end: {
+      x: x1 + dx * maxT,
+      y: y1 + dy * maxT,
+    },
+  };
 }
 
 function extractPrimaryZone(circlePayload) {
@@ -461,6 +602,16 @@ function circlesRoughlyMatch(left, right) {
   );
 }
 
+function circleContainsCircle(outer, inner) {
+  if (!outer || !inner) {
+    return false;
+  }
+
+  const distance = Math.hypot(outer.x - inner.x, outer.y - inner.y);
+  const tolerance = Math.max(64, Math.abs(outer.radius) * 0.002);
+  return distance + inner.radius <= outer.radius + tolerance;
+}
+
 function buildInitialBlueZone(mapDefinition) {
   const worldSize = toFiniteNumber(mapDefinition?.worldSize);
   if (worldSize === null || worldSize <= 0) {
@@ -471,7 +622,7 @@ function buildInitialBlueZone(mapDefinition) {
   return {
     x: center,
     y: center,
-    radius: center,
+    radius: Math.hypot(center, center) + worldSize * 0.08,
   };
 }
 
@@ -485,6 +636,13 @@ function resolveExplicitBlueZone(circlePayload, fallbackCurrentCircle) {
     pickFirstRecord(root, ["currentBlueZone", "CurrentBlueZone"]),
   );
   if (currentBlueZone) {
+    if (
+      fallbackCurrentCircle &&
+      (circlesRoughlyMatch(currentBlueZone, fallbackCurrentCircle) ||
+        !circleContainsCircle(currentBlueZone, fallbackCurrentCircle))
+    ) {
+      return null;
+    }
     return currentBlueZone;
   }
 
@@ -498,6 +656,13 @@ function resolveExplicitBlueZone(circlePayload, fallbackCurrentCircle) {
   // In live ShadowTracker payloads, "blueZone" often aliases the current safe zone.
   // Ignore it when it matches the current circle and fall back to phase-array reconstruction.
   if (circlesRoughlyMatch(legacyBlueZone, fallbackCurrentCircle)) {
+    return null;
+  }
+
+  if (
+    fallbackCurrentCircle &&
+    !circleContainsCircle(legacyBlueZone, fallbackCurrentCircle)
+  ) {
     return null;
   }
 
@@ -556,9 +721,9 @@ function pickCirclePayloadNumber(circlePayload, keys) {
   return null;
 }
 
-function pickCirclePayloadString(circlePayload, keys) {
+function pickCirclePayloadStatus(circlePayload, keys) {
   for (const record of getCirclePayloadRecords(circlePayload)) {
-    const value = pickFirstString(record, keys);
+    const value = pickFirstStatus(record, keys);
     if (value) {
       return value;
     }
@@ -588,6 +753,46 @@ function isCircleShrinkingStatus(status) {
   );
 }
 
+function resolveCircleMode(circlePayload) {
+  const status =
+    pickCirclePayloadStatus(circlePayload, [
+      "CircleStatus",
+      "circleStatus",
+      "status",
+      "Status",
+    ]) ?? null;
+  const normalized = String(status || "").trim().toLowerCase();
+
+  if (
+    normalized === "2" ||
+    normalized === "moving" ||
+    normalized === "shrinking" ||
+    normalized === "shrink" ||
+    normalized === "closing" ||
+    normalized === "collapse" ||
+    normalized === "collapsing"
+  ) {
+    return "closing";
+  }
+
+  if (
+    normalized === "0" ||
+    normalized === "1" ||
+    normalized === "waiting" ||
+    normalized === "wait" ||
+    normalized === "idle" ||
+    normalized === "hold" ||
+    normalized === "holding" ||
+    normalized === "opening" ||
+    normalized === "open" ||
+    normalized === "next"
+  ) {
+    return "waiting";
+  }
+
+  return null;
+}
+
 function resolveCircleTimer(circlePayload) {
   const counter = pickCirclePayloadNumber(circlePayload, [
     "Counter",
@@ -606,7 +811,7 @@ function resolveCircleTimer(circlePayload) {
     "Duration",
   ]);
   const status =
-    pickCirclePayloadString(circlePayload, [
+    pickCirclePayloadStatus(circlePayload, [
       "CircleStatus",
       "circleStatus",
       "status",
@@ -694,6 +899,22 @@ function resolveCirclePhaseDuration(circlePayload) {
   );
 }
 
+function shouldShowZoneCircles(matchPhase, circlePayload) {
+  const normalizedPhase = String(matchPhase || "").trim().toLowerCase();
+  if (!MATCH_OPENING_PHASES.has(normalizedPhase)) {
+    return true;
+  }
+
+  // Direct observer payloads can expose future circles before they are visible in the match.
+  // Keep the geometry hidden until the opening timer has fully elapsed.
+  const remainingTime = resolveCircleTimeRemaining(circlePayload);
+  if (remainingTime === null) {
+    return false;
+  }
+
+  return remainingTime <= 0;
+}
+
 function resolveCircleArrayIndex(circlePayload, circleArrayLength) {
   if (!Number.isFinite(circleArrayLength) || circleArrayLength <= 0) {
     return null;
@@ -761,16 +982,18 @@ function extractBlueZone(circlePayload, mapDefinition) {
     return null;
   }
   const targetCircle = circleArray[currentIndex];
+  const timer = resolveCircleTimer(root);
   const previousCircle =
     currentIndex > 0
       ? circleArray[Math.max(0, currentIndex - 1)] || targetCircle
-      : buildInitialBlueZone(mapDefinition) || targetCircle;
+      : isCircleShrinkingStatus(timer.status)
+        ? buildInitialBlueZone(mapDefinition) || targetCircle
+        : null;
 
   if (!targetCircle || !previousCircle) {
     return null;
   }
 
-  const timer = resolveCircleTimer(root);
   const canAnimateFromTimer =
     timer.progress !== null &&
     !circlesRoughlyMatch(previousCircle, targetCircle) &&
@@ -855,6 +1078,17 @@ function extractAlive(record) {
     }
   }
 
+  const liveState = pickFirstNumber(root, ["liveState", "LiveState", "lifeState", "LifeState"]);
+  if (liveState !== null) {
+    return Math.trunc(liveState) !== 5;
+  }
+
+  for (const key of ["bHasDied", "hasDied", "isDead", "IsDead"]) {
+    if (typeof root[key] === "boolean") {
+      return !root[key];
+    }
+  }
+
   const hp = pickFirstNumber(root, ["hp", "HP", "health", "Health"]);
   if (hp !== null) {
     return hp > 0;
@@ -897,7 +1131,190 @@ function extractKnocked(record) {
     }
   }
 
+  const liveState = pickFirstNumber(root, ["liveState", "LiveState", "lifeState", "LifeState"]);
+  if (liveState !== null) {
+    return Math.trunc(liveState) === 4;
+  }
+
   return null;
+}
+
+function extractInVehicle(record) {
+  const root = asRecord(record);
+  if (!root) {
+    return null;
+  }
+
+  for (const key of [
+    "inVehicle",
+    "InVehicle",
+    "isInVehicle",
+    "IsInVehicle",
+    "isDriving",
+    "IsDriving",
+    "isRiding",
+    "IsRiding",
+  ]) {
+    if (typeof root[key] === "boolean") {
+      return root[key];
+    }
+  }
+
+  const aliveState = pickFirstString(root, ["aliveState", "AliveState", "state", "State"]);
+  if (aliveState) {
+    const normalized = aliveState.toLowerCase();
+    if (
+      normalized.includes("vehicle") ||
+      normalized.includes("driving") ||
+      normalized.includes("riding")
+    ) {
+      return true;
+    }
+  }
+
+  const liveState = pickFirstNumber(root, ["liveState", "LiveState", "lifeState", "LifeState"]);
+  if (liveState !== null) {
+    return Math.trunc(liveState) === 3;
+  }
+
+  return null;
+}
+
+function extractIsFiring(record) {
+  return pickFirstBoolean(asRecord(record), ["isFiring", "IsFiring"]) === true;
+}
+
+function normalizeAngleDegrees(value) {
+  const numeric = toFiniteNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+
+  const degrees = Math.abs(numeric) <= Math.PI * 2 + 0.001 ? (numeric * 180) / Math.PI : numeric;
+  return ((degrees % 360) + 360) % 360;
+}
+
+function extractFireAngle(record) {
+  const root = asRecord(record);
+  if (!root) {
+    return null;
+  }
+
+  return normalizeAngleDegrees(
+    pickFirstNumber(root, [
+      "fireAngle",
+      "FireAngle",
+      "firingAngle",
+      "FiringAngle",
+      "shootAngle",
+      "ShootAngle",
+      "aimAngle",
+      "AimAngle",
+      "weaponAngle",
+      "WeaponAngle",
+      "viewAngle",
+      "ViewAngle",
+      "viewYaw",
+      "ViewYaw",
+      "yaw",
+      "Yaw",
+      "rotationYaw",
+      "RotationYaw",
+      "rotYaw",
+      "RotYaw",
+      "direction",
+      "Direction",
+      "heading",
+      "Heading",
+      "facing",
+      "Facing",
+      "orientation",
+      "Orientation",
+    ]),
+  );
+}
+
+function normalizeDirectionVector(xValue, yValue) {
+  const x = toFiniteNumber(xValue);
+  const y = toFiniteNumber(yValue);
+  if (x === null || y === null) {
+    return null;
+  }
+
+  const magnitude = Math.hypot(x, y);
+  if (!Number.isFinite(magnitude) || magnitude <= 0.0001) {
+    return null;
+  }
+
+  return {
+    x: x / magnitude,
+    y: y / magnitude,
+  };
+}
+
+function extractFireDirection(record) {
+  const root = asRecord(record);
+  if (!root) {
+    return null;
+  }
+
+  const direct = normalizeDirectionVector(
+    pickFirstNumber(root, [
+      "fireDirectionX",
+      "FireDirectionX",
+      "firingDirectionX",
+      "FiringDirectionX",
+      "aimDirectionX",
+      "AimDirectionX",
+      "viewDirectionX",
+      "ViewDirectionX",
+      "directionX",
+      "DirectionX",
+      "dirX",
+      "DirX",
+    ]),
+    pickFirstNumber(root, [
+      "fireDirectionY",
+      "FireDirectionY",
+      "firingDirectionY",
+      "FiringDirectionY",
+      "aimDirectionY",
+      "AimDirectionY",
+      "viewDirectionY",
+      "ViewDirectionY",
+      "directionY",
+      "DirectionY",
+      "dirY",
+      "DirY",
+    ]),
+  );
+  if (direct) {
+    return direct;
+  }
+
+  const nested =
+    pickFirstRecord(root, [
+      "fireDirection",
+      "FireDirection",
+      "firingDirection",
+      "FiringDirection",
+      "aimDirection",
+      "AimDirection",
+      "viewDirection",
+      "ViewDirection",
+      "direction",
+      "Direction",
+      "rotation",
+      "Rotation",
+    ]) || null;
+  if (!nested) {
+    return null;
+  }
+
+  return normalizeDirectionVector(
+    pickFirstNumber(nested, ["x", "X", "dx", "DX", "dirX", "DirX"]),
+    pickFirstNumber(nested, ["y", "Y", "dy", "DY", "dirY", "DirY"]),
+  );
 }
 
 function normalizeSlotNumber(value) {
@@ -1518,8 +1935,10 @@ function detectCoordinateScale(mapDefinition, values) {
   return maxValue <= mapDefinition.worldSize / 20 ? hint : 1;
 }
 
-function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
+function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
   let lastResolvedMapKey = null;
+  const lastFlightPathByMapKey = new Map();
+  const firstCircleVisibleAtByMapKey = new Map();
 
   function ingestSnapshot(snapshot) {
     const rawMapName = extractRawMapName(snapshot) || lastResolvedMapKey;
@@ -1531,11 +1950,30 @@ function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
     const receivedAt = Date.now();
     const eventTimestamp = extractEventTimestamp(snapshot);
     const timestamp = eventTimestamp ?? receivedAt;
+    const source =
+      typeof snapshot?.source === "string" && snapshot.source.trim()
+        ? snapshot.source.trim()
+        : "unknown";
     const sourceMapName = extractRawMapName(snapshot) || definition.label;
+    const matchPhase =
+      typeof snapshot?.phase === "string" && snapshot.phase.trim()
+        ? snapshot.phase.trim().toLowerCase()
+        : null;
+    const circlesVisible = shouldShowZoneCircles(matchPhase, snapshot?.circlePayload);
     const primaryZone = extractPrimaryZone(snapshot?.circlePayload);
     const nextZone = extractNextZone(snapshot?.circlePayload);
     const blueZone = extractBlueZone(snapshot?.circlePayload, definition);
-    const flightPath = extractFlightPath(snapshot?.circlePayload);
+    const extractedFlightPath =
+      extractFlightPath(snapshot?.circlePayload) ??
+      extractFlightPath(snapshot?.routePayloads);
+    if (extractedFlightPath?.start && extractedFlightPath?.end) {
+      lastFlightPathByMapKey.set(definition.key, {
+        start: { ...extractedFlightPath.start },
+        end: { ...extractedFlightPath.end },
+      });
+    }
+    const retainedFlightPathForScale =
+      extractedFlightPath ?? lastFlightPathByMapKey.get(definition.key) ?? null;
     const rawKills = Array.isArray(snapshot?.kills) ? snapshot.kills : [];
     const rawPlayerSource = Array.isArray(snapshot?.players) ? snapshot.players : [];
     const rosterFilterResult = filterObserverCurrentRosterPlayers(
@@ -1638,7 +2076,11 @@ function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
           ),
           alive: extractAlive(record),
           knocked: extractKnocked(record),
+          inVehicle: extractInVehicle(record),
           health: extractHealth(record),
+          isFiring: extractIsFiring(record),
+          fireAngle: extractFireAngle(record),
+          fireDirection: extractFireDirection(record),
         };
       })
       .filter(Boolean);
@@ -1655,10 +2097,10 @@ function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
       blueZone?.x,
       blueZone?.y,
       blueZone?.radius,
-      flightPath?.start?.x,
-      flightPath?.start?.y,
-      flightPath?.end?.x,
-      flightPath?.end?.y,
+      retainedFlightPathForScale?.start?.x,
+      retainedFlightPathForScale?.start?.y,
+      retainedFlightPathForScale?.end?.x,
+      retainedFlightPathForScale?.end?.y,
       ...positionedPlayers.flatMap((player) => [player.x, player.y]),
     ]);
     const coordinate = {
@@ -1692,7 +2134,45 @@ function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
       timestamp,
     });
 
-    if (primaryZone) {
+    if (primaryZone && circlesVisible === true) {
+      if (!firstCircleVisibleAtByMapKey.has(definition.key)) {
+        firstCircleVisibleAtByMapKey.set(definition.key, receivedAt);
+      }
+    } else if (circlesVisible === false) {
+      firstCircleVisibleAtByMapKey.delete(definition.key);
+    }
+
+    const firstCircleVisibleAt =
+      firstCircleVisibleAtByMapKey.get(definition.key) ?? null;
+    const flightPathVisibleUntil =
+      firstCircleVisibleAt === null
+        ? null
+        : firstCircleVisibleAt + FLIGHT_PATH_POST_CIRCLE_RETENTION_MS;
+    const flightPathRetentionActive =
+      flightPathVisibleUntil !== null && receivedAt <= flightPathVisibleUntil;
+    const openingPhaseActive = MATCH_OPENING_PHASES.has(matchPhase);
+    const preCircleFlightPathActive = !primaryZone;
+    if (!openingPhaseActive && !flightPathRetentionActive && !preCircleFlightPathActive) {
+      lastFlightPathByMapKey.delete(definition.key);
+    }
+
+    const flightPath =
+      extractedFlightPath ??
+      (openingPhaseActive || preCircleFlightPathActive || flightPathRetentionActive
+        ? lastFlightPathByMapKey.get(definition.key) ?? null
+        : null);
+    const shouldKeepFlightPath =
+      Boolean(flightPath) &&
+      (!primaryZone ||
+        (openingPhaseActive && circlesVisible === false) ||
+        flightPathRetentionActive);
+    const normalizedFlightPath = shouldKeepFlightPath
+      ? clipFlightPathToMapBounds(flightPath, definition, {
+          detectedScaleFactor: scaleFactor,
+        })
+      : null;
+
+    if (primaryZone || flightPath) {
       engine.applyZoneUpdate(
         {
           mapKey: definition.key,
@@ -1707,26 +2187,32 @@ function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
             ]) ??
             pickFirstNumber(snapshot?.circle, ["circleIndex"]) ??
             null,
-          matchPhase:
-            typeof snapshot?.phase === "string" && snapshot.phase.trim()
-              ? snapshot.phase.trim().toLowerCase()
-              : null,
+          matchPhase,
+          circlesVisible,
           status:
-            pickCirclePayloadString(snapshot?.circlePayload, [
+            pickCirclePayloadStatus(snapshot?.circlePayload, [
               "CircleStatus",
               "circleStatus",
               "status",
               "Status",
             ]) ?? null,
-          centerX: normalizeWorldX(primaryZone.x, definition, {
-            detectedScaleFactor: scaleFactor,
-          }),
-          centerY: normalizeWorldY(primaryZone.y, definition, {
-            detectedScaleFactor: scaleFactor,
-          }),
-          radius: normalizeWorldRadius(primaryZone.radius, definition, {
-            detectedScaleFactor: scaleFactor,
-          }),
+          mode: resolveCircleMode(snapshot?.circlePayload),
+          zoneMode: resolveCircleMode(snapshot?.circlePayload),
+          centerX: primaryZone
+            ? normalizeWorldX(primaryZone.x, definition, {
+                detectedScaleFactor: scaleFactor,
+              })
+            : null,
+          centerY: primaryZone
+            ? normalizeWorldY(primaryZone.y, definition, {
+                detectedScaleFactor: scaleFactor,
+              })
+            : null,
+          radius: primaryZone
+            ? normalizeWorldRadius(primaryZone.radius, definition, {
+                detectedScaleFactor: scaleFactor,
+              })
+            : null,
           nextCenterX:
             nextZone === null
               ? null
@@ -1764,32 +2250,19 @@ function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
                   detectedScaleFactor: scaleFactor,
                 }),
           flightPath:
-            !flightPath ||
-            !flightPath.start ||
-            !flightPath.end
+            normalizedFlightPath === null
               ? null
               : {
-                  start: {
-                    x: normalizeWorldX(flightPath.start.x, definition, {
-                      detectedScaleFactor: scaleFactor,
-                    }),
-                    y: normalizeWorldY(flightPath.start.y, definition, {
-                      detectedScaleFactor: scaleFactor,
-                    }),
-                  },
-                  end: {
-                    x: normalizeWorldX(flightPath.end.x, definition, {
-                      detectedScaleFactor: scaleFactor,
-                    }),
-                    y: normalizeWorldY(flightPath.end.y, definition, {
-                      detectedScaleFactor: scaleFactor,
-                    }),
-                  },
+                  start: { ...normalizedFlightPath.start },
+                  end: { ...normalizedFlightPath.end },
                 },
+          flightPathVisibleUntil:
+            normalizedFlightPath === null ? null : flightPathVisibleUntil,
           phaseDuration: resolveCirclePhaseDuration(snapshot?.circlePayload),
           timeRemaining: resolveCircleTimeRemaining(snapshot?.circlePayload),
           timestamp,
           receivedAt,
+          source,
           raw: {
             currentCircle: primaryZone ? { ...primaryZone } : null,
             nextCircle: nextZone ? { ...nextZone } : null,
@@ -1835,10 +2308,15 @@ function createMapTelemetryBridge({ engine, registry, log = () => {} }) {
             kills: player.kills,
             alive: player.alive,
             knocked: player.knocked,
+            inVehicle: player.inVehicle,
             health: player.health,
+            isFiring: player.isFiring,
+            fireAngle: player.fireAngle,
+            fireDirection: player.fireDirection,
           })),
           timestamp,
           receivedAt,
+          source,
           coordinate,
           warnings,
         },

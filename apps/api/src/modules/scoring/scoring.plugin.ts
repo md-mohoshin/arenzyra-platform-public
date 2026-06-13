@@ -6,6 +6,7 @@ export type StandingsRow = {
   teamName?: string | null;
   logoUrl?: string | null;
   total: number;
+  wwcd: number;
   placementPoints: number;
   kills: number;
   bestPlacement: number; // lower is better

@@ -15,6 +15,7 @@ export const emptyObserverCommandCenterSnapshot: ObserverCommandCenterSnapshot =
     matchId: null,
     packetsPerSecond: 0,
     aliveTeams: null,
+    alivePlayers: null,
     gameTime: null,
     circleIndex: null,
     circleStatus: null,

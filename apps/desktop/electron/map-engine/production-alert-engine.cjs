@@ -26,12 +26,35 @@ function buildAlertKey(type, involvedTeamIds, centerX, centerY) {
   return `${type}:${teamKey}:${buildSpatialKey(centerX, centerY)}`;
 }
 
-function cloneAlert(alert) {
+function resolveAlertLabel(alert, teamLabelResolver = null) {
+  const label = String(alert?.label || "").trim();
+  if (!label || typeof teamLabelResolver !== "function") {
+    return label;
+  }
+
+  const involvedTeamIds = Array.isArray(alert?.involvedTeamIds) ? alert.involvedTeamIds : [];
+  const defaultLabel =
+    involvedTeamIds.length === 1
+      ? formatTeamLabel(involvedTeamIds[0])
+      : formatMatchup(involvedTeamIds);
+  const resolvedLabel =
+    involvedTeamIds.length === 1
+      ? formatTeamLabel(involvedTeamIds[0], teamLabelResolver)
+      : formatMatchup(involvedTeamIds, teamLabelResolver);
+
+  if (defaultLabel && resolvedLabel && defaultLabel !== resolvedLabel) {
+    return label.replace(defaultLabel, resolvedLabel);
+  }
+
+  return label;
+}
+
+function cloneAlert(alert, teamLabelResolver = null) {
   return {
     id: alert.id,
     type: alert.type,
     severity: alert.severity,
-    label: alert.label,
+    label: resolveAlertLabel(alert, teamLabelResolver),
     centerX: alert.centerX,
     centerY: alert.centerY,
     involvedTeamIds: [...alert.involvedTeamIds],
@@ -121,6 +144,7 @@ function createProductionAlertEngine() {
     zone,
     config,
     updatedAt,
+    teamLabelResolver,
   } = {}) {
     const now = Number.isFinite(updatedAt) ? updatedAt : Date.now();
     const hotZones = Array.isArray(assistSnapshot?.hotZones) ? assistSnapshot.hotZones : [];
@@ -148,7 +172,7 @@ function createProductionAlertEngine() {
               hotZone.score >= (config?.HIGH_RISK_FIGHT_SCORE ?? 150) + 30
                 ? "critical"
                 : "warning",
-            label: `High risk fight: ${formatMatchup(hotZone.involvedTeamIds)}`,
+            label: `High risk fight: ${formatMatchup(hotZone.involvedTeamIds, teamLabelResolver)}`,
             centerX: hotZone.centerX,
             centerY: hotZone.centerY,
             involvedTeamIds: hotZone.involvedTeamIds,
@@ -163,7 +187,10 @@ function createProductionAlertEngine() {
           {
             type: "multi_team_convergence",
             severity: teamCount >= 4 ? "critical" : "warning",
-            label: `${teamCount}-team convergence: ${formatMatchup(hotZone.involvedTeamIds)}`,
+            label: `${teamCount}-team convergence: ${formatMatchup(
+              hotZone.involvedTeamIds,
+              teamLabelResolver,
+            )}`,
             centerX: hotZone.centerX,
             centerY: hotZone.centerY,
             involvedTeamIds: hotZone.involvedTeamIds,
@@ -178,7 +205,10 @@ function createProductionAlertEngine() {
           {
             type: "zone_edge_engagement",
             severity: hotZone.score >= (config?.HIGH_RISK_FIGHT_SCORE ?? 150) ? "critical" : "warning",
-            label: `Zone edge engagement: ${formatMatchup(hotZone.involvedTeamIds)}`,
+            label: `Zone edge engagement: ${formatMatchup(
+              hotZone.involvedTeamIds,
+              teamLabelResolver,
+            )}`,
             centerX: hotZone.centerX,
             centerY: hotZone.centerY,
             involvedTeamIds: hotZone.involvedTeamIds,
@@ -193,7 +223,10 @@ function createProductionAlertEngine() {
           {
             type: "final_circle_cluster",
             severity: teamCount >= 3 ? "critical" : "warning",
-            label: `Final circle cluster: ${formatMatchup(hotZone.involvedTeamIds)}`,
+            label: `Final circle cluster: ${formatMatchup(
+              hotZone.involvedTeamIds,
+              teamLabelResolver,
+            )}`,
             centerX: hotZone.centerX,
             centerY: hotZone.centerY,
             involvedTeamIds: hotZone.involvedTeamIds,
@@ -218,6 +251,7 @@ function createProductionAlertEngine() {
                 : "warning",
             label: `Knock spike: ${hotZone.currentKnockedCount} downs in ${formatMatchup(
               hotZone.involvedTeamIds,
+              teamLabelResolver,
             )}`,
             centerX: hotZone.centerX,
             centerY: hotZone.centerY,
@@ -237,7 +271,10 @@ function createProductionAlertEngine() {
           {
             type: "recent_combat_reignite",
             severity: hotZone.recentCombatCount >= 2 ? "warning" : "info",
-            label: `Combat reignites: ${formatMatchup(hotZone.involvedTeamIds)}`,
+            label: `Combat reignites: ${formatMatchup(
+              hotZone.involvedTeamIds,
+              teamLabelResolver,
+            )}`,
             centerX: hotZone.centerX,
             centerY: hotZone.centerY,
             involvedTeamIds: hotZone.involvedTeamIds,
@@ -260,7 +297,7 @@ function createProductionAlertEngine() {
         {
           type: "team_split_risk",
           severity: splitRisk.severity === "high" ? "critical" : "warning",
-          label: `${formatTeamLabel(splitRisk.teamId)} split wide under pressure`,
+          label: `${formatTeamLabel(splitRisk.teamId, teamLabelResolver)} split wide under pressure`,
           centerX: splitRisk.centerX,
           centerY: splitRisk.centerY,
           involvedTeamIds: [splitRisk.teamId],
@@ -293,7 +330,7 @@ function createProductionAlertEngine() {
       return right.createdAt - left.createdAt;
     });
 
-    return activeAlerts.map(cloneAlert);
+    return activeAlerts.map((alert) => cloneAlert(alert, teamLabelResolver));
   }
 
   return {

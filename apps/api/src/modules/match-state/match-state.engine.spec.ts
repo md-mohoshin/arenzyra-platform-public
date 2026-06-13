@@ -99,6 +99,102 @@ describe('MatchStateEngine', () => {
     );
   });
 
+  it('does not eliminate or auto-end from plane/parachuting death snapshots', () => {
+    const engine = new MatchStateEngine();
+
+    engine.syncAutoMatch({
+      matchId: 'match-air',
+      sourceMode: 'AUTO',
+      status: 'LIVE',
+      startedAt: '2026-03-08T00:00:00.000Z',
+      teams: [
+        {
+          ...baseTeams()[0],
+          alivePlayers: 1,
+          totalPlayers: 1,
+        },
+        {
+          ...baseTeams()[1],
+          alivePlayers: 1,
+          totalPlayers: 1,
+        },
+      ],
+      totalPlayerList: {
+        players: [
+          {
+            teamId: 'team-1',
+            externalPlayerId: 'player-1',
+            name: 'Ace',
+            isAlive: true,
+          },
+          {
+            teamId: 'team-2',
+            externalPlayerId: 'player-2',
+            name: 'Brick',
+            isAlive: true,
+          },
+        ],
+      },
+      circle: { phase: 0 },
+      killEvents: [],
+    });
+
+    const result = engine.syncAutoMatch({
+      matchId: 'match-air',
+      sourceMode: 'AUTO',
+      status: 'LIVE',
+      startedAt: '2026-03-08T00:00:00.000Z',
+      teams: [
+        {
+          ...baseTeams()[0],
+          alivePlayers: 0,
+          totalPlayers: 1,
+        },
+        {
+          ...baseTeams()[1],
+          alivePlayers: 0,
+          totalPlayers: 1,
+        },
+      ],
+      totalPlayerList: {
+        players: [
+          {
+            teamId: 'team-1',
+            externalPlayerId: 'player-1',
+            name: 'Ace',
+            isAlive: false,
+          },
+          {
+            teamId: 'team-2',
+            externalPlayerId: 'player-2',
+            name: 'Brick',
+            isAlive: false,
+          },
+        ],
+      },
+      circle: { phase: 1 },
+      killEvents: [
+        {
+          type: 'PLAYER_KILL',
+          matchId: 'match-air',
+          killerPlayerExternalId: 'player-1',
+          victimPlayerExternalId: 'player-2',
+          killerTeamId: 'team-1',
+          victimTeamId: 'team-2',
+          timestamp: Date.now(),
+        },
+      ],
+    });
+
+    expect(result?.finished).toBe(false);
+    expect(result?.status).toBe('LIVE');
+    expect(result?.summary.aliveTeams).toBe(2);
+    expect(result?.summary.alivePlayers).toBe(2);
+    expect(result?.events.map((event) => event.type)).not.toEqual(
+      expect.arrayContaining(['PLAYER_DIED', 'TEAM_ELIMINATED', 'MATCH_ENDED']),
+    );
+  });
+
   it('extracts telemetry players from wrapped totalmessage payloads', () => {
     const engine = new MatchStateEngine();
 
@@ -294,7 +390,7 @@ describe('MatchStateEngine', () => {
 
     expect(first).not.toBeNull();
     expect(first?.finished).toBe(true);
-    expect(first?.status).toBe('ENDED');
+    expect(first?.status).toBe('FINISH_PENDING');
     expect(first?.summary.aliveTeams).toBe(1);
     expect(
       first?.teams.find((team) => team.teamId === 'team-1')
@@ -370,7 +466,7 @@ describe('MatchStateEngine', () => {
     expect(
       second?.events.filter((event) => event.type === 'PLAYER_KILL'),
     ).toHaveLength(0);
-    expect(second?.status).toBe('ENDED');
+    expect(second?.status).toBe('FINISH_PENDING');
   });
 
   it('ignores non-AUTO sources', () => {
@@ -557,7 +653,7 @@ describe('MatchStateEngine', () => {
     });
 
     expect(result).not.toBeNull();
-    expect(result?.status).toBe('ENDED');
+    expect(result?.status).toBe('FINISH_PENDING');
     expect(
       result?.teams.find((team) => team.teamId === 'team-4')?.placement,
     ).toBe(5);

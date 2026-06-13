@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { Role } from '@prisma/client';
+import { GameKey, OrganizerAccessMode, Role } from '@prisma/client';
 import { AuthService } from '../../auth/auth.service';
 import { env } from '../../config/env.validation';
 
@@ -17,6 +17,13 @@ export type JwtPayload = {
   actingOrgId?: string | null;
   actingRole?: Role | null;
   actingOrgName?: string | null;
+  organizerAccessMode?: OrganizerAccessMode | null;
+  organizationAccessMode?: OrganizerAccessMode | null;
+  accessMode?: OrganizerAccessMode | null;
+  organizationPlanId?: string | null;
+  planId?: string | null;
+  enabledGames?: GameKey[] | null;
+  enabledAddOns?: string[] | null;
   actingAsUserId?: string | null;
   isImpersonating?: boolean | null;
   impersonationExpiresAt?: string | number | Date | null;
@@ -32,11 +39,19 @@ export type Actor = {
   role: Role | null;
   organizationId: string | null;
   orgId?: string | null;
+  serviceToken?: boolean;
   actorId: string | null;
   actorRole: Role | null;
   actingOrgId: string | null;
   actingRole: Role | null;
   actingOrgName: string | null;
+  organizerAccessMode?: OrganizerAccessMode | null;
+  organizationAccessMode?: OrganizerAccessMode | null;
+  accessMode?: OrganizerAccessMode | null;
+  organizationPlanId?: string | null;
+  planId?: string | null;
+  enabledGames?: GameKey[] | null;
+  enabledAddOns?: string[] | null;
   actingAsUserId: string | null;
   isImpersonating?: boolean;
   impersonated?: boolean;

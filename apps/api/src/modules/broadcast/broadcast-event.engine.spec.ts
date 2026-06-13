@@ -28,6 +28,39 @@ describe('BroadcastEventEngine', () => {
     },
   ];
 
+  const baseTeamsWithPlayers = () => [
+    {
+      ...baseTeams()[0],
+      players: [
+        {
+          id: 'player-a',
+          playerId: 'player-a',
+          ign: 'Ace',
+          name: 'Ace',
+          avatarUrl: null,
+          kills: 0,
+          alive: true,
+          knocked: false,
+        },
+      ],
+    },
+    {
+      ...baseTeams()[1],
+      players: [
+        {
+          id: 'player-b',
+          playerId: 'player-b',
+          ign: 'Bravo',
+          name: 'Bravo',
+          avatarUrl: null,
+          kills: 0,
+          alive: true,
+          knocked: false,
+        },
+      ],
+    },
+  ];
+
   it('emits first blood, triple, and quadra kills inside the 8 second window', () => {
     const engine = new BroadcastEventEngine();
 
@@ -225,5 +258,49 @@ describe('BroadcastEventEngine', () => {
 
     expect(first.map((event) => event.type)).toEqual(['MATCH_WINNER']);
     expect(second).toEqual([]);
+  });
+
+  it('emits achievement moments from kill-count deltas when explicit kill events are missing', () => {
+    const engine = new BroadcastEventEngine();
+
+    expect(
+      engine.processMatch({
+        matchId: 'match-4',
+        sourceMode: 'API',
+        updatedAt: 1_000,
+        status: 'LIVE',
+        finished: false,
+        teams: baseTeamsWithPlayers(),
+        summary: null,
+        matchEvents: [],
+        fightEvents: [],
+      }),
+    ).toEqual([]);
+
+    const secondTeams = baseTeamsWithPlayers();
+    secondTeams[0].kills = 3;
+    if (secondTeams[0].players) {
+      secondTeams[0].players[0].kills = 3;
+      secondTeams[0].players[0].updatedAt = new Date(2_000).toISOString();
+    }
+
+    const result = engine.processMatch({
+      matchId: 'match-4',
+      sourceMode: 'API',
+      updatedAt: 2_000,
+      status: 'LIVE',
+      finished: false,
+      teams: secondTeams,
+      summary: null,
+      matchEvents: [],
+      fightEvents: [],
+    });
+
+    expect(result.map((event) => event.type)).toEqual([
+      'FIRST_BLOOD',
+      'TRIPLE_KILL',
+    ]);
+    expect(result[0]?.playerId).toBe('player-a');
+    expect(result[1]?.playerId).toBe('player-a');
   });
 });

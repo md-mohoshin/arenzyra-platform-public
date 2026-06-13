@@ -1,12 +1,52 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import { Role } from '@prisma/client';
 import { LiveSyncService } from './live-sync.service';
-import { Body, Post, BadRequestException } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
+import type { AuthenticatedRequest } from '../../common/auth/auth.types';
 import { Public } from '../../common/auth/public.decorator';
+import { PrismaService } from '../../db/prisma.service';
+import { requireMatchOrganization } from '../../common/org/org.util';
 
 @Controller('api/matches/:matchId/overlay')
 export class OverlayController {
-  constructor(private readonly liveSync: LiveSyncService) {}
+  constructor(
+    private readonly liveSync: LiveSyncService,
+    private readonly prisma: PrismaService,
+  ) {}
+
+  private async authorizeOverlayMutation(
+    matchId: string,
+    req: AuthenticatedRequest,
+  ) {
+    const actor = req.user;
+    const allowedRoles = new Set<Role>([
+      Role.SUPER_ADMIN,
+      Role.ADMIN,
+      Role.ORGANIZER,
+    ]);
+    const candidateRoles = [
+      actor?.role,
+      actor?.actorRole,
+      actor?.actingRole,
+      actor?.realRole,
+    ].filter((role): role is Role => Boolean(role));
+
+    if (!candidateRoles.some((role) => allowedRoles.has(role))) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    await requireMatchOrganization(this.prisma, matchId, { actor });
+  }
 
   @Get('teams')
   @Public()
@@ -42,9 +82,11 @@ export class OverlayController {
   @UseGuards(JwtAuthGuard)
   async mapTeam(
     @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
     @Body('liveTeamId') liveTeamId: string,
     @Body('managedTeamId') managedTeamId: string,
   ) {
+    await this.authorizeOverlayMutation(matchId, req);
     if (!liveTeamId || !managedTeamId) {
       throw new BadRequestException(
         'liveTeamId and managedTeamId are required',
@@ -58,9 +100,11 @@ export class OverlayController {
   @UseGuards(JwtAuthGuard)
   async mapPlayer(
     @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
     @Body('livePlayerId') livePlayerId: string,
     @Body('managedPlayerId') managedPlayerId: string,
   ) {
+    await this.authorizeOverlayMutation(matchId, req);
     if (!livePlayerId || !managedPlayerId) {
       throw new BadRequestException(
         'livePlayerId and managedPlayerId are required',

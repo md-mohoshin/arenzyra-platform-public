@@ -154,6 +154,33 @@ describe('MatchStateService transitions', () => {
         }
         return Promise.resolve(prisma.controlStates.get(id));
       }),
+      setStatus: jest.fn().mockImplementation((_actor, id: string, dto) => {
+        const row = prisma.controlStates.get(id);
+        if (row) {
+          prisma.controlStates.set(id, {
+            ...row,
+            state: dto.status,
+            version: row.version + 1,
+            reason: dto.reason ?? null,
+            metaJson: dto.meta ?? row.metaJson,
+          });
+        }
+        const match = prisma.matches.get(id);
+        if (match) {
+          const nextStatus =
+            dto.status === 'LIVE' || dto.status === 'PAUSED'
+              ? MatchStatus.LIVE
+              : dto.status === 'FINISH_PENDING'
+                ? MatchStatus.FINISH_PENDING
+                : dto.status === 'ENDED'
+                  ? MatchStatus.ENDED
+                  : dto.status === 'CONFIRMED' || dto.status === 'FINISHED'
+                    ? MatchStatus.FINISHED
+                    : MatchStatus.DRAFT;
+          prisma.matches.set(id, { ...match, status: nextStatus });
+        }
+        return Promise.resolve(prisma.controlStates.get(id));
+      }),
     };
     const results = {
       ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
@@ -198,7 +225,7 @@ describe('MatchStateService transitions', () => {
     expect(prisma.matches.get('m1')?.status).toBe(MatchStatus.LIVE);
   });
 
-  it('rejects LIVE -> READY transition', async () => {
+  it('allows LIVE -> READY transition and resets business status to DRAFT', async () => {
     prisma.controlStates.set('m1', {
       id: 'mcs-m1',
       matchId: 'm1',
@@ -215,16 +242,18 @@ describe('MatchStateService transitions', () => {
       endedAt: null,
     });
 
-    await expect(
-      service.transition('m1', 'READY', actor, null, null),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    const res = await service.transition('m1', 'READY', actor, null, null);
+
+    expect(res.state).toBe('READY');
+    expect(res.version).toBe(4);
+    expect(prisma.matches.get('m1')?.status).toBe(MatchStatus.DRAFT);
   });
 
-  it('allows ENDED -> CONFIRMED and promotes business status to FINISHED', async () => {
+  it('allows FINISH_PENDING -> FINISHED and promotes business status to FINISHED', async () => {
     prisma.controlStates.set('m1', {
       id: 'mcs-m1',
       matchId: 'm1',
-      state: 'ENDED',
+      state: 'FINISH_PENDING',
       version: 2,
       reason: null,
       metaJson: null,
@@ -233,19 +262,19 @@ describe('MatchStateService transitions', () => {
     });
     prisma.matches.set('m1', {
       ...prisma.matches.get('m1')!,
-      status: MatchStatus.ENDED,
+      status: MatchStatus.FINISH_PENDING,
       endedAt: new Date(),
     });
 
     const res = await service.transition(
       'm1',
-      'CONFIRMED',
+      'FINISHED',
       actor,
       'finalize',
       null,
     );
 
-    expect(res.state).toBe('CONFIRMED');
+    expect(res.state).toBe('FINISHED');
     expect(res.version).toBe(3);
     expect(prisma.matches.get('m1')?.status).toBe(MatchStatus.FINISHED);
   });

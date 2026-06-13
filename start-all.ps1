@@ -4,6 +4,7 @@ Write-Host ""
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
+$allowLegacyShadowApi = $env:ALLOW_LEGACY_SHADOW_API -eq "1"
 
 # ---------------- BACKEND ----------------
 $backendPath = Join-Path $root "apps\api"
@@ -19,15 +20,19 @@ Start-Process powershell -ArgumentList `
 
 Start-Sleep -Seconds 5
 
-# ---------------- SHADOW API ----------------
-$shadowPath = Join-Path $root "shadow_api"
-if (Test-Path $shadowPath) {
-    Write-Host "Starting Shadow API..."
-    Start-Process powershell -ArgumentList `
-      "-NoExit", `
-      "-Command Set-Location `"$shadowPath`"; py shadow_receiver.py"
+# ---------------- LEGACY SHADOW API ----------------
+$shadowPath = Join-Path $root "apps\shadow_api"
+if ($allowLegacyShadowApi) {
+    if (Test-Path $shadowPath) {
+        Write-Host "Starting Legacy Shadow API..."
+        Start-Process powershell -ArgumentList `
+          "-NoExit", `
+          "-Command Set-Location `"$shadowPath`"; py shadow_receiver.py"
+    } else {
+        Write-Host "Skipping Legacy Shadow API: apps\shadow_api folder not found"
+    }
 } else {
-    Write-Host "Skipping Shadow API: shadow_api folder not found"
+    Write-Host "Skipping Legacy Shadow API: set ALLOW_LEGACY_SHADOW_API=1 only for explicit legacy workflows"
 }
 
 Start-Sleep -Seconds 3
@@ -48,5 +53,5 @@ Write-Host ""
 Write-Host "Arenzyra SYSTEM STARTED"
 Write-Host "Backend   : http://localhost:3000"
 Write-Host "Frontend  : http://localhost:3001"
-Write-Host "Shadow API: optional, only started when shadow_api exists"
+Write-Host "Legacy Shadow API: disabled by default; set ALLOW_LEGACY_SHADOW_API=1 only for explicit legacy workflows"
 Write-Host ""

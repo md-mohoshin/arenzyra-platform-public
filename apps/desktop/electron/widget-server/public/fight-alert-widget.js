@@ -41,6 +41,15 @@
     setVisible(false);
   }
 
+  function applyRuntimeReset() {
+    state.lastProductionSupportAt = 0;
+    if (state.staleTimer !== null) {
+      window.clearTimeout(state.staleTimer);
+      state.staleTimer = null;
+    }
+    clearCandidate();
+  }
+
   function renderCandidate(candidate) {
     if (!candidate || !candidate.teamALabel || !candidate.teamBLabel) {
       clearCandidate();
@@ -108,6 +117,11 @@
 
     if (message.type === "production_support") {
       applyProductionSupport(message.payload);
+      return;
+    }
+
+    if (message.type === "runtime_reset") {
+      applyRuntimeReset();
       return;
     }
 

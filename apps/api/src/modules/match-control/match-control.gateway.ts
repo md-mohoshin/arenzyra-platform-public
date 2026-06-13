@@ -146,6 +146,7 @@ type MatchServer = {
 };
 
 type MatchSocket = {
+  id?: string;
   data: MatchControlSocketData;
   handshake: {
     headers: { authorization?: string | string[] | undefined };
@@ -481,10 +482,20 @@ export class MatchControlGateway
     try {
       switch (command.type) {
         case 'START_MATCH':
-          state = await this.service.startMatch(actor, command.matchId);
+          state = await this.service.startMatch(actor, command.matchId, null, {
+            source: 'match-control-gateway',
+            clientId: socket.id ?? null,
+            requestedMatchId: command.matchId,
+            expectedVersion: command.version ?? null,
+          });
           break;
         case 'END_MATCH':
-          state = await this.service.endMatch(actor, command.matchId);
+          state = await this.service.endMatch(
+            actor,
+            command.matchId,
+            'MATCH_CONTROL_GATEWAY_END',
+            { expectedVersion: command.version ?? null },
+          );
           break;
         case 'SET_STATUS':
           state = await this.service.setStatus(actor, command.matchId, {

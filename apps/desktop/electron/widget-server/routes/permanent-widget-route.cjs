@@ -8,6 +8,8 @@ const DEFAULT_API_BASE =
   process.env.ARENZYRA_API_BASE ||
   getProcessDefaultApiBase();
 const DEFAULT_WS_PATH = "/ws";
+const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v4";
+const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v11";
 
 const LIVE_WIDGET_KEYS = new Set([
   "teams-alive",
@@ -19,6 +21,8 @@ const LIVE_WIDGET_KEYS = new Set([
   "player-photo",
   "map-overlay",
   "next-zone-update",
+  "next-zone-update-kinetic-hud",
+  "next-zone-update-pro-sidebar",
   "wwcd",
   "winner",
   "fight-alert",
@@ -216,7 +220,13 @@ function renderStatePage(title, detail, reason) {
 </html>`;
 }
 
-function renderWidgetHostPage({ widgetKey, organizationName, tournamentName, targetUrl }) {
+function renderWidgetHostPage({
+  widgetKey,
+  organizationName,
+  tournamentName,
+  targetUrl,
+  wsPath,
+}) {
   const titleParts = ["Arenzyra Widget", widgetKey];
   if (organizationName) {
     titleParts.push(organizationName);
@@ -227,6 +237,10 @@ function renderWidgetHostPage({ widgetKey, organizationName, tournamentName, tar
 
   const safeTitle = escapeHtml(titleParts.filter(Boolean).join(" | "));
   const safeTargetUrl = escapeHtml(targetUrl);
+  const visibilityBootstrap = safeJson({
+    widgetKey,
+    wsPath: asString(wsPath) || DEFAULT_WS_PATH,
+  });
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -265,6 +279,8 @@ function renderWidgetHostPage({ widgetKey, organizationName, tournamentName, tar
       allow="autoplay; clipboard-read; clipboard-write"
       referrerpolicy="no-referrer-when-downgrade"
     ></iframe>
+    <script>window.__ARENZYRA_WIDGET_VISIBILITY_BOOTSTRAP__ = ${visibilityBootstrap};</script>
+    <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
   </body>
 </html>`;
 }
@@ -339,6 +355,7 @@ function renderLocalWidgetPage({
   <body>
     ${markup}
     <script>window.__ARENZYRA_LOCAL_WIDGET_BOOTSTRAP__ = ${payload};</script>
+    <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
     ${extraScripts || ""}
     <script src="${safeScriptPath}"></script>
   </body>
@@ -446,6 +463,151 @@ function buildLocalWidgetPage({
     });
   }
 
+  if (widgetKey === "next-zone-update") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      hidden
+    >
+      <section class="next-zone-update-card" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-phase-block">
+          <span id="next-zone-update-phase">P--</span>
+        </div>
+        <div class="next-zone-update-copy">
+          <div class="next-zone-update-topline">Zone Closing</div>
+          <div class="next-zone-update-title">Next Zone Update</div>
+          <div class="next-zone-update-subtitle">Zone closes in</div>
+        </div>
+        <div class="next-zone-update-timer">
+          <div class="next-zone-update-timer-inner">
+            <div class="next-zone-update-countdown" id="next-zone-update-countdown">00:20</div>
+            <div class="next-zone-update-timer-label">Remaining</div>
+          </div>
+        </div>
+        <div class="next-zone-update-status" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
+  if (widgetKey === "next-zone-update-pro-sidebar") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update Pro Sidebar",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        styleVariant: "pro-sidebar",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root obs-next-zone-update-root--pro-sidebar"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      data-style="pro-sidebar"
+      hidden
+    >
+      <section class="next-zone-update-card next-zone-update-card--pro-sidebar" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-phase-block next-zone-update-phase-block--pro-sidebar">
+          <span id="next-zone-update-phase">P--</span>
+        </div>
+        <div class="next-zone-update-copy next-zone-update-copy--pro-sidebar">
+          <div class="next-zone-update-topline next-zone-update-topline--pro-sidebar">Blue Zone</div>
+          <div class="next-zone-update-title next-zone-update-title--pro-sidebar">Zone Shift</div>
+          <div class="next-zone-update-subtitle next-zone-update-subtitle--pro-sidebar">Final shrink window</div>
+        </div>
+        <div class="next-zone-update-timer next-zone-update-timer--pro-sidebar">
+          <div class="next-zone-update-timer-inner next-zone-update-timer-inner--pro-sidebar">
+            <div class="next-zone-update-countdown next-zone-update-countdown--pro-sidebar" id="next-zone-update-countdown">00:20</div>
+            <div class="next-zone-update-timer-label next-zone-update-timer-label--pro-sidebar">Remaining</div>
+          </div>
+        </div>
+        <div class="next-zone-update-status" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress next-zone-update-progress--pro-sidebar" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
+  if (widgetKey === "next-zone-update-kinetic-hud") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update Kinetic HUD",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        styleVariant: "kinetic-hud",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root obs-next-zone-update-root--kinetic-hud"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      data-style="kinetic-hud"
+      hidden
+    >
+      <section class="next-zone-update-card next-zone-update-card--kinetic-hud" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-phase-block next-zone-update-phase-block--kinetic-hud">
+          <span id="next-zone-update-phase">P--</span>
+        </div>
+        <div class="next-zone-update-copy next-zone-update-copy--kinetic-hud">
+          <div class="next-zone-update-topline next-zone-update-topline--kinetic-hud">Zone Telemetry</div>
+          <div class="next-zone-update-title next-zone-update-title--kinetic-hud">Next Zone Update</div>
+          <div class="next-zone-update-subtitle next-zone-update-subtitle--kinetic-hud">Final shrink window</div>
+        </div>
+        <div class="next-zone-update-timer next-zone-update-timer--kinetic-hud">
+          <div class="next-zone-update-timer-inner next-zone-update-timer-inner--kinetic-hud">
+            <div class="next-zone-update-countdown next-zone-update-countdown--kinetic-hud" id="next-zone-update-countdown">00:20</div>
+            <div class="next-zone-update-timer-label next-zone-update-timer-label--kinetic-hud">Remaining</div>
+          </div>
+        </div>
+        <div class="next-zone-update-status" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress next-zone-update-progress--kinetic-hud" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
   if (widgetKey === "zone-closing") {
     return renderLocalWidgetPage({
       widgetTitle: "Arenzyra Zone Closing Alert Banner",
@@ -511,13 +673,18 @@ function buildLocalWidgetPage({
     const playerPhotoStateUrl = bootstrap.matchId
       ? `/obs/player-photo/state?matchId=${encodeURIComponent(bootstrap.matchId)}`
       : "/obs/player-photo/state";
+    const playerPhotoStylePath =
+      `/obs/static/obs-player-photo-widget.css?v=${PLAYER_PHOTO_WIDGET_ASSET_VERSION}`;
+    const playerPhotoScriptPath =
+      `/obs/static/obs-player-photo-widget.js?v=${PLAYER_PHOTO_WIDGET_ASSET_VERSION}`;
     return renderLocalWidgetPage({
       widgetTitle: "Arenzyra Player Photo Widget",
-      stylePath: "/obs/static/obs-player-photo-widget.css",
-      scriptPath: "/obs/static/obs-player-photo-widget.js",
+      stylePath: playerPhotoStylePath,
+      scriptPath: playerPhotoScriptPath,
       bootstrap: {
         ...bootstrap,
         localStateUrl: playerPhotoStateUrl,
+        localFocusUrl: "/obs/player-photo/focus",
       },
       markup: `
     <div
@@ -695,6 +862,8 @@ async function resolveWidgetContext({ apiBase, instanceKey, log }) {
 function chooseWidgetRenderer(widgetKey) {
   if (
     widgetKey === "zone-timer" ||
+    widgetKey === "next-zone-update" ||
+    widgetKey === "next-zone-update-pro-sidebar" ||
     widgetKey === "zone-closing" ||
     widgetKey === "team-status" ||
     widgetKey === "player-photo" ||
@@ -845,6 +1014,7 @@ async function handleCanonicalWidgetRequest(
         organizationName: asString(resolved?.organization?.name),
         tournamentName: asString(resolved?.tournament?.name),
         targetUrl,
+        wsPath,
       }),
     );
     return;
@@ -883,6 +1053,54 @@ function registerPermanentWidgetRoute(
       resolveApiBase,
       wsPath,
       log,
+    });
+  });
+
+  app.get("/obs/widget-context/:widgetInstanceKey", async (req, res) => {
+    const instanceKey = asString(req.params?.widgetInstanceKey);
+    if (!instanceKey) {
+      res.status(400).json({
+        ok: false,
+        error: "widget instance key is required",
+      });
+      return;
+    }
+
+    const apiBase = normalizeBaseUrl(resolveApiBase());
+    const resolvedResponse = await resolveWidgetContext({
+      apiBase,
+      instanceKey,
+      log,
+    });
+
+    if (!resolvedResponse.ok) {
+      res.status(resolvedResponse.failure.httpStatus).json({
+        ok: false,
+        error: resolvedResponse.failure.detail,
+      });
+      return;
+    }
+
+    const resolved = resolvedResponse.resolved;
+    const resolvedWidgetKey = asString(resolved?.widgetKey);
+    const resolvedId = asString(resolved?.id);
+    if (!resolvedWidgetKey || !resolvedId) {
+      res.status(404).json({
+        ok: false,
+        error: "widget instance unavailable",
+      });
+      return;
+    }
+
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.json({
+      ok: true,
+      ...buildLocalWidgetBootstrap({
+        apiBase,
+        wsPath,
+        instanceKey,
+        resolved,
+      }),
     });
   });
 

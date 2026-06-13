@@ -16,7 +16,6 @@ type HelloPayload = {
   };
 };
 
-type IdentifiedPayload = { op: number };
 type RequestResponse = { op: number; d: { requestId: string; requestStatus: { result: boolean }; responseData?: any } };
 
 export class OBSController {

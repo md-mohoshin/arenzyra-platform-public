@@ -11,9 +11,17 @@ const { createMapRegistry } = require("../map-engine/map-registry.cjs");
 const { createMapTelemetryBridge } = require("../map-engine/telemetry-map-bridge.cjs");
 const { createMapWidgetEngine } = require("../map-engine/map-widget-engine.cjs");
 const { createDirectObserverSnapshotPoller } = require("./direct-observer-snapshot-poller.cjs");
+const { createAiCasterEngine } = require("./ai-caster-engine.cjs");
 const { registerHealthRoute } = require("./routes/health-route.cjs");
+const { registerAiCasterRoute } = require("./routes/ai-caster-route.cjs");
+const {
+  registerCommentatorDeskRoute,
+} = require("./routes/commentator-desk-route.cjs");
 const { registerObsMapRoute } = require("./routes/obs-map-route.cjs");
-const { registerObsPlayerPhotoRoute } = require("./routes/obs-player-photo-route.cjs");
+const {
+  normalizeObserverFocus,
+  registerObsPlayerPhotoRoute,
+} = require("./routes/obs-player-photo-route.cjs");
 const { registerTeamEliminatedRoute } = require("./routes/team-eliminated-route.cjs");
 const { registerPermanentWidgetRoute } = require("./routes/permanent-widget-route.cjs");
 const { createLocalWidgetBroadcast } = require("./ws/local-widget-broadcast.cjs");
@@ -37,6 +45,24 @@ const PLACEHOLDER_TEAM_PNG_BASE64 =
 const PLACEHOLDER_PLAYER_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axzwoAAAAASUVORK5CYII=";
 const PLAYER_ASSET_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
+const DEFAULT_COMMENTATOR_DESK_ACCESS = Object.freeze({
+  featureKey: "commentator-desk",
+  widgetKey: "commentator-desk",
+  organization: null,
+  approved: false,
+  approval: null,
+  canUse: false,
+  reason: "SUPER_ADMIN_APPROVAL_REQUIRED",
+});
+const DEFAULT_WIDGET_VISIBILITY = Object.freeze({
+  active: false,
+  source: "server",
+  key: null,
+  mode: "hold",
+  transitionMs: 260,
+  widgets: [],
+  updatedAt: null,
+});
 
 let cachedLogForcedMapKey = null;
 let cachedLogForcedMapKeyAt = 0;
@@ -68,6 +94,41 @@ function findPlayerAssetPath(playerAssetsRoot, playerId) {
   }
 
   return null;
+}
+
+function setNoStoreHeaders(res) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+}
+
+function getPlayerAssetsVersion(playerAssetsRoot) {
+  if (!playerAssetsRoot || !fs.existsSync(playerAssetsRoot)) {
+    return "0:0";
+  }
+
+  let newestMtime = 0;
+  let assetCount = 0;
+  for (const fileName of fs.readdirSync(playerAssetsRoot)) {
+    const ext = path.extname(fileName).toLowerCase();
+    if (!PLAYER_ASSET_EXTENSIONS.includes(ext)) {
+      continue;
+    }
+    if (path.parse(fileName).name === "default-player") {
+      continue;
+    }
+
+    try {
+      const stat = fs.statSync(path.join(playerAssetsRoot, fileName));
+      if (!stat.isFile()) {
+        continue;
+      }
+      assetCount += 1;
+      newestMtime = Math.max(newestMtime, Math.trunc(stat.mtimeMs));
+    } catch {
+      // Ignore files that disappear while the cache is being refreshed.
+    }
+  }
+
+  return `${assetCount}:${newestMtime}`;
 }
 
 function readFileTail(filePath, maxBytes) {
@@ -140,6 +201,18 @@ function resolveBundledDefaultTeamPath() {
   }
 
   candidates.push(path.resolve(__dirname, "../../build/default-team.png"));
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || "";
+}
+
+function resolveBundledDefaultPlayerPath() {
+  const candidates = [];
+
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, "default-player.png"));
+  }
+
+  candidates.push(path.resolve(__dirname, "../../build/default-player.png"));
 
   return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || "";
 }
@@ -289,6 +362,9 @@ function startWidgetsServer(options = {}) {
     broadcast,
     log,
   });
+  const aiCasterEngine = createAiCasterEngine({ log });
+  let commentatorDeskAccess = { ...DEFAULT_COMMENTATOR_DESK_ACCESS };
+  let widgetVisibility = { ...DEFAULT_WIDGET_VISIBILITY, updatedAt: Date.now() };
   const telemetryBridge = createMapTelemetryBridge({
     engine,
     registry,
@@ -317,9 +393,10 @@ function startWidgetsServer(options = {}) {
   });
   directObserverPoller.start();
 
-  broadcast.setSnapshotProvider(({ requestedMapKey }) =>
-    engine.getSnapshot(requestedMapKey),
-  );
+  broadcast.setSnapshotProvider(({ requestedMapKey }) => ({
+    ...engine.getSnapshot(requestedMapKey),
+    widgetVisibility,
+  }));
 
   app.disable("x-powered-by");
   app.use(cors());
@@ -378,6 +455,7 @@ function startWidgetsServer(options = {}) {
     express.static(playerAssetsRoot, {
       index: false,
       fallthrough: true,
+      setHeaders: setNoStoreHeaders,
     }),
   );
   app.get(/^\/assets\/players\/(.+)\.png$/, (req, res, next) => {
@@ -390,13 +468,19 @@ function startWidgetsServer(options = {}) {
       return;
     }
 
-    res.setHeader("Cache-Control", "public, max-age=86400");
+    setNoStoreHeaders(res);
     res.sendFile(playerAssetPath);
   });
   app.get("/assets/default-player.png", (_req, res) => {
     const defaultPlayerPath = path.join(playerAssetsRoot, "default-player.png");
     if (fs.existsSync(defaultPlayerPath)) {
       res.sendFile(defaultPlayerPath);
+      return;
+    }
+
+    const bundledDefaultPlayerPath = resolveBundledDefaultPlayerPath();
+    if (bundledDefaultPlayerPath) {
+      res.sendFile(bundledDefaultPlayerPath);
       return;
     }
 
@@ -409,6 +493,9 @@ function startWidgetsServer(options = {}) {
     express.static(path.join(__dirname, "public"), {
       index: false,
       fallthrough: false,
+      setHeaders(res) {
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      },
     }),
   );
 
@@ -422,6 +509,14 @@ function startWidgetsServer(options = {}) {
     engine,
     registry,
     wsPath: broadcast.getPath(),
+  });
+  registerAiCasterRoute(app, {
+    engine,
+    aiCasterEngine,
+  });
+  registerCommentatorDeskRoute(app, {
+    engine,
+    getAccess: () => commentatorDeskAccess,
   });
   registerObsPlayerPhotoRoute(app, {
     resolveApiBase:
@@ -437,6 +532,15 @@ function startWidgetsServer(options = {}) {
       typeof options.getCurrentMatchContext === "function"
         ? options.getCurrentMatchContext
         : () => null,
+    resolveObserverBaseUrl:
+      typeof options.getObserverBaseUrl === "function"
+        ? options.getObserverBaseUrl
+        : () => options.observerBaseUrl || null,
+    getPlayerAssetsVersion: () => getPlayerAssetsVersion(playerAssetsRoot),
+    requestPlayerPhotoRefresh:
+      typeof options.requestPlayerPhotoRefresh === "function"
+        ? options.requestPlayerPhotoRefresh
+        : null,
     log,
   });
   registerTeamEliminatedRoute(app, {
@@ -460,9 +564,9 @@ function startWidgetsServer(options = {}) {
     (!options.disableDebugRoutes && process.env.NODE_ENV !== "production");
   const enableOperatorRoutes = options.enableOperatorRoutes !== false;
 
-  function sendOperatorActionResponse(res, action, id, result, mapKey = null, extra = {}) {
+  function buildOperatorActionPayload(action, id, result, mapKey = null, extra = {}) {
     const snapshot = engine.getSnapshot(mapKey).productionSupport;
-    res.json({
+    return {
       ok: Boolean(result?.snapshot),
       action,
       id,
@@ -472,7 +576,165 @@ function startWidgetsServer(options = {}) {
       replayCandidates: snapshot?.replayCandidates ?? [],
       productionSupport: snapshot,
       ...extra,
-    });
+    };
+  }
+
+  function sendOperatorActionResponse(res, action, id, result, mapKey = null, extra = {}) {
+    res.json(buildOperatorActionPayload(action, id, result, mapKey, extra));
+  }
+
+  function buildCameraAssistResetPayload(mapKey = null) {
+    const snapshot = engine.resetCameraAssistHistory(mapKey);
+    return {
+      ok: Boolean(snapshot),
+      map: mapKey,
+      cameraAssist: snapshot?.cameraAssistPayload ?? null,
+      productionSupport: snapshot ?? engine.getSnapshot(mapKey).productionSupport,
+    };
+  }
+
+  function runObserverCommandAction(commandPath) {
+    const parsed = new URL(commandPath, "http://127.0.0.1");
+    const mapKey = parsed.searchParams.get("map");
+    const id = parsed.searchParams.get("id");
+    const teamId = parsed.searchParams.get("teamId");
+
+    switch (parsed.pathname) {
+      case "/debug/observer/pin-team":
+        return buildOperatorActionPayload(
+          "pin-team",
+          teamId,
+          engine.pinTeam(teamId, mapKey),
+          mapKey,
+          { teamId },
+        );
+      case "/debug/observer/unpin-team":
+        return buildOperatorActionPayload(
+          "unpin-team",
+          teamId,
+          engine.unpinTeam(teamId, mapKey),
+          mapKey,
+          { teamId },
+        );
+      case "/debug/observer/pin-target":
+      case "/debug/operator/pin-target":
+        return buildOperatorActionPayload(
+          "pin-target",
+          id,
+          engine.pinTarget(id, mapKey),
+          mapKey,
+        );
+      case "/debug/observer/unpin-target":
+      case "/debug/operator/unpin-target":
+        return buildOperatorActionPayload(
+          "unpin-target",
+          id,
+          engine.unpinTarget(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/watch-now":
+        return buildOperatorActionPayload(
+          "watch-now",
+          id,
+          engine.watchNowTarget(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/select-target":
+        return buildOperatorActionPayload(
+          "select-target",
+          id,
+          engine.selectTarget(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/select-alert":
+        return buildOperatorActionPayload(
+          "select-alert",
+          id,
+          engine.selectAlert(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/mark-replay":
+        return buildOperatorActionPayload(
+          "mark-replay",
+          id,
+          engine.markReplay(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/unmark-replay":
+        return buildOperatorActionPayload(
+          "unmark-replay",
+          id,
+          engine.unmarkReplay(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/suppress-target":
+        return buildOperatorActionPayload(
+          "suppress-target",
+          id,
+          engine.suppressTarget(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/unsuppress-target":
+        return buildOperatorActionPayload(
+          "unsuppress-target",
+          id,
+          engine.unsuppressTarget(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/center-target":
+        return buildOperatorActionPayload(
+          "center-target",
+          id,
+          engine.centerTarget(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/center-alert":
+        return buildOperatorActionPayload(
+          "center-alert",
+          id,
+          engine.centerAlert(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/center-replay":
+        return buildOperatorActionPayload(
+          "center-replay",
+          id,
+          engine.centerReplayCandidate(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/accept-recommendation":
+        return buildOperatorActionPayload(
+          "accept-recommendation",
+          null,
+          engine.acceptCameraRecommendation(mapKey),
+          mapKey,
+        );
+      case "/debug/operator/dismiss-alert":
+        return buildOperatorActionPayload(
+          "dismiss-alert",
+          id,
+          engine.dismissAlert(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/undismiss-alert":
+        return buildOperatorActionPayload(
+          "undismiss-alert",
+          id,
+          engine.undismissAlert(id, mapKey),
+          mapKey,
+        );
+      case "/debug/operator/remove-replay":
+        return buildOperatorActionPayload(
+          "remove-replay",
+          id,
+          engine.removeReplay(id, mapKey),
+          mapKey,
+        );
+      case "/debug/camera-assist/reset-history":
+        return buildCameraAssistResetPayload(mapKey);
+      default:
+        throw new Error(`Unsupported observer command path: ${parsed.pathname}`);
+    }
   }
 
   if (enableDebugRoutes) {
@@ -524,13 +786,7 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/camera-assist/reset-history", (req, res) => {
-      const snapshot = engine.resetCameraAssistHistory(req.query?.map ?? null);
-      res.json({
-        ok: Boolean(snapshot),
-        map: req.query?.map ?? null,
-        cameraAssist: snapshot?.cameraAssistPayload ?? null,
-        productionSupport: snapshot ?? engine.getSnapshot(req.query?.map ?? null).productionSupport,
-      });
+      res.json(buildCameraAssistResetPayload(req.query?.map ?? null));
     });
 
     app.get("/debug/replay-markers", (req, res) => {
@@ -815,6 +1071,8 @@ function startWidgetsServer(options = {}) {
     log("Routes ready", {
       health: `${localBaseUrl}/health`,
       obsMap: `${localBaseUrl}/obs/map`,
+      aiCaster: `${localBaseUrl}/obs/ai-caster`,
+      commentatorDesk: `${localBaseUrl}/obs/commentator-desk`,
       obsPlayerPhoto: `${localBaseUrl}/obs/player-photo`,
       productionWidget: `${localBaseUrl}/w/:widgetInstanceKey`,
       legacyWidget: `${localBaseUrl}/w/:widgetKey/:key`,
@@ -859,7 +1117,27 @@ function startWidgetsServer(options = {}) {
   }
 
   return {
+    clearRuntimeState(options = {}) {
+      const reason =
+        typeof options?.reason === "string" && options.reason.trim()
+          ? options.reason.trim()
+          : "stopped";
+      if (typeof engine.clearRuntimeState === "function") {
+        engine.clearRuntimeState({ reason });
+      }
+      broadcast.broadcast(
+        "runtime_reset",
+        {
+          reason,
+          timestamp: Date.now(),
+        },
+        Date.now(),
+      );
+    },
     engine,
+    getAiCasterState(mapKey = null) {
+      return aiCasterEngine.evaluate(engine.getSnapshot(mapKey));
+    },
     getStatus() {
       return getStatusSnapshot();
     },
@@ -869,11 +1147,64 @@ function startWidgetsServer(options = {}) {
     host: networkBaseUrl ? lanIp : host,
     ingestTelemetrySnapshot(snapshot) {
       telemetryBridge.ingestSnapshot(snapshot);
+      const observerFocus = normalizeObserverFocus(snapshot);
+      if (observerFocus) {
+        broadcast.broadcast("observer_focus", observerFocus, Date.now());
+      }
     },
     port,
     registry,
+    runObserverCommandAction(commandPath) {
+      return runObserverCommandAction(commandPath);
+    },
     setTeamBranding(update) {
       return engine.applyTeamBrandingUpdate(update);
+    },
+    setAiCasterAccess(update) {
+      return aiCasterEngine.setAccess(update);
+    },
+    setCommentatorDeskAccess(update) {
+      commentatorDeskAccess =
+        update && typeof update === "object"
+          ? {
+              ...DEFAULT_COMMENTATOR_DESK_ACCESS,
+              ...update,
+              featureKey: "commentator-desk",
+              widgetKey: "commentator-desk",
+              approved: update.approved === true,
+              canUse:
+                update.canUse === true ||
+                (update.approved === true && update.canUse !== false),
+              reason:
+                typeof update.reason === "string" && update.reason.trim()
+                  ? update.reason.trim()
+                  : update.approved === true
+                    ? null
+                    : "SUPER_ADMIN_APPROVAL_REQUIRED",
+            }
+          : { ...DEFAULT_COMMENTATOR_DESK_ACCESS };
+      return commentatorDeskAccess;
+    },
+    setWidgetVisibility(update) {
+      const source = update && typeof update === "object" ? update : {};
+      const transitionMs = Number(source.transitionMs);
+      widgetVisibility = {
+        ...DEFAULT_WIDGET_VISIBILITY,
+        ...source,
+        active: source.active === true,
+        transitionMs:
+          Number.isFinite(transitionMs) && transitionMs >= 80 && transitionMs <= 1000
+            ? Math.round(transitionMs)
+            : DEFAULT_WIDGET_VISIBILITY.transitionMs,
+        widgets: Array.isArray(source.widgets) ? source.widgets : [],
+        updatedAt: Date.now(),
+      };
+      broadcast.broadcast(
+        "widget_visibility",
+        widgetVisibility,
+        widgetVisibility.updatedAt,
+      );
+      return widgetVisibility;
     },
     whenReady() {
       return readyPromise;

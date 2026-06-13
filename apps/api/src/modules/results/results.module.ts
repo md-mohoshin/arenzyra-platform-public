@@ -13,7 +13,6 @@ import { ResultsService } from './results.service';
 import { RefereeResultsController } from './referee-results.controller';
 import { WidgetsPublicController } from './widgets-public.controller';
 import { ResultsInitService } from './results-init.service';
-import { ShadowModule } from '../shadow/shadow.module';
 import { MatchConclusionService } from './match-conclusion.service';
 import { TopFraggerModule } from '../widgets/top-fragger/top-fragger.module';
 import { MvpModule } from '../widgets/mvp/mvp.module';
@@ -27,7 +26,6 @@ import { TelemetryModule } from '../telemetry/telemetry.module';
   imports: [
     forwardRef(() => PcobModule),
     forwardRef(() => ScoringModule),
-    forwardRef(() => ShadowModule),
     AuthModule,
     TopFraggerModule,
     MvpModule,

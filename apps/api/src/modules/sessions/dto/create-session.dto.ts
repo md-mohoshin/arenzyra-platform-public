@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -35,11 +36,23 @@ export class CreateSessionDto {
 
   @IsOptional()
   @IsString()
+  logoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  bannerUrl?: string;
+
+  @IsOptional()
+  @IsString()
   rulesetId?: string;
 
   @IsOptional()
   @IsString()
   gameId?: string;
+
+  @IsOptional()
+  @IsString()
+  gameKey?: string;
 
   @IsOptional()
   @IsString()
@@ -58,6 +71,25 @@ export class CreateSessionDto {
   @Min(1)
   @Max(100)
   slotCount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  qualifiedTeamsCount?: number | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  qualificationBubbleCount?: number | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  qualificationLabel?: string | null;
 
   @IsOptional()
   @IsBoolean()

@@ -27,6 +27,7 @@ const widgetInstanceRelations = {
       id: true,
       name: true,
       tournamentId: true,
+      sessionId: true,
       organizationId: true,
       status: true,
       startedAt: true,
@@ -67,6 +68,13 @@ const TRIGGERABLE_WIDGET_KEYS = new Set([
   'lower-third',
   'match-lower-third',
   'match-start-lower-third',
+]);
+
+const EXPLICIT_WIDGET_APPROVAL_KEYS = new Set([
+  'ai-caster',
+  'feature.widget-hotkey-control',
+  'map',
+  'next-zone-update-pro-sidebar',
 ]);
 
 @Injectable()
@@ -133,6 +141,9 @@ export class WidgetsService {
     organization: WidgetAccessOrganization,
     widgetKey: string,
   ): Promise<WidgetAccessResult> {
+    const explicitApprovalOnly =
+      widgetKey.startsWith('style.') ||
+      EXPLICIT_WIDGET_APPROVAL_KEYS.has(widgetKey);
     const approval = await this.prisma.organizationWidgetApproval.findUnique({
       where: {
         organizationId_widgetKey: {
@@ -154,9 +165,11 @@ export class WidgetsService {
       organizationSlug: organization.slug,
       widgetKey,
       enforced: organization.widgetApprovalEnforced,
-      allowed: approval
-        ? approval.isApproved
-        : !organization.widgetApprovalEnforced,
+      allowed: explicitApprovalOnly
+        ? approval?.isApproved === true
+        : approval
+          ? approval.isApproved
+          : !organization.widgetApprovalEnforced,
       approval: mappedApproval,
     };
   }
@@ -267,6 +280,7 @@ export class WidgetsService {
           id: true,
           name: true,
           tournamentId: true,
+          sessionId: true,
           organizationId: true,
           status: true,
           startedAt: true,
@@ -284,6 +298,7 @@ export class WidgetsService {
           id: true,
           name: true,
           tournamentId: true,
+          sessionId: true,
           organizationId: true,
           status: true,
           startedAt: true,
@@ -310,7 +325,13 @@ export class WidgetsService {
       });
     }
 
-    const branding = await this.branding.getForOrganization(orgId);
+    const branding = match?.id
+      ? await this.branding.getEffectiveBranding({
+          organizationId: orgId,
+          matchId: match.id,
+          sessionId: match.sessionId,
+        })
+      : await this.branding.getForOrganization(orgId);
 
     return {
       id: instance.id,

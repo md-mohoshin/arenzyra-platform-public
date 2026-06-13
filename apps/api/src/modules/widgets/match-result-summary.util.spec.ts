@@ -37,6 +37,39 @@ describe('extractMatchResultSummaryTelemetryStats', () => {
     });
   });
 
+  it('reads raw observer mirror players when compatibility payload players are blank', () => {
+    const stats = extractMatchResultSummaryTelemetryStats({
+      players: [],
+      raw: {
+        players: [
+          {
+            knockouts: 2,
+            assists: 1,
+            damage: 350,
+            killNumByGrenade: 0,
+            killNumInVehicle: 1,
+          },
+          {
+            knockouts: 0,
+            assists: 3,
+            damage: 720,
+            killNumByGrenade: 2,
+            killNumInVehicle: 0,
+          },
+        ],
+      },
+      structuralMirrorDisabled: true,
+    });
+
+    expect(stats).toEqual({
+      totalKnocks: 2,
+      totalDamage: 1070,
+      totalAssists: 4,
+      grenadeKills: 2,
+      vehicleKills: 1,
+    });
+  });
+
   it('returns null metrics when the telemetry payload has no usable player summary fields', () => {
     const stats = extractMatchResultSummaryTelemetryStats({
       players: [{ raw: { playerName: 'Player' } }],

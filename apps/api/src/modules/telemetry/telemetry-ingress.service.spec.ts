@@ -65,6 +65,7 @@ const createMatchRecord = (overrides: Record<string, unknown> = {}) => ({
       telemetryIngress: {
         sessionId: 'session-live',
         lastAdapterSequence: 15,
+        updatedAt: '2026-04-04T18:00:00.000Z',
       },
     },
   },
@@ -90,6 +91,7 @@ describe('TelemetryIngressService', () => {
             telemetryIngress: {
               sessionId: 'session-live',
               lastAdapterSequence: 15,
+              updatedAt: '2026-04-04T18:00:00.000Z',
             },
           },
         }),
@@ -173,6 +175,68 @@ describe('TelemetryIngressService', () => {
     expect(matchControl.applyAuthoritativeMatchEnd).not.toHaveBeenCalled();
   });
 
+  it('merges duplicate canonical players before handing the packet to the engine', async () => {
+    const { service, engine } = createService();
+    const errorSpy = jest.spyOn((service as any).logger, 'error');
+
+    await expect(
+      service.ingestAdapterTelemetryEnvelope(
+        createEnvelope({
+          players: [
+            {
+              playerId: 'player-1',
+              teamId: 'team-1',
+              alive: false,
+            },
+            {
+              playerId: 'player-1',
+              teamId: 'team-1',
+              alive: true,
+            },
+          ],
+          teams: [
+            {
+              teamId: 'team-1',
+              players: [
+                {
+                  playerId: 'player-1',
+                  teamId: 'team-1',
+                  alive: true,
+                },
+              ],
+            },
+          ],
+        }) as any,
+        { source: 'PCOB_PUSH' },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      ignored: false,
+      matchId: 'match-1',
+    });
+
+    expect(engine.applyAdapterTelemetryEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        players: [
+          expect.objectContaining({
+            playerId: 'player-1',
+            alive: true,
+          }),
+        ],
+        teams: [
+          expect.objectContaining({
+            teamId: 'team-1',
+            players: [],
+          }),
+        ],
+      }),
+      'PCOB_PUSH',
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[CRITICAL][PLAYER STATE CONFLICT]'),
+    );
+  });
+
   it('locks AUTO telemetry source on the first accepted packet', async () => {
     const matchRecord = createMatchRecord({
       telemetrySource: 'AUTO',
@@ -207,7 +271,7 @@ describe('TelemetryIngressService', () => {
         telemetrySource: 'AUTO',
       },
       data: {
-        telemetrySource: 'PCOB',
+        telemetrySource: 'API',
         telemetrySourceLockedAt: expect.any(Date),
       },
     });
@@ -216,7 +280,7 @@ describe('TelemetryIngressService', () => {
         where: { matchId: 'match-1' },
         update: expect.objectContaining({
           metaJson: expect.objectContaining({
-            telemetrySource: 'PCOB',
+            telemetrySource: 'API',
           }),
         }),
       }),
@@ -300,7 +364,44 @@ describe('TelemetryIngressService', () => {
     expect(persistence.markTelemetryAccepted).not.toHaveBeenCalled();
   });
 
-  it('rejects packets from a different locked telemetry source without touching state', async () => {
+  it('accepts a large same-session sequence rewind as a fresh adapter run', async () => {
+    const rewoundMatch = createMatchRecord({
+      controlState: {
+        state: 'LIVE',
+        organizationId: 'org-1',
+        metaJson: {
+          telemetryIngress: {
+            sessionId: 'session-live',
+            lastAdapterSequence: 125,
+            updatedAt: '2026-04-04T18:00:00.000Z',
+          },
+        },
+      },
+    });
+    const { service, engine, persistence } = createService(rewoundMatch);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn');
+
+    await expect(
+      service.ingestAdapterTelemetryEnvelope(
+        createEnvelope({
+          sequence: 40,
+          timestamp: Date.parse('2026-04-04T18:00:30.000Z'),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      ignored: false,
+      matchId: 'match-1',
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('sequence-rewind-reset'),
+    );
+    expect(engine.applyAdapterTelemetryEnvelope).toHaveBeenCalled();
+    expect(persistence.markTelemetryAccepted).toHaveBeenCalled();
+  });
+
+  it('accepts adapter telemetry aliases when automatic API telemetry is already locked', async () => {
     const lockedMatch = createMatchRecord({
       telemetrySource: 'LAUNCHER',
       telemetrySourceLockedAt: new Date('2026-04-04T18:00:00.000Z'),
@@ -322,12 +423,16 @@ describe('TelemetryIngressService', () => {
       service.ingestAdapterTelemetryEnvelope(createEnvelope(), {
         source: 'PCOB_PUSH',
       }),
-    ).rejects.toThrow('Telemetry source mismatch');
+    ).resolves.toMatchObject({
+      ok: true,
+      ignored: false,
+      matchId: 'match-1',
+    });
 
     expect((prisma as any).match.updateMany).not.toHaveBeenCalled();
-    expect((prisma as any).matchControlState.upsert).not.toHaveBeenCalled();
-    expect(engine.applyAdapterTelemetryEnvelope).not.toHaveBeenCalled();
-    expect(persistence.markTelemetryAccepted).not.toHaveBeenCalled();
+    expect((prisma as any).matchControlState.upsert).toHaveBeenCalled();
+    expect(engine.applyAdapterTelemetryEnvelope).toHaveBeenCalled();
+    expect(persistence.markTelemetryAccepted).toHaveBeenCalled();
   });
 
   it('rejects telemetry when the canonical match lifecycle is not LIVE', async () => {
@@ -418,6 +523,31 @@ describe('TelemetryIngressService', () => {
         source: 'PCOB_PUSH',
       }),
     );
+  });
+
+  it('does not route one-team-alive plane telemetry through finish detection', async () => {
+    const { service, matchControl } = createService();
+    const state = createEngineState();
+    state.teamsAlive = 1;
+    state.status = 'LIVE';
+    state.circle = { phase: 1 } as any;
+    (
+      (service as any).engine.applyAdapterTelemetryEnvelope as jest.Mock
+    ).mockResolvedValueOnce({
+      state,
+    });
+
+    await expect(
+      service.ingestAdapterTelemetryEnvelope(createEnvelope(), {
+        source: 'PCOB_PUSH',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      ignored: false,
+      matchId: 'match-1',
+    });
+
+    expect(matchControl.applyAuthoritativeMatchEnd).not.toHaveBeenCalled();
   });
 
   it('does not auto-finish when live telemetry still has multiple teams alive', async () => {

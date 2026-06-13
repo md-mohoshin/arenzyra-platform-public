@@ -6,6 +6,7 @@ const {
   createMapAssetResolver,
   resolveDefaultMapAssetsRoot,
 } = require("./map-asset-resolver.cjs");
+const { MAP_POI_LABELS, MAP_TILE_SOURCES } = require("./map-poi-labels.cjs");
 
 const DEFAULT_COORDINATE_SCALE_HINT = 102;
 
@@ -15,34 +16,39 @@ const MAP_DEFINITIONS = [
     label: "Erangel",
     worldSize: 816000,
     imagePath: "erangel.png",
-    aliases: ["ERANGEL", "ERANGEL8X8", "ERANGEL_MAIN", "BALTIC_MAIN"],
+    tileSource: MAP_TILE_SOURCES.erangel,
+    poiLabels: MAP_POI_LABELS.erangel,
+    aliases: ["ERANGEL", "ERANGEL8X8", "ERANGEL_MAIN", "BALTIC_MAIN", "BALTICMAIN"],
   },
   {
     key: "miramar",
     label: "Miramar",
     worldSize: 816000,
     imagePath: "miramar.png",
-    aliases: ["MIRAMAR", "MIRAMAR8X8", "DESERT_MAIN"],
+    tileSource: MAP_TILE_SOURCES.miramar,
+    poiLabels: MAP_POI_LABELS.miramar,
+    aliases: ["MIRAMAR", "MIRAMAR8X8", "DESERT_MAIN", "DESERTMAIN"],
   },
   {
     key: "sanhok",
     label: "Sanhok",
     worldSize: 408000,
     imagePath: "sanhok.png",
-    aliases: ["SANHOK", "SANHOK4X4", "SAVAGE_MAIN"],
+    aliases: ["SANHOK", "SANHOK4X4", "SAVAGE_MAIN", "SAVAGEMAIN"],
   },
   {
     key: "vikendi",
     label: "Vikendi",
     worldSize: 612000,
     imagePath: "vikendi.png",
-    aliases: ["VIKENDI", "VIKENDI6X6", "DIHOROTOK_MAIN"],
+    aliases: ["VIKENDI", "VIKENDI6X6", "DIHOROTOK_MAIN", "DIHOROTOKMAIN"],
   },
   {
     key: "livik",
     label: "Livik",
     worldSize: 408000,
     imagePath: "livik.png",
+    poiLabels: MAP_POI_LABELS.livik,
     aliases: ["LIVIK", "LIVIK4X4"],
     notes:
       "TODO: confirm the exact raw ShadowTracker world size if Livik renders with a constant offset.",
@@ -61,7 +67,7 @@ const MAP_DEFINITIONS = [
     label: "Karakin",
     worldSize: 204000,
     imagePath: "karakin.png",
-    aliases: ["KARAKIN", "KARAKIN2X2", "SUMMERLAND_MAIN"],
+    aliases: ["KARAKIN", "KARAKIN2X2", "SUMMERLAND_MAIN", "SUMMERLANDMAIN"],
   },
   {
     key: "nusa",
@@ -76,8 +82,9 @@ const MAP_DEFINITIONS = [
     key: "rondo",
     label: "Rondo",
     worldSize: 816000,
-    imagePath: "rondo.png",
-    aliases: ["RONDO", "RONDO8X8", "RONDO_MAIN"],
+    imagePath: "rondo.webp",
+    poiLabels: MAP_POI_LABELS.rondo,
+    aliases: ["RONDO", "RONDO8X8", "RONDO_MAIN", "RONDOMAIN"],
     notes:
       "TODO: confirm the raw world size and alias set once live Rondo telemetry is available.",
   },
@@ -86,7 +93,7 @@ const MAP_DEFINITIONS = [
     label: "Taego",
     worldSize: 816000,
     imagePath: "taego.png",
-    aliases: ["TAEGO", "TAEGO8X8", "TIGER_MAIN"],
+    aliases: ["TAEGO", "TAEGO8X8", "TIGER_MAIN", "TIGERMAIN"],
     notes:
       "TODO: confirm asset naming and alias coverage if Taego is added to production rotation.",
   },
@@ -95,7 +102,7 @@ const MAP_DEFINITIONS = [
     label: "Deston",
     worldSize: 816000,
     imagePath: "deston.png",
-    aliases: ["DESTON", "DESTON8X8", "KIKI_MAIN"],
+    aliases: ["DESTON", "DESTON8X8", "KIKI_MAIN", "KIKIMAIN"],
     notes:
       "TODO: confirm whether ShadowTracker reports Deston as Kiki in the current observer build.",
   },
@@ -104,7 +111,7 @@ const MAP_DEFINITIONS = [
     label: "Paramo",
     worldSize: 306000,
     imagePath: "paramo.png",
-    aliases: ["PARAMO", "PARAMO3X3", "CHIMERA_MAIN"],
+    aliases: ["PARAMO", "PARAMO3X3", "CHIMERA_MAIN", "CHIMERAMAIN"],
     notes:
       "TODO: verify exact telemetry scale before enabling Paramo in production overlays.",
   },
@@ -113,7 +120,7 @@ const MAP_DEFINITIONS = [
     label: "Haven",
     worldSize: 102000,
     imagePath: "haven.png",
-    aliases: ["HAVEN", "HAVEN1X1", "HEAVEN_MAIN"],
+    aliases: ["HAVEN", "HAVEN1X1", "HAVENMAIN", "HEAVEN_MAIN", "HEAVENMAIN"],
     notes:
       "TODO: confirm Haven aliasing if the observer client reports a different internal map key.",
   },
@@ -126,6 +133,39 @@ function normalizeLookup(value) {
     .replace(/[^A-Z0-9]+/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function cloneTileSource(tileSource) {
+  if (!tileSource || typeof tileSource !== "object") {
+    return null;
+  }
+
+  return {
+    endpoint: tileSource.endpoint,
+    prefix: tileSource.prefix,
+    sourceSize: tileSource.sourceSize,
+    minZoom: tileSource.minZoom,
+    maxZoom: tileSource.maxZoom,
+    tileSize: tileSource.tileSize,
+  };
+}
+
+function clonePoiLabels(poiLabels) {
+  if (!poiLabels || typeof poiLabels !== "object") {
+    return null;
+  }
+
+  return {
+    sourceSize: poiLabels.sourceSize,
+    labels: Array.isArray(poiLabels.labels)
+      ? poiLabels.labels.map((label) => ({
+          label: label.label,
+          x: label.x,
+          y: label.y,
+          tier: label.tier,
+        }))
+      : [],
+  };
 }
 
 function cloneClientDefinition(definition) {
@@ -152,6 +192,8 @@ function cloneClientDefinition(definition) {
       : null,
     coordinateScaleHint:
       definition.coordinateScaleHint ?? DEFAULT_COORDINATE_SCALE_HINT,
+    tileSource: cloneTileSource(definition.tileSource),
+    poiLabels: clonePoiLabels(definition.poiLabels),
     notes: definition.notes ?? null,
     assetAvailable: definition.assetAvailable === true,
     isRequiredMapAsset: definition.isRequiredMapAsset === true,
@@ -201,6 +243,8 @@ function createMapRegistry({
         : null,
       coordinateScaleHint:
         entry.coordinateScaleHint ?? DEFAULT_COORDINATE_SCALE_HINT,
+      tileSource: cloneTileSource(entry.tileSource),
+      poiLabels: clonePoiLabels(entry.poiLabels),
       notes: entry.notes ?? null,
       aliases: Array.isArray(entry.aliases)
         ? entry.aliases.map((alias) => normalizeLookup(alias))

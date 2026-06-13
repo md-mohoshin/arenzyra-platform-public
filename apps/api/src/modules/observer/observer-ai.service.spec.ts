@@ -263,4 +263,78 @@ describe('ObserverAiService', () => {
       }),
     ]);
   });
+
+  it('feeds live camera suggestions from event-bus match and fight events', async () => {
+    const eventBus = {
+      subscribe: jest.fn().mockImplementation(() => jest.fn()),
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const broadcaster = {
+      broadcastObserverSuggestion: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const service = new ObserverAiService(eventBus, broadcaster);
+
+    service.onModuleInit();
+
+    const matchHandler = eventBus.subscribe.mock.calls.find(
+      ([topic, , , options]: [string, string, unknown, { types?: string[] }]) =>
+        topic === 'match.events' &&
+        options?.types?.includes('state.updated') === true,
+    )?.[2] as ((envelope: { payload: unknown }) => Promise<void>) | undefined;
+    const fightHandler = eventBus.subscribe.mock.calls.find(
+      ([topic, , , options]: [string, string, unknown, { types?: string[] }]) =>
+        topic === 'fight.events' &&
+        options?.types?.includes('fight.detected') === true,
+    )?.[2] as ((envelope: { payload: unknown }) => Promise<void>) | undefined;
+
+    await matchHandler?.({
+      payload: {
+        matchId: 'observer-ai-live',
+        organizationId: 'org-1',
+        projection: {
+          matchId: 'observer-ai-live',
+          sourceMode: 'AUTO',
+          updatedAt: 2_000,
+          teams: baseTeams(),
+          events: [],
+        },
+      },
+    });
+    await fightHandler?.({
+      payload: {
+        matchId: 'observer-ai-live',
+        organizationId: 'org-1',
+        fightEvent: {
+          type: 'FIGHT_STARTED',
+          fightId: 'fight-ab',
+          matchId: 'observer-ai-live',
+          teamIds: ['team-a', 'team-b', 'team-c'],
+          timestamp: 2_100,
+          startedAt: 2_100,
+          lastEventAt: 2_100,
+          durationMs: 0,
+          killsByTeam: {},
+          knocksByTeam: {},
+        },
+      },
+    });
+
+    expect(service.getSuggestions('observer-ai-live')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: 'Multi-team fight',
+          teamId: 'team-a',
+          playerId: 'player-a1',
+        }),
+      ]),
+    );
+    expect(broadcaster.broadcastObserverSuggestion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        matchId: 'observer-ai-live',
+        teamId: 'team-a',
+        playerId: 'player-a1',
+      }),
+      'org-1',
+    );
+  });
 });

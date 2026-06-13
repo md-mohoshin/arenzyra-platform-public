@@ -62,8 +62,7 @@ export class RulesetsController {
     @Req() req: AuthenticatedRequest,
   ) {
     const parsedGame =
-      body?.gameKey &&
-      (Object.values(GameKey) as string[]).includes(body.gameKey)
+      body?.gameKey && Object.values(GameKey).includes(body.gameKey)
         ? body.gameKey
         : (body?.gameKey as unknown as GameKey | undefined);
     return this.rulesets.update(

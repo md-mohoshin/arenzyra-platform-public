@@ -126,11 +126,8 @@ describe('MatchStateService', () => {
   });
 
   it('emits websocket match updates', () => {
-    const emit = jest.fn();
     const realtime = {
-      io: {
-        to: jest.fn().mockReturnValue({ emit }),
-      },
+      emitMatchScopedEvent: jest.fn(),
     } as any;
     const service = new MatchStateService(realtime);
     const payload = service.createEmptyState(
@@ -140,16 +137,16 @@ describe('MatchStateService', () => {
 
     service.emitMatchUpdate(payload);
 
-    expect(realtime.io.to).toHaveBeenCalledWith('match:match-1');
-    expect(emit).toHaveBeenCalledWith('match:update', payload);
+    expect(realtime.emitMatchScopedEvent).toHaveBeenCalledWith(
+      'match-1',
+      'match:update',
+      payload,
+    );
   });
 
   it('emits websocket observer state updates with the clean leaderboard contract', () => {
-    const emit = jest.fn();
     const realtime = {
-      io: {
-        to: jest.fn().mockReturnValue({ emit }),
-      },
+      emitMatchScopedEvent: jest.fn(),
     } as any;
     const service = new MatchStateService(realtime);
     const payload = service.update('match-1', {
@@ -180,21 +177,21 @@ describe('MatchStateService', () => {
 
     service.emitObserverStateUpdate(payload);
 
-    expect(realtime.io.to).toHaveBeenCalledWith('match:match-1');
-    expect(emit).toHaveBeenCalledWith('observer:state:update', {
-      matchId: 'match-1',
-      leaderboard: payload.leaderboard,
-      teamsAlive: 12,
-      timestamp: '2026-03-09T10:00:00.000Z',
-    });
+    expect(realtime.emitMatchScopedEvent).toHaveBeenCalledWith(
+      'match-1',
+      'observer:state:update',
+      {
+        matchId: 'match-1',
+        leaderboard: payload.leaderboard,
+        teamsAlive: 12,
+        timestamp: '2026-03-09T10:00:00.000Z',
+      },
+    );
   });
 
   it('emits websocket kill feed updates with a dedicated sequence payload', () => {
-    const emit = jest.fn();
     const realtime = {
-      io: {
-        to: jest.fn().mockReturnValue({ emit }),
-      },
+      emitMatchScopedEvent: jest.fn(),
     } as any;
     const service = new MatchStateService(realtime);
     const payload = service.update('match-1', {
@@ -229,32 +226,35 @@ describe('MatchStateService', () => {
 
     service.emitObserverKillFeedUpdate(payload);
 
-    expect(realtime.io.to).toHaveBeenCalledWith('match:match-1');
-    expect(emit).toHaveBeenCalledWith('observer:killfeed:update', {
-      matchId: 'match-1',
-      entries: [
-        {
-          id: 'kill-1',
-          timestamp: '2026-03-09T10:00:00.000Z',
-          killerPlayerId: 'player-1',
-          killerName: 'Alpha',
-          killerTeamId: 'team-1',
-          killerTeamName: 'A7',
-          victimPlayerId: 'player-2',
-          victimName: 'Bravo',
-          victimTeamId: 'team-2',
-          victimTeamName: 'B8',
-          weapon: 'M416',
-          isKnock: false,
-          isThirst: true,
-          isSelf: false,
-          isZone: false,
-          isReviveRelated: false,
-        },
-      ],
-      sequence: 1,
-      emittedAt: '2026-03-09T10:00:00.000Z',
-    });
+    expect(realtime.emitMatchScopedEvent).toHaveBeenCalledWith(
+      'match-1',
+      'observer:killfeed:update',
+      {
+        matchId: 'match-1',
+        entries: [
+          {
+            id: 'kill-1',
+            timestamp: '2026-03-09T10:00:00.000Z',
+            killerPlayerId: 'player-1',
+            killerName: 'Alpha',
+            killerTeamId: 'team-1',
+            killerTeamName: 'A7',
+            victimPlayerId: 'player-2',
+            victimName: 'Bravo',
+            victimTeamId: 'team-2',
+            victimTeamName: 'B8',
+            weapon: 'M416',
+            isKnock: false,
+            isThirst: true,
+            isSelf: false,
+            isZone: false,
+            isReviveRelated: false,
+          },
+        ],
+        sequence: 1,
+        emittedAt: '2026-03-09T10:00:00.000Z',
+      },
+    );
   });
 
   it('emits websocket match winners', () => {

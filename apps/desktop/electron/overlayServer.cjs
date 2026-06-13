@@ -1,6 +1,5 @@
 const express = require("express");
 const axios = require("axios");
-const path = require("node:path");
 
 function renderTemplate(template) {
   const safe = ["scoreboard", "killfeed", "roster"].includes(template) ? template : "scoreboard";
@@ -122,7 +121,7 @@ function startOverlayServer(options) {
       });
       const data = res.data?.state ?? res.data ?? {};
       state = normalize(data);
-    } catch (err) {
+    } catch (_err) {
       // keep last state
     }
   };

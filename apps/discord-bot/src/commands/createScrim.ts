@@ -29,6 +29,7 @@ export const createScrimCommand = {
       interaction.user.id,
       name,
       slots,
+      interaction.guild,
     );
     await interaction.editReply(content);
   },

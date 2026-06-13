@@ -1,0 +1,282 @@
+:root {
+  color-scheme: dark;
+  --panel: rgba(8, 13, 20, 0.9);
+  --panel-soft: rgba(15, 24, 34, 0.8);
+  --line: rgba(73, 227, 255, 0.28);
+  --line-soft: rgba(255, 255, 255, 0.1);
+  --text: #f4fdff;
+  --muted: rgba(215, 244, 248, 0.78);
+  --accent: #49e3ff;
+  --gold: #f8d778;
+  --danger: #ff5c7a;
+  --shadow: 0 34px 80px rgba(0, 0, 0, 0.48);
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif;
+}
+
+body {
+  pointer-events: none;
+}
+
+.mvp {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 0 64px 72px;
+}
+
+.mvp__card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 430px minmax(0, 680px);
+  align-items: stretch;
+  width: min(1140px, calc(100vw - 128px));
+  min-height: 510px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background:
+    linear-gradient(105deg, rgba(73, 227, 255, 0.14), transparent 34%),
+    linear-gradient(135deg, rgba(12, 19, 29, 0.96), rgba(7, 11, 17, 0.9));
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(22px) saturate(140%);
+  opacity: 0;
+  transform: translate3d(0, 42px, 0) scale(0.98);
+  transition:
+    opacity 620ms ease,
+    transform 620ms cubic-bezier(0.18, 0.92, 0.22, 1);
+}
+
+.mvp__card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 8px;
+  background: linear-gradient(180deg, var(--gold), var(--accent), rgba(73, 227, 255, 0.18));
+  box-shadow: 0 0 28px rgba(73, 227, 255, 0.46);
+}
+
+.mvp__card::after {
+  content: "";
+  position: absolute;
+  right: 34px;
+  bottom: 28px;
+  width: 280px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(73, 227, 255, 0.65));
+}
+
+.mvp[data-state="visible"] .mvp__card {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.mvp[data-state="hidden"] .mvp__card {
+  opacity: 0;
+  transform: translate3d(0, 54px, 0) scale(0.975);
+}
+
+.mvp__portrait-shell {
+  position: relative;
+  display: grid;
+  place-items: end center;
+  min-height: 510px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 26%),
+    linear-gradient(145deg, rgba(73, 227, 255, 0.1), rgba(248, 215, 120, 0.09)),
+    var(--panel-soft);
+}
+
+.mvp__portrait-shell::before {
+  content: "";
+  position: absolute;
+  inset: 34px 38px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+}
+
+.mvp__portrait-shell::after {
+  content: "";
+  position: absolute;
+  inset: auto 34px 0;
+  height: 42%;
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.64));
+}
+
+.mvp__portrait {
+  position: relative;
+  z-index: 1;
+  display: none;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center bottom;
+  filter: drop-shadow(0 26px 34px rgba(0, 0, 0, 0.44));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.mvp__portrait-fallback {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 250px;
+  height: 250px;
+  margin-bottom: 88px;
+  border-radius: 50%;
+  border: 2px solid rgba(73, 227, 255, 0.34);
+  background:
+    radial-gradient(circle at 50% 32%, rgba(255, 255, 255, 0.18), transparent 34%),
+    linear-gradient(145deg, rgba(73, 227, 255, 0.24), rgba(248, 215, 120, 0.14));
+  color: rgba(244, 253, 255, 0.9);
+  font-size: 54px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 24px 54px rgba(0, 0, 0, 0.34);
+}
+
+.mvp__content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 48px 52px 46px;
+}
+
+.mvp__topline {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.mvp__label {
+  color: var(--gold);
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.mvp__divider {
+  flex: 1;
+  min-width: 52px;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(248, 215, 120, 0.8), rgba(73, 227, 255, 0.16), transparent);
+}
+
+.mvp__logo-shell {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 92px;
+  margin: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 18px 32px rgba(0, 0, 0, 0.24);
+}
+
+.mvp__logo {
+  width: 82%;
+  height: 82%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.mvp__team {
+  margin: 44px 0 8px;
+  color: var(--muted);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.mvp__player {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(72px, 8vw, 128px);
+  line-height: 0.85;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-shadow: 0 18px 36px rgba(0, 0, 0, 0.42);
+}
+
+.mvp__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 42px;
+}
+
+.mvp__stat {
+  min-width: 0;
+  padding: 18px 16px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.mvp__stat-value {
+  display: block;
+  color: var(--accent);
+  font-size: 42px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.mvp__stat-label {
+  display: block;
+  margin-top: 8px;
+  color: rgba(215, 244, 248, 0.7);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 980px) {
+  .mvp {
+    padding: 24px;
+    align-items: center;
+  }
+
+  .mvp__card {
+    grid-template-columns: 1fr;
+    width: calc(100vw - 48px);
+    min-height: 0;
+  }
+
+  .mvp__portrait-shell {
+    min-height: 360px;
+  }
+
+  .mvp__content {
+    padding: 32px 28px 28px;
+  }
+
+  .mvp__team {
+    margin-top: 28px;
+  }
+}

@@ -33,7 +33,9 @@ import {
   isMatchFinishedStatus,
 } from '../../common/match-status.util';
 import {
-  buildPcobBindingData,
+  buildApiObserverBindingData,
+  hasLegacyPcobControlSignal,
+  hasPcobAdapterBindingSignal,
   PCOB_ADAPTER_KEY,
 } from '../../common/pcob-binding.util';
 import { resolveMatchDataSource } from '../matches/match-datasource.util';
@@ -83,9 +85,16 @@ type ObserverTelemetryPayload = {
   players?: unknown[];
   kills?: unknown[];
   teams?: unknown[];
+  backpacks?: unknown[];
+  teamBackpackInfo?: unknown[];
   circle?: unknown;
   circleInfo?: unknown;
   CircleInfo?: unknown;
+  allInfo?: unknown;
+  routePayloads?: unknown;
+  rawRoutePayloads?: unknown;
+  observerSnapshot?: unknown;
+  raw?: unknown;
   playerInfoList?: unknown[];
   killInfoList?: unknown[];
   teamInfoList?: unknown[];
@@ -158,6 +167,11 @@ export class ObserverController {
       : Array.isArray(body?.killInfoList)
         ? body.killInfoList
         : [];
+    const backpacks = Array.isArray(body?.backpacks)
+      ? body.backpacks
+      : Array.isArray(body?.teamBackpackInfo)
+        ? body.teamBackpackInfo
+        : [];
     const zonePhase = this.numberValue(
       body?.zonePhase ??
         (body?.circle as Record<string, unknown> | null | undefined)
@@ -190,11 +204,17 @@ export class ObserverController {
       events: [],
     };
     const circle = body.circle ?? body.circleInfo ?? body.CircleInfo ?? null;
-    const circleInfo = body.circleInfo ?? body.circle ?? body.CircleInfo ?? null;
+    const circleInfo =
+      body.circleInfo ?? body.circle ?? body.CircleInfo ?? null;
     const observer = body.observer ?? body.observingPlayer ?? null;
+    const raw = body.raw ?? body.observerSnapshot ?? null;
 
     if (kills.length > 0) {
       envelope.kills = kills;
+    }
+    if (backpacks.length > 0) {
+      envelope.backpacks = backpacks;
+      envelope.teamBackpackInfo = backpacks;
     }
     if (circle !== null && circle !== undefined) {
       envelope.circle = circle;
@@ -204,6 +224,21 @@ export class ObserverController {
     }
     if (observer !== null && observer !== undefined) {
       envelope.observer = observer;
+    }
+    if (body.allInfo !== null && body.allInfo !== undefined) {
+      envelope.allInfo = body.allInfo;
+    }
+    if (body.routePayloads !== null && body.routePayloads !== undefined) {
+      envelope.routePayloads = body.routePayloads;
+    }
+    if (body.rawRoutePayloads !== null && body.rawRoutePayloads !== undefined) {
+      envelope.rawRoutePayloads = body.rawRoutePayloads;
+    }
+    if (body.observerSnapshot !== null && body.observerSnapshot !== undefined) {
+      envelope.observerSnapshot = body.observerSnapshot;
+    }
+    if (raw !== null && raw !== undefined) {
+      envelope.raw = raw;
     }
 
     return envelope;
@@ -245,15 +280,47 @@ export class ObserverController {
       create: {
         matchId: match.id,
         organizationId: currentMeta?.organizationId ?? organizationId,
-        state: currentMeta?.state ?? currentState,
+        state: (currentMeta?.state ?? currentState) as never,
         reason: 'TELEMETRY_RUNTIME_TRANSPORT',
         metaJson: nextMeta as Prisma.JsonObject,
       },
     });
   }
 
+  private logPipelineObserverDecision(params: {
+    accepted: boolean;
+    matchId: string | null;
+    sessionId: string | null;
+    reason?: string | null;
+    queued?: boolean;
+    playerCount?: number;
+    teamCount?: number;
+    killCount?: number;
+    extra?: Record<string, unknown>;
+  }) {
+    this.logger.log(
+      JSON.stringify({
+        tag: '[PIPELINE][OBSERVER ACCEPT]',
+        stage: 'observer-controller',
+        outcome: params.accepted ? 'accepted' : 'rejected',
+        matchId: params.matchId,
+        sessionId: params.sessionId,
+        reason: params.reason ?? null,
+        queued: params.queued === true,
+        players: params.playerCount ?? null,
+        teams: params.teamCount ?? null,
+        kills: params.killCount ?? null,
+        ...(params.extra ?? {}),
+      }),
+    );
+  }
+
   private isAdapterPcobMatch(match: ObserverTelemetryMatch): boolean {
-    return resolveMatchDataSource(match) === MatchDataSource.PCOB;
+    const dataSource = resolveMatchDataSource(match);
+    return (
+      hasLegacyPcobControlSignal(match) ||
+      (dataSource === MatchDataSource.API && hasPcobAdapterBindingSignal(match))
+    );
   }
 
   @Get('matches/:matchId/observer-suggestions')
@@ -297,10 +364,31 @@ export class ObserverController {
         : 0;
 
     this.logger.log(
+      JSON.stringify({
+        tag: '[PIPELINE][POST RECEIVED]',
+        stage: 'observer-controller',
+        matchId: matchId || null,
+        sessionId: sessionId || null,
+        players: playerCount,
+        teams: teamCount,
+        kills: killCount,
+      }),
+    );
+
+    this.logger.log(
       `[observer-controller] telemetry received match=${matchId || 'missing'} session=${sessionId || 'missing'} players=${playerCount} teams=${teamCount} kills=${killCount}`,
     );
 
     if (!matchId) {
+      this.logPipelineObserverDecision({
+        accepted: false,
+        matchId: null,
+        sessionId: sessionId || null,
+        reason: 'MATCH_ID_REQUIRED',
+        playerCount,
+        teamCount,
+        killCount,
+      });
       this.logger.debug(
         '[observer-controller] telemetry ignored reason=MATCH_ID_REQUIRED',
       );
@@ -324,6 +412,18 @@ export class ObserverController {
     const sanitizedBody = sanitizedPayload;
     const forbiddenFields = findForbiddenObserverTelemetryFields(sanitizedBody);
     if (forbiddenFields.length > 0) {
+      this.logPipelineObserverDecision({
+        accepted: false,
+        matchId,
+        sessionId: sessionId || null,
+        reason: 'FORBIDDEN_FIELDS',
+        playerCount,
+        teamCount,
+        killCount,
+        extra: {
+          forbiddenFields,
+        },
+      });
       this.logger.warn(
         JSON.stringify({
           stage: 'observer-telemetry',
@@ -347,6 +447,15 @@ export class ObserverController {
     });
 
     if (!match || match.deletedAt) {
+      this.logPipelineObserverDecision({
+        accepted: false,
+        matchId,
+        sessionId: sessionId || null,
+        reason: 'MATCH_NOT_FOUND',
+        playerCount,
+        teamCount,
+        killCount,
+      });
       this.logger.debug(
         `[observer-controller] telemetry ignored match=${matchId} session=${sessionId || 'missing'} reason=MATCH_NOT_FOUND`,
       );
@@ -364,6 +473,15 @@ export class ObserverController {
         : isMatchFinalizingStatus(match.status)
           ? 'MATCH_FINALIZING'
           : 'MATCH_NOT_LIVE';
+      this.logPipelineObserverDecision({
+        accepted: false,
+        matchId,
+        sessionId: sessionId || null,
+        reason,
+        playerCount,
+        teamCount,
+        killCount,
+      });
       this.logger.debug(
         `[observer-controller] telemetry ignored match=${matchId} session=${sessionId || 'missing'} reason=${reason}`,
       );
@@ -380,6 +498,15 @@ export class ObserverController {
       };
     }
     if (!sessionId) {
+      this.logPipelineObserverDecision({
+        accepted: false,
+        matchId,
+        sessionId: null,
+        reason: 'SESSION_ID_REQUIRED',
+        playerCount,
+        teamCount,
+        killCount,
+      });
       this.logger.debug(
         `[observer-controller] telemetry ignored match=${matchId} reason=SESSION_ID_REQUIRED`,
       );
@@ -404,14 +531,14 @@ export class ObserverController {
           deletedAt: null,
           OR: [{ pcobSessionId: null }, { pcobSessionId: '' }],
         },
-        data: buildPcobBindingData(sessionId),
+        data: buildApiObserverBindingData(sessionId),
       });
 
       if (bound.count > 0) {
         expectedSessionId = sessionId;
         resolvedMatch = {
           ...resolvedMatch,
-          ...buildPcobBindingData(sessionId),
+          ...buildApiObserverBindingData(sessionId),
         } as ObserverTelemetryMatch;
         this.logger.debug(
           `[observer-controller] telemetry bound missing session match=${matchId} session=${sessionId}`,
@@ -432,6 +559,18 @@ export class ObserverController {
     }
 
     if (sessionId !== expectedSessionId) {
+      this.logPipelineObserverDecision({
+        accepted: false,
+        matchId,
+        sessionId,
+        reason: 'SESSION_MISMATCH',
+        playerCount,
+        teamCount,
+        killCount,
+        extra: {
+          expectedSessionId: expectedSessionId || null,
+        },
+      });
       this.logAdapterPathDecision(
         'SESSION_MISMATCH',
         resolvedMatch,
@@ -447,6 +586,18 @@ export class ObserverController {
     const receivedAt = new Date();
     if (this.isAdapterPcobMatch(resolvedMatch)) {
       if (resolvedMatch.adapterKey !== PCOB_ADAPTER_KEY) {
+        this.logPipelineObserverDecision({
+          accepted: false,
+          matchId,
+          sessionId,
+          reason: 'MATCH_NOT_ADAPTER_BOUND',
+          playerCount,
+          teamCount,
+          killCount,
+          extra: {
+            adapterKey: resolvedMatch.adapterKey ?? null,
+          },
+        });
         this.logAdapterPathDecision(
           'MATCH_NOT_ADAPTER_BOUND',
           resolvedMatch,
@@ -466,6 +617,15 @@ export class ObserverController {
       }
 
       if (!this.adapterTelemetry) {
+        this.logPipelineObserverDecision({
+          accepted: false,
+          matchId,
+          sessionId,
+          reason: 'ADAPTER_TELEMETRY_UNAVAILABLE',
+          playerCount,
+          teamCount,
+          killCount,
+        });
         this.logAdapterPathDecision(
           'ADAPTER_TELEMETRY_UNAVAILABLE',
           resolvedMatch,
@@ -486,10 +646,22 @@ export class ObserverController {
       if (
         activeTelemetrySource !== null &&
         activeTelemetrySource !== TelemetrySource.AUTO &&
-        activeTelemetrySource !== TelemetrySource.LAUNCHER
+        activeTelemetrySource !== TelemetrySource.API
       ) {
+        this.logPipelineObserverDecision({
+          accepted: false,
+          matchId,
+          sessionId,
+          reason: 'SOURCE_MISMATCH',
+          playerCount,
+          teamCount,
+          killCount,
+          extra: {
+            activeTelemetrySource,
+          },
+        });
         this.logger.debug(
-          `[observer-controller] launcher telemetry ignored match=${matchId} session=${sessionId} activeSource=${activeTelemetrySource} reason=SOURCE_MISMATCH`,
+          `[observer-controller] api telemetry ignored match=${matchId} session=${sessionId} activeSource=${activeTelemetrySource} reason=SOURCE_MISMATCH`,
         );
         return {
           ok: true,
@@ -503,14 +675,10 @@ export class ObserverController {
         prisma: this.prisma,
         logger: this.logger,
         match: resolvedMatch,
-        incomingSource: 'LAUNCHER',
+        incomingSource: 'API',
       });
 
-      await this.touchTelemetryTransport(
-        sourceLockedMatch,
-        'LAUNCHER',
-        receivedAt,
-      );
+      await this.touchTelemetryTransport(sourceLockedMatch, 'API', receivedAt);
 
       this.logAdapterPathDecision(null, resolvedMatch, matchId, sessionId, {
         eventCount: Array.isArray(sanitizedBody?.kills)
@@ -523,10 +691,19 @@ export class ObserverController {
         matchId,
         this.buildAdapterEnvelope(sanitizedBody),
         {
-          sourceOverride: 'LAUNCHER',
+          sourceOverride: 'API',
         },
       );
       if (result?.handled === false) {
+        this.logPipelineObserverDecision({
+          accepted: false,
+          matchId,
+          sessionId,
+          reason: 'ADAPTER_NOT_ENVELOPE_CAPABLE',
+          playerCount,
+          teamCount,
+          killCount,
+        });
         return {
           ok: true,
           ignored: true,
@@ -534,6 +711,18 @@ export class ObserverController {
           matchId,
         };
       }
+      const adapterReason =
+        result && 'reason' in result ? (result.reason ?? null) : null;
+      this.logPipelineObserverDecision({
+        accepted: true,
+        matchId,
+        sessionId,
+        queued: true,
+        reason: adapterReason,
+        playerCount,
+        teamCount,
+        killCount,
+      });
       return {
         ok: true,
         queued: true,

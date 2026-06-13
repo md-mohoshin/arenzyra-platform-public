@@ -18,6 +18,7 @@ const tournamentAId = `iso-delete-tour-a-${seed}`;
 const tournamentBId = `iso-delete-tour-b-${seed}`;
 const matchForbiddenId = `iso-delete-match-forbidden-${seed}`;
 const matchOwnedId = `iso-delete-match-owned-${seed}`;
+const matchLiveId = `iso-delete-match-live-${seed}`;
 
 const signAccessToken = (payload: {
   sub: string;
@@ -113,6 +114,12 @@ describe('Isolation deletes/updates', () => {
           organizationId: orgB,
           status: 'DRAFT',
         },
+        {
+          id: matchLiveId,
+          tournamentId: tournamentBId,
+          organizationId: orgB,
+          status: 'LIVE',
+        },
       ],
     });
 
@@ -130,7 +137,7 @@ describe('Isolation deletes/updates', () => {
 
   afterAll(async () => {
     await prisma.match.deleteMany({
-      where: { id: { in: [matchForbiddenId, matchOwnedId] } },
+      where: { id: { in: [matchForbiddenId, matchOwnedId, matchLiveId] } },
     });
     await prisma.tournament.deleteMany({
       where: { id: { in: [tournamentAId, tournamentBId] } },
@@ -162,5 +169,19 @@ describe('Isolation deletes/updates', () => {
       select: { deletedAt: true },
     });
     expect(deleted?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it('organizer B cannot delete a LIVE match through the canonical me route', async () => {
+    await request(app.getHttpServer() as unknown as import('http').Server)
+      .delete(`/me/matches/${matchLiveId}`)
+      .set('authorization', `Bearer ${organizerBToken}`)
+      .expect(400);
+
+    const liveMatch = await prisma.match.findUnique({
+      where: { id: matchLiveId },
+      select: { deletedAt: true, status: true },
+    });
+    expect(liveMatch?.status).toBe('LIVE');
+    expect(liveMatch?.deletedAt).toBeNull();
   });
 });

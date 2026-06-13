@@ -1,6 +1,8 @@
 # Match State Service
 
-Small NestJS service that polls the Flask `shadow_receiver.py` for live PUBG observer data and exposes a normalized REST + WebSocket API for the webapp.
+Legacy NestJS service that polls the Flask `shadow_receiver.py` for live PUBG observer data and exposes a normalized REST + WebSocket API for old snapshot-driven workflows.
+
+This service is disabled by default in the launcher and health tooling. Enable it only for explicit legacy workflows with `ALLOW_LEGACY_SHADOW_API=1`.
 
 ## Environment
 

@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { ScoringModule } from '../scoring/scoring.module';
 import { AuditService } from '../audit/audit.service';
 import { ProductionController } from './production.controller';
+import { ProductionDiscordController } from './production.controller';
 import {
   MeProductionController,
   OrgMeProductionController,
@@ -20,6 +21,7 @@ import { RealtimeModule } from '../../realtime/realtime.module';
   ],
   controllers: [
     ProductionController,
+    ProductionDiscordController,
     MeProductionController,
     OrgMeProductionController,
   ],

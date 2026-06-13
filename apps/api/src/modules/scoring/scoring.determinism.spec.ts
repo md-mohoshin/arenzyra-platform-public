@@ -243,18 +243,16 @@ class MockPrisma {
 
 const liveStub = { setLatestStandings: jest.fn().mockResolvedValue(undefined) };
 const scoreboardStub = {} as unknown;
-const resultsStub = {
+const resultsStub: { assertMatchStateConsistency: jest.Mock } = {
   assertMatchStateConsistency: jest.fn().mockResolvedValue(undefined),
-} as unknown;
+};
 
 const deepClone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
 describe('ScoringService recomputeMatchAndTournament determinism', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (resultsStub.assertMatchStateConsistency as jest.Mock).mockResolvedValue(
-      undefined,
-    );
+    resultsStub.assertMatchStateConsistency.mockResolvedValue(undefined);
   });
 
   it('produces identical state on repeated recompute', async () => {
@@ -294,9 +292,9 @@ describe('ScoringService recomputeMatchAndTournament determinism', () => {
       resultsStub as any,
     );
     (scoring as any).pubgm = new PubgmScoring(prisma as any);
-    (
-      resultsStub.assertMatchStateConsistency as jest.Mock
-    ).mockRejectedValueOnce(new Error('terminal mismatch'));
+    resultsStub.assertMatchStateConsistency.mockRejectedValueOnce(
+      new Error('terminal mismatch'),
+    );
 
     await expect(scoring.recomputeMatchAndTournament('m-1')).rejects.toThrow(
       'terminal mismatch',

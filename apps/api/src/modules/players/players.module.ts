@@ -9,9 +9,10 @@ import { GlobalPlayersController } from './global-players.controller';
 import { GlobalPlayersService } from './global-players.service';
 import { OrganizerPlayersController } from './organizer-players.controller';
 import { CurrentOrgPlayersController } from './current-org-players.controller';
+import { OverlayModule } from '../overlay/overlay.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, OverlayModule],
   controllers: [
     PlayersController,
     GlobalPlayersController,
@@ -25,5 +26,6 @@ import { CurrentOrgPlayersController } from './current-org-players.controller';
     TournamentPlayersService,
     OrgScopeGuard,
   ],
+  exports: [PlayersService],
 })
 export class PlayersModule {}

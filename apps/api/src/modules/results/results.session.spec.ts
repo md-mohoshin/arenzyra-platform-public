@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import type { PrismaService } from '../../db/prisma.service';
 import type { ResultsEventsService } from './results-events.service';
@@ -55,7 +56,7 @@ describe('ResultsService session match compatibility', () => {
     return { service, standings };
   };
 
-  it('allows org-scoped access to a session match and skips tournament standings locks', async () => {
+  it('keeps session matches org-accessible but still blocks result edits while LIVE', async () => {
     const { service, standings } = buildService();
     const actor = {
       id: 'organizer-1',
@@ -76,9 +77,9 @@ describe('ResultsService session match compatibility', () => {
       tournament: null,
     });
 
-    await expect(
-      service.ensureResultsEditable(match, actor),
-    ).resolves.toBeUndefined();
+    await expect(service.ensureResultsEditable(match, actor)).rejects.toThrow(
+      ConflictException,
+    );
     expect(standings.canEditResults).not.toHaveBeenCalled();
   });
 });

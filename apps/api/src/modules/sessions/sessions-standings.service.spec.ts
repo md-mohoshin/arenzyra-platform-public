@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { MatchStatus, Role } from '@prisma/client';
+import { Role } from '@prisma/client';
 import { SessionsStandingsService } from './sessions-standings.service';
 
 describe('SessionsStandingsService', () => {
@@ -62,7 +62,7 @@ describe('SessionsStandingsService', () => {
     };
   };
 
-  it('aggregates session standings from ended session matches only', async () => {
+  it('aggregates session standings from applied session result rows', async () => {
     const { prisma, service } = buildService({
       matches: [{ id: 'match-session-1' }, { id: 'match-session-2' }],
       slotResults: [
@@ -106,6 +106,17 @@ describe('SessionsStandingsService', () => {
           points: 12,
           team: { id: 'team-b', tag: 'BRV' },
         },
+        {
+          matchId: 'match-session-2',
+          teamId: 'team-empty',
+          wasPresentInMatch: true,
+          placement: null,
+          totalKills: 0,
+          totalPoints: 0,
+          points: 0,
+          placementPoints: 0,
+          team: { id: 'team-empty', tag: 'EMP' },
+        },
       ],
     });
 
@@ -116,18 +127,24 @@ describe('SessionsStandingsService', () => {
       teams: [
         {
           teamId: 'team-a',
+          teamName: null,
           tag: 'ALP',
           totalPoints: 28,
           totalKills: 13,
+          placementPoints: 0,
+          wwcd: 1,
           matchesPlayed: 2,
           avgPlacement: 2,
           rank: 1,
         },
         {
           teamId: 'team-b',
+          teamName: null,
           tag: 'BRV',
           totalPoints: 27,
           totalKills: 16,
+          placementPoints: 0,
+          wwcd: 0,
           matchesPlayed: 2,
           avgPlacement: 2,
           rank: 2,
@@ -139,9 +156,6 @@ describe('SessionsStandingsService', () => {
         sessionId: 'session-1',
         organizationId: 'org-1',
         deletedAt: null,
-        status: {
-          in: [MatchStatus.FINISHED, MatchStatus.ENDED],
-        },
       },
       select: {
         id: true,
@@ -181,13 +195,65 @@ describe('SessionsStandingsService', () => {
     expect(result.teams).toEqual([
       {
         teamId: 'team-a',
+        teamName: null,
         tag: 'ALP',
         totalPoints: 14,
         totalKills: 4,
+        placementPoints: 0,
+        wwcd: 1,
         matchesPlayed: 1,
         avgPlacement: 1,
         rank: 1,
       },
+    ]);
+  });
+
+  it('breaks equal points by WWCD, placement points, then kills', async () => {
+    const { service } = buildService({
+      matches: [{ id: 'match-session-1' }],
+      slotResults: [
+        {
+          matchId: 'match-session-1',
+          teamId: 'team-kills',
+          wasPresentInMatch: true,
+          placement: 4,
+          placementPoints: 4,
+          totalKills: 16,
+          totalPoints: 20,
+          points: 20,
+          team: { id: 'team-kills', tag: 'KIL' },
+        },
+        {
+          matchId: 'match-session-1',
+          teamId: 'team-place',
+          wasPresentInMatch: true,
+          placement: 2,
+          placementPoints: 8,
+          totalKills: 12,
+          totalPoints: 20,
+          points: 20,
+          team: { id: 'team-place', tag: 'PLC' },
+        },
+        {
+          matchId: 'match-session-1',
+          teamId: 'team-wwcd',
+          wasPresentInMatch: true,
+          placement: 1,
+          placementPoints: 6,
+          totalKills: 14,
+          totalPoints: 20,
+          points: 20,
+          team: { id: 'team-wwcd', tag: 'WIN' },
+        },
+      ],
+    });
+
+    const result = await service.getStandings('session-1', actor as any);
+
+    expect(result.teams.map((team) => team.teamId)).toEqual([
+      'team-wwcd',
+      'team-place',
+      'team-kills',
     ]);
   });
 
@@ -235,9 +301,12 @@ describe('SessionsStandingsService', () => {
     expect(result.teams).toEqual([
       {
         teamId: 'team-a',
+        teamName: null,
         tag: 'ALP',
         totalPoints: 16,
         totalKills: 6,
+        placementPoints: 0,
+        wwcd: 1,
         matchesPlayed: 1,
         avgPlacement: 1,
         rank: 1,
@@ -255,12 +324,14 @@ describe('SessionsStandingsService', () => {
         teamId: true,
         wasPresentInMatch: true,
         placement: true,
+        placementPoints: true,
         totalKills: true,
         totalPoints: true,
         points: true,
         team: {
           select: {
             id: true,
+            name: true,
             tag: true,
           },
         },

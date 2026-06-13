@@ -8,7 +8,7 @@ import {
   forwardRef,
   Logger,
 } from '@nestjs/common';
-import { AuditAction, MatchStatus, Role, Prisma } from '@prisma/client';
+import { MatchStatus, Role, Prisma } from '@prisma/client';
 import type { ControlState } from './dto/control.dto';
 import type { Actor } from '../matches/matches.service';
 import { AuditService } from '../audit/audit.service';
@@ -23,6 +23,7 @@ import {
   deriveGroupStateFromMatches,
   deriveStageStateFromGroups,
 } from '../../common/live-state.util';
+import { deriveControlStateFromMatchStatus } from '../../common/match-status.util';
 
 export type ControlStateSnapshot = {
   matchId: string;
@@ -63,18 +64,29 @@ export type ControlSnapshot = {
   };
 };
 
-type MatchControlRow = {
-  id: string;
-  controlState: { state: ControlState | null };
-};
-
 const ALLOWED_TRANSITIONS: Record<ControlState, ControlState[]> = {
   READY: ['COUNTDOWN', 'LIVE'],
-  COUNTDOWN: ['LIVE', 'PAUSED', 'READY'],
-  LIVE: ['PAUSED', 'ENDED'],
-  PAUSED: ['LIVE', 'ENDED', 'READY'],
-  ENDED: ['CONFIRMED', 'READY'],
-  CONFIRMED: ['READY'],
+  COUNTDOWN: ['LIVE', 'READY'],
+  LIVE: ['FINISH_PENDING', 'READY'],
+  FINISH_PENDING: ['FINISHED', 'READY'],
+  FINISHED: ['READY'],
+};
+
+const toPublicControlState = (value?: string | null): ControlState => {
+  const normalized = (value ?? '').toString().trim().toUpperCase();
+  if (normalized === 'COUNTDOWN') {
+    return 'COUNTDOWN';
+  }
+  if (normalized === 'LIVE' || normalized === 'PAUSED') {
+    return 'LIVE';
+  }
+  if (normalized === 'FINISH_PENDING' || normalized === 'ENDED') {
+    return 'FINISH_PENDING';
+  }
+  if (normalized === 'FINISHED' || normalized === 'CONFIRMED') {
+    return 'FINISHED';
+  }
+  return 'READY';
 };
 
 @Injectable()
@@ -113,37 +125,21 @@ export class MatchStateService {
     control: ControlState,
     current: MatchStatus,
   ): MatchStatus {
-    if (control === 'LIVE' || control === 'PAUSED') return MatchStatus.LIVE;
-    if (control === 'COUNTDOWN' || control === 'READY')
+    if (control === 'LIVE') return MatchStatus.LIVE;
+    if (control === 'FINISH_PENDING') return MatchStatus.FINISH_PENDING;
+    if (control === 'READY' || control === 'COUNTDOWN') {
       return MatchStatus.DRAFT;
-    if (control === 'CONFIRMED') return MatchStatus.FINISHED;
-    if (control === 'ENDED') {
-      return MatchStatus.ENDED;
     }
+    if (control === 'FINISHED') return MatchStatus.FINISHED;
     return current;
   }
 
-  private async ensureStatusConsistency(
+  private ensureStatusConsistency(
     matchId: string,
     control: ControlState,
-  ): Promise<void> {
-    const match = await this.prisma.match.findUnique({
-      where: { id: matchId },
-      select: { status: true, endedAt: true },
-    });
-    if (!match) return;
-    const mapped = this.mapControlToBusinessStatus(control, match.status);
-    if (mapped === match.status) return;
-    const update: { status: MatchStatus; endedAt?: Date | null } = {
-      status: mapped,
-    };
-    if (mapped === MatchStatus.ENDED || mapped === MatchStatus.FINISHED) {
-      update.endedAt = match.endedAt ?? new Date();
-    }
-    await this.prisma.match.update({ where: { id: matchId }, data: update });
-    this.logger.warn(
-      `Auto-synced match.status with controlState for match=${matchId}`,
-    );
+  ): void {
+    void matchId;
+    void control;
   }
 
   private emitResultsLockState(matchId: string) {
@@ -157,7 +153,7 @@ export class MatchStateService {
       if (existing) {
         return {
           matchId: existing.matchId,
-          state: existing.state,
+          state: toPublicControlState(existing.state),
           version: existing.version,
           reason: existing.reason ?? null,
           updatedAt: existing.updatedAt,
@@ -169,36 +165,15 @@ export class MatchStateService {
         where: { id: matchId },
         select: {
           status: true,
-          dataSource: true,
-          tournament: { select: { organizationId: true } },
         },
       });
-      const orgId = matchOrg?.tournament?.organizationId ?? null;
-      const lockPatch =
-        this.hasModelField('MatchControlState', 'resultsManualLock') ||
-        this.hasModelField('MatchControlState', 'resultsForceUnlock')
-          ? {
-              // Keep explicit lock fields false; locking is derived from match status/data source instead.
-              resultsManualLock: false,
-              resultsForceUnlock: false,
-            }
-          : {};
-      const createData = {
-        matchId,
-        state: 'READY',
-        ...(orgId ? { organizationId: orgId } : {}),
-        ...(lockPatch as Record<string, unknown>),
-      } as unknown as Prisma.MatchControlStateCreateInput;
-      const created = await this.prisma.matchControlState.create({
-        data: createData,
-      });
       return {
-        matchId: created.matchId,
-        state: created.state,
-        version: created.version,
-        reason: created.reason ?? null,
-        updatedAt: created.updatedAt,
-        updatedByUserId: created.updatedByUserId ?? null,
+        matchId,
+        state: deriveControlStateFromMatchStatus(matchOrg?.status),
+        version: 0,
+        reason: null,
+        updatedAt: new Date(),
+        updatedByUserId: null,
         meta: null,
       };
     } catch (err) {
@@ -208,50 +183,12 @@ export class MatchStateService {
         if (legacy) {
           return {
             matchId: legacy.matchId,
-            state: legacy.state,
+            state: toPublicControlState(legacy.state),
             version: legacy.version,
             reason: legacy.reason ?? null,
             updatedAt: legacy.updatedAt,
             updatedByUserId: legacy.updatedByUserId ?? null,
             meta: legacy.metaJson ?? null,
-          };
-        }
-        // Attempt to bootstrap a READY row in legacy shape.
-        const lockCols =
-          this.hasModelField('MatchControlState', 'resultsManualLock') &&
-          this.hasModelField('MatchControlState', 'resultsForceUnlock');
-        const inserted = lockCols
-          ? (
-              await this.prisma.$queryRaw<
-                Array<{
-                  matchId: string;
-                  state: ControlState;
-                  version: number;
-                  reason: string | null;
-                  updatedAt: Date;
-                }>
-              >`INSERT INTO "MatchControlState" ("matchId", "state", "version", "reason", "updatedAt", "resultsManualLock", "resultsForceUnlock") VALUES (${matchId}, 'READY', 0, NULL, NOW(), FALSE, FALSE) RETURNING "matchId", "state", "version", "reason", "updatedAt"`
-            )[0]
-          : (
-              await this.prisma.$queryRaw<
-                Array<{
-                  matchId: string;
-                  state: ControlState;
-                  version: number;
-                  reason: string | null;
-                  updatedAt: Date;
-                }>
-              >`INSERT INTO "MatchControlState" ("matchId", "state", "version", "reason", "updatedAt") VALUES (${matchId}, 'READY', 0, NULL, NOW()) RETURNING "matchId", "state", "version", "reason", "updatedAt"`
-            )[0];
-        if (inserted) {
-          return {
-            matchId: inserted.matchId,
-            state: inserted.state,
-            version: inserted.version ?? 0,
-            reason: inserted.reason ?? null,
-            updatedAt: inserted.updatedAt ?? new Date(),
-            updatedByUserId: null,
-            meta: null,
           };
         }
         throw new BadRequestException(
@@ -302,7 +239,7 @@ export class MatchStateService {
     const controlState: ControlStateSnapshot = existingControlState
       ? {
           matchId: existingControlState.matchId,
-          state: existingControlState.state,
+          state: toPublicControlState(existingControlState.state),
           version: existingControlState.version,
           reason: existingControlState.reason ?? null,
           updatedAt: existingControlState.updatedAt,
@@ -397,7 +334,9 @@ export class MatchStateService {
     );
     return deriveGroupStateFromMatches(
       patched.map((m) => ({
-        controlState: { state: m.controlState?.state ?? null },
+        controlState: {
+          state: toPublicControlState(m.controlState?.state ?? null),
+        },
       })),
     );
   }
@@ -424,11 +363,15 @@ export class MatchStateService {
     return deriveStageStateFromGroups(
       patchedGroups.map((g) => ({
         matches: g.matches.map((m) => ({
-          controlState: { state: m.controlState?.state ?? null },
+          controlState: {
+            state: toPublicControlState(m.controlState?.state ?? null),
+          },
         })),
         state: deriveGroupStateFromMatches(
           g.matches.map((m) => ({
-            controlState: { state: m.controlState?.state ?? null },
+            controlState: {
+              state: toPublicControlState(m.controlState?.state ?? null),
+            },
           })),
         ),
       })),
@@ -466,6 +409,33 @@ export class MatchStateService {
     reason?: string | null,
     meta?: Record<string, unknown> | null,
   ): Promise<ControlStateSnapshot> {
+    const current = await this.getState(matchId);
+    if (current.state !== nextState) {
+      this.ensureTransition(current.state, nextState);
+    }
+    const delegatedActor =
+      actor ??
+      ({
+        id: 'system',
+        actorId: 'system',
+        role: Role.SUPER_ADMIN,
+        actorRole: Role.SUPER_ADMIN,
+        organizationId: null,
+        actingOrgId: null,
+      } as Actor);
+    await this.matchControl.setStatus(delegatedActor, matchId, {
+      status: nextState,
+      reason: reason ?? undefined,
+      meta: meta ?? undefined,
+    });
+    return this.getState(matchId);
+  }
+
+  /*
+   * Legacy direct lifecycle writer disabled. MatchStateService remains as a
+   * compatibility read/delegation surface; mutations must route through
+   * MatchControlService.
+   *
     const actorId = actor?.actorId ?? actor?.id ?? null;
     const auditUserId = actorId ?? 'system';
     const matchOrg = await this.prisma.match.findUnique({
@@ -481,9 +451,12 @@ export class MatchStateService {
       MatchStatus.DRAFT,
     );
     if (targetBusinessStatus === MatchStatus.LIVE) {
-      // Ensure match is set to LIVE with auto-ending of others
+      // Ensure match is set to LIVE through the single authoritative start path.
       try {
-        await this.matchControl.startMatch(actor ?? null, matchId);
+        await this.matchControl.startMatch(actor ?? null, matchId, null, {
+          source: 'match-state-transition',
+          requestedMatchId: matchId,
+        });
       } catch (err) {
         if (
           err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -495,7 +468,7 @@ export class MatchStateService {
         }
         throw err;
       }
-      await this.ensureStatusConsistency(matchId, nextState);
+      this.ensureStatusConsistency(matchId, nextState);
       // If state is PAUSED, update control-state to reflect it while keeping business status LIVE
       if (nextState === 'PAUSED') {
         const manageLocks =
@@ -621,7 +594,10 @@ export class MatchStateService {
                   controlState: { select: { state: true } },
                 },
               });
-        const groupMatches: MatchControlRow[] = rawGroupMatches.map((m) => ({
+        const groupMatches: Array<{
+          id: string;
+          controlState: { state: ControlState | null };
+        }> = rawGroupMatches.map((m) => ({
           id: m.id,
           controlState: { state: m.controlState?.state ?? null },
         }));
@@ -644,7 +620,10 @@ export class MatchStateService {
               });
         const stageGroups: Array<{
           id: string;
-          matches: MatchControlRow[];
+          matches: Array<{
+            id: string;
+            controlState: { state: ControlState | null };
+          }>;
         }> = rawStageGroups.map((g) => ({
           id: g.id,
           matches: (g.matches ?? []).map((m) => ({
@@ -728,7 +707,9 @@ export class MatchStateService {
         await this.audit.log({
           organizationId: match.tournament?.organizationId ?? null,
           userId: auditUserId,
-          action: AuditAction.MATCH_CONTROL_STATE_CHANGED,
+          action: 'MATCH_CONTROL_STATE_CHANGED' as Parameters<
+            AuditService['log']
+          >[0]['action'],
           entityType: 'Match',
           entityId: matchId,
           before: {
@@ -853,7 +834,7 @@ export class MatchStateService {
           `[RESULTS][AUTO-GENERATE] Failed to ensure slot results for match ${matchId}: ${msg}`,
         );
       }
-      await this.ensureStatusConsistency(matchId, snapshot.state);
+      this.ensureStatusConsistency(matchId, snapshot.state);
       return snapshot;
     } catch (err) {
       if (this.isSchemaMismatchError(err)) {
@@ -872,7 +853,7 @@ export class MatchStateService {
       }
       throw err;
     }
-  }
+  */
 
   private resolveConnection(pcobStatus: string | null | undefined): string {
     if (pcobStatus === 'READY') return 'connected';
@@ -932,7 +913,7 @@ export class MatchStateService {
     }
   }
 
-  private async legacyTransition(
+  private legacyTransition(
     matchId: string,
     nextState: ControlState,
     actorId: string | null,
@@ -941,6 +922,19 @@ export class MatchStateService {
     reason?: string | null,
     meta?: Record<string, unknown> | null,
   ): Promise<ControlStateSnapshot> {
+    void nextState;
+    void actorId;
+    void auditUserId;
+    void actor;
+    void reason;
+    void meta;
+    return Promise.reject(
+      new ConflictException(
+        'Legacy direct lifecycle transition is disabled; use MatchControlService',
+      ),
+    );
+
+    /*
     return this.prisma.$transaction(async (tx) => {
       const match = await tx.match.findUnique({
         where: { id: matchId },
@@ -977,7 +971,10 @@ export class MatchStateService {
                 controlState: { select: { state: true } },
               },
             });
-      const groupMatches: MatchControlRow[] = legacyGroupMatchesRaw.map(
+      const groupMatches: Array<{
+        id: string;
+        controlState: { state: ControlState | null };
+      }> = legacyGroupMatchesRaw.map(
         (m) => ({
           id: m.id,
           controlState: { state: m.controlState?.state ?? null },
@@ -1002,7 +999,10 @@ export class MatchStateService {
             });
       const stageGroups: Array<{
         id: string;
-        matches: MatchControlRow[];
+        matches: Array<{
+          id: string;
+          controlState: { state: ControlState | null };
+        }>;
       }> = legacyStageGroupsRaw.map((g) => ({
         id: g.id,
         matches: (g.matches ?? []).map((m) => ({
@@ -1096,7 +1096,9 @@ export class MatchStateService {
       await this.audit.log({
         organizationId,
         userId: auditUserId,
-        action: AuditAction.MATCH_CONTROL_STATE_CHANGED,
+        action: 'MATCH_CONTROL_STATE_CHANGED' as Parameters<
+          AuditService['log']
+        >[0]['action'],
         entityType: 'Match',
         entityId: matchId,
         before: {
@@ -1198,7 +1200,7 @@ export class MatchStateService {
         );
       }
 
-      await this.ensureStatusConsistency(matchId, nextState);
+      this.ensureStatusConsistency(matchId, nextState);
       return {
         matchId: updated?.matchId ?? matchId,
         state: nextState,
@@ -1209,6 +1211,7 @@ export class MatchStateService {
         meta: null,
       };
     });
+  */
   }
 }
 

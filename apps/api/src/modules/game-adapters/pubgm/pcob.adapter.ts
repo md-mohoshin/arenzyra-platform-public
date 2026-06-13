@@ -5,15 +5,18 @@ import axios, { type AxiosInstance } from 'axios';
 import WebSocket from 'ws';
 import { buildMatchPlayerKey } from '../../../common/match-player-key.util';
 import { PrismaService } from '../../../db/prisma.service';
+import type { MatchStateObservedPlayer } from '../../match-control/state.store';
 import type { GameAdapter } from '../game-adapter.interface';
 import type {
   AdapterContext,
   AdapterSnapshot,
   AdapterTelemetryEnvelope,
   AdapterTelemetryEvent,
+  AdapterTelemetryBackpackItem,
   AdapterTelemetryPlayer,
   AdapterTelemetryPosition,
   AdapterTelemetryTeam,
+  AdapterTelemetryTeamBackpack,
   AdapterTelemetryZone,
 } from '../game-adapter.types';
 
@@ -41,6 +44,128 @@ const SHADOW_TEAM_LIST_KEYS = [
   'teams',
   'TeamList',
   'teamList',
+] as const;
+
+const SHADOW_BACKPACK_LIST_KEYS = [
+  'backpacks',
+  'Backpacks',
+  'TeamBackpackInfo',
+  'teamBackpackInfo',
+  'TeamBackPackInfo',
+  'teamBackPackInfo',
+  'teamBackpackList',
+  'TeamBackpackList',
+  'teamBackPackList',
+  'TeamBackPackList',
+  'data',
+  'Data',
+  'result',
+  'Result',
+  'allinfo',
+  'allInfo',
+] as const;
+
+const SHADOW_BACKPACK_ITEMS_KEYS = [
+  'items',
+  'Items',
+  'backpack',
+  'Backpack',
+  'equipment',
+  'Equipment',
+  'inventory',
+  'Inventory',
+  'weapons',
+  'Weapons',
+] as const;
+
+const SHADOW_BACKPACK_TEAM_ID_KEYS = [
+  'teamId',
+  'TeamId',
+  'teamID',
+  'TeamID',
+  'team',
+  'Team',
+] as const;
+
+const SHADOW_BACKPACK_SLOT_KEYS = [
+  'slot',
+  'Slot',
+  'teamNo',
+  'TeamNo',
+  'teamNumber',
+  'TeamNumber',
+  'teamIndex',
+  'TeamIndex',
+  'order',
+  'Order',
+] as const;
+
+const SHADOW_BACKPACK_PLAYER_ID_KEYS = [
+  'playerId',
+  'PlayerId',
+  'playerID',
+  'PlayerID',
+  'playerKey',
+  'PlayerKey',
+  'uid',
+  'uId',
+  'UId',
+  'UID',
+] as const;
+
+const SHADOW_BACKPACK_META_KEYS = new Set(
+  [
+    'teamId',
+    'TeamId',
+    'teamID',
+    'TeamID',
+    'team',
+    'Team',
+    'slot',
+    'Slot',
+    'teamNo',
+    'TeamNo',
+    'teamName',
+    'TeamName',
+    'name',
+    'Name',
+    'playerKey',
+    'PlayerKey',
+    'playerId',
+    'PlayerId',
+    'playerID',
+    'PlayerID',
+    'uid',
+    'uId',
+    'UId',
+    'UID',
+    'MainWeapon1ID',
+    'mainWeapon1ID',
+    'mainWeapon1Id',
+    'MainWeapon1AmmoNuminClip',
+    'mainWeapon1AmmoNuminClip',
+    'MainWeapon2ID',
+    'mainWeapon2ID',
+    'mainWeapon2Id',
+    'MainWeapon2AmmoNuminClip',
+    'mainWeapon2AmmoNuminClip',
+    ...SHADOW_BACKPACK_ITEMS_KEYS,
+  ].map((key) => key.toLowerCase()),
+);
+
+const SHADOW_BACKPACK_EQUIPMENT_SLOTS = [
+  {
+    name: 'mainWeapon1',
+    label: 'Main Weapon 1',
+    idKeys: ['MainWeapon1ID', 'mainWeapon1ID', 'mainWeapon1Id'],
+    ammoKeys: ['MainWeapon1AmmoNuminClip', 'mainWeapon1AmmoNuminClip'],
+  },
+  {
+    name: 'mainWeapon2',
+    label: 'Main Weapon 2',
+    idKeys: ['MainWeapon2ID', 'mainWeapon2ID', 'mainWeapon2Id'],
+    ammoKeys: ['MainWeapon2AmmoNuminClip', 'mainWeapon2AmmoNuminClip'],
+  },
 ] as const;
 
 const SHADOW_KILL_LIST_KEYS = [
@@ -245,6 +370,7 @@ type CanonicalPlayerResolutionInput = {
   source:
     | 'snapshot-player'
     | 'team-player'
+    | 'observer-player'
     | 'event-player'
     | 'event-killer'
     | 'event-victim';
@@ -464,8 +590,17 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         this.get('/getkillinfo'),
         this.get('/getcircleinfo'),
       ]);
+    const backpackPayload = await this.get('/getteambackpackinfo').then(
+      (value) => value ?? this.get('/getteambackpacklist'),
+    );
 
-    if (!playerPayload && !teamPayload && !killPayload && !circlePayload) {
+    if (
+      !playerPayload &&
+      !teamPayload &&
+      !killPayload &&
+      !circlePayload &&
+      !backpackPayload
+    ) {
       return null;
     }
 
@@ -481,6 +616,7 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         payloadKinds: {
           players: valueKind(playerPayload),
           teams: valueKind(teamPayload),
+          backpacks: valueKind(backpackPayload),
           kills: valueKind(killPayload),
           circle: valueKind(circlePayload),
         },
@@ -489,7 +625,11 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
 
     const timestamp = Date.now();
     const players = this.normalizePlayers(playerPayload);
-    const teams = this.normalizeTeams(teamPayload, players, []);
+    const backpacks = this.normalizeBackpacks(backpackPayload);
+    const teams = this.attachBackpacksToTeams(
+      this.normalizeTeams(teamPayload, players, []),
+      backpacks,
+    );
     const zone = this.normalizeZone(circlePayload);
     const events = this.deriveSnapshotEvents({
       timestamp,
@@ -527,10 +667,12 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         teams,
         zone,
         events,
+        backpacks,
         source: 'PCOB_API',
         raw: {
           players: playerPayload ?? null,
           teams: teamPayload ?? null,
+          backpacks: backpackPayload ?? null,
           zone: circlePayload ?? null,
           kills: killPayload ?? null,
         },
@@ -611,6 +753,8 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
     teams: AdapterTelemetryTeam[];
     zone: AdapterTelemetryZone | null;
     events: AdapterTelemetryEvent[];
+    backpacks?: AdapterTelemetryTeamBackpack[];
+    observedPlayer?: MatchStateObservedPlayer | null;
     source: string;
     raw?: unknown;
   }): AdapterTelemetryEnvelope {
@@ -623,9 +767,109 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
       teams: params.teams,
       zone: params.zone,
       events: params.events,
+      ...(params.backpacks ? { backpacks: params.backpacks } : {}),
+      ...(params.observedPlayer !== undefined
+        ? { observedPlayer: params.observedPlayer }
+        : {}),
       source: params.source,
       raw: params.raw ?? null,
     };
+  }
+
+  private normalizeObservedPlayer(
+    payload: unknown,
+  ): MatchStateObservedPlayer | null {
+    const record = asRecord(payload);
+    if (!record) {
+      return null;
+    }
+
+    const playerRecord =
+      asRecord(
+        record.player ??
+          record.playerInfo ??
+          record.observerPlayer ??
+          record.currentPlayer,
+      ) ?? record;
+    const teamRecord =
+      asRecord(record.team ?? record.teamInfo ?? record.teamData) ?? record;
+    const pubgUid = stringValue(
+      playerRecord.pubgPlayerId ??
+        playerRecord.inGameId ??
+        playerRecord.uId ??
+        playerRecord.uid ??
+        playerRecord.UID ??
+        playerRecord.playerId ??
+        playerRecord.playerID ??
+        playerRecord.PlayerId ??
+        playerRecord.PlayerID ??
+        playerRecord.id ??
+        playerRecord.accountId ??
+        playerRecord.AccountId,
+    );
+    const playerOpenId = stringValue(
+      playerRecord.pubgAccountId ??
+        playerRecord.playerOpenId ??
+        playerRecord.playerOpenID ??
+        playerRecord.PlayerOpenId ??
+        playerRecord.PlayerOpenID ??
+        playerRecord.openId ??
+        playerRecord.OpenId ??
+        playerRecord.openid,
+    );
+    const externalPlayerId = stringValue(
+      playerRecord.externalPlayerId ?? playerRecord.externalId,
+    );
+
+    const observedPlayer: MatchStateObservedPlayer = {
+      playerId:
+        stringValue(
+          playerRecord.playerId ??
+            playerRecord.id ??
+            playerRecord.uid ??
+            playerRecord.playerKey,
+        ) ??
+        pubgUid ??
+        externalPlayerId ??
+        playerOpenId,
+      externalPlayerId: externalPlayerId ?? pubgUid ?? playerOpenId,
+      pubgPlayerId: pubgUid ?? playerOpenId,
+      playerName: stringValue(
+        playerRecord.playerName ??
+          playerRecord.name ??
+          playerRecord.realName ??
+          playerRecord.playerNickName,
+      ),
+      playerIgn: stringValue(
+        playerRecord.playerIgn ??
+          playerRecord.ign ??
+          playerRecord.nickname ??
+          playerRecord.nickName,
+      ),
+      teamId: stringValue(
+        teamRecord.teamId ??
+          teamRecord.team ??
+          teamRecord.team_id ??
+          teamRecord.teamNo ??
+          teamRecord.teamNumber,
+      ),
+      teamName: stringValue(teamRecord.teamName ?? teamRecord.name),
+      teamTag: stringValue(
+        teamRecord.teamTag ?? teamRecord.tag ?? teamRecord.shortName,
+      ),
+      teamLogoUrl: stringValue(
+        teamRecord.teamLogoUrl ??
+          teamRecord.teamLogo ??
+          teamRecord.logoUrl ??
+          teamRecord.logo,
+      ),
+      updatedAt: null,
+    };
+
+    const hasValue = Object.values(observedPlayer).some((value) => {
+      return typeof value === 'string' && value.trim().length > 0;
+    });
+    return hasValue ? observedPlayer : null;
   }
 
   private extractEnvelopeSessionId(
@@ -820,11 +1064,23 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
             item.teamID ??
             item.TeamId ??
             item.TeamID ??
-            item.team_id,
+            item.team_id ??
+            item.teamNo ??
+            item.TeamNo ??
+            item.teamNO ??
+            item.teamSlot ??
+            item.TeamSlot ??
+            item.slot ??
+            item.slotNumber ??
+            item.teamNumber,
         ) ?? null;
       const pubgAccountId = this.resolveTelemetryPubgAccountId(item);
-      const externalPlayerId = this.resolveTelemetryExternalPlayerId(item);
+      const pubgPlayerId = this.resolveTelemetryPubgPlayerId(item);
+      const externalPlayerId =
+        this.resolveTelemetryExternalPlayerId(item) ?? pubgPlayerId;
       const playerId =
+        pubgPlayerId ??
+        externalPlayerId ??
         stringValue(
           item.playerId ??
             item.id ??
@@ -835,12 +1091,12 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
             item.externalPlayerId ??
             item.externalId,
         ) ??
-        externalPlayerId ??
         pubgAccountId;
       const ign =
         stringValue(
           item.playerName ??
             item.PlayerName ??
+            item.player_name ??
             item.ign ??
             item.name ??
             item.Name,
@@ -849,6 +1105,7 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         externalPlayerId ?? pubgAccountId ?? playerId ?? JSON.stringify(item);
       const alive = this.isAlive(item);
       const knocked = alive ? this.isKnocked(item) : false;
+      const health = this.extractHealth(item);
       const kills =
         numberValue(
           item.kills ??
@@ -857,16 +1114,32 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
             item.killnum ??
             item.kill_count,
         ) ?? 0;
+      const assists =
+        numberValue(
+          item.assists ??
+            item.Assists ??
+            item.assist ??
+            item.Assist ??
+            item.assistNum ??
+            item.AssistNum ??
+            item.assistnum ??
+            item.assistCount ??
+            item.AssistCount ??
+            item.assist_count,
+        ) ?? 0;
       players.set(key, {
         playerId,
         externalPlayerId,
+        pubgPlayerId,
         pubgAccountId,
         ign,
         teamId,
         alive,
         knocked,
         eliminated: !alive,
+        health,
         kills,
+        assists,
         position: this.extractPosition(item),
         raw: item,
       });
@@ -896,7 +1169,15 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
             item.TeamId ??
             item.TeamID ??
             item.team ??
-            item.id,
+            item.id ??
+            item.teamNo ??
+            item.TeamNo ??
+            item.teamNO ??
+            item.teamSlot ??
+            item.TeamSlot ??
+            item.slot ??
+            item.slotNumber ??
+            item.teamNumber,
         ) ?? null;
       if (!teamId) continue;
 
@@ -964,7 +1245,13 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         eliminated: aliveCount <= 0,
         kills,
         placement:
-          numberValue(item.placement ?? item.position ?? item.rank) ??
+          numberValue(
+            item.placement ??
+              item.placementIndex ??
+              item.PlacementIndex ??
+              item.position ??
+              item.rank,
+          ) ??
           previous?.placement ??
           null,
         players: teamPlayers,
@@ -1016,6 +1303,461 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
     });
   }
 
+  private firstTextValue(
+    record: Record<string, unknown> | null,
+    keys: readonly string[],
+  ): string | null {
+    if (!record) {
+      return null;
+    }
+    for (const key of keys) {
+      const value = stringValue(record[key]);
+      if (value) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private firstNumberValue(
+    record: Record<string, unknown> | null,
+    keys: readonly string[],
+  ): number | null {
+    if (!record) {
+      return null;
+    }
+    for (const key of keys) {
+      const value = numberValue(record[key]);
+      if (value !== null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private parseBackpackValueString(value: unknown): {
+    count: number | null;
+    quality: number | null;
+    worth: number | null;
+  } | null {
+    const text = stringValue(value);
+    if (!text || !text.includes(':')) {
+      return null;
+    }
+
+    const parsed: Record<string, number> = {};
+    for (const part of text.split(',')) {
+      const separator = part.indexOf(':');
+      if (separator <= 0) {
+        continue;
+      }
+      const key = part.slice(0, separator).trim().toLowerCase();
+      const numeric = numberValue(part.slice(separator + 1).trim());
+      if (key && numeric !== null) {
+        parsed[key] = numeric;
+      }
+    }
+
+    if (Object.keys(parsed).length === 0) {
+      return null;
+    }
+
+    return {
+      count: parsed.num ?? parsed.count ?? parsed.quantity ?? null,
+      quality: parsed.quality ?? null,
+      worth: parsed.worth ?? null,
+    };
+  }
+
+  private extractBackpackRecords(payload: unknown): Record<string, unknown>[] {
+    if (Array.isArray(payload)) {
+      return payload.map((item) => asRecord(item)).filter(Boolean) as Record<
+        string,
+        unknown
+      >[];
+    }
+
+    const root = asRecord(payload);
+    if (!root || Object.keys(root).length === 0) {
+      return [];
+    }
+
+    for (const key of SHADOW_BACKPACK_LIST_KEYS) {
+      const value = root[key];
+      if (Array.isArray(value)) {
+        return value.map((item) => asRecord(item)).filter(Boolean) as Record<
+          string,
+          unknown
+        >[];
+      }
+      const nested = asRecord(value);
+      if (nested && Object.keys(nested).length > 0) {
+        const nestedRecords = this.extractBackpackRecords(nested);
+        if (nestedRecords.length > 0) {
+          return nestedRecords;
+        }
+      }
+    }
+
+    if (
+      this.firstTextValue(root, [
+        'teamId',
+        'TeamId',
+        'teamID',
+        'TeamID',
+        'team',
+        'Team',
+      ]) &&
+      SHADOW_BACKPACK_ITEMS_KEYS.some((key) => root[key] !== undefined)
+    ) {
+      return [root];
+    }
+
+    return [];
+  }
+
+  private normalizeBackpackItem(
+    value: unknown,
+    fallbackName: string | null = null,
+  ): AdapterTelemetryBackpackItem | null {
+    const record = asRecord(value);
+    if (record && Object.keys(record).length > 0) {
+      const packed =
+        this.parseBackpackValueString(record.count) ??
+        this.parseBackpackValueString(record.Count) ??
+        this.parseBackpackValueString(record.value) ??
+        this.parseBackpackValueString(record.Value);
+      const name =
+        this.firstTextValue(record, [
+          'name',
+          'Name',
+          'itemName',
+          'ItemName',
+          'item',
+          'Item',
+          'type',
+          'Type',
+          'id',
+          'ID',
+        ]) ?? stringValue(fallbackName);
+      const count =
+        this.firstNumberValue(record, [
+          'count',
+          'Count',
+          'num',
+          'Num',
+          'amount',
+          'Amount',
+          'quantity',
+          'Quantity',
+          'value',
+          'Value',
+        ]) ??
+        packed?.count ??
+        null;
+
+      if (!name) {
+        return null;
+      }
+
+      return {
+        name,
+        itemId: /^\d+$/.test(name)
+          ? name
+          : this.firstTextValue(record, ['itemId', 'ItemId', 'ItemID']),
+        count: count === null ? null : Math.max(0, Math.trunc(count)),
+        raw: value,
+      };
+    }
+
+    const name = stringValue(fallbackName) ?? stringValue(value);
+    if (!name) {
+      return null;
+    }
+    const packed = this.parseBackpackValueString(value);
+    const count = packed?.count ?? numberValue(value);
+    return {
+      name,
+      itemId: /^\d+$/.test(name) ? name : null,
+      count: count === null ? null : Math.max(0, Math.trunc(count)),
+      raw: value,
+    };
+  }
+
+  private normalizeBackpackItems(
+    value: unknown,
+  ): AdapterTelemetryBackpackItem[] {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => this.normalizeBackpackItem(entry))
+        .filter((item): item is AdapterTelemetryBackpackItem => item !== null);
+    }
+
+    const record = asRecord(value);
+    if (!record || Object.keys(record).length === 0) {
+      return [];
+    }
+
+    for (const key of SHADOW_BACKPACK_ITEMS_KEYS) {
+      if (record[key] !== undefined) {
+        return this.normalizeBackpackItems(record[key]);
+      }
+    }
+
+    return Object.entries(record)
+      .filter(([key]) => !SHADOW_BACKPACK_META_KEYS.has(key.toLowerCase()))
+      .map(([key, entryValue]) => {
+        const nested = asRecord(entryValue);
+        if (nested && Object.keys(nested).length > 0) {
+          return this.normalizeBackpackItem({ name: key, ...nested }, key);
+        }
+        return this.normalizeBackpackItem(
+          { name: key, count: entryValue },
+          key,
+        );
+      })
+      .filter((item): item is AdapterTelemetryBackpackItem => item !== null);
+  }
+
+  private extractBackpackEquipmentItems(
+    record: Record<string, unknown> | null,
+  ): AdapterTelemetryBackpackItem[] {
+    if (!record || Object.keys(record).length === 0) {
+      return [];
+    }
+
+    return SHADOW_BACKPACK_EQUIPMENT_SLOTS.reduce<
+      AdapterTelemetryBackpackItem[]
+    >((items, slot) => {
+      const itemId = this.firstTextValue(record, slot.idKeys);
+      if (!itemId || itemId === '0' || itemId === '-1') {
+        return items;
+      }
+      const ammoInClip = this.firstNumberValue(record, slot.ammoKeys);
+      items.push({
+        name: slot.label,
+        itemId,
+        count: 1,
+        raw: {
+          slot: slot.name,
+          ammoInClip:
+            ammoInClip === null ? null : Math.max(0, Math.trunc(ammoInClip)),
+        },
+      });
+      return items;
+    }, []);
+  }
+
+  private backpackSlot(record: Record<string, unknown>): number | null {
+    const slot = this.firstNumberValue(record, [
+      ...SHADOW_BACKPACK_SLOT_KEYS,
+      ...SHADOW_BACKPACK_TEAM_ID_KEYS,
+    ]);
+    return slot === null ? null : Math.trunc(slot);
+  }
+
+  private backpackGroupKey(
+    backpack: AdapterTelemetryTeamBackpack,
+  ): string | null {
+    if (typeof backpack.slot === 'number' && Number.isFinite(backpack.slot)) {
+      return `slot:${Math.trunc(backpack.slot)}`;
+    }
+
+    const teamId = stringValue(backpack.teamId);
+    if (teamId) {
+      return `team:${teamId}`;
+    }
+
+    const playerId = stringValue(backpack.playerId);
+    return playerId ? `player:${playerId}` : null;
+  }
+
+  private mergeBackpackItem(
+    itemMap: Map<string, AdapterTelemetryBackpackItem>,
+    item: AdapterTelemetryBackpackItem,
+  ) {
+    const name = stringValue(item.name);
+    const itemId = stringValue(item.itemId);
+    const key = itemId ?? name;
+    if (!key) {
+      return;
+    }
+
+    const existing = itemMap.get(key);
+    itemMap.set(key, {
+      ...(existing ?? {}),
+      ...item,
+      name: name ?? existing?.name ?? itemId ?? null,
+      itemId: itemId ?? existing?.itemId ?? null,
+      count:
+        Math.max(0, Math.trunc(numberValue(existing?.count) ?? 0)) +
+        Math.max(0, Math.trunc(numberValue(item.count) ?? 1)),
+    });
+  }
+
+  private aggregateBackpacks(
+    backpacks: AdapterTelemetryTeamBackpack[],
+  ): AdapterTelemetryTeamBackpack[] {
+    const groups = new Map<
+      string,
+      {
+        teamId: string | null;
+        slot: number | null;
+        playerIds: Set<string>;
+        itemMap: Map<string, AdapterTelemetryBackpackItem>;
+        equipmentMap: Map<string, AdapterTelemetryBackpackItem>;
+        raw: unknown[];
+      }
+    >();
+
+    for (const backpack of backpacks) {
+      const key = this.backpackGroupKey(backpack);
+      if (!key) {
+        continue;
+      }
+
+      const group = groups.get(key) ?? {
+        teamId: null,
+        slot: null,
+        playerIds: new Set<string>(),
+        itemMap: new Map<string, AdapterTelemetryBackpackItem>(),
+        equipmentMap: new Map<string, AdapterTelemetryBackpackItem>(),
+        raw: [],
+      };
+      const teamId = stringValue(backpack.teamId);
+      if (!group.teamId && teamId) {
+        group.teamId = teamId;
+      }
+      if (
+        group.slot === null &&
+        typeof backpack.slot === 'number' &&
+        Number.isFinite(backpack.slot)
+      ) {
+        group.slot = Math.trunc(backpack.slot);
+      }
+      const playerId = stringValue(backpack.playerId);
+      if (playerId) {
+        group.playerIds.add(playerId);
+      }
+      for (const item of backpack.items) {
+        this.mergeBackpackItem(group.itemMap, item);
+      }
+      for (const item of backpack.equipment ?? []) {
+        this.mergeBackpackItem(group.equipmentMap, item);
+      }
+      group.raw.push(backpack.raw ?? backpack);
+      groups.set(key, group);
+    }
+
+    return Array.from(groups.values()).map((group) => {
+      const items = Array.from(group.itemMap.values());
+      const equipment = Array.from(group.equipmentMap.values());
+      const playerIds = Array.from(group.playerIds);
+      return {
+        teamId: group.teamId,
+        playerId: playerIds.length === 1 ? playerIds[0] : null,
+        slot: group.slot,
+        items,
+        equipment: equipment.length > 0 ? equipment : items,
+        itemCount: items.reduce(
+          (total, item) =>
+            total + Math.max(0, Math.trunc(numberValue(item.count) ?? 0)),
+          0,
+        ),
+        raw: group.raw,
+      };
+    });
+  }
+
+  private normalizeBackpacks(payload: unknown): AdapterTelemetryTeamBackpack[] {
+    const playerBackpacks = this.extractBackpackRecords(payload)
+      .map((entry) => {
+        const teamId = this.firstTextValue(entry, SHADOW_BACKPACK_TEAM_ID_KEYS);
+        const playerId = this.firstTextValue(
+          entry,
+          SHADOW_BACKPACK_PLAYER_ID_KEYS,
+        );
+        const slot = this.backpackSlot(entry);
+        const items = this.normalizeBackpackItems(entry);
+        const equipment = [
+          ...this.extractBackpackEquipmentItems(entry),
+          ...items,
+        ];
+        const hasExplicitCounts = items.some(
+          (item) => numberValue(item.count) !== null,
+        );
+        const itemCount = hasExplicitCounts
+          ? items.reduce(
+              (total, item) =>
+                total + Math.max(0, Math.trunc(numberValue(item.count) ?? 1)),
+              0,
+            )
+          : items.length;
+
+        return {
+          teamId,
+          playerId,
+          slot: slot === null ? null : Math.trunc(slot),
+          items,
+          equipment,
+          itemCount,
+          raw: entry,
+        };
+      })
+      .filter(
+        (backpack) =>
+          Boolean(backpack.teamId) ||
+          typeof backpack.slot === 'number' ||
+          backpack.items.length > 0,
+      );
+
+    return this.aggregateBackpacks(playerBackpacks);
+  }
+
+  private attachBackpacksToTeams(
+    teams: AdapterTelemetryTeam[],
+    backpacks: AdapterTelemetryTeamBackpack[],
+  ): AdapterTelemetryTeam[] {
+    if (backpacks.length === 0 || teams.length === 0) {
+      return teams;
+    }
+
+    const byTeamId = new Map(
+      backpacks
+        .filter((backpack) => stringValue(backpack.teamId))
+        .map((backpack) => [stringValue(backpack.teamId) as string, backpack]),
+    );
+    const bySlot = new Map(
+      backpacks
+        .filter(
+          (
+            backpack,
+          ): backpack is AdapterTelemetryTeamBackpack & {
+            slot: number;
+          } =>
+            typeof backpack.slot === 'number' && Number.isFinite(backpack.slot),
+        )
+        .map((backpack) => [Math.trunc(backpack.slot), backpack]),
+    );
+
+    return teams.map((team) => {
+      const backpack =
+        (team.teamId ? byTeamId.get(team.teamId) : null) ??
+        (typeof team.slot === 'number' && Number.isFinite(team.slot)
+          ? bySlot.get(Math.trunc(team.slot))
+          : null) ??
+        null;
+      if (!backpack) {
+        return team;
+      }
+      return {
+        ...team,
+        backpack,
+        equipment: backpack,
+      };
+    });
+  }
+
   private async bindCanonicalIdentifiers(
     matchId: string,
     envelope: AdapterTelemetryEnvelope,
@@ -1023,7 +1765,9 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
     if (
       (envelope.teams?.length ?? 0) === 0 &&
       (envelope.players?.length ?? 0) === 0 &&
-      (envelope.events?.length ?? 0) === 0
+      (envelope.events?.length ?? 0) === 0 &&
+      (envelope.backpacks?.length ?? 0) === 0 &&
+      envelope.observedPlayer === undefined
     ) {
       return envelope;
     }
@@ -1301,16 +2045,100 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         })?.teamId ?? null
       );
     };
+    const bindObservedPlayer = (
+      observedPlayer: MatchStateObservedPlayer | null | undefined,
+    ): MatchStateObservedPlayer | null | undefined => {
+      if (observedPlayer === undefined) {
+        return undefined;
+      }
+      if (!observedPlayer) {
+        return null;
+      }
+
+      const canonicalTeamId =
+        resolveCanonicalTeamId({
+          teamId: observedPlayer.teamId ?? null,
+          slot: numberValue(observedPlayer.teamId),
+          name: observedPlayer.teamName ?? null,
+          tag: observedPlayer.teamTag ?? null,
+        }) ??
+        observedPlayer.teamId ??
+        null;
+      const canonicalTeam = canonicalTeamId
+        ? (canonicalTeamById.get(canonicalTeamId) ?? null)
+        : null;
+      const resolved = this.resolveCanonicalPlayerBinding(canonicalPlayers, {
+        matchId,
+        source: 'observer-player',
+        teamId: canonicalTeamId,
+        playerId:
+          observedPlayer.playerId ??
+          observedPlayer.externalPlayerId ??
+          observedPlayer.pubgPlayerId ??
+          null,
+        externalPlayerId: observedPlayer.externalPlayerId ?? null,
+        pubgAccountId: observedPlayer.pubgPlayerId ?? null,
+        name: observedPlayer.playerIgn ?? observedPlayer.playerName ?? null,
+      });
+
+      return {
+        playerId:
+          resolved?.binding.playerKey ??
+          observedPlayer.playerId ??
+          observedPlayer.externalPlayerId ??
+          null,
+        externalPlayerId:
+          observedPlayer.externalPlayerId ??
+          resolved?.binding.externalPlayerIds[0] ??
+          null,
+        pubgPlayerId:
+          observedPlayer.pubgPlayerId ??
+          resolved?.binding.pubgAccountIds[0] ??
+          null,
+        playerName:
+          observedPlayer.playerName ?? resolved?.binding.playerName ?? null,
+        playerIgn:
+          observedPlayer.playerIgn ??
+          observedPlayer.playerName ??
+          resolved?.binding.playerName ??
+          null,
+        teamId: canonicalTeamId,
+        teamName: canonicalTeam?.name ?? observedPlayer.teamName ?? null,
+        teamTag: canonicalTeam?.tag ?? observedPlayer.teamTag ?? null,
+        teamLogoUrl:
+          canonicalTeam?.logoUrl ?? observedPlayer.teamLogoUrl ?? null,
+        updatedAt: observedPlayer.updatedAt ?? null,
+      };
+    };
+    const bindTeamBackpack = (
+      backpack: AdapterTelemetryTeamBackpack | null | undefined,
+      team: AdapterTelemetryTeam,
+      canonical: CanonicalTeamBinding | null,
+    ): AdapterTelemetryTeamBackpack | null => {
+      if (!backpack) {
+        return null;
+      }
+      return {
+        ...backpack,
+        teamId: canonical?.teamId ?? team.teamId ?? backpack.teamId ?? null,
+        slot: canonical?.slot ?? team.slot ?? backpack.slot ?? null,
+      };
+    };
     const boundTeams = envelope.teams.map((team) => {
       const canonical = resolveCanonicalTeam(team);
       if (!canonical) {
+        const slot =
+          team.slot ??
+          (numberValue(team.teamId) !== null ? numberValue(team.teamId) : null);
         return {
           ...team,
-          slot:
-            team.slot ??
-            (numberValue(team.teamId) !== null
-              ? numberValue(team.teamId)
-              : null),
+          slot,
+          backpack: bindTeamBackpack(team.backpack, { ...team, slot }, null),
+          equipment: bindTeamBackpack(
+            team.equipment ?? team.backpack,
+            { ...team, slot },
+            null,
+          ),
         };
       }
 
@@ -1325,6 +2153,12 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         name: canonical.name ?? team.name ?? null,
         tag: canonical.tag ?? team.tag ?? null,
         logoUrl: canonical.logoUrl ?? team.logoUrl ?? null,
+        backpack: bindTeamBackpack(team.backpack, team, canonical),
+        equipment: bindTeamBackpack(
+          team.equipment ?? team.backpack,
+          team,
+          canonical,
+        ),
         players: (team.players ?? []).map((player) => {
           const raw = asRecord(player.raw);
           const resolved = this.resolveCanonicalPlayerBinding(
@@ -1353,7 +2187,9 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
             ...player,
             teamId: canonical.teamId,
             externalPlayerId:
-              player.externalPlayerId ?? player.pubgAccountId ?? null,
+              player.externalPlayerId ?? player.pubgPlayerId ?? null,
+            pubgPlayerId:
+              player.pubgPlayerId ?? player.externalPlayerId ?? null,
             playerId: resolved?.binding.playerKey ?? player.playerId ?? null,
           };
         }),
@@ -1385,7 +2221,8 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         ...player,
         teamId: canonicalTeamId,
         externalPlayerId:
-          player.externalPlayerId ?? player.pubgAccountId ?? null,
+          player.externalPlayerId ?? player.pubgPlayerId ?? null,
+        pubgPlayerId: player.pubgPlayerId ?? player.externalPlayerId ?? null,
         playerId: resolved?.binding.playerKey ?? player.playerId ?? null,
       };
     });
@@ -1550,12 +2387,29 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         }),
       );
     }
+    const boundBackpacks = (envelope.backpacks ?? []).map((backpack) => {
+      const canonical = resolveCanonicalTeam({
+        teamId: backpack.teamId ?? null,
+        slot: backpack.slot ?? null,
+        name: null,
+        tag: null,
+      });
+      return {
+        ...backpack,
+        teamId: canonical?.teamId ?? backpack.teamId ?? null,
+        slot: canonical?.slot ?? backpack.slot ?? null,
+      };
+    });
 
     return {
       ...envelope,
       teams: boundTeams,
       players: boundPlayers,
       events: boundEvents,
+      ...(envelope.backpacks ? { backpacks: boundBackpacks } : {}),
+      ...(envelope.observedPlayer !== undefined
+        ? { observedPlayer: bindObservedPlayer(envelope.observedPlayer) }
+        : {}),
     };
   }
 
@@ -1984,7 +2838,7 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
     );
   }
 
-  private resolveTelemetryExternalPlayerId(
+  private resolveTelemetryPubgPlayerId(
     record: Record<string, unknown> | null | undefined,
   ): string | null {
     if (!record) {
@@ -1992,8 +2846,12 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
     }
     return (
       stringValue(
-        record.externalPlayerId ??
-          record.externalId ??
+        record.pubgPlayerId ??
+          record.inGameId ??
+          record.playerGameId ??
+          record.gamePlayerId ??
+          record.uId ??
+          record.UId ??
           record.uid ??
           record.Uid ??
           record.UID ??
@@ -2003,6 +2861,23 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
           record.AccountId,
       ) ?? null
     );
+  }
+
+  private resolveTelemetryExternalPlayerId(
+    record: Record<string, unknown> | null | undefined,
+  ): string | null {
+    if (!record) {
+      return null;
+    }
+    const pubgPlayerId = this.resolveTelemetryPubgPlayerId(record);
+    const pubgAccountId = this.resolveTelemetryPubgAccountId(record);
+    const explicitExternalId =
+      stringValue(record.externalPlayerId ?? record.externalId) ?? null;
+
+    if (explicitExternalId && explicitExternalId !== pubgAccountId) {
+      return explicitExternalId;
+    }
+    return pubgPlayerId ?? explicitExternalId ?? null;
   }
 
   private normalizeZone(payload: unknown): AdapterTelemetryZone | null {
@@ -2149,7 +3024,7 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
           kill.victimTeamId ??
             kill.VictimTeamId ??
             kill.victimTeamID ??
-          kill.targetTeamId,
+            kill.targetTeamId,
         ) ?? null;
       const killerName = stringValue(kill.killerName ?? kill.KillerName);
       const victimName = stringValue(kill.victimName ?? kill.VictimName);
@@ -2189,11 +3064,259 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
           victimTeamId,
           killerName,
           victimName,
-          weapon: stringValue(kill.weapon ?? kill.Weapon),
+          weapon: stringValue(
+            kill.weapon ??
+              kill.Weapon ??
+              kill.damageCauserName ??
+              kill.DamageCauserName,
+          ),
+          itemId: stringValue(
+            kill.itemId ??
+              kill.ItemId ??
+              kill.itemID ??
+              kill.ItemID ??
+              kill.weaponId ??
+              kill.WeaponId ??
+              kill.damageCauserItemId ??
+              kill.DamageCauserItemId,
+          ),
+          cause: stringValue(
+            kill.cause ??
+              kill.Cause ??
+              kill.killCause ??
+              kill.KillCause ??
+              kill.damageTypeCategory ??
+              kill.DamageTypeCategory,
+          ),
+          damageCauserName: stringValue(
+            kill.damageCauserName ?? kill.DamageCauserName,
+          ),
+          damageTypeCategory: stringValue(
+            kill.damageTypeCategory ?? kill.DamageTypeCategory,
+          ),
         },
         raw: kill,
       };
     });
+  }
+
+  private collectPlayerSnapshotRecords(
+    value: unknown,
+    visited = new Set<Record<string, unknown>>(),
+    depth = 0,
+  ): Record<string, unknown>[] {
+    if (depth > 4) {
+      return [];
+    }
+
+    if (Array.isArray(value)) {
+      const players: Record<string, unknown>[] = [];
+      for (const entry of value) {
+        const record = asRecord(entry);
+        if (!record) {
+          continue;
+        }
+        players.push(record);
+        for (const key of [
+          'raw',
+          'observerSnapshot',
+          'snapshot',
+          'allInfo',
+          'allinfo',
+          'data',
+          'Data',
+          'payload',
+          'result',
+          'Result',
+        ]) {
+          players.push(
+            ...this.collectPlayerSnapshotRecords(
+              record[key],
+              visited,
+              depth + 1,
+            ),
+          );
+        }
+      }
+      return players;
+    }
+
+    const record = asRecord(value);
+    if (!record || visited.has(record)) {
+      return [];
+    }
+    visited.add(record);
+
+    const players: Record<string, unknown>[] = [];
+    for (const key of SHADOW_PLAYER_LIST_KEYS) {
+      const list = record[key];
+      if (Array.isArray(list)) {
+        players.push(
+          ...list
+            .map((entry) => asRecord(entry))
+            .filter(
+              (entry): entry is Record<string, unknown> => entry !== null,
+            ),
+        );
+      }
+    }
+
+    for (const key of [
+      'raw',
+      'observerSnapshot',
+      'snapshot',
+      'allInfo',
+      'allinfo',
+      'data',
+      'Data',
+      'payload',
+      'result',
+      'Result',
+    ]) {
+      players.push(
+        ...this.collectPlayerSnapshotRecords(record[key], visited, depth + 1),
+      );
+    }
+
+    return players;
+  }
+
+  private playerHealthLookupKeys(record: Record<string, unknown>): string[] {
+    const directIds = uniqueStrings([
+      this.resolveTelemetryPubgAccountId(record),
+      this.resolveTelemetryPubgPlayerId(record),
+      this.resolveTelemetryExternalPlayerId(record),
+      stringValue(
+        record.playerId ??
+          record.PlayerId ??
+          record.playerID ??
+          record.PlayerID ??
+          record.id ??
+          record.ID ??
+          record.playerKey ??
+          record.PlayerKey,
+      ),
+    ]).map((value) => `id:${value}`);
+
+    const teamId = stringValue(
+      record.teamId ??
+        record.TeamId ??
+        record.teamID ??
+        record.TeamID ??
+        record.team_id,
+    );
+    const playerName = stringValue(
+      record.playerName ??
+        record.PlayerName ??
+        record.ign ??
+        record.IGN ??
+        record.name ??
+        record.Name,
+    );
+    const teamNameKeys =
+      teamId && playerName
+        ? [
+            `team:${teamId}:name:${normalizePlayerLookup(playerName)}`,
+            `team:${teamId}:compact:${compactPlayerLookup(playerName)}`,
+          ]
+        : [];
+
+    return [...directIds, ...teamNameKeys].filter(
+      (key) => !key.endsWith(':') && !key.endsWith(':name:'),
+    );
+  }
+
+  private buildRawPlayerHealthMap(...sources: unknown[]): Map<string, number> {
+    const healthByKey = new Map<string, number>();
+    for (const source of sources) {
+      for (const player of this.collectPlayerSnapshotRecords(source)) {
+        const health = this.extractHealth(player);
+        if (health === null) {
+          continue;
+        }
+        for (const key of this.playerHealthLookupKeys(player)) {
+          if (!healthByKey.has(key)) {
+            healthByKey.set(key, health);
+          }
+        }
+      }
+    }
+    return healthByKey;
+  }
+
+  private enrichPlayerRecordHealth(
+    record: Record<string, unknown>,
+    healthByKey: Map<string, number>,
+  ): Record<string, unknown> {
+    if (this.extractHealth(record) !== null) {
+      return record;
+    }
+
+    for (const key of this.playerHealthLookupKeys(record)) {
+      const health = healthByKey.get(key);
+      if (health !== undefined) {
+        return { ...record, health };
+      }
+    }
+
+    return record;
+  }
+
+  private enrichPlayerPayloadHealth(
+    payload: unknown,
+    ...sources: unknown[]
+  ): unknown {
+    const healthByKey = this.buildRawPlayerHealthMap(payload, ...sources);
+    if (healthByKey.size === 0) {
+      return payload;
+    }
+
+    if (Array.isArray(payload)) {
+      let changed = false;
+      const entries: unknown[] = payload;
+      const next = entries.map((entry): unknown => {
+        const record = asRecord(entry);
+        if (!record) {
+          return entry;
+        }
+        const enriched = this.enrichPlayerRecordHealth(record, healthByKey);
+        changed = changed || enriched !== record;
+        return enriched;
+      });
+      return changed ? next : payload;
+    }
+
+    const record = asRecord(payload);
+    if (!record) {
+      return payload;
+    }
+
+    let changed = false;
+    const clone: Record<string, unknown> = { ...record };
+    for (const key of SHADOW_PLAYER_LIST_KEYS) {
+      const list = record[key];
+      if (!Array.isArray(list)) {
+        continue;
+      }
+      const entries: unknown[] = list;
+      const next = entries.map((entry): unknown => {
+        const playerRecord = asRecord(entry);
+        if (!playerRecord) {
+          return entry;
+        }
+        const enriched = this.enrichPlayerRecordHealth(
+          playerRecord,
+          healthByKey,
+        );
+        changed = changed || enriched !== playerRecord;
+        return enriched;
+      });
+      if (changed) {
+        clone[key] = next;
+      }
+    }
+
+    return changed ? clone : payload;
   }
 
   private normalizePushedEnvelope(
@@ -2234,11 +3357,26 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
           payloadRecord.ts ??
           payloadRecord.timestamp,
       ) ?? fallbackTimestamp;
-    const players = this.normalizePlayers(payloadRecord.players ?? dataRecord);
-    const teams = this.normalizeTeams(
-      payloadRecord.teams ?? dataRecord,
-      players,
-      [],
+    const playerPayload = this.enrichPlayerPayloadHealth(
+      payloadRecord.players ?? dataRecord,
+      payloadRecord,
+      dataRecord,
+      root,
+    );
+    const players = this.normalizePlayers(playerPayload);
+    const backpacks = this.normalizeBackpacks(
+      payloadRecord.backpacks ??
+        payloadRecord.teamBackpackInfo ??
+        dataRecord.backpacks ??
+        dataRecord.teamBackpackInfo ??
+        dataRecord.TeamBackpackInfo ??
+        dataRecord.TeamBackPackInfo ??
+        root.backpacks ??
+        root.teamBackpackInfo,
+    );
+    const teams = this.attachBackpacksToTeams(
+      this.normalizeTeams(payloadRecord.teams ?? dataRecord, players, []),
+      backpacks,
     );
     const zone = this.normalizeZone(
       payloadRecord.zone ??
@@ -2252,6 +3390,24 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
       : Array.isArray(dataRecord.events)
         ? this.normalizeStructuredEvents(dataRecord.events, timestamp)
         : [];
+    const observerPayload: unknown =
+      payloadRecord.observer ??
+      payloadRecord.observingPlayer ??
+      dataRecord.observer ??
+      dataRecord.observingPlayer ??
+      root.observer ??
+      root.observingPlayer;
+    const hasObservedPlayer = Boolean(
+      Object.prototype.hasOwnProperty.call(payloadRecord, 'observer') ||
+      Object.prototype.hasOwnProperty.call(payloadRecord, 'observingPlayer') ||
+      Object.prototype.hasOwnProperty.call(dataRecord, 'observer') ||
+      Object.prototype.hasOwnProperty.call(dataRecord, 'observingPlayer') ||
+      Object.prototype.hasOwnProperty.call(root, 'observer') ||
+      Object.prototype.hasOwnProperty.call(root, 'observingPlayer'),
+    );
+    const observedPlayer = hasObservedPlayer
+      ? this.normalizeObservedPlayer(observerPayload)
+      : undefined;
     const killPayload =
       payloadRecord.kills ??
       payloadRecord.killInfo ??
@@ -2268,8 +3424,10 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
     if (
       players.length > 0 ||
       teams.length > 0 ||
+      backpacks.length > 0 ||
       zone !== null ||
-      events.length > 0
+      events.length > 0 ||
+      hasObservedPlayer
     ) {
       return this.buildCanonicalEnvelope({
         matchId,
@@ -2280,6 +3438,8 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         teams,
         zone,
         events,
+        backpacks,
+        observedPlayer,
         source: 'PCOB_PUSH',
         raw: root,
       });
@@ -2294,9 +3454,13 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
           sequence,
           timestamp,
           players: snapshotPlayers,
-          teams: this.normalizeTeams([], snapshotPlayers, []),
+          teams: this.attachBackpacksToTeams(
+            this.normalizeTeams([], snapshotPlayers, []),
+            backpacks,
+          ),
           zone: null,
           events: [],
+          backpacks,
           source: 'PCOB_PUSH',
           raw: root,
         });
@@ -2309,9 +3473,13 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
           sequence,
           timestamp,
           players: [],
-          teams: this.normalizeTeams(dataRecord, [], []),
+          teams: this.attachBackpacksToTeams(
+            this.normalizeTeams(dataRecord, [], []),
+            backpacks,
+          ),
           zone: null,
           events: [],
+          backpacks,
           source: 'PCOB_PUSH',
           raw: root,
         });
@@ -2544,6 +3712,9 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
       stringValue(
         killer.playerId ??
           killer.externalPlayerId ??
+          killer.pubgPlayerId ??
+          killer.uId ??
+          killer.UId ??
           killer.id ??
           killer.uid ??
           killer.Uid ??
@@ -2559,6 +3730,9 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
       stringValue(
         victim.playerId ??
           victim.externalPlayerId ??
+          victim.pubgPlayerId ??
+          victim.uId ??
+          victim.UId ??
           victim.id ??
           victim.uid ??
           victim.Uid ??
@@ -2616,7 +3790,36 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
         victimTeamId,
         killerName: stringValue(killer.ign ?? killer.name ?? killer.playerName),
         victimName: stringValue(victim.ign ?? victim.name ?? victim.playerName),
-        weapon: stringValue(payload.weapon ?? payload.Weapon),
+        weapon: stringValue(
+          payload.weapon ??
+            payload.Weapon ??
+            payload.damageCauserName ??
+            payload.DamageCauserName,
+        ),
+        itemId: stringValue(
+          payload.itemId ??
+            payload.ItemId ??
+            payload.itemID ??
+            payload.ItemID ??
+            payload.weaponId ??
+            payload.WeaponId ??
+            payload.damageCauserItemId ??
+            payload.DamageCauserItemId,
+        ),
+        cause: stringValue(
+          payload.cause ??
+            payload.Cause ??
+            payload.killCause ??
+            payload.KillCause ??
+            payload.damageTypeCategory ??
+            payload.DamageTypeCategory,
+        ),
+        damageCauserName: stringValue(
+          payload.damageCauserName ?? payload.DamageCauserName,
+        ),
+        damageTypeCategory: stringValue(
+          payload.damageTypeCategory ?? payload.DamageTypeCategory,
+        ),
       },
       raw: payload,
     };
@@ -2892,6 +4095,28 @@ export class PcobAdapter implements GameAdapter, OnModuleDestroy {
     return (
       stateLabel === 'knocked' || stateLabel === 'down' || stateLabel === 'dbno'
     );
+  }
+
+  private extractHealth(
+    record: Record<string, unknown>,
+    depth = 0,
+  ): number | null {
+    const health = numberValue(
+      record.health ??
+        record.Health ??
+        record.hp ??
+        record.HP ??
+        record.currentHealth ??
+        record.CurrentHealth,
+    );
+    if (health === null) {
+      const raw = asRecord(record.raw);
+      return raw && raw !== record && depth < 3
+        ? this.extractHealth(raw, depth + 1)
+        : null;
+    }
+
+    return Math.max(0, Math.min(100, health));
   }
 
   private extractPosition(

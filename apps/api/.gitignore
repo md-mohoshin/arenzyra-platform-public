@@ -51,6 +51,10 @@ pids
 *.pid
 *.seed
 *.pid.lock
+/storage/
+/uploads/
+/public/assets/players/player_*
+/public/assets/teams/team_*
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

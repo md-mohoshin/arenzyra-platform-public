@@ -1,4 +1,6 @@
 const axios = require("axios");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   getDefaultProtocolForEnvironment,
   getProcessDefaultApiBase,
@@ -8,6 +10,7 @@ const {
 const UNAUTHORIZED_ERROR_CODE = "ARENZYRA_AUTH_UNAUTHORIZED";
 const OBSERVER_LIMIT_ERROR_CODE = "OBSERVER_LIMIT_REACHED";
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REFRESH_PROMISE_CACHE_MS = 5000;
 
 function defaultResolveApiBase(value) {
   const trimmed = String(value || "").trim();
@@ -22,7 +25,9 @@ function defaultResolveApiBase(value) {
   try {
     return new URL(
       trimmed.includes("://") ? trimmed : `${defaultProtocol}//${trimmed}`,
-    ).toString().replace(/\/$/, "");
+    )
+      .toString()
+      .replace(/\/$/, "");
   } catch {
     return getProcessDefaultApiBase();
   }
@@ -33,7 +38,10 @@ function normalizeApiErrorMessage(error, fallback) {
   if (Array.isArray(responseData?.message) && responseData.message.length > 0) {
     return responseData.message.map((item) => String(item)).join(", ");
   }
-  if (typeof responseData?.message === "string" && responseData.message.trim()) {
+  if (
+    typeof responseData?.message === "string" &&
+    responseData.message.trim()
+  ) {
     return responseData.message.trim();
   }
   if (typeof responseData?.error === "string" && responseData.error.trim()) {
@@ -76,11 +84,51 @@ function buildApiError(error, fallback) {
     nextError.maxObservers = Number(responseData.maxObservers);
   }
 
-  if (typeof responseData?.machineId === "string" && responseData.machineId.trim()) {
+  if (
+    typeof responseData?.machineId === "string" &&
+    responseData.machineId.trim()
+  ) {
     nextError.machineId = responseData.machineId.trim();
   }
 
   return nextError;
+}
+
+function screenshotMimeType(filePath) {
+  const ext = path.extname(String(filePath || "")).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") {
+    return "image/jpeg";
+  }
+  if (ext === ".webp") {
+    return "image/webp";
+  }
+  return "image/png";
+}
+
+function createScreenshotUploadForm(filePath) {
+  const normalizedPath = String(filePath || "").trim();
+  if (!normalizedPath) {
+    throw new Error("Screenshot file path is required.");
+  }
+  if (!fs.existsSync(normalizedPath)) {
+    throw new Error("Screenshot file was not found.");
+  }
+  if (typeof FormData !== "function" || typeof Blob !== "function") {
+    throw new Error("This launcher runtime cannot create screenshot uploads.");
+  }
+
+  const buffer = fs.readFileSync(normalizedPath);
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error("Screenshot file is empty.");
+  }
+
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([buffer], { type: screenshotMimeType(normalizedPath) }),
+    path.basename(normalizedPath) || "visual-capture.png",
+  );
+  return form;
 }
 
 function normalizeLoginParams(params) {
@@ -143,16 +191,55 @@ function createLauncherApiClient(options) {
       : typeof options?.normalizeBaseUrl === "function"
         ? options.normalizeBaseUrl
         : defaultResolveApiBase;
+  const getSession =
+    typeof options?.getSession === "function" ? options.getSession : null;
   const onSessionUpdate =
     typeof options?.onSessionUpdate === "function"
       ? options.onSessionUpdate
       : async () => {};
   const onActivity =
-    typeof options?.onActivity === "function" ? options.onActivity : async () => {};
+    typeof options?.onActivity === "function"
+      ? options.onActivity
+      : async () => {};
   const onUnauthorized =
     typeof options?.onUnauthorized === "function"
       ? options.onUnauthorized
       : async () => {};
+  const refreshPromises = new Map();
+
+  function buildRefreshKey(apiBase, refreshToken) {
+    return `${apiBase}\n${refreshToken}`;
+  }
+
+  function readCurrentAuthBundle(apiBase, staleRefreshToken) {
+    if (!getSession) {
+      return null;
+    }
+
+    let session = null;
+    try {
+      session = getSession();
+    } catch {
+      return null;
+    }
+
+    const accessToken = String(
+      session?.accessToken || session?.token || "",
+    ).trim();
+    const refreshToken = String(session?.refreshToken || "").trim();
+
+    if (!accessToken || !refreshToken || refreshToken === staleRefreshToken) {
+      return null;
+    }
+
+    return {
+      apiBase,
+      accessToken,
+      refreshToken,
+      user: session?.user ?? null,
+      organization: session?.organization ?? null,
+    };
+  }
 
   async function performRequest(config, token) {
     return axios({
@@ -169,7 +256,7 @@ function createLauncherApiClient(options) {
     });
   }
 
-  async function refreshSession(params) {
+  async function refreshSessionDirect(params) {
     const normalizedBase = resolveApiBase(params?.apiBase);
     const refreshToken = String(params?.refreshToken || "").trim();
 
@@ -200,11 +287,55 @@ function createLauncherApiClient(options) {
     }
   }
 
+  async function refreshSession(params) {
+    const normalizedBase = resolveApiBase(params?.apiBase);
+    const refreshToken = String(params?.refreshToken || "").trim();
+
+    if (!refreshToken) {
+      throw unauthorizedError();
+    }
+
+    const currentBundle = readCurrentAuthBundle(normalizedBase, refreshToken);
+    if (currentBundle) {
+      return currentBundle;
+    }
+
+    const refreshKey = buildRefreshKey(normalizedBase, refreshToken);
+    const existingRefresh = refreshPromises.get(refreshKey);
+    if (existingRefresh) {
+      return existingRefresh;
+    }
+
+    const refreshPromise = refreshSessionDirect({
+      apiBase: normalizedBase,
+      refreshToken,
+    });
+
+    refreshPromise.then(
+      () => {
+        const cleanupTimer = setTimeout(() => {
+          if (refreshPromises.get(refreshKey) === refreshPromise) {
+            refreshPromises.delete(refreshKey);
+          }
+        }, REFRESH_PROMISE_CACHE_MS);
+        if (typeof cleanupTimer.unref === "function") {
+          cleanupTimer.unref();
+        }
+      },
+      () => {
+        if (refreshPromises.get(refreshKey) === refreshPromise) {
+          refreshPromises.delete(refreshKey);
+        }
+      },
+    );
+
+    refreshPromises.set(refreshKey, refreshPromise);
+    return refreshPromise;
+  }
+
   async function request(config) {
     const normalizedBase = resolveApiBase(config?.apiBase);
-    let accessToken = String(
-      config?.token || config?.accessToken || "",
-    ).trim();
+    let accessToken = String(config?.token || config?.accessToken || "").trim();
     let refreshToken = String(config?.refreshToken || "").trim();
     const path = String(config?.path || "").trim();
     const method = String(config?.method || "GET")
@@ -249,7 +380,13 @@ function createLauncherApiClient(options) {
         await updateSession(refreshed);
       } catch (error) {
         if (error?.code === UNAUTHORIZED_ERROR_CODE) {
-          await onUnauthorized();
+          await onUnauthorized({
+            apiBase: normalizedBase,
+            path,
+            method,
+            accessToken,
+            refreshToken,
+          });
           throw unauthorizedError();
         }
         throw error;
@@ -257,7 +394,13 @@ function createLauncherApiClient(options) {
     }
 
     if (!accessToken) {
-      await onUnauthorized();
+      await onUnauthorized({
+        apiBase: normalizedBase,
+        path,
+        method,
+        accessToken,
+        refreshToken,
+      });
       throw unauthorizedError();
     }
 
@@ -293,14 +436,26 @@ function createLauncherApiClient(options) {
             return retryResponse?.data;
           } catch (refreshError) {
             if (refreshError?.code === UNAUTHORIZED_ERROR_CODE) {
-              await onUnauthorized();
+              await onUnauthorized({
+                apiBase: normalizedBase,
+                path,
+                method,
+                accessToken,
+                refreshToken,
+              });
               throw unauthorizedError();
             }
             throw refreshError;
           }
         }
 
-        await onUnauthorized();
+        await onUnauthorized({
+          apiBase: normalizedBase,
+          path,
+          method,
+          accessToken,
+          refreshToken,
+        });
         throw unauthorizedError();
       }
       throw buildApiError(error, `Request failed for ${path || "API call"}.`);
@@ -435,15 +590,6 @@ function createLauncherApiClient(options) {
       });
     },
 
-    async getPcobActiveMatch(params) {
-      return request({
-        apiBase: params?.apiBase,
-        token: params?.token,
-        refreshToken: params?.refreshToken,
-        path: "/pcob/active-match",
-      });
-    },
-
     async fetchObserverSlots(params) {
       return request({
         apiBase: params?.apiBase,
@@ -545,7 +691,17 @@ function createLauncherApiClient(options) {
         method: "POST",
         data: {
           sessionId:
-            typeof params?.sessionId === "string" ? params.sessionId : undefined,
+            typeof params?.sessionId === "string"
+              ? params.sessionId
+              : undefined,
+          source:
+            typeof params?.source === "string" ? params.source : undefined,
+          clientId:
+            typeof params?.clientId === "string" ? params.clientId : undefined,
+          requestedMatchId:
+            typeof params?.requestedMatchId === "string"
+              ? params.requestedMatchId
+              : undefined,
         },
       });
     },
@@ -567,6 +723,56 @@ function createLauncherApiClient(options) {
         token: params?.token,
         refreshToken: params?.refreshToken,
         path: "/launcher/license",
+      });
+    },
+
+    async getAiCasterAccess(params) {
+      return request({
+        apiBase: params?.apiBase,
+        token: params?.token,
+        refreshToken: params?.refreshToken,
+        path: "/api/ai-caster/access",
+        params: {
+          ...(typeof params?.organizationId === "string" &&
+          params.organizationId.trim()
+            ? { organizationId: params.organizationId.trim() }
+            : {}),
+        },
+      });
+    },
+
+    async updateAiCasterSettings(params) {
+      return request({
+        apiBase: params?.apiBase,
+        token: params?.token,
+        refreshToken: params?.refreshToken,
+        path: "/api/ai-caster/settings",
+        method: "PATCH",
+        params: {
+          ...(typeof params?.organizationId === "string" &&
+          params.organizationId.trim()
+            ? { organizationId: params.organizationId.trim() }
+            : {}),
+        },
+        data: params?.settings || {},
+      });
+    },
+
+    async previewAiCasterVoice(params) {
+      return request({
+        apiBase: params?.apiBase,
+        token: params?.token,
+        refreshToken: params?.refreshToken,
+        path: "/api/ai-caster/voice-preview",
+        method: "POST",
+        params: {
+          ...(typeof params?.organizationId === "string" &&
+          params.organizationId.trim()
+            ? { organizationId: params.organizationId.trim() }
+            : {}),
+        },
+        data: params?.preview || {},
+        timeout: 45000,
       });
     },
 
@@ -603,6 +809,48 @@ function createLauncherApiClient(options) {
         refreshToken: params?.refreshToken,
         path: "/launcher/observer-feed-token",
         method: "POST",
+      });
+    },
+
+    async uploadScreenshot(params) {
+      return request({
+        apiBase: params?.apiBase,
+        token: params?.token,
+        refreshToken: params?.refreshToken,
+        path: "/ingest/screenshot/upload",
+        method: "POST",
+        data: createScreenshotUploadForm(params?.filePath),
+        timeout: 60000,
+      });
+    },
+
+    async previewScreenshotResults(params) {
+      const matchId = String(params?.matchId || "").trim();
+      const imageUrl = String(params?.imageUrl || "").trim();
+      const imageUrls = Array.isArray(params?.imageUrls)
+        ? params.imageUrls
+            .map((url) => String(url || "").trim())
+            .filter(Boolean)
+        : [];
+      if (!matchId) {
+        throw new Error("Match id is required for OCR preview.");
+      }
+      const urls = imageUrls.length ? imageUrls : imageUrl ? [imageUrl] : [];
+      if (!urls.length) {
+        throw new Error("Screenshot URL is required for OCR preview.");
+      }
+
+      return request({
+        apiBase: params?.apiBase,
+        token: params?.token,
+        refreshToken: params?.refreshToken,
+        path: "/ingest/screenshot",
+        method: "POST",
+        data: {
+          matchId,
+          imageUrls: urls,
+        },
+        timeout: 120000,
       });
     },
   };

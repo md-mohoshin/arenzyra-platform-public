@@ -1,8 +1,17 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
+import { compareRankingRows } from '../../common/ranking-tiebreakers.util';
 import { PrismaService } from '../../db/prisma.service';
 import { isPresentInMatch } from '../../common/results-presence.util';
+import {
+  aggregatePointDeltaForScope,
+  applyMatchScoreAdjustments,
+  type AdminAdjustmentScopeValue,
+  type ScoreAdjustmentMatchContext,
+  type ScoreAdjustmentRecord,
+} from '../../common/admin-adjustments.util';
 
-export type Scope = 'TOURNAMENT' | 'STAGE' | 'GROUP';
+export type Scope = 'TOURNAMENT' | 'STAGE' | 'GROUP' | 'SESSION' | 'MATCH';
 
 type StandingRow = {
   teamId: string;
@@ -14,6 +23,8 @@ type StandingRow = {
   matchesPlayed: number;
   totalKills: number;
   totalPlacementPoints: number;
+  wwcd: number;
+  adjustmentPoints: number;
   totalPoints: number;
   bestPlacement: number | null;
   lastMatchPlacement: number | null;
@@ -26,6 +37,8 @@ type StandingRow = {
     kills: number | null;
     placementPoints: number;
     totalPoints: number;
+    adjustmentPoints: number;
+    disqualified: boolean;
     playedAt: Date;
   }>;
 };
@@ -69,12 +82,18 @@ export class StandingsService {
       id: string;
       matchNumber: number | null;
       map: string | null;
+      tournamentId: string | null;
+      stageId: string | null;
+      groupId: string | null;
+      sessionId: string | null;
       createdAt: Date;
       scheduledAt: Date | null;
       slotResults: Array<{
         teamId: string;
         placement: number | null;
+        placementPoints: number | null;
         totalKills: number | null;
+        totalPoints: number | null;
         points: number | null;
         team: {
           id: string;
@@ -91,7 +110,11 @@ export class StandingsService {
         ? { tournamentId: scopeId }
         : scope === 'STAGE'
           ? { stageId: scopeId }
-          : { groupId: scopeId };
+          : scope === 'GROUP'
+            ? { groupId: scopeId }
+            : scope === 'SESSION'
+              ? { sessionId: scopeId }
+              : { id: scopeId };
 
     const matchesRaw = await this.prisma.match.findMany({
       where: { ...where, deletedAt: null },
@@ -118,6 +141,10 @@ export class StandingsService {
       id: m.id,
       matchNumber: m.matchNumber ?? null,
       map: (m as unknown as { map?: string | null })?.map ?? null,
+      tournamentId: m.tournamentId ?? null,
+      stageId: m.stageId ?? null,
+      groupId: m.groupId ?? null,
+      sessionId: m.sessionId ?? null,
       createdAt: m.createdAt,
       scheduledAt: m.scheduledAt ?? null,
       slotResults: (m.slotResults ?? [])
@@ -125,21 +152,107 @@ export class StandingsService {
         .map((sr) => ({
           teamId: sr.teamId as string,
           placement: sr.placement ?? null,
+          placementPoints: sr.placementPoints ?? null,
           totalKills: sr.totalKills ?? null,
+          totalPoints: sr.totalPoints ?? null,
           points: sr.points ?? null,
           team: sr.team ?? null,
         })),
     }));
 
+    const matchIds = matches.map((match) => match.id);
+    const groupIds = [
+      ...new Set(
+        matches
+          .map((match) => match.groupId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const stageIds = [
+      ...new Set(
+        matches
+          .map((match) => match.stageId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const tournamentIds = [
+      ...new Set(
+        matches
+          .map((match) => match.tournamentId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const sessionIds = [
+      ...new Set(
+        matches
+          .map((match) => match.sessionId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const adjustmentFilters: Prisma.AdminAdjustmentWhereInput[] = [];
+    if (matchIds.length) adjustmentFilters.push({ matchId: { in: matchIds } });
+    if (groupIds.length) adjustmentFilters.push({ groupId: { in: groupIds } });
+    if (stageIds.length) adjustmentFilters.push({ stageId: { in: stageIds } });
+    if (tournamentIds.length) {
+      adjustmentFilters.push({ tournamentId: { in: tournamentIds } });
+    }
+    if (sessionIds.length) {
+      adjustmentFilters.push({ sessionId: { in: sessionIds } });
+    }
+    const adjustments: ScoreAdjustmentRecord[] = adjustmentFilters.length
+      ? await this.prisma.adminAdjustment.findMany({
+          where: {
+            deletedAt: null,
+            revokedAt: null,
+            OR: adjustmentFilters,
+          },
+          select: {
+            teamId: true,
+            pointsDelta: true,
+            scope: true,
+            type: true,
+            matchId: true,
+            groupId: true,
+            stageId: true,
+            tournamentId: true,
+            sessionId: true,
+            deletedAt: true,
+            revokedAt: true,
+          },
+        })
+      : [];
+    const adjustmentsByTeam = new Map<string, ScoreAdjustmentRecord[]>();
+    for (const adjustment of adjustments) {
+      const list = adjustmentsByTeam.get(adjustment.teamId) ?? [];
+      list.push(adjustment);
+      adjustmentsByTeam.set(adjustment.teamId, list);
+    }
+
     const rows = new Map<string, StandingRow>();
 
     for (const match of matches) {
       const playedAt = match.scheduledAt ?? match.createdAt;
+      const matchContext: ScoreAdjustmentMatchContext = {
+        id: match.id,
+        tournamentId: match.tournamentId,
+        stageId: match.stageId,
+        groupId: match.groupId,
+        sessionId: match.sessionId,
+      };
       for (const sr of match.slotResults) {
         if (!sr.teamId) continue;
-        const placementPts = this.placementPoints(sr.placement);
+        const placementPts =
+          sr.placementPoints ?? this.placementPoints(sr.placement);
         const kills = sr.totalKills ?? 0;
-        const totalPoints = sr.points ?? placementPts + kills; // fallback if points not set
+        const killPoints = sr.points ?? kills;
+        const baseTotalPoints = placementPts + killPoints;
+        const adjusted = applyMatchScoreAdjustments(
+          baseTotalPoints,
+          adjustmentsByTeam.get(sr.teamId) ?? [],
+          matchContext,
+        );
+        const totalPoints = adjusted.totalPoints;
+        const adjustmentPoints = totalPoints - baseTotalPoints;
 
         const current = rows.get(sr.teamId) ?? {
           teamId: sr.teamId,
@@ -151,6 +264,8 @@ export class StandingsService {
           matchesPlayed: 0,
           totalKills: 0,
           totalPlacementPoints: 0,
+          wwcd: 0,
+          adjustmentPoints: 0,
           totalPoints: 0,
           bestPlacement: null as number | null,
           lastMatchPlacement: null as number | null,
@@ -160,6 +275,8 @@ export class StandingsService {
         current.matchesPlayed += 1;
         current.totalKills += kills;
         current.totalPlacementPoints += placementPts;
+        if (sr.placement === 1) current.wwcd += 1;
+        current.adjustmentPoints += adjustmentPoints;
         current.totalPoints += totalPoints;
         if (sr.placement) {
           current.bestPlacement =
@@ -176,6 +293,8 @@ export class StandingsService {
           kills,
           placementPoints: placementPts,
           totalPoints,
+          adjustmentPoints,
+          disqualified: adjusted.disqualified,
           playedAt,
         });
 
@@ -195,6 +314,36 @@ export class StandingsService {
       }
     }
 
+    const aggregateScope = scope as AdminAdjustmentScopeValue;
+    const aggregateScopeIds =
+      scope === 'TOURNAMENT'
+        ? {
+            TOURNAMENT: [scopeId],
+            STAGE: stageIds,
+            GROUP: groupIds,
+          }
+        : scope === 'STAGE'
+          ? {
+              STAGE: [scopeId],
+              GROUP: groupIds,
+            }
+          : scope === 'GROUP'
+            ? { GROUP: [scopeId] }
+            : scope === 'SESSION'
+              ? { SESSION: [scopeId] }
+              : { MATCH: [scopeId] };
+    rows.forEach((row) => {
+      const delta = aggregatePointDeltaForScope(
+        adjustmentsByTeam.get(row.teamId) ?? [],
+        aggregateScope,
+        scopeId,
+        aggregateScopeIds,
+      );
+      if (!delta) return;
+      row.adjustmentPoints += delta;
+      row.totalPoints += delta;
+    });
+
     const sorted = [...rows.values()].map((row) => {
       // lastMatchPlacement based on most recent playedAt
       const latest = row.perMatch
@@ -207,8 +356,8 @@ export class StandingsService {
     });
 
     sorted.sort((a, b) => {
-      if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-      if (b.totalKills !== a.totalKills) return b.totalKills - a.totalKills;
+      const rankingOrder = compareRankingRows(a, b);
+      if (rankingOrder !== 0) return rankingOrder;
       if ((a.bestPlacement ?? Infinity) !== (b.bestPlacement ?? Infinity))
         return (a.bestPlacement ?? Infinity) - (b.bestPlacement ?? Infinity);
       if (

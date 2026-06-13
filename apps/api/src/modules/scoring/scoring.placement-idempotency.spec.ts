@@ -1,6 +1,30 @@
 import { MatchEventType } from '@prisma/client';
 import { PubgmScoring } from './pubgm.scoring';
 
+type MockMatchEvent = {
+  matchId: string;
+  seq: number;
+  type: MatchEventType;
+  teamId: string | null;
+  payload: Record<string, unknown>;
+};
+
+type MockSlotResult = {
+  id: string;
+  matchId: string;
+  teamId: string;
+  wasPresentInMatch: boolean;
+  placement: number | null;
+  finalPlacement?: number | null;
+  placementPoints: number;
+  totalKills: number;
+  finalKills?: number | null;
+  points: number;
+  totalPoints: number;
+  manualTotalKills: boolean;
+  players?: Array<{ kills?: number | null }>;
+};
+
 class MockPrisma {
   match = {
     data: {
@@ -60,7 +84,7 @@ class MockPrisma {
         teamId: null,
         payload: {},
       },
-    ],
+    ] as MockMatchEvent[],
     findMany: ({ where }: any) => {
       if (where?.matchId === 'm-2') {
         return Promise.resolve(
@@ -109,7 +133,7 @@ class MockPrisma {
         totalPoints: 0,
         manualTotalKills: false,
       },
-    ],
+    ] as MockSlotResult[],
     findMany: ({ where }: any) => {
       if (where?.matchId === 'm-2') {
         return Promise.resolve(

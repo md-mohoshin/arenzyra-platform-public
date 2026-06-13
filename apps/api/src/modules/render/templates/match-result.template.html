@@ -4,52 +4,48 @@
     <meta charset="utf-8" />
     <title>Arenzyra Match Result</title>
     <style>
+      {{fontCssImport}}
       * { box-sizing: border-box; }
       body {
         margin: 0;
         width: 1200px;
         height: 630px;
-        font-family: "Segoe UI", Arial, sans-serif;
+        font-family: {{fontFamily}};
         background: {{background}};
         color: {{textPrimary}};
       }
       .frame {
         width: 100%;
         height: 100%;
-        padding: 32px;
+        padding: {{framePaddingTop}} {{framePaddingRight}} {{framePaddingBottom}} {{framePaddingLeft}};
         position: relative;
         overflow: hidden;
-      }
-      .frame::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background:
-          radial-gradient(circle at top right, rgba(255,255,255,0.08), transparent 28%),
-          linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
-        pointer-events: none;
       }
       .shell {
         position: relative;
         height: 100%;
-        border: 1px solid {{border}};
-        border-radius: 28px;
-        background: rgba(6, 10, 16, 0.66);
-        box-shadow: {{shadow}};
         padding: 28px;
+        z-index: 10;
+      }
+      .overlay-layer {
+        position: absolute;
+        height: auto;
+        max-width: none;
+        object-fit: contain;
+        pointer-events: none;
       }
       .header {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 24px;
-        margin-bottom: 22px;
+        margin-bottom: {{headerMargin}};
       }
       .eyebrow {
         display: inline-block;
         padding: 8px 14px;
         border-radius: 999px;
-        background: rgba(0, 0, 0, 0.24);
+        background: {{panel}};
         border: 1px solid {{border}};
         color: {{primaryColor}};
         font-size: 14px;
@@ -59,100 +55,98 @@
       }
       .title {
         margin: 14px 0 0;
-        font-size: 42px;
+        font-size: {{titleSize}};
         font-weight: 800;
         line-height: 1.04;
-        letter-spacing: -0.03em;
+        letter-spacing: 0;
+      }
+      .subtitle {
+        margin-top: 8px;
+        color: {{textMuted}};
+        font-size: 16px;
       }
       .brand-logo {
         width: 96px;
         height: 96px;
         object-fit: contain;
         border-radius: 20px;
-        background: rgba(255, 255, 255, 0.04);
+        background: {{panel}};
         border: 1px solid {{border}};
         padding: 16px;
       }
       .brand-logo--empty {
-        background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
+        background: {{panel}};
       }
       .board {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px 16px;
+        grid-template-columns: repeat({{boardColumns}}, minmax(0, 1fr));
+        gap: {{boardGap}};
       }
       .row {
         display: grid;
-        grid-template-columns: 78px 1fr auto;
+        grid-template-columns: 38px 30px minmax(0, 1fr) 42px 54px 54px;
         align-items: center;
-        gap: 14px;
-        min-height: 52px;
-        padding: 12px 16px;
-        border-radius: 18px;
+        gap: 8px;
+        min-height: {{rowMinHeight}};
+        padding: {{rowPadding}};
+        border-radius: {{rowRadius}};
         background: {{panel}};
         border: 1px solid {{border}};
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
       }
       .row-rank {
         color: {{primaryColor}};
-        font-size: 26px;
+        font-size: {{rowRankSize}};
         font-weight: 800;
-        letter-spacing: -0.04em;
+        letter-spacing: 0;
       }
-      .row-main {
+      .row-logo {
+        width: 24px;
+        height: 24px;
+        object-fit: contain;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid {{border}};
+        padding: 3px;
+      }
+      .row-team {
         min-width: 0;
-      }
-      .row-tag {
-        font-size: 22px;
+        font-size: {{rowTitleSize}};
         font-weight: 800;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
         text-transform: uppercase;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
-      .row-meta {
-        margin-top: 4px;
-        color: {{textMuted}};
-        font-size: 14px;
-      }
-      .row-points {
-        color: {{primaryColor}};
-        font-size: 24px;
+      .row-stat,
+      .row-total {
+        text-align: right;
+        color: {{textPrimary}};
+        font-size: {{rowMetaSize}};
         font-weight: 800;
         white-space: nowrap;
       }
-      .footer {
-        position: absolute;
-        left: 28px;
-        right: 28px;
-        bottom: 20px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        color: {{textMuted}};
-        font-size: 13px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-      .footer-mark {
+      .row-total {
         color: {{primaryColor}};
-        font-weight: 700;
+        font-size: {{rowMetricSize}};
       }
     </style>
   </head>
   <body>
     <div class="frame">
+      {{overlayLayersHtml}}
       <div class="shell">
         <div class="header">
           <div>
-            <div class="eyebrow">Arenzyra Results</div>
+            <div class="eyebrow">{{eyebrow}}</div>
             <div class="title">{{matchName}}</div>
+            {{subtitleHtml}}
           </div>
           {{logoHtml}}
         </div>
         <div class="board">{{rowsHtml}}</div>
-        <div class="footer">
-          <span>{{footer}}</span>
-          <span class="footer-mark">Backend Rendered PNG</span>
-        </div>
       </div>
     </div>
   </body>
-  </html>
+</html>

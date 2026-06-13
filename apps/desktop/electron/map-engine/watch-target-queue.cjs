@@ -21,7 +21,21 @@ function buildTeamSetKey(teamIds) {
     .join("|");
 }
 
-function formatTeamLabel(teamId) {
+function resolveCustomTeamLabel(teamId, teamLabelResolver) {
+  if (typeof teamLabelResolver !== "function") {
+    return null;
+  }
+
+  const resolved = teamLabelResolver(teamId);
+  return typeof resolved === "string" && resolved.trim() ? resolved.trim() : null;
+}
+
+function formatTeamLabel(teamId, teamLabelResolver = null) {
+  const customLabel = resolveCustomTeamLabel(teamId, teamLabelResolver);
+  if (customLabel) {
+    return customLabel;
+  }
+
   const normalized = String(teamId || "").trim();
   if (!normalized) {
     return DEFAULT_TEAM_NAME;
@@ -39,24 +53,47 @@ function formatTeamLabel(teamId) {
   return `${DEFAULT_TEAM_NAME} ${normalized}`;
 }
 
-function formatMatchup(teamIds) {
+function formatMatchup(teamIds, teamLabelResolver = null) {
   const source = uniqueList(Array.isArray(teamIds) ? teamIds : []).sort(compareTeamIds);
   if (source.length === 0) {
     return DEFAULT_TEAM_NAME;
   }
   if (source.length === 1) {
-    return formatTeamLabel(source[0]);
+    return formatTeamLabel(source[0], teamLabelResolver);
   }
   if (source.length === 2) {
-    return `${formatTeamLabel(source[0])} vs ${formatTeamLabel(source[1])}`;
+    return `${formatTeamLabel(source[0], teamLabelResolver)} vs ${formatTeamLabel(
+      source[1],
+      teamLabelResolver,
+    )}`;
   }
 
   return `${source.length}-team cluster`;
 }
 
+function formatCandidateLabel(candidate, teamLabelResolver) {
+  const label = String(candidate?.label || "").trim();
+  if (!label) {
+    return formatMatchup(candidate?.involvedTeamIds, teamLabelResolver);
+  }
+
+  if (typeof teamLabelResolver !== "function") {
+    return label;
+  }
+
+  const defaultMatchup = formatMatchup(candidate?.involvedTeamIds);
+  const resolvedMatchup = formatMatchup(candidate?.involvedTeamIds, teamLabelResolver);
+  if (defaultMatchup && resolvedMatchup && defaultMatchup !== resolvedMatchup) {
+    return label.replace(defaultMatchup, resolvedMatchup);
+  }
+
+  return label;
+}
+
 function toWatchTarget(candidate, context = {}, updatedAt) {
   const reason = [];
   const hotZone = context.hotZone || null;
+  const teamLabelResolver = context.teamLabelResolver || null;
 
   if (hotZone) {
     reason.push(`${hotZone.involvedTeamIds.length} teams nearby`);
@@ -98,7 +135,7 @@ function toWatchTarget(candidate, context = {}, updatedAt) {
 
   return {
     id: String(candidate.id || "").trim(),
-    label: String(candidate.label || "").trim() || formatMatchup(candidate.involvedTeamIds),
+    label: formatCandidateLabel(candidate, teamLabelResolver),
     score,
     centerX: candidate.centerX,
     centerY: candidate.centerY,
@@ -172,7 +209,7 @@ function mergeTargets(base, candidate) {
   return next;
 }
 
-function createPinnedTeamTarget(teamSummary, config, updatedAt) {
+function createPinnedTeamTarget(teamSummary, config, updatedAt, teamLabelResolver = null) {
   if (!teamSummary) {
     return null;
   }
@@ -180,7 +217,7 @@ function createPinnedTeamTarget(teamSummary, config, updatedAt) {
   const priorityBoost = config?.PINNED_PRIORITY_BOOST ?? 0;
   return {
     id: `pinned-team:${teamSummary.teamId}`,
-    label: `Pinned: ${formatTeamLabel(teamSummary.teamId)}`,
+    label: `Pinned: ${formatTeamLabel(teamSummary.teamId, teamLabelResolver)}`,
     score: teamSummary.activePlayerCount * 12,
     centerX: teamSummary.centroidX,
     centerY: teamSummary.centroidY,
@@ -200,6 +237,7 @@ function buildWatchTargetQueue({
   teamProximities,
   teamSummaries,
   teamSplitRisks,
+  teamLabelResolver,
   pinState,
   mapKey,
   config,
@@ -247,6 +285,7 @@ function buildWatchTargetQueue({
         hotZone: relatedHotZone,
         nearestSplitRisk,
         teamProximities,
+        teamLabelResolver,
         config,
       },
       updatedAt,
@@ -298,7 +337,9 @@ function buildWatchTargetQueue({
       label: target.label.startsWith("Pinned:") ? target.label : `Pinned: ${target.label}`,
       reason: uniqueList([
         "Pinned by operator",
-        ...pinnedTeamsInTarget.map((teamId) => `${formatTeamLabel(teamId)} pinned`),
+        ...pinnedTeamsInTarget.map(
+          (teamId) => `${formatTeamLabel(teamId, teamLabelResolver)} pinned`,
+        ),
         ...target.reason,
       ]),
       priority: target.priority + (config?.PINNED_PRIORITY_BOOST ?? 0),
@@ -319,6 +360,7 @@ function buildWatchTargetQueue({
       teamSummaryById.get(teamId),
       config,
       updatedAt,
+      teamLabelResolver,
     );
     if (syntheticTarget) {
       mergedTargets.push(syntheticTarget);

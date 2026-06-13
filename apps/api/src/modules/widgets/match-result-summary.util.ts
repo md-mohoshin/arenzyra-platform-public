@@ -42,63 +42,126 @@ const pickNumber = (
   return null;
 };
 
-const sumMetric = (
-  players: unknown[],
-  keys: readonly string[],
-): SummaryMetric => {
-  let total = 0;
-  let hasValue = false;
+const PLAYER_LIST_KEYS = [
+  'players',
+  'Players',
+  'playerInfoList',
+  'PlayerInfoList',
+  'TotalPlayerList',
+  'totalPlayerList',
+  'teamPlayerList',
+  'TeamPlayerList',
+] as const;
 
-  for (const player of players) {
-    const playerRecord = asRecord(player);
-    const source = asRecord(playerRecord?.raw) ?? playerRecord;
-    const value = pickNumber(source, keys);
-    if (value === null) {
-      continue;
-    }
-    total += value;
-    hasValue = true;
+const PLAYER_CONTAINER_KEYS = [
+  'raw',
+  'payload',
+  'data',
+  'game',
+  'match',
+] as const;
+
+const pushPlayerList = (lists: unknown[][], value: unknown) => {
+  if (!Array.isArray(value) || value.length === 0) {
+    return;
+  }
+  lists.push(value);
+};
+
+const collectPlayerListsFromRecord = (
+  record: Record<string, unknown> | null,
+  lists: unknown[][],
+  seen: Set<Record<string, unknown>>,
+) => {
+  if (!record || seen.has(record)) {
+    return;
+  }
+  seen.add(record);
+
+  for (const key of PLAYER_LIST_KEYS) {
+    pushPlayerList(lists, record[key]);
   }
 
-  return hasValue ? total : null;
+  for (const key of PLAYER_CONTAINER_KEYS) {
+    collectPlayerListsFromRecord(asRecord(record[key]), lists, seen);
+  }
+};
+
+const extractPlayerLists = (telemetryPayload: unknown): unknown[][] => {
+  const lists: unknown[][] = [];
+  const telemetry = asRecord(telemetryPayload);
+  collectPlayerListsFromRecord(telemetry, lists, new Set());
+  return lists;
+};
+
+const sumMetric = (
+  playerLists: unknown[][],
+  keys: readonly string[],
+): SummaryMetric => {
+  for (const players of playerLists) {
+    let total = 0;
+    let hasValue = false;
+
+    for (const player of players) {
+      const playerRecord = asRecord(player);
+      const source = asRecord(playerRecord?.raw) ?? playerRecord;
+      const value = pickNumber(source, keys);
+      if (value === null) {
+        continue;
+      }
+      total += value;
+      hasValue = true;
+    }
+
+    if (hasValue) {
+      return total;
+    }
+  }
+
+  return null;
 };
 
 export function extractMatchResultSummaryTelemetryStats(
   telemetryPayload: unknown,
 ): MatchResultSummaryTelemetryStats {
-  const telemetry = asRecord(telemetryPayload);
-  const players = Array.isArray(telemetry?.players) ? telemetry.players : [];
+  const playerLists = extractPlayerLists(telemetryPayload);
 
   return {
-    totalKnocks: sumMetric(players, [
+    totalKnocks: sumMetric(playerLists, [
       'knockouts',
       'Knockouts',
       'knocks',
       'Knocks',
       'knockNum',
       'KnockNum',
+      'knockCount',
+      'KnockCount',
     ]),
-    totalDamage: sumMetric(players, [
+    totalDamage: sumMetric(playerLists, [
       'damage',
       'Damage',
       'damageDealt',
       'DamageDealt',
       'totalDamage',
       'TotalDamage',
+      'damageValue',
+      'DamageValue',
     ]),
-    totalAssists: sumMetric(players, [
+    totalAssists: sumMetric(playerLists, [
       'assists',
       'Assists',
       'assistNum',
       'AssistNum',
+      'assistCount',
+      'AssistCount',
     ]),
-    grenadeKills: sumMetric(players, [
+    grenadeKills: sumMetric(playerLists, [
       'killNumByGrenade',
       'KillNumByGrenade',
       'grenadeKills',
       'GrenadeKills',
     ]),
-    vehicleKills: sumMetric(players, [
+    vehicleKills: sumMetric(playerLists, [
       'killNumInVehicle',
       'KillNumInVehicle',
       'vehicleKills',

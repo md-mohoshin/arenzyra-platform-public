@@ -234,7 +234,115 @@ export class CanonicalControlReadService {
         matchId,
       );
     }
-    return { match, state };
+    return {
+      match,
+      state: this.stripUnconfirmedLiveRosterState(match, state),
+    };
+  }
+
+  private stripUnconfirmedLiveRosterState(
+    match: MatchMeta,
+    state: LiveMatchState,
+  ): LiveMatchState {
+    const isLive =
+      match.status === MatchStatus.LIVE ||
+      state.status === 'LIVE' ||
+      state.status === 'FINISH_PENDING';
+    if (!isLive || !Array.isArray(state.teams) || state.teams.length === 0) {
+      return state;
+    }
+
+    let changed = false;
+    const teams = state.teams.map((team) => {
+      if (!this.isUnconfirmedLiveRosterTeam(team)) {
+        return team;
+      }
+      changed = true;
+      return {
+        ...team,
+        alivePlayers: null,
+        totalPlayers: null,
+        alive: undefined,
+        eliminated: undefined,
+        presenceStatus: team.presenceStatus ?? 'UNRESOLVED',
+        players: [],
+      };
+    });
+
+    if (!changed) {
+      return state;
+    }
+
+    return {
+      ...state,
+      teams,
+      summary: this.summarizeSanitizedLiveState(teams, state.summary),
+    };
+  }
+
+  private isUnconfirmedLiveRosterTeam(team: TeamScoreState): boolean {
+    const explicitNoShow =
+      team.wasPresentInMatch === false || team.presenceStatus === 'NO_SHOW';
+    if (explicitNoShow) {
+      return true;
+    }
+
+    if (
+      team.wasPresentInMatch === true ||
+      team.presenceStatus === 'ACTIVE' ||
+      team.hasTelemetryPresence === true
+    ) {
+      return false;
+    }
+
+    const hasTeamScoreSignal =
+      (typeof team.kills === 'number' && team.kills > 0) ||
+      (typeof team.placement === 'number' && Number.isFinite(team.placement)) ||
+      (typeof team.points === 'number' && team.points > 0);
+    if (hasTeamScoreSignal) {
+      return false;
+    }
+
+    const hasPlayerTelemetrySignal = (team.players ?? []).some(
+      (player) =>
+        player.lifeTelemetryFresh === true ||
+        Boolean(player.position) ||
+        (typeof player.kills === 'number' && player.kills > 0),
+    );
+    return !hasPlayerTelemetrySignal;
+  }
+
+  private summarizeSanitizedLiveState(
+    teams: TeamScoreState[],
+    fallback?: LiveMatchState['summary'] | null,
+  ): LiveMatchState['summary'] {
+    const totalTeams = Math.max(0, fallback?.totalTeams ?? teams.length);
+    const totalPlayers = teams.reduce(
+      (sum, team) => sum + Math.max(0, team.totalPlayers ?? 0),
+      0,
+    );
+    const alivePlayers = teams.reduce(
+      (sum, team) => sum + Math.max(0, team.alivePlayers ?? 0),
+      0,
+    );
+    const aliveTeams = teams.reduce(
+      (sum, team) => sum + ((team.alivePlayers ?? 0) > 0 ? 1 : 0),
+      0,
+    );
+    const winnerTeam =
+      teams.find((team) => team.placement === 1) ??
+      (aliveTeams === 1
+        ? (teams.find((team) => (team.alivePlayers ?? 0) > 0) ?? null)
+        : null);
+
+    return {
+      totalTeams,
+      aliveTeams,
+      totalPlayers,
+      alivePlayers,
+      winnerTeamId: winnerTeam?.teamId ?? null,
+      winnerSlot: winnerTeam?.slot ?? null,
+    };
   }
 
   private async loadMatch(matchId: string): Promise<MatchMeta> {
@@ -300,6 +408,8 @@ export class CanonicalControlReadService {
       alivePlayers:
         team.alivePlayers ?? this.countAlivePlayers(team.players ?? []),
       totalPlayers: team.totalPlayers ?? players.length,
+      backpack: team.backpack ?? null,
+      equipment: team.equipment ?? team.backpack ?? null,
       players,
     };
   }
@@ -320,7 +430,10 @@ export class CanonicalControlReadService {
       isAlive: player.alive === true,
       alive: player.alive === true,
       knocked: player.knocked === true,
+      health: player.health ?? null,
       kills: Math.max(0, player.kills ?? 0),
+      assists: Math.max(0, player.assists ?? 0),
+      lifeTelemetryFresh: player.lifeTelemetryFresh === true,
     };
   }
 
@@ -354,6 +467,7 @@ export class CanonicalControlReadService {
         isAlive: true,
         alive: true,
         knocked: false,
+        health: player.health ?? null,
       })),
     };
   }
@@ -380,10 +494,13 @@ export class CanonicalControlReadService {
     controlStatus: LiveMatchState['status'],
     fallback: MatchStatus | null,
   ): MatchStatus | null {
-    if (controlStatus === 'LIVE' || controlStatus === 'PAUSED') {
+    if (controlStatus === 'LIVE') {
       return MatchStatus.LIVE;
     }
-    if (controlStatus === 'ENDED' || controlStatus === 'CONFIRMED') {
+    if (controlStatus === 'FINISH_PENDING') {
+      return MatchStatus.FINISH_PENDING;
+    }
+    if (controlStatus === 'FINISHED') {
       return MatchStatus.FINISHED;
     }
     return fallback;

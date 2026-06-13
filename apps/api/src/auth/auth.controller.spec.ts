@@ -11,6 +11,7 @@ describe('AuthController', () => {
     revoke: jest.fn(),
     validateAccessTokenPayload: jest.fn(),
     me: jest.fn(),
+    serviceSession: jest.fn(),
   } as jest.Mocked<
     Pick<
       AuthService,
@@ -20,6 +21,7 @@ describe('AuthController', () => {
       | 'revoke'
       | 'validateAccessTokenPayload'
       | 'me'
+      | 'serviceSession'
     >
   >;
 
@@ -45,6 +47,14 @@ describe('AuthController', () => {
       name: 'Acme Events',
       email: 'owner@example.com',
       applicantName: 'Owner',
+      country: 'Bangladesh',
+      whatsappNumber: '+8801700000000',
+      discordUsername: 'owner.gg',
+      websiteUrl: 'https://example.com',
+      contactMessage: 'We run weekly tournaments.',
+      requestedPlan: 'Production - Single Game - PUBG Mobile ($29.99/mo)',
+      requestedAddOns: 'None selected',
+      paymentMethod: 'Manual invoice - Wise',
       status: 'PENDING',
       createdAt: new Date('2026-03-24T10:00:00.000Z'),
       updatedAt: new Date('2026-03-24T10:00:00.000Z'),
@@ -55,6 +65,14 @@ describe('AuthController', () => {
       email: 'owner@example.com',
       password: 'secret123',
       applicantName: 'Owner',
+      country: 'Bangladesh',
+      whatsappNumber: '+8801700000000',
+      discordUsername: 'owner.gg',
+      websiteUrl: 'https://example.com',
+      contactMessage: 'We run weekly tournaments.',
+      requestedPlan: 'Production - Single Game - PUBG Mobile ($29.99/mo)',
+      requestedAddOns: 'None selected',
+      paymentMethod: 'Manual invoice - Wise',
     });
 
     expect(auth.applyForOrganization).toHaveBeenCalledWith({
@@ -62,6 +80,14 @@ describe('AuthController', () => {
       email: 'owner@example.com',
       password: 'secret123',
       applicantName: 'Owner',
+      country: 'Bangladesh',
+      whatsappNumber: '+8801700000000',
+      discordUsername: 'owner.gg',
+      websiteUrl: 'https://example.com',
+      contactMessage: 'We run weekly tournaments.',
+      requestedPlan: 'Production - Single Game - PUBG Mobile ($29.99/mo)',
+      requestedAddOns: 'None selected',
+      paymentMethod: 'Manual invoice - Wise',
     });
     expect(result).toEqual({
       data: expect.objectContaining({
@@ -93,5 +119,34 @@ describe('AuthController', () => {
     await controller.me(req);
 
     expect(auth.me).toHaveBeenCalledWith('jwt-token');
+  });
+
+  it('me resolves the bot service token from the authorization header', async () => {
+    const controller = new AuthController(auth as unknown as AuthService);
+    auth.serviceSession.mockResolvedValue({
+      user: {
+        id: 'service-user',
+        email: 'service@example.com',
+        name: 'Service',
+        role: Role.ORGANIZER,
+        organizationId: 'org1',
+      },
+      organization: { id: 'org1', name: 'Org' },
+    });
+
+    const req = {
+      headers: {
+        authorization: 'Bot service-token',
+        'x-organization-id': 'org1',
+      },
+    } as unknown as Request;
+
+    await controller.me(req);
+
+    expect(auth.serviceSession).toHaveBeenCalledWith({
+      token: 'service-token',
+      organizationId: 'org1',
+    });
+    expect(auth.me).not.toHaveBeenCalled();
   });
 });

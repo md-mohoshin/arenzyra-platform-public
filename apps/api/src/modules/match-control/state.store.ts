@@ -7,7 +7,7 @@ import type {
   LiveSyncTeamOwnership,
 } from '../../common/live-sync-contract.util';
 
-export type MatchStateSourceMode = 'AUTO' | 'MANUAL' | 'HYBRID';
+export type MatchStateSourceMode = 'API' | 'MANUAL';
 
 export type MatchStateEventType =
   | 'MATCH_STARTED'
@@ -41,10 +41,30 @@ export type MatchStatePlayer = {
   alive: boolean;
   knocked: boolean;
   eliminated?: boolean;
+  health?: number | null;
   kills: number;
+  assists?: number;
   position?: { x: number; y: number } | null;
   updatedAt?: string | null;
+  lifeTelemetryFresh?: boolean;
   ownership?: LiveSyncPlayerOwnership;
+};
+
+export type MatchStateBackpackItem = {
+  name: string | null;
+  count: number | null;
+  itemId?: string | null;
+  raw?: unknown;
+};
+
+export type MatchStateTeamBackpack = {
+  teamId?: string | null;
+  playerId?: string | null;
+  slot?: number | null;
+  items: MatchStateBackpackItem[];
+  equipment?: MatchStateBackpackItem[];
+  itemCount: number;
+  raw?: unknown;
 };
 
 export type MatchStateObservedPlayer = {
@@ -109,6 +129,8 @@ export type TeamScoreState = {
   totalPlayers?: number | null;
   alive?: boolean;
   eliminated?: boolean;
+  backpack?: MatchStateTeamBackpack | null;
+  equipment?: MatchStateTeamBackpack | null;
   updatedAt?: string | null;
   sourceMode?: MatchStateSourceMode;
   ownership?: LiveSyncTeamOwnership;
@@ -139,6 +161,31 @@ export type LiveMatchState = {
 const MIN_VALID_ALIVE_TEAMS = 2;
 const MIN_VALID_TOTAL_PLAYERS = 10;
 const MAX_INIT_WAIT_MS = 120_000;
+
+const normalizeSourceMode = (value: string | null | undefined): string =>
+  (value ?? '').toString().trim().toUpperCase();
+
+export const isAutomaticMatchStateSourceMode = (
+  value: string | null | undefined,
+): boolean => {
+  const normalized = normalizeSourceMode(value);
+  return (
+    normalized === 'API' || normalized === 'AUTO' || normalized === 'HYBRID'
+  );
+};
+
+export const toCanonicalMatchStateSourceMode = (
+  value: string | null | undefined,
+): MatchStateSourceMode | null => {
+  const normalized = normalizeSourceMode(value);
+  if (normalized === 'MANUAL') {
+    return 'MANUAL';
+  }
+  if (isAutomaticMatchStateSourceMode(normalized)) {
+    return 'API';
+  }
+  return null;
+};
 
 const normalizeCount = (value: unknown): number | null => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {

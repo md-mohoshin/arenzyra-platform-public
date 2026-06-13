@@ -1,4 +1,8 @@
 import { comparePresenceStatus } from '../../common/results-presence.util';
+import {
+  compareRankingRows,
+  type RankingTieBreakRow,
+} from '../../common/ranking-tiebreakers.util';
 
 export type WidgetContractVersion = 'v1';
 
@@ -123,6 +127,7 @@ export type WidgetPlayerListRow = WidgetTeamListRow & {
     alive?: boolean | null;
     knocked?: boolean | null;
     knocks?: number | null;
+    assists?: number | null;
   }>;
 };
 
@@ -233,13 +238,11 @@ export function sortScoreboardRows(
     );
     if (presenceOrder !== 0) return presenceOrder;
 
-    const aPoints = Number(a.totalPoints ?? 0);
-    const bPoints = Number(b.totalPoints ?? 0);
-    if (bPoints !== aPoints) return bPoints - aPoints;
-
-    const aKills = Number(a.totalKills ?? 0);
-    const bKills = Number(b.totalKills ?? 0);
-    if (bKills !== aKills) return bKills - aKills;
+    const rankingOrder = compareRankingRows(
+      a as RankingTieBreakRow,
+      b as RankingTieBreakRow,
+    );
+    if (rankingOrder !== 0) return rankingOrder;
 
     const aPlace = Number.isFinite(a.placement)
       ? (a.placement as number)

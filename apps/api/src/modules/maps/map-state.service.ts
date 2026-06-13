@@ -952,7 +952,12 @@ export class MapStateService {
           this.resolveTimestampMs(
             evt.timestamp ??
               evt.receivedAt ??
-              (payloadObj?.timestamp as string | number | Date | null | undefined) ??
+              (payloadObj?.timestamp as
+                | string
+                | number
+                | Date
+                | null
+                | undefined) ??
               null,
           );
       }
@@ -1137,8 +1142,7 @@ export class MapStateService {
 
     return {
       matchId,
-      updatedAt:
-        updatedAtMs > 0 ? new Date(updatedAtMs).toISOString() : null,
+      updatedAt: updatedAtMs > 0 ? new Date(updatedAtMs).toISOString() : null,
       map: mapConfig
         ? {
             ...mapConfig,

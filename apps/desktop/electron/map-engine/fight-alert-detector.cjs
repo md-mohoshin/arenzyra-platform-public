@@ -116,6 +116,7 @@ function selectFightAlertCandidate({
   teamSummaries,
   config,
   updatedAt,
+  teamLabelResolver,
 } = {}) {
   const hotZones = Array.isArray(assistSnapshot?.hotZones) ? assistSnapshot.hotZones : [];
   const teamProximities = Array.isArray(assistSnapshot?.teamProximities)
@@ -188,14 +189,16 @@ function selectFightAlertCandidate({
           ? bestWatchTarget.score
           : 0;
 
+      const teamALabel = formatTeamLabel(proximity.teamA, teamLabelResolver);
+      const teamBLabel = formatTeamLabel(proximity.teamB, teamLabelResolver);
       candidates.push({
         id: `fight:${hotZone.id}:${[proximity.teamA, proximity.teamB].sort().join("|")}`,
         hotZoneId: hotZone.id,
         watchTargetId: bestWatchTarget?.id ?? null,
         teamIds: normalizeTeamIds([proximity.teamA, proximity.teamB]),
-        teamALabel: formatTeamLabel(proximity.teamA),
-        teamBLabel: formatTeamLabel(proximity.teamB),
-        matchup: `${formatTeamLabel(proximity.teamA)} vs ${formatTeamLabel(proximity.teamB)}`,
+        teamALabel,
+        teamBLabel,
+        matchup: `${teamALabel} vs ${teamBLabel}`,
         combatScore,
         combatThreshold,
         distance: proximity.distance,

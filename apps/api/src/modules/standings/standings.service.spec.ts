@@ -35,6 +35,10 @@ class PrismaMock {
     findFirst: () => Promise.resolve(null),
   };
 
+  adminAdjustment = {
+    findMany: () => Promise.resolve([]),
+  };
+
   matchSlotResultData = [
     {
       id: 'slot-a',

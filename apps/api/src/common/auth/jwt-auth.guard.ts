@@ -5,11 +5,16 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
+import { AuthService } from '../../auth/auth.service';
+import type { AuthUser } from './auth.types';
 import { IS_PUBLIC_KEY } from './public.decorator';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
-  constructor(private readonly reflector: Reflector) {
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly auth: AuthService,
+  ) {
     super();
   }
 
@@ -32,12 +37,30 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     );
   }
 
+  private getHeader(
+    headers: Record<string, string | string[] | undefined> | undefined,
+    name: string,
+  ) {
+    const value = headers?.[name] ?? headers?.[name.toLowerCase()];
+    return Array.isArray(value) ? value[0] : value;
+  }
+
+  private parseServiceToken(authorization: string | undefined) {
+    const match = /^Bot\s+(.+)$/i.exec(authorization?.trim() ?? '');
+    return match?.[1]?.trim() || null;
+  }
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     if (context.getType() === 'ws') return true;
 
     if (context.getType() !== 'http') return true;
 
-    const req = context.switchToHttp().getRequest<{ url?: string }>();
+    const req = context.switchToHttp().getRequest<{
+      url?: string;
+      headers?: Record<string, string | string[] | undefined>;
+      user?: AuthUser;
+      isServiceToken?: boolean;
+    }>();
     const url = typeof req?.url === 'string' ? req.url : '';
 
     if (JwtAuthGuard.shouldBypass(url)) return true;
@@ -47,6 +70,19 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       context.getClass(),
     ]);
     if (isPublic) return true;
+
+    const serviceToken = this.parseServiceToken(
+      this.getHeader(req.headers, 'authorization'),
+    );
+    if (serviceToken) {
+      req.user = await this.auth.validateServiceToken({
+        token: serviceToken,
+        organizationId:
+          this.getHeader(req.headers, 'x-organization-id') ?? null,
+      });
+      req.isServiceToken = true;
+      return true;
+    }
 
     const result = await super.canActivate(context);
     return typeof result === 'boolean' ? result : true;

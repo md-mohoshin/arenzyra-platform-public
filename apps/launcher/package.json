@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder -w",
+    "sync:branding": "node ../../scripts/sync-brand-icons.cjs",
+    "dist": "npm run sync:branding && electron-builder -w",
     "test": "echo \"No tests configured\" && exit 0"
   },
   "keywords": [],
@@ -32,6 +33,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
       {
         "from": "../../infra/health.ps1",
         "to": "health.ps1"

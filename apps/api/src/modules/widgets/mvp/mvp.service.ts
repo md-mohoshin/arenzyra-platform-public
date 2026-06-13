@@ -1,7 +1,7 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../db/prisma.service';
 import { AuditService } from '../../audit/audit.service';
-import { AuditAction, MatchStatus } from '@prisma/client';
+import { AuditAction, MatchEventType, MatchStatus } from '@prisma/client';
 import { MvpPlayer, MvpState } from './mvp.types';
 import { resolvePlayerPhotoUrl, resolveTeamLogoUrl } from '../widgets.snapshot';
 import { isMatchFinishedStatus } from '../../../common/match-status.util';
@@ -13,6 +13,11 @@ type AuditLogAction =
   | 'MVP_SHOW'
   | 'MVP_HIDE'
   | 'MVP_REPLAY';
+
+type SurvivalContext = {
+  matchDurationSeconds: number | null;
+  deathsByName: Map<string, number>;
+};
 
 @Injectable()
 export class MvpService {
@@ -34,89 +39,233 @@ export class MvpService {
   private scorePlayer(opts: {
     kills: number;
     assists: number;
+    isAlive?: boolean | null;
     survivalTime?: number | null;
     placement?: number | null;
   }) {
-    const { kills, assists, survivalTime, placement } = opts;
-    const placementBonus = placement ? Math.max(0, 20 - placement) : 0;
-    const survivalScore = survivalTime ? Math.round(survivalTime / 60) : 0;
-    return kills * 4 + assists * 2 + placementBonus + survivalScore;
+    const { kills, assists, isAlive, survivalTime, placement } = opts;
+    const placementBonus = placement ? Math.max(0, 21 - placement) : 0;
+    const survivalScore = survivalTime
+      ? Math.min(10, Math.round(survivalTime / 180))
+      : 0;
+    const aliveBonus = isAlive === true ? 2 : 0;
+    return (
+      kills * 6 + assists * 4 + placementBonus + survivalScore + aliveBonus
+    );
+  }
+
+  private normalizeName(value: string | null | undefined): string | null {
+    const normalized = value?.trim().toLowerCase();
+    return normalized ? normalized : null;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private stringValue(value: unknown): string | null {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+    return null;
+  }
+
+  private numberValue(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  private async buildSurvivalContext(
+    matchId: string,
+  ): Promise<SurvivalContext> {
+    const killEvents = await this.prisma.matchEvent.findMany({
+      where: { matchId, type: MatchEventType.KILL },
+      select: { payload: true, rawPayload: true },
+    });
+    const deathsByName = new Map<string, number>();
+    let maxGameTime: number | null = null;
+
+    for (const event of killEvents) {
+      const payload = this.asRecord(event.payload);
+      const raw = this.asRecord(event.rawPayload);
+      const gameTime =
+        this.numberValue(raw?.CurGameTime) ??
+        this.numberValue(raw?.curGameTime) ??
+        this.numberValue(raw?.GameTime) ??
+        this.numberValue(raw?.gameTime) ??
+        this.numberValue(payload?.CurGameTime) ??
+        this.numberValue(payload?.curGameTime);
+
+      if (gameTime !== null) {
+        maxGameTime =
+          maxGameTime === null ? gameTime : Math.max(maxGameTime, gameTime);
+      }
+
+      const victimName = this.normalizeName(
+        this.stringValue(raw?.VictimName) ??
+          this.stringValue(raw?.victimName) ??
+          this.stringValue(payload?.victimName) ??
+          this.stringValue(payload?.victim),
+      );
+      if (!victimName || gameTime === null) {
+        continue;
+      }
+
+      const previous = deathsByName.get(victimName);
+      deathsByName.set(
+        victimName,
+        previous === undefined ? gameTime : Math.min(previous, gameTime),
+      );
+    }
+
+    return {
+      matchDurationSeconds:
+        maxGameTime !== null ? Math.max(0, Math.round(maxGameTime)) : null,
+      deathsByName,
+    };
+  }
+
+  private resolveSurvivalTime(opts: {
+    playerName: string;
+    placement: number | null;
+    isAlive: boolean | null;
+    context: SurvivalContext;
+  }): number | null {
+    const playerKey = this.normalizeName(opts.playerName);
+    const deathTime = playerKey
+      ? opts.context.deathsByName.get(playerKey)
+      : null;
+    if (deathTime !== null && deathTime !== undefined) {
+      return Math.max(0, Math.round(deathTime));
+    }
+    if (opts.isAlive === true || opts.placement === 1) {
+      return opts.context.matchDurationSeconds;
+    }
+    return null;
   }
 
   private async computeAuto(matchId: string): Promise<MvpPlayer | null> {
-    const players = await this.prisma.matchSlotPlayerResult.findMany({
-      where: { slotResult: { matchId } },
-      include: {
-        player: {
-          select: {
-            id: true,
-            ign: true,
-            realName: true,
-            photoUrl: true,
-            updatedAt: true,
+    const [players, survivalContext] = await Promise.all([
+      this.prisma.matchSlotPlayerResult.findMany({
+        where: { slotResult: { matchId } },
+        include: {
+          player: {
+            select: {
+              id: true,
+              ign: true,
+              realName: true,
+              photoUrl: true,
+              updatedAt: true,
+            },
           },
-        },
-        slotResult: {
-          select: {
-            placement: true,
-            team: {
-              select: {
-                id: true,
-                name: true,
-                tag: true,
-                logoUrl: true,
-                updatedAt: true,
+          slotResult: {
+            select: {
+              placement: true,
+              team: {
+                select: {
+                  id: true,
+                  name: true,
+                  tag: true,
+                  logoUrl: true,
+                  updatedAt: true,
+                },
               },
             },
           },
         },
-      },
-    });
+      }),
+      this.buildSurvivalContext(matchId),
+    ]);
 
     if (!players.length) return null;
 
-    const rows: MvpPlayer[] = players.map((p) => {
-      const kills = p.kills ?? 0;
-      const assists = (p.knocks ?? 0) > 0 ? (p.knocks ?? 0) : 0;
-      const placement = p.slotResult?.placement ?? null;
-      const score = this.scorePlayer({
-        kills,
-        assists,
-        survivalTime: null,
-        placement,
-      });
-      return {
-        playerId: p.playerId ?? p.id,
-        ign: p.player?.ign ?? p.playerName ?? p.player?.realName ?? 'Unknown',
-        photoUrl:
-          resolvePlayerPhotoUrl({
-            photoUrl: p.player?.photoUrl ?? null,
-            photoUpdatedAt: p.player?.updatedAt ?? null,
-            updatedAt: p.player?.updatedAt ?? null,
-          }) ?? null,
-        teamId: p.slotResult?.team?.id ?? null,
-        teamName:
-          p.slotResult?.team?.name ??
-          p.slotResult?.team?.tag ??
-          (p.slotResult?.team ? 'Team' : null),
-        teamLogo: resolveTeamLogoUrl(p.slotResult?.team ?? null),
-        kills,
-        assists,
-        placement,
-        survivalTime: null,
-        mvpScore: score,
-      };
-    });
+    const rows: Array<MvpPlayer & { isAlive: boolean | null }> = players.map(
+      (p) => {
+        const kills = p.kills ?? 0;
+        const assists = Math.max(0, p.assists ?? 0);
+        const placement = p.slotResult?.placement ?? null;
+        const ign =
+          p.player?.ign ?? p.playerName ?? p.player?.realName ?? 'Unknown';
+        const isAlive = p.isAlive ?? p.alive ?? null;
+        const survivalTime = this.resolveSurvivalTime({
+          playerName: ign,
+          placement,
+          isAlive,
+          context: survivalContext,
+        });
+        const score = this.scorePlayer({
+          kills,
+          assists,
+          isAlive,
+          survivalTime,
+          placement,
+        });
+        return {
+          playerId: p.playerId ?? p.id,
+          ign,
+          photoUrl:
+            resolvePlayerPhotoUrl({
+              photoUrl: p.player?.photoUrl ?? null,
+              photoUpdatedAt: p.player?.updatedAt ?? null,
+              updatedAt: p.player?.updatedAt ?? null,
+            }) ?? null,
+          teamId: p.slotResult?.team?.id ?? null,
+          teamName:
+            p.slotResult?.team?.name ??
+            p.slotResult?.team?.tag ??
+            (p.slotResult?.team ? 'Team' : null),
+          teamLogo: resolveTeamLogoUrl(p.slotResult?.team ?? null),
+          kills,
+          assists,
+          placement,
+          isAlive,
+          survivalTime,
+          mvpScore: score,
+        };
+      },
+    );
 
     const sorted = rows.sort((a, b) => {
       if (b.mvpScore !== a.mvpScore) return b.mvpScore - a.mvpScore;
       if (b.kills !== a.kills) return b.kills - a.kills;
+      if (b.assists !== a.assists) return b.assists - a.assists;
+      const aPlacement = a.placement ?? Number.MAX_SAFE_INTEGER;
+      const bPlacement = b.placement ?? Number.MAX_SAFE_INTEGER;
+      if (aPlacement !== bPlacement) return aPlacement - bPlacement;
       if ((b.survivalTime ?? 0) !== (a.survivalTime ?? 0))
         return (b.survivalTime ?? 0) - (a.survivalTime ?? 0);
+      if ((b.isAlive === true) !== (a.isAlive === true))
+        return b.isAlive === true ? 1 : -1;
       return a.ign.localeCompare(b.ign);
     });
 
-    return sorted[0] ?? null;
+    const winner = sorted[0];
+    if (!winner) return null;
+    return {
+      playerId: winner.playerId,
+      ign: winner.ign,
+      photoUrl: winner.photoUrl,
+      teamId: winner.teamId,
+      teamName: winner.teamName,
+      teamLogo: winner.teamLogo,
+      kills: winner.kills,
+      assists: winner.assists,
+      placement: winner.placement,
+      survivalTime: winner.survivalTime,
+      mvpScore: winner.mvpScore,
+    };
   }
 
   private getState(matchId: string): MvpState {
@@ -267,12 +416,21 @@ export class MvpService {
     });
     if (!rec) return null;
     const kills = rec.kills ?? 0;
-    const assists = (rec.knocks ?? 0) > 0 ? (rec.knocks ?? 0) : 0;
+    const assists = Math.max(0, rec.assists ?? 0);
     const placement = rec.slotResult?.placement ?? null;
+    const ign =
+      rec.player?.ign ?? rec.playerName ?? rec.player?.realName ?? 'Unknown';
+    const isAlive = rec.isAlive ?? rec.alive ?? null;
+    const survivalContext = await this.buildSurvivalContext(matchId);
+    const survivalTime = this.resolveSurvivalTime({
+      playerName: ign,
+      placement,
+      isAlive,
+      context: survivalContext,
+    });
     return {
       playerId: rec.playerId ?? rec.id,
-      ign:
-        rec.player?.ign ?? rec.playerName ?? rec.player?.realName ?? 'Unknown',
+      ign,
       photoUrl:
         resolvePlayerPhotoUrl({
           photoUrl: rec.player?.photoUrl ?? null,
@@ -288,12 +446,13 @@ export class MvpService {
       kills,
       assists,
       placement,
-      survivalTime: null,
+      survivalTime,
       mvpScore: this.scorePlayer({
         kills,
         assists,
         placement,
-        survivalTime: null,
+        isAlive,
+        survivalTime,
       }),
     };
   }

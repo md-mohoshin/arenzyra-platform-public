@@ -5,6 +5,7 @@
   const PLAYER_STALE_SNAP_MS = 2200;
   const PLAYER_SNAP_WORLD_RATIO = 0.035;
   const DEBUG_REFRESH_MS = 160;
+  const COMBAT_ROLE_TTL_MS = 2600;
   const KILL_PING_TTL_MS = 3000;
   const KILL_PING_MAX_COUNT = 20;
   const COMMENTARY_REFRESH_MS = 1000;
@@ -16,6 +17,12 @@
   const CIRCLE_CAMERA_PADDING_RATIO = 0.1;
   const CIRCLE_CAMERA_PLAYER_PADDING_WORLD_RATIO = 0.018;
   const CIRCLE_CAMERA_SMOOTHING_MS = 520;
+  const FLIGHT_SYNTHETIC_DURATION_MS = 90_000;
+  const FLIGHT_PLAYER_LINE_THRESHOLD_RATIO = 0.022;
+  const FLIGHT_PLAYER_PLANE_THRESHOLD_RATIO = 0.055;
+  const VEHICLE_FALLBACK_POLL_MS = 700;
+  const VEHICLE_FALLBACK_TTL_MS = 2500;
+  const VEHICLE_FALLBACK_URL = "http://127.0.0.1:10086/gettotalplayerlist";
   const MATCH_FINISHED_PHASES = new Set([
     "finished",
     "ended",
@@ -30,6 +37,8 @@
   const MANUAL_CAMERA_MAX_ZOOM = 6;
   const MANUAL_CAMERA_RESUME_MS = 8000;
   const MANUAL_CAMERA_ZOOM_STEP = 1.18;
+  const MAP_TILE_MAX_VISIBLE_TILES = 180;
+  const MAP_TILE_PADDING_TILES = 1;
   const RENDER_REFERENCE_PX = 1040;
   const DEFAULT_STYLE = "esports";
   const DEFAULT_TEAM_LOGO_URL = "/assets/default-team.png";
@@ -93,6 +102,7 @@
   const widgetShell = document.getElementById("widget-shell");
   const stage = document.getElementById("map-stage");
   const image = document.getElementById("map-image");
+  const tileLayer = document.getElementById("map-tile-layer");
   const canvas = document.getElementById("map-overlay");
   const statusPill = document.getElementById("status-pill");
   const timerValue = document.getElementById("timer-value");
@@ -124,6 +134,7 @@
     !widgetShell ||
     !stage ||
     !image ||
+    !tileLayer ||
     !canvas ||
     !statusPill ||
     !timerValue ||
@@ -181,6 +192,29 @@
 
   function clamp01(value) {
     return clamp(value, 0, 1);
+  }
+
+  function normalizeDirectionVector(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    if (!source) {
+      return null;
+    }
+
+    const x = toFiniteNumber(source.x ?? source.X, null);
+    const y = toFiniteNumber(source.y ?? source.Y, null);
+    if (x === null || y === null) {
+      return null;
+    }
+
+    const magnitude = Math.hypot(x, y);
+    if (!Number.isFinite(magnitude) || magnitude <= 0.0001) {
+      return null;
+    }
+
+    return {
+      x: x / magnitude,
+      y: y / magnitude,
+    };
   }
 
   function lerp(start, end, progress) {
@@ -366,7 +400,126 @@
     return null;
   }
 
-  function normalizeTeamBrandingRecord(record, index) {
+  function normalizeLookupText(value) {
+    const normalized = normalizeText(value);
+    return normalized ? normalized.toLowerCase() : null;
+  }
+
+  function addVehicleLookupKeys(keys, player) {
+    if (!keys || !player) {
+      return;
+    }
+
+    for (const value of [
+      player.playerId,
+      player.externalPlayerId,
+      player.pubgPlayerId,
+      player.playerKey,
+      player.uId,
+      player.uid,
+      player.playerOpenId,
+      player.playerName,
+      player.name,
+    ]) {
+      const key = normalizeLookupText(value);
+      if (key) {
+        keys.add(key);
+      }
+    }
+
+    const teamId = normalizeLookupText(player.teamId);
+    const playerName = normalizeLookupText(player.playerName || player.name);
+    if (teamId && playerName) {
+      keys.add(`${teamId}:${playerName}`);
+    }
+  }
+
+  function isRawVehiclePlayer(player) {
+    if (!player || typeof player !== "object") {
+      return false;
+    }
+
+    for (const key of ["inVehicle", "isInVehicle", "isDriving", "isRiding"]) {
+      if (player[key] === true) {
+        return true;
+      }
+    }
+
+    const liveState = toFiniteNumber(player.liveState ?? player.LiveState ?? player.lifeState);
+    return liveState !== null && Math.trunc(liveState) === 3;
+  }
+
+  function isVehicleFallbackActive(player, now) {
+    if (
+      !player ||
+      state.vehicleFallbackByKey.size === 0 ||
+      now - state.vehicleFallbackUpdatedAt > VEHICLE_FALLBACK_TTL_MS
+    ) {
+      return false;
+    }
+
+    const keys = new Set();
+    addVehicleLookupKeys(keys, player);
+    for (const key of keys) {
+      if (state.vehicleFallbackByKey.has(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function refreshVehicleFallback(now) {
+    if (
+      state.vehicleFallbackPending ||
+      now - state.vehicleFallbackPollAt < VEHICLE_FALLBACK_POLL_MS ||
+      typeof window.fetch !== "function"
+    ) {
+      return;
+    }
+
+    state.vehicleFallbackPollAt = now;
+    state.vehicleFallbackPending = true;
+    window
+      .fetch(VEHICLE_FALLBACK_URL, { cache: "no-store" })
+      .then((response) => (response && response.ok ? response.json() : null))
+      .then((payload) => {
+        const players =
+          payload && Array.isArray(payload.playerInfoList) ? payload.playerInfoList : [];
+        const next = new Map();
+        for (const player of players) {
+          if (!isRawVehiclePlayer(player)) {
+            continue;
+          }
+          const keys = new Set();
+          addVehicleLookupKeys(keys, player);
+          for (const key of keys) {
+            next.set(key, true);
+          }
+        }
+        state.vehicleFallbackByKey = next;
+        state.vehicleFallbackUpdatedAt = performance.now();
+      })
+      .catch(() => {
+        if (performance.now() - state.vehicleFallbackUpdatedAt > VEHICLE_FALLBACK_TTL_MS) {
+          state.vehicleFallbackByKey.clear();
+        }
+      })
+      .finally(() => {
+        state.vehicleFallbackPending = false;
+      });
+  }
+
+  function buildCombatPlayerLookupKey(teamId, playerKey) {
+    const normalizedPlayerKey = normalizeLookupText(playerKey);
+    if (!normalizedPlayerKey) {
+      return null;
+    }
+
+    const normalizedTeamId = normalizeTeamKey(teamId);
+    return normalizedTeamId ? `${normalizedTeamId}|${normalizedPlayerKey}` : normalizedPlayerKey;
+  }
+
+  function normalizeTeamBrandingRecord(record, _index) {
     if (!record || typeof record !== "object") {
       return null;
     }
@@ -554,6 +707,7 @@
   const styleConfig = STYLE_CONFIGS[style] || STYLE_CONFIGS[DEFAULT_STYLE];
   const showOperatorPanel = resolveQueryFlag("operatorpanel");
   const showCameraAssist = resolveQueryFlag("cameraassist");
+  const showMapLabels = resolveQueryFlag("maplabels", true);
 
   const state = {
     connectionStatus: "connecting",
@@ -590,6 +744,7 @@
       clusters: [],
       fightHighlights: [],
       flightPath: null,
+      flightProgress: null,
       focusCandidates: [],
       hotZones: [],
       killPingCount: 0,
@@ -638,6 +793,12 @@
       zoom: 1,
     },
     mapContext: null,
+    mapTileState: {
+      active: false,
+      elements: new Map(),
+      mapKey: null,
+      zoom: null,
+    },
     operatorFlags: {
       showAlerts: resolveQueryFlag("alerts"),
       showBasePanel: showOperatorPanel,
@@ -649,6 +810,12 @@
     playerMediaApiBase: null,
     playerMotionById: new Map(),
     playersPacket: null,
+    vehicleFallbackByKey: new Map(),
+    vehicleFallbackPending: false,
+    vehicleFallbackPollAt: 0,
+    vehicleFallbackUpdatedAt: 0,
+    flightPathSeenAt: null,
+    flightPathSignature: "",
     productionSupportSnapshot: bootstrap.snapshot ? bootstrap.snapshot.productionSupport || null : null,
     alertsMarkup: "",
     renderMetrics: {
@@ -664,6 +831,12 @@
       flightPathAccentWidth: 5,
       flightPathArrowLength: 18,
       flightPathArrowWidth: 10,
+      flightPlaneBodyWidth: 11,
+      flightPlaneLength: 42,
+      flightPlaneShadowBlur: 13,
+      flightPlaneTrailLength: 76,
+      flightPlaneTrailWidth: 5,
+      flightPlaneWingspan: 42,
       flightPathStartRadius: 9,
       flightPathWidth: 8,
       killPingMaxRadius: 28,
@@ -676,7 +849,9 @@
       markerRadius: 5.5,
       markerStrokeWidth: 1.35,
       nextZoneLineWidth: 1.7,
-      knockedCrossSize: 6,
+      fireArrowLength: 24,
+      fireArrowWidth: 8,
+      knockPlusSize: 7,
       scale: 1,
       teamBadgeFont: "",
       teamBadgeHeight: 24,
@@ -824,6 +999,179 @@
     );
   }
 
+  function resetMapTileLayer() {
+    if (state.mapTileState.elements.size > 0) {
+      state.mapTileState.elements.forEach((element) => element.remove());
+      state.mapTileState.elements.clear();
+    }
+    state.mapTileState.active = false;
+    state.mapTileState.mapKey = null;
+    state.mapTileState.zoom = null;
+    tileLayer.removeAttribute("data-active");
+  }
+
+  function resolveMapTileSource(mapDefinition) {
+    const tileSource = mapDefinition && mapDefinition.tileSource;
+    if (!tileSource || typeof tileSource !== "object") {
+      return null;
+    }
+
+    const endpoint = String(tileSource.endpoint || "").trim();
+    const prefix = String(tileSource.prefix || "").trim().replace(/^\/+|\/+$/g, "");
+    if (!endpoint || !prefix) {
+      return null;
+    }
+
+    const minZoom = clamp(Math.round(toFiniteNumber(tileSource.minZoom, 0) || 0), 0, 8);
+    const maxZoom = clamp(
+      Math.round(toFiniteNumber(tileSource.maxZoom, minZoom) || minZoom),
+      minZoom,
+      8,
+    );
+
+    return {
+      endpoint,
+      prefix,
+      minZoom,
+      maxZoom,
+      sourceSize: Math.max(1, toFiniteNumber(tileSource.sourceSize, 8192) || 8192),
+      tileSize: Math.max(1, toFiniteNumber(tileSource.tileSize, 256) || 256),
+    };
+  }
+
+  function getCameraViewportRatios(width, height) {
+    const camera = state.mapCamera;
+    const zoom = camera && camera.enabled ? Math.max(1, toFiniteNumber(camera.zoom, 1) || 1) : 1;
+    if (!camera || !camera.enabled || zoom <= 1.002) {
+      return { bottom: 1, left: 0, right: 1, top: 0 };
+    }
+
+    const safeWidth = Math.max(1, width || 1);
+    const safeHeight = Math.max(1, height || 1);
+    const viewWidth = safeWidth / zoom;
+    const viewHeight = safeHeight / zoom;
+    const left = clamp((toFiniteNumber(camera.x, 0) || 0) / safeWidth, 0, 1);
+    const top = clamp((toFiniteNumber(camera.y, 0) || 0) / safeHeight, 0, 1);
+
+    return {
+      bottom: clamp((top * safeHeight + viewHeight) / safeHeight, 0, 1),
+      left,
+      right: clamp((left * safeWidth + viewWidth) / safeWidth, 0, 1),
+      top,
+    };
+  }
+
+  function resolveTileRange(tileCount, view) {
+    const maxIndex = Math.max(0, tileCount - 1);
+    return {
+      endX: clamp(Math.ceil(view.right * tileCount) + MAP_TILE_PADDING_TILES, 0, maxIndex),
+      endY: clamp(Math.ceil(view.bottom * tileCount) + MAP_TILE_PADDING_TILES, 0, maxIndex),
+      startX: clamp(Math.floor(view.left * tileCount) - MAP_TILE_PADDING_TILES, 0, maxIndex),
+      startY: clamp(Math.floor(view.top * tileCount) - MAP_TILE_PADDING_TILES, 0, maxIndex),
+    };
+  }
+
+  function resolveMapTilePlan(tileSource, width, height) {
+    const camera = state.mapCamera;
+    const cameraZoom = camera && camera.enabled ? Math.max(1, toFiniteNumber(camera.zoom, 1) || 1) : 1;
+    const deviceScale = clamp(toFiniteNumber(window.devicePixelRatio, 1) || 1, 1, 1.5);
+    const targetPixels = Math.max(width || 1, height || 1) * cameraZoom * deviceScale;
+    let zoom = tileSource.minZoom;
+
+    while (
+      zoom < tileSource.maxZoom &&
+      tileSource.tileSize * Math.pow(2, zoom) < targetPixels * 1.15
+    ) {
+      zoom += 1;
+    }
+
+    const view = getCameraViewportRatios(width, height);
+    while (zoom > tileSource.minZoom) {
+      const tileCount = Math.pow(2, zoom);
+      const range = resolveTileRange(tileCount, view);
+      const visibleCount =
+        (range.endX - range.startX + 1) * (range.endY - range.startY + 1);
+      if (visibleCount <= MAP_TILE_MAX_VISIBLE_TILES) {
+        return { range, tileCount, visibleCount, zoom };
+      }
+      zoom -= 1;
+    }
+
+    const tileCount = Math.pow(2, zoom);
+    const range = resolveTileRange(tileCount, view);
+    return {
+      range,
+      tileCount,
+      visibleCount: (range.endX - range.startX + 1) * (range.endY - range.startY + 1),
+      zoom,
+    };
+  }
+
+  function buildMapTileUrl(tileSource, zoom, x, y) {
+    const server = Math.abs((x + y + zoom) % 4);
+    const endpoint = String(tileSource.endpoint || "")
+      .replace("{server}", String(server))
+      .replace("{0-3}", String(server))
+      .replace(/\/+$/g, "");
+    return `${endpoint}/${tileSource.prefix}/${zoom}/${x}/${y}.png`;
+  }
+
+  function updateMapTileLayer(mapDefinition, width, height) {
+    const tileSource = resolveMapTileSource(mapDefinition);
+    if (!tileSource) {
+      resetMapTileLayer();
+      return;
+    }
+
+    const plan = resolveMapTilePlan(tileSource, width, height);
+    const nextMapKey = mapDefinition.key || "unknown";
+    if (
+      state.mapTileState.mapKey !== nextMapKey ||
+      state.mapTileState.zoom !== plan.zoom
+    ) {
+      resetMapTileLayer();
+      state.mapTileState.mapKey = nextMapKey;
+      state.mapTileState.zoom = plan.zoom;
+    }
+
+    const neededKeys = new Set();
+    const tileWidthPercent = 100 / plan.tileCount;
+
+    for (let y = plan.range.startY; y <= plan.range.endY; y += 1) {
+      for (let x = plan.range.startX; x <= plan.range.endX; x += 1) {
+        const key = `${nextMapKey}:${plan.zoom}:${x}:${y}`;
+        neededKeys.add(key);
+
+        if (state.mapTileState.elements.has(key)) {
+          continue;
+        }
+
+        const tile = document.createElement("img");
+        tile.alt = "";
+        tile.decoding = "async";
+        tile.draggable = false;
+        tile.referrerPolicy = "no-referrer";
+        tile.style.left = `${(x * tileWidthPercent).toFixed(6)}%`;
+        tile.style.top = `${(y * tileWidthPercent).toFixed(6)}%`;
+        tile.style.width = `${tileWidthPercent.toFixed(6)}%`;
+        tile.style.height = `${tileWidthPercent.toFixed(6)}%`;
+        tile.src = buildMapTileUrl(tileSource, plan.zoom, x, y);
+        tileLayer.appendChild(tile);
+        state.mapTileState.elements.set(key, tile);
+      }
+    }
+
+    state.mapTileState.elements.forEach((element, key) => {
+      if (!neededKeys.has(key)) {
+        element.remove();
+        state.mapTileState.elements.delete(key);
+      }
+    });
+
+    state.mapTileState.active = true;
+    tileLayer.dataset.active = "true";
+  }
+
   function normalizeWorldX(worldX, mapDefinition, options) {
     const worldSize = resolveWorldSize(mapDefinition);
     return clamp(
@@ -919,6 +1267,10 @@
       return null;
     }
 
+    if (zone.circlesVisible === false) {
+      return null;
+    }
+
     if (
       zone.currentCircle &&
       Number.isFinite(zone.currentCircle.centerX) &&
@@ -944,6 +1296,10 @@
 
   function getNextCircle(zone) {
     if (!zone) {
+      return null;
+    }
+
+    if (zone.circlesVisible === false) {
       return null;
     }
 
@@ -975,6 +1331,10 @@
       return null;
     }
 
+    if (zone.circlesVisible === false) {
+      return null;
+    }
+
     if (
       zone.blueCircle &&
       Number.isFinite(zone.blueCircle.centerX) &&
@@ -998,23 +1358,128 @@
     return { centerX, centerY, radius };
   }
 
-  function getFlightPath(zone, now = Date.now()) {
+  function circlesRoughlyMatch(left, right) {
+    if (!left || !right) {
+      return false;
+    }
+
+    const radiusReference = Math.max(
+      Math.abs(toFiniteNumber(left.radius) || 0),
+      Math.abs(toFiniteNumber(right.radius) || 0),
+    );
+    const tolerance = Math.max(32, radiusReference * 0.0015);
+    return (
+      Math.abs(left.centerX - right.centerX) <= tolerance &&
+      Math.abs(left.centerY - right.centerY) <= tolerance &&
+      Math.abs(left.radius - right.radius) <= tolerance
+    );
+  }
+
+  function circleContainsCircle(outer, inner) {
+    if (!outer || !inner) {
+      return false;
+    }
+
+    const distance = Math.hypot(outer.centerX - inner.centerX, outer.centerY - inner.centerY);
+    const tolerance = Math.max(64, Math.abs(outer.radius) * 0.002);
+    return distance + inner.radius <= outer.radius + tolerance;
+  }
+
+  function buildInitialBlueCircle(mapDefinition) {
+    const worldSize = resolveWorldSize(mapDefinition);
+    if (!Number.isFinite(worldSize) || worldSize <= 0) {
+      return null;
+    }
+
+    const center = worldSize / 2;
+    return {
+      centerX: center,
+      centerY: center,
+      radius: Math.hypot(center, center) + worldSize * 0.08,
+    };
+  }
+
+  function interpolateCircle(start, end, progress) {
+    return {
+      centerX: lerp(start.centerX, end.centerX, progress),
+      centerY: lerp(start.centerY, end.centerY, progress),
+      radius: lerp(start.radius, end.radius, progress),
+    };
+  }
+
+  function isFirstCirclePhase(zone) {
+    const phase = toFiniteNumber(zone && zone.phase);
+    if (phase !== null) {
+      return phase <= 1;
+    }
+
+    return Boolean(zone && getCurrentCircle(zone) && !getNextCircle(zone));
+  }
+
+  function getFirstBlueCircleProgress(zone, now) {
+    if (!isZoneShrinking(zone)) {
+      return 0;
+    }
+
+    const durationMs = getZoneDurationMs(zone);
+    const remainingMs = getRemainingZoneMs(zone, now);
+    if (!Number.isFinite(durationMs) || durationMs <= 0 || remainingMs === null) {
+      return 0;
+    }
+
+    return clamp01(1 - remainingMs / durationMs);
+  }
+
+  function getRenderableBlueCircle(zone, currentCircle, blueCircle, mapDefinition, now) {
+    if (!currentCircle) {
+      return blueCircle;
+    }
+
+    if (
+      blueCircle &&
+      circleContainsCircle(blueCircle, currentCircle) &&
+      !circlesRoughlyMatch(blueCircle, currentCircle)
+    ) {
+      return blueCircle;
+    }
+
+    if (!isFirstCirclePhase(zone)) {
+      return null;
+    }
+
+    const initialBlueCircle = buildInitialBlueCircle(mapDefinition);
+    if (!initialBlueCircle) {
+      return null;
+    }
+
+    return interpolateCircle(
+      initialBlueCircle,
+      currentCircle,
+      getFirstBlueCircleProgress(zone, now),
+    );
+  }
+
+  function getFlightPath(zone, _now = Date.now()) {
     if (!zone) {
       return null;
     }
 
     const matchPhase = String(zone.matchPhase || "").trim().toLowerCase();
+    const visibleUntil = toFiniteNumber(zone.flightPathVisibleUntil);
+    const retentionActive = visibleUntil !== null && _now <= visibleUntil;
+    const currentCircle = getCurrentCircle(zone);
+    const preCircleFlightPathActive = !currentCircle;
     if (MATCH_FINISHED_PHASES.has(matchPhase)) {
       return null;
     }
-
-    const remainingMs = getRemainingZoneMs(zone, now);
-    // The plane route should only live through the opening sequence.
-    // Once the opening timer expires, hide it even if the first circle paint lags by a tick.
     if (
-      !MATCH_OPENING_PHASES.has(matchPhase) ||
-      (remainingMs !== null && remainingMs <= 0)
+      !MATCH_OPENING_PHASES.has(matchPhase) &&
+      !preCircleFlightPathActive &&
+      !retentionActive
     ) {
+      return null;
+    }
+    if (zone.circlesVisible !== false && currentCircle && !retentionActive) {
       return null;
     }
 
@@ -1040,6 +1505,65 @@
     }
 
     return null;
+  }
+
+  function getFlightProgress(zone, now = Date.now(), flightPath = null, mapDefinition = null, players = []) {
+    if (!zone) {
+      return null;
+    }
+
+    const matchPhase = String(zone.matchPhase || "").trim().toLowerCase();
+    const visibleUntil = toFiniteNumber(zone.flightPathVisibleUntil);
+    const retentionActive = visibleUntil !== null && now <= visibleUntil;
+    const preCircleFlightPathActive = !getCurrentCircle(zone);
+    if (MATCH_FINISHED_PHASES.has(matchPhase)) {
+      return null;
+    }
+
+    if (
+      !(flightPath || zone.flightPath) ||
+      !(flightPath || zone.flightPath).start ||
+      !(flightPath || zone.flightPath).end
+    ) {
+      return null;
+    }
+
+    const activeFlightPath = flightPath || zone.flightPath;
+    if (
+      !MATCH_OPENING_PHASES.has(matchPhase) &&
+      !preCircleFlightPathActive &&
+      !retentionActive
+    ) {
+      return 1;
+    }
+
+    if (MATCH_OPENING_PHASES.has(matchPhase) || preCircleFlightPathActive) {
+      const inferredProgress = inferFlightProgressFromPlayers(
+        activeFlightPath,
+        mapDefinition,
+        players,
+      );
+      if (inferredProgress !== null) {
+        return inferredProgress;
+      }
+    }
+
+    const durationMs = getZoneDurationMs(zone);
+    const remainingMs = getRemainingZoneMs(zone, now);
+    if (Number.isFinite(durationMs) && durationMs > 0 && remainingMs !== null) {
+      return clamp01(1 - remainingMs / durationMs);
+    }
+
+    if (retentionActive) {
+      return 1;
+    }
+
+    const firstSeenAt = toFiniteNumber(state.flightPathSeenAt);
+    if (firstSeenAt !== null) {
+      return clamp01((now - firstSeenAt) / FLIGHT_SYNTHETIC_DURATION_MS);
+    }
+
+    return 0;
   }
 
   function getRemainingZoneMs(zone, now) {
@@ -1080,8 +1604,18 @@
   }
 
   function isZoneShrinking(zone) {
-    const status = String(zone && (zone.status || zone.circleStatus || "")).trim().toLowerCase();
-    return status === "2" || status === "moving" || status === "shrinking" || status === "closing";
+    const rawStatus =
+      zone && (zone.status ?? zone.circleStatus ?? zone.zoneMode ?? zone.mode ?? "");
+    const status = String(rawStatus).trim().toLowerCase();
+    return (
+      status === "2" ||
+      status === "moving" ||
+      status === "shrinking" ||
+      status === "shrink" ||
+      status === "closing" ||
+      status === "collapse" ||
+      status === "collapsing"
+    );
   }
 
   function getAnimatedCircleState(zone, now) {
@@ -1130,7 +1664,13 @@
   }
 
   function isActiveCameraPlayer(player) {
-    return Boolean(player && player.state !== "eliminated" && Number.isFinite(player.x) && Number.isFinite(player.y));
+    return Boolean(
+      player &&
+        player.state !== "eliminated" &&
+        player.combatRole !== "dead" &&
+        Number.isFinite(player.x) &&
+        Number.isFinite(player.y),
+    );
   }
 
   function getCameraPlayerGroupKey(player) {
@@ -1559,11 +2099,13 @@
     metrics.scale = scale;
     metrics.markerRadius = (isMinimal ? 4.3 : 5.8) * scale;
     metrics.markerStrokeWidth = Math.max(1, 1.2 * scale);
-    metrics.knockedCrossSize = metrics.markerRadius * 0.92;
+    metrics.fireArrowLength = Math.max(18, 26 * scale);
+    metrics.fireArrowWidth = Math.max(6, 8 * scale);
+    metrics.knockPlusSize = Math.max(7, metrics.markerRadius * 1.18);
     metrics.markerGlowBlur = (isMinimal ? 0 : 12) * scale;
-    metrics.teamBadgeHeight = (isMinimal ? 20 : 24) * scale;
-    metrics.teamBadgeLogoSize = (isMinimal ? 15 : 18) * scale;
-    metrics.teamBadgePaddingX = (isMinimal ? 5 : 6) * scale;
+    metrics.teamBadgeHeight = Math.max(isMinimal ? 24 : 28, (isMinimal ? 24 : 30) * scale);
+    metrics.teamBadgeLogoSize = Math.max(isMinimal ? 20 : 23, (isMinimal ? 20 : 24) * scale);
+    metrics.teamBadgePaddingX = Math.max(isMinimal ? 6 : 7, (isMinimal ? 7 : 8) * scale);
     metrics.clusterStrokeWidth = Math.max(1, 1.2 * scale);
     metrics.clusterPaddingPx = 6 * scale;
     metrics.clusterMinRadiusPx = 10 * scale;
@@ -1572,13 +2114,19 @@
     metrics.flightPathStartRadius = Math.max(7, 9 * scale);
     metrics.flightPathArrowLength = Math.max(14, 18 * scale);
     metrics.flightPathArrowWidth = Math.max(8, 10 * scale);
+    metrics.flightPlaneLength = Math.max(34, 42 * scale);
+    metrics.flightPlaneWingspan = Math.max(34, 42 * scale);
+    metrics.flightPlaneBodyWidth = Math.max(8, 11 * scale);
+    metrics.flightPlaneTrailLength = Math.max(54, 76 * scale);
+    metrics.flightPlaneTrailWidth = Math.max(4, 5 * scale);
+    metrics.flightPlaneShadowBlur = Math.max(9, 13 * scale);
     metrics.killPingMinRadius = 7 * scale;
     metrics.killPingMaxRadius = 30 * scale;
     metrics.zoneLineWidth = Math.max(1.8, 2.35 * scale);
     metrics.nextZoneLineWidth = Math.max(1.2, 1.7 * scale);
     metrics.zoneGlowBlur = 11 * scale;
     metrics.labelFont = `700 ${labelFontSize}px ${OBS_LABEL_FONT_STACK}`;
-    metrics.teamBadgeFont = `800 ${Math.max(9, Math.round(9.5 * scale))}px ${OBS_LABEL_FONT_STACK}`;
+    metrics.teamBadgeFont = `900 ${Math.max(11, Math.round(11.75 * scale))}px ${OBS_LABEL_FONT_STACK}`;
     metrics.labelStrokeWidth = Math.max(2, 2.35 * scale);
     metrics.labelOffsetX = 8 * scale;
     metrics.labelOffsetY = 5 * scale;
@@ -1603,6 +2151,7 @@
       canvas.height = nextHeight;
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
     }
 
     updateRenderMetrics(width, height);
@@ -1710,6 +2259,174 @@
     };
   }
 
+  function getFlightPathSignature(flightPath) {
+    if (!flightPath || !flightPath.start || !flightPath.end) {
+      return "";
+    }
+
+    const startX = toFiniteNumber(flightPath.start.x);
+    const startY = toFiniteNumber(flightPath.start.y);
+    const endX = toFiniteNumber(flightPath.end.x);
+    const endY = toFiniteNumber(flightPath.end.y);
+    if (startX === null || startY === null || endX === null || endY === null) {
+      return "";
+    }
+
+    return [startX, startY, endX, endY].map((value) => Math.round(value)).join(":");
+  }
+
+  function projectPointToFlightPath(point, flightPath) {
+    if (!point || !flightPath || !flightPath.start || !flightPath.end) {
+      return null;
+    }
+
+    const x = toFiniteNumber(point.x);
+    const y = toFiniteNumber(point.y);
+    const startX = toFiniteNumber(flightPath.start.x);
+    const startY = toFiniteNumber(flightPath.start.y);
+    const endX = toFiniteNumber(flightPath.end.x);
+    const endY = toFiniteNumber(flightPath.end.y);
+    if (
+      x === null ||
+      y === null ||
+      startX === null ||
+      startY === null ||
+      endX === null ||
+      endY === null
+    ) {
+      return null;
+    }
+
+    const deltaX = endX - startX;
+    const deltaY = endY - startY;
+    const lengthSquared = deltaX * deltaX + deltaY * deltaY;
+    if (lengthSquared <= 1) {
+      return null;
+    }
+
+    const progress = clamp01(((x - startX) * deltaX + (y - startY) * deltaY) / lengthSquared);
+    const closestX = lerp(startX, endX, progress);
+    const closestY = lerp(startY, endY, progress);
+    return {
+      closestX,
+      closestY,
+      distance: Math.hypot(x - closestX, y - closestY),
+      progress,
+      segmentLength: Math.sqrt(lengthSquared),
+    };
+  }
+
+  function getFlightPlaneWorldPosition(flightPath, progress) {
+    if (!flightPath || !flightPath.start || !flightPath.end || !Number.isFinite(progress)) {
+      return null;
+    }
+
+    return {
+      x: lerp(flightPath.start.x, flightPath.end.x, clamp01(progress)),
+      y: lerp(flightPath.start.y, flightPath.end.y, clamp01(progress)),
+    };
+  }
+
+  function inferFlightProgressFromPlayers(flightPath, mapDefinition, players) {
+    if (!flightPath || !mapDefinition || !Array.isArray(players) || players.length === 0) {
+      return null;
+    }
+
+    const worldSize = resolveWorldSize(mapDefinition);
+    const lineThreshold = Math.max(9000, worldSize * FLIGHT_PLAYER_LINE_THRESHOLD_RATIO);
+    const candidates = [];
+    for (const player of players) {
+      if (!player || player.state === "eliminated") {
+        continue;
+      }
+
+      const projection = projectPointToFlightPath(player, flightPath);
+      if (!projection || projection.distance > lineThreshold) {
+        continue;
+      }
+
+      candidates.push(projection.progress);
+    }
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    candidates.sort((left, right) => left - right);
+    return clamp01(candidates[Math.max(0, Math.ceil(candidates.length * 0.85) - 1)]);
+  }
+
+  function shouldTreatPlayerAsFlightPassenger(player, flightPath, flightProgress, mapDefinition) {
+    if (
+      !player ||
+      player.state === "eliminated" ||
+      !flightPath ||
+      !mapDefinition ||
+      !Number.isFinite(flightProgress) ||
+      flightProgress >= 0.995
+    ) {
+      return false;
+    }
+
+    const projection = projectPointToFlightPath(player, flightPath);
+    const planePosition = getFlightPlaneWorldPosition(flightPath, flightProgress);
+    if (!projection || !planePosition) {
+      return false;
+    }
+
+    const worldSize = resolveWorldSize(mapDefinition);
+    const lineThreshold = Math.max(9000, worldSize * FLIGHT_PLAYER_LINE_THRESHOLD_RATIO);
+    const planeThreshold = Math.max(18000, worldSize * FLIGHT_PLAYER_PLANE_THRESHOLD_RATIO);
+    const distanceToPlane = Math.hypot(player.x - planePosition.x, player.y - planePosition.y);
+    const progressSlack = Math.max(0.035, planeThreshold / Math.max(1, projection.segmentLength));
+
+    return (
+      projection.distance <= lineThreshold &&
+      projection.progress <= flightProgress + progressSlack &&
+      distanceToPlane <= planeThreshold
+    );
+  }
+
+  function applyFlightPassengerVisibility(players, zone, flightPath, flightProgress, mapDefinition) {
+    if (!Array.isArray(players) || players.length === 0) {
+      return 0;
+    }
+
+    const matchPhase = String(zone && zone.matchPhase ? zone.matchPhase : "").trim().toLowerCase();
+    const planeActive = Boolean(
+      flightPath &&
+        Number.isFinite(flightProgress) &&
+        (MATCH_OPENING_PHASES.has(matchPhase) || !getCurrentCircle(zone)),
+    );
+    let passengerCount = 0;
+
+    for (const player of players) {
+      player.inFlightPlane =
+        planeActive &&
+        shouldTreatPlayerAsFlightPassenger(player, flightPath, flightProgress, mapDefinition);
+      if (player.inFlightPlane) {
+        passengerCount += 1;
+      }
+    }
+
+    for (const members of state.teamMembersById.values()) {
+      members.length = 0;
+    }
+
+    for (const player of players) {
+      if (!player || player.inFlightPlane || player.state === "eliminated" || !player.teamGroupKey) {
+        continue;
+      }
+
+      const members = getTeamMemberBuffer(player.teamGroupKey);
+      if (members) {
+        members.push(player);
+      }
+    }
+
+    return passengerCount;
+  }
+
   function drawFlightPath(flightPath, mapDefinition, width, height, now) {
     if (!flightPath || !mapDefinition) {
       return;
@@ -1809,6 +2526,175 @@
     context.lineWidth = Math.max(1.1, metrics.scale * 1.2);
     context.strokeStyle = "rgba(20, 28, 38, 0.38)";
     context.stroke();
+
+    context.restore();
+  }
+
+  function drawFlightPlane(
+    flightPath,
+    flightProgress,
+    mapDefinition,
+    width,
+    height,
+    now,
+    passengerCount = 0,
+  ) {
+    if (!flightPath || !mapDefinition || !Number.isFinite(flightProgress)) {
+      return;
+    }
+
+    const clipped = clipFlightPathToWorldBounds(flightPath, mapDefinition);
+    if (!clipped) {
+      return;
+    }
+
+    const startX = worldToPixelX(clipped.start.x, mapDefinition, width);
+    const startY = worldToPixelY(clipped.start.y, mapDefinition, height);
+    const endX = worldToPixelX(clipped.end.x, mapDefinition, width);
+    const endY = worldToPixelY(clipped.end.y, mapDefinition, height);
+    if (
+      !Number.isFinite(startX) ||
+      !Number.isFinite(startY) ||
+      !Number.isFinite(endX) ||
+      !Number.isFinite(endY)
+    ) {
+      return;
+    }
+
+    const deltaX = endX - startX;
+    const deltaY = endY - startY;
+    const distance = Math.hypot(deltaX, deltaY);
+    if (distance < 18) {
+      return;
+    }
+
+    const metrics = state.renderMetrics;
+    const unitX = deltaX / distance;
+    const unitY = deltaY / distance;
+    const startInset =
+      (metrics.flightPathStartRadius + metrics.flightPlaneLength * 0.55) / distance;
+    const endInset =
+      (metrics.flightPathArrowLength + metrics.flightPlaneLength * 0.85) / distance;
+    const minProgress = clamp01(startInset);
+    const maxProgress = clamp01(1 - endInset);
+    if (maxProgress <= minProgress) {
+      return;
+    }
+
+    const progress = clamp(flightProgress, minProgress, maxProgress);
+    const planeX = lerp(startX, endX, progress);
+    const planeY = lerp(startY, endY, progress);
+    const angle = Math.atan2(unitY, unitX);
+    const trailStartProgress = Math.max(
+      minProgress,
+      progress - metrics.flightPlaneTrailLength / distance,
+    );
+    const trailStartX = lerp(startX, endX, trailStartProgress);
+    const trailStartY = lerp(startY, endY, trailStartProgress);
+    const trailEndX = planeX - unitX * metrics.flightPlaneLength * 0.28;
+    const trailEndY = planeY - unitY * metrics.flightPlaneLength * 0.28;
+    const shimmer = 0.65 + 0.35 * (0.5 + 0.5 * Math.sin(now / 180));
+    const length = metrics.flightPlaneLength;
+    const wingspan = metrics.flightPlaneWingspan;
+    const bodyWidth = metrics.flightPlaneBodyWidth;
+
+    context.save();
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    context.beginPath();
+    context.moveTo(trailStartX, trailStartY);
+    context.lineTo(trailEndX, trailEndY);
+    context.lineWidth = metrics.flightPlaneTrailWidth + Math.max(1.5, metrics.scale * 1.6);
+    context.strokeStyle = "rgba(0, 0, 0, 0.2)";
+    context.stroke();
+
+    context.beginPath();
+    context.moveTo(trailStartX, trailStartY);
+    context.lineTo(trailEndX, trailEndY);
+    context.lineWidth = metrics.flightPlaneTrailWidth;
+    context.strokeStyle = `rgba(208, 48, 48, ${0.7 + shimmer * 0.18})`;
+    context.shadowColor = "rgba(208, 48, 48, 0.28)";
+    context.shadowBlur = metrics.flightPlaneShadowBlur * 0.8;
+    context.stroke();
+    context.shadowColor = "transparent";
+    context.shadowBlur = 0;
+
+    context.translate(planeX, planeY);
+    context.rotate(angle);
+
+    context.beginPath();
+    context.ellipse(
+      -length * 0.04,
+      0,
+      length * 0.34,
+      bodyWidth * 1.2,
+      0,
+      0,
+      Math.PI * 2,
+    );
+    context.fillStyle = "rgba(0, 0, 0, 0.15)";
+    context.fill();
+
+    context.beginPath();
+    context.moveTo(length * 0.5, 0);
+    context.lineTo(length * 0.12, bodyWidth * 0.82);
+    context.lineTo(-length * 0.02, wingspan * 0.46);
+    context.lineTo(-length * 0.17, wingspan * 0.46);
+    context.lineTo(-length * 0.07, bodyWidth * 0.72);
+    context.lineTo(-length * 0.29, bodyWidth * 0.72);
+    context.lineTo(-length * 0.46, bodyWidth * 0.28);
+    context.lineTo(-length * 0.52, bodyWidth * 0.28);
+    context.lineTo(-length * 0.52, -bodyWidth * 0.28);
+    context.lineTo(-length * 0.46, -bodyWidth * 0.28);
+    context.lineTo(-length * 0.29, -bodyWidth * 0.72);
+    context.lineTo(-length * 0.07, -bodyWidth * 0.72);
+    context.lineTo(-length * 0.17, -wingspan * 0.46);
+    context.lineTo(-length * 0.02, -wingspan * 0.46);
+    context.lineTo(length * 0.12, -bodyWidth * 0.82);
+    context.closePath();
+    context.fillStyle = "rgba(255, 255, 255, 0.98)";
+    context.shadowColor = "rgba(255, 255, 255, 0.22)";
+    context.shadowBlur = metrics.flightPlaneShadowBlur;
+    context.fill();
+    context.shadowColor = "transparent";
+    context.shadowBlur = 0;
+    context.lineWidth = Math.max(1.1, metrics.scale * 1.2);
+    context.strokeStyle = "rgba(20, 28, 38, 0.4)";
+    context.stroke();
+
+    context.beginPath();
+    context.moveTo(-length * 0.33, 0);
+    context.lineTo(length * 0.15, 0);
+    context.lineWidth = Math.max(1.5, metrics.scale * 1.6);
+    context.strokeStyle = `rgba(208, 48, 48, ${0.9 + shimmer * 0.08})`;
+    context.stroke();
+
+    context.beginPath();
+    context.arc(length * 0.22, 0, Math.max(1.8, bodyWidth * 0.38), 0, Math.PI * 2);
+    context.fillStyle = "rgba(76, 214, 255, 0.82)";
+    context.fill();
+
+    if (passengerCount > 0) {
+      const label = passengerCount > 99 ? "99+" : String(passengerCount);
+      const fontSize = Math.max(9, Math.round(9.5 * metrics.scale));
+      context.font = `900 ${fontSize}px ${OBS_LABEL_FONT_STACK}`;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      const badgeWidth = Math.max(18 * metrics.scale, context.measureText(label).width + 10 * metrics.scale);
+      const badgeHeight = Math.max(14 * metrics.scale, fontSize + 5 * metrics.scale);
+      const badgeX = -length * 0.06 - badgeWidth / 2;
+      const badgeY = -wingspan * 0.58 - badgeHeight / 2;
+      context.beginPath();
+      drawRoundedRectPath(context, badgeX, badgeY, badgeWidth, badgeHeight, badgeHeight / 2);
+      context.fillStyle = "rgba(2, 6, 12, 0.88)";
+      context.fill();
+      context.lineWidth = Math.max(1, metrics.scale);
+      context.strokeStyle = "rgba(255, 255, 255, 0.86)";
+      context.stroke();
+      context.fillStyle = "rgba(255, 255, 255, 0.98)";
+      context.fillText(label, badgeX + badgeWidth / 2, badgeY + badgeHeight / 2 + 0.2 * metrics.scale);
+    }
 
     context.restore();
   }
@@ -1958,7 +2844,7 @@
     }
   }
 
-  function drawFightHighlights(fightHighlights, mapDefinition, width, height, now) {
+  function _drawFightHighlights(fightHighlights, mapDefinition, width, height, now) {
     if (!mapDefinition || !Array.isArray(fightHighlights) || fightHighlights.length === 0) {
       return;
     }
@@ -2359,6 +3245,100 @@
     context.restore();
   }
 
+  function boxesOverlap(a, b) {
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+
+  function drawMapLabels(width, height, mapDefinition) {
+    const labelConfig = mapDefinition && mapDefinition.poiLabels;
+    const labels =
+      labelConfig && Array.isArray(labelConfig.labels) ? labelConfig.labels : [];
+    if (!showMapLabels || !mapDefinition || labels.length === 0) {
+      return;
+    }
+
+    const worldSize = resolveWorldSize(mapDefinition);
+    const fallbackSourceSize = Math.max(1, toFiniteNumber(labelConfig.sourceSize, 8192) || 8192);
+    const sourceWidth = Math.max(
+      1,
+      toFiniteNumber(labelConfig.sourceWidth, fallbackSourceSize) || fallbackSourceSize,
+    );
+    const sourceHeight = Math.max(
+      1,
+      toFiniteNumber(labelConfig.sourceHeight, fallbackSourceSize) || fallbackSourceSize,
+    );
+    const camera = state.mapCamera;
+    const zoom = camera && camera.enabled ? Math.max(1, toFiniteNumber(camera.zoom, 1) || 1) : 1;
+    const metrics = state.renderMetrics;
+    const scale = metrics.scale || 1;
+    const placed = [];
+    const sortedLabels = labels
+      .slice()
+      .sort((a, b) => (toFiniteNumber(a.tier, 2) || 2) - (toFiniteNumber(b.tier, 2) || 2));
+
+    context.save();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+
+    for (const label of sortedLabels) {
+      const text = String(label.label || "").trim();
+      if (!text) {
+        continue;
+      }
+
+      const tier = clamp(Math.round(toFiniteNumber(label.tier, 2) || 2), 1, 3);
+      if ((tier > 1 && zoom < 1.12) || (tier > 2 && zoom < 1.45)) {
+        continue;
+      }
+
+      const labelX = toFiniteNumber(label.x, null);
+      const labelY = toFiniteNumber(label.y, null);
+      if (labelX === null || labelY === null) {
+        continue;
+      }
+
+      const worldX = (labelX / sourceWidth) * worldSize;
+      const worldY = (labelY / sourceHeight) * worldSize;
+      const x = worldToPixelX(worldX, mapDefinition, width);
+      const y = worldToPixelY(worldY, mapDefinition, height);
+      if (x < -80 || x > width + 80 || y < -30 || y > height + 30) {
+        continue;
+      }
+
+      const fontSize = Math.round(
+        (tier === 1 ? 12.5 : 10.5) * scale + Math.min(4, Math.log2(zoom) * 2),
+      );
+      context.font = `900 ${fontSize}px ${OBS_LABEL_FONT_STACK}`;
+
+      const textWidth = context.measureText(text).width;
+      const paddingX = Math.max(5, 5 * scale);
+      const paddingY = Math.max(2.5, 2.5 * scale);
+      const box = {
+        bottom: y + fontSize / 2 + paddingY,
+        left: x - textWidth / 2 - paddingX,
+        right: x + textWidth / 2 + paddingX,
+        top: y - fontSize / 2 - paddingY,
+      };
+      if (placed.some((entry) => boxesOverlap(entry, box))) {
+        continue;
+      }
+      placed.push(box);
+
+      context.lineJoin = "round";
+      context.miterLimit = 2;
+      context.lineWidth = Math.max(3, scale * 3.25);
+      context.strokeStyle = "rgba(2, 6, 12, 0.74)";
+      context.strokeText(text, x, y);
+      context.lineWidth = Math.max(1, scale * 1.05);
+      context.strokeStyle = "rgba(15, 23, 42, 0.48)";
+      context.strokeText(text, x, y);
+      context.fillStyle = tier === 1 ? "rgba(248, 250, 252, 0.92)" : "rgba(226, 232, 240, 0.82)";
+      context.fillText(text, x, y);
+    }
+
+    context.restore();
+  }
+
   function drawCrosshair(worldX, worldY, mapDefinition, width, height, styleOptions, options) {
     const x = worldToPixelX(worldX, mapDefinition, width, options);
     const y = worldToPixelY(worldY, mapDefinition, height, options);
@@ -2478,6 +3458,8 @@
     state.productionSupportSnapshot = null;
     resetManualCamera();
     state.operatorPanelMarkup = "";
+    state.flightPathSeenAt = null;
+    state.flightPathSignature = "";
     state.teamClusters.length = 0;
     state.teamDisplayIndexById.clear();
     for (const members of state.teamMembersById.values()) {
@@ -2486,6 +3468,14 @@
     state.teamMembersById.clear();
     state.visiblePlayers.length = 0;
     state.watchQueueMarkup = "";
+  }
+
+  function applyRuntimeReset() {
+    state.zone = null;
+    state.lastHeartbeatAt = null;
+    state.lastZoneMessageAt = null;
+    setConnectionStatus("disconnected");
+    resetTransientState();
   }
 
   function applyMapContext(mapContext) {
@@ -2541,6 +3531,16 @@
   function applyZonePacket(zonePacket, receivedAt) {
     state.zone = zonePacket || null;
     state.lastZoneMessageAt = zonePacket ? receivedAt : null;
+    const flightPathSignature = getFlightPathSignature(zonePacket && zonePacket.flightPath);
+    if (!flightPathSignature) {
+      state.flightPathSeenAt = null;
+      state.flightPathSignature = "";
+    } else if (flightPathSignature !== state.flightPathSignature) {
+      state.flightPathSeenAt = receivedAt;
+      state.flightPathSignature = flightPathSignature;
+    } else if (state.flightPathSeenAt === null) {
+      state.flightPathSeenAt = receivedAt;
+    }
   }
 
   function addKillPing(x, y, teamId, startedAt) {
@@ -2622,7 +3622,11 @@
         state.lastPlayerSnapshotById.set(playerId, snapshot);
       }
       snapshot.alive = player.alive;
+      snapshot.isFiring = player.isFiring === true;
+      snapshot.fireAngle = toFiniteNumber(player.fireAngle, null);
+      snapshot.fireDirection = normalizeDirectionVector(player.fireDirection);
       snapshot.knocked = player.knocked;
+      snapshot.inVehicle = player.inVehicle === true;
       snapshot.kills = Math.max(0, Math.trunc(toFiniteNumber(player.kills, 0) || 0));
       snapshot.lastSeenAt = receivedAt;
       snapshot.playerAvatarUrl = playerAvatarUrl;
@@ -2648,6 +3652,10 @@
         fromX: shouldSnap ? player.x : currentPosition.x,
         fromY: shouldSnap ? player.y : currentPosition.y,
         knocked: player.knocked,
+        inVehicle: player.inVehicle === true,
+        isFiring: player.isFiring === true,
+        fireAngle: toFiniteNumber(player.fireAngle, null),
+        fireDirection: normalizeDirectionVector(player.fireDirection),
         kills: Math.max(0, Math.trunc(toFiniteNumber(player.kills, 0) || 0)),
         lastSeenAt: receivedAt,
         playerAvatarUrl,
@@ -2732,11 +3740,18 @@
       const teamGroupKey = getTeamGroupingKey(teamId, teamSlot, teamBranding);
       const playerState =
         motion.alive === false ? "eliminated" : motion.knocked === true ? "knocked" : "alive";
+      const playerInVehicle =
+        playerState === "alive" &&
+        (motion.inVehicle === true || isVehicleFallbackActive(motion, now));
 
       entry.alive = motion.alive;
       entry.clusterBadgeVisible = false;
       entry.kills = motion.kills;
+      entry.isFiring = motion.isFiring === true;
+      entry.fireAngle = toFiniteNumber(motion.fireAngle, null);
+      entry.fireDirection = normalizeDirectionVector(motion.fireDirection);
       entry.knocked = motion.knocked;
+      entry.inVehicle = playerInVehicle;
       entry.playerAvatarUrl = motion.playerAvatarUrl || null;
       entry.playerId = playerId;
       entry.playerName = motion.playerName || null;
@@ -2753,19 +3768,199 @@
       entry.teamTag = (teamBranding && teamBranding.teamTag) || null;
       entry.x = position.x;
       entry.y = position.y;
-
-      if (playerState !== "eliminated" && teamGroupKey) {
-        const members = getTeamMemberBuffer(teamGroupKey);
-        if (members) {
-          members.push(entry);
-        }
-      }
+      entry.combatRole = null;
+      entry.combatRoleAt = 0;
+      entry.combatRoleStrength = 0;
+      entry.combatTargetX = null;
+      entry.combatTargetY = null;
 
       visibleCount += 1;
     }
 
-    visiblePlayers.length = visibleCount;
+    applyRecentCombatRoles(visiblePlayers, visibleCount, now);
+
+    let filteredCount = 0;
+    for (let index = 0; index < visibleCount; index += 1) {
+      const entry = visiblePlayers[index];
+      if (!entry || entry.combatRole === "dead") {
+        continue;
+      }
+
+      if (filteredCount !== index) {
+        visiblePlayers[filteredCount] = entry;
+      }
+      filteredCount += 1;
+
+      if (entry.state !== "eliminated" && entry.teamGroupKey) {
+        const members = getTeamMemberBuffer(entry.teamGroupKey);
+        if (members) {
+          members.push(entry);
+        }
+      }
+    }
+
+    visiblePlayers.length = filteredCount;
     return visiblePlayers;
+  }
+
+  function getCombatRolePriority(role) {
+    if (role === "dead") {
+      return 3;
+    }
+    if (role === "victim") {
+      return 2;
+    }
+    if (role === "attacker") {
+      return 1;
+    }
+    return 0;
+  }
+
+  function assignCombatRole(entry, role, timestamp, ageMs) {
+    if (!entry || !role) {
+      return;
+    }
+
+    const previousTimestamp = toFiniteNumber(entry.combatRoleAt, 0) || 0;
+    if (previousTimestamp > timestamp) {
+      return;
+    }
+
+    if (
+      previousTimestamp === timestamp &&
+      getCombatRolePriority(entry.combatRole) >= getCombatRolePriority(role)
+    ) {
+      return;
+    }
+
+    entry.combatRole = role;
+    entry.combatRoleAt = timestamp;
+    entry.combatRoleStrength = clamp01(1 - ageMs / COMBAT_ROLE_TTL_MS);
+  }
+
+  function buildCombatPlayerLookup(players, count) {
+    const byId = new Map();
+    const byName = new Map();
+    const byTeamAndName = new Map();
+
+    for (let index = 0; index < count; index += 1) {
+      const player = players[index];
+      if (!player) {
+        continue;
+      }
+
+      const playerIdKey = normalizeLookupText(player.playerId);
+      if (playerIdKey && !byId.has(playerIdKey)) {
+        byId.set(playerIdKey, player);
+      }
+
+      const playerNameKey = normalizeLookupText(player.playerName);
+      if (playerNameKey && !byName.has(playerNameKey)) {
+        byName.set(playerNameKey, player);
+      }
+
+      const teamNameKey = buildCombatPlayerLookupKey(player.teamId, player.playerName);
+      if (teamNameKey && !byTeamAndName.has(teamNameKey)) {
+        byTeamAndName.set(teamNameKey, player);
+      }
+    }
+
+    return {
+      byId,
+      byName,
+      byTeamAndName,
+    };
+  }
+
+  function resolveCombatPlayerEntry(lookup, playerId, teamId, playerName) {
+    if (!lookup) {
+      return null;
+    }
+
+    const playerIdKey = normalizeLookupText(playerId);
+    if (playerIdKey && lookup.byId.has(playerIdKey)) {
+      return lookup.byId.get(playerIdKey) || null;
+    }
+
+    const teamNameKey = buildCombatPlayerLookupKey(teamId, playerName);
+    if (teamNameKey && lookup.byTeamAndName.has(teamNameKey)) {
+      return lookup.byTeamAndName.get(teamNameKey) || null;
+    }
+
+    const playerNameKey = normalizeLookupText(playerName);
+    if (playerNameKey && lookup.byName.has(playerNameKey)) {
+      return lookup.byName.get(playerNameKey) || null;
+    }
+
+    return null;
+  }
+
+  function applyRecentCombatRoles(players, count, now) {
+    if (!Array.isArray(players) || count <= 0) {
+      return;
+    }
+
+    const combatEvents =
+      state.assistSnapshot && Array.isArray(state.assistSnapshot.combatEvents)
+        ? state.assistSnapshot.combatEvents
+        : [];
+    if (combatEvents.length === 0) {
+      return;
+    }
+
+    const lookup = buildCombatPlayerLookup(players, count);
+    for (const event of combatEvents) {
+      if (!event) {
+        continue;
+      }
+
+      const timestamp = toFiniteNumber(event.timestamp, 0) || 0;
+      const ageMs = now - timestamp;
+      if (ageMs < 0 || ageMs > COMBAT_ROLE_TTL_MS) {
+        continue;
+      }
+
+      const eventKind = normalizeLookupText(event.kind) || "kill";
+      const attacker = resolveCombatPlayerEntry(
+        lookup,
+        event.killerPlayerId,
+        event.killerTeamId,
+        event.killerName,
+      );
+      const victim = resolveCombatPlayerEntry(
+        lookup,
+        event.victimPlayerId,
+        event.victimTeamId,
+        event.victimName,
+      );
+      if (attacker && attacker.state !== "eliminated" && attacker.alive !== false) {
+        assignCombatRole(attacker, "attacker", timestamp, ageMs);
+        if (
+          victim &&
+          victim !== attacker &&
+          Number.isFinite(victim.x) &&
+          Number.isFinite(victim.y)
+        ) {
+          attacker.combatTargetX = victim.x;
+          attacker.combatTargetY = victim.y;
+        }
+      }
+
+      if (!victim) {
+        continue;
+      }
+
+      if (
+        eventKind === "kill" ||
+        victim.alive === false ||
+        victim.state === "eliminated"
+      ) {
+        assignCombatRole(victim, "dead", timestamp, ageMs);
+        continue;
+      }
+
+      assignCombatRole(victim, "victim", timestamp, ageMs);
+    }
   }
 
   function getClusterThresholdWorld(mapDefinition) {
@@ -2847,24 +4042,9 @@
     return clusters;
   }
 
-  function drawMarkerCross(x, y, size, color, alpha) {
-    context.save();
-    context.globalAlpha = alpha;
-    context.strokeStyle = color;
-    context.lineCap = "round";
-    context.lineWidth = Math.max(1.25, state.renderMetrics.markerStrokeWidth);
-    context.beginPath();
-    context.moveTo(x - size, y - size);
-    context.lineTo(x + size, y + size);
-    context.moveTo(x + size, y - size);
-    context.lineTo(x - size, y + size);
-    context.stroke();
-    context.restore();
-  }
-
   function buildTeamBadgeLabel(source) {
     const label = source && source.playerName ? source.playerName : "";
-    return truncateLabel(label, 14);
+    return truncateLabel(label, 16);
   }
 
   function buildPlayerIconText(source) {
@@ -2960,7 +4140,7 @@
     context.restore();
   }
 
-  function drawPlayerInitialCircle(source, centerX, centerY, size, color, alpha) {
+  function _drawPlayerInitialCircle(source, centerX, centerY, size, color, alpha) {
     const radius = size / 2;
     const imageCandidates = buildPlayerImageCandidates(source);
     let imageRecord = null;
@@ -3005,6 +4185,151 @@
     context.restore();
   }
 
+  function drawCombatRoleMarker(source, left, top, badgeWidth, badgeHeight, width, height, alpha) {
+    const role = source?.combatRole;
+    if (!role || role === "dead") {
+      return;
+    }
+
+    const metrics = state.renderMetrics;
+    const strength = clamp01(toFiniteNumber(source.combatRoleStrength, 0.82) || 0.82);
+    const chipRadius =
+      role === "attacker"
+        ? Math.max(5.4 * metrics.scale, badgeHeight * 0.24)
+        : Math.max(4.2 * metrics.scale, badgeHeight * 0.18);
+    const chipX = clamp(
+      left + badgeWidth - chipRadius * 0.4,
+      chipRadius + 2,
+      width - chipRadius - 2,
+    );
+    const chipY = clamp(
+      top + chipRadius * 0.65,
+      chipRadius + 2,
+      height - chipRadius - 2,
+    );
+    const roleColor = role === "attacker" ? "#22D3EE" : "#FB7185";
+
+    context.save();
+    context.globalAlpha = alpha * (0.54 + strength * 0.4);
+    context.beginPath();
+    context.arc(chipX, chipY, chipRadius, 0, Math.PI * 2);
+    context.fillStyle = "rgba(2, 6, 12, 0.9)";
+    context.fill();
+    context.lineWidth = Math.max(1, metrics.scale);
+    context.strokeStyle = colorWithAlpha(roleColor, 0.92);
+    context.stroke();
+
+    if (role === "attacker") {
+      const arm = chipRadius * 0.58;
+      context.beginPath();
+      context.moveTo(chipX - arm, chipY);
+      context.lineTo(chipX + arm, chipY);
+      context.moveTo(chipX, chipY - arm);
+      context.lineTo(chipX, chipY + arm);
+      context.lineWidth = Math.max(1.1, metrics.scale * 1.2);
+      context.strokeStyle = colorWithAlpha("#F8FAFC", 0.96);
+      context.stroke();
+    } else {
+      context.beginPath();
+      context.arc(chipX, chipY, Math.max(1.2, chipRadius * 0.34), 0, Math.PI * 2);
+      context.fillStyle = colorWithAlpha("#F8FAFC", 0.94);
+      context.fill();
+    }
+
+    context.restore();
+  }
+
+  function drawKnockedLogoPlus(source, centerX, centerY, logoSize, alpha) {
+    if (source?.state !== "knocked") {
+      return;
+    }
+
+    const metrics = state.renderMetrics;
+    const radius = Math.max(5.2 * metrics.scale, Math.min(logoSize * 0.28, metrics.knockPlusSize));
+    const chipX = centerX + logoSize * 0.28;
+    const chipY = centerY - logoSize * 0.28;
+    const arm = radius * 0.56;
+
+    context.save();
+    context.globalAlpha = alpha;
+    context.beginPath();
+    context.arc(chipX, chipY, radius, 0, Math.PI * 2);
+    context.fillStyle = "rgba(2, 6, 12, 0.94)";
+    context.fill();
+    context.lineWidth = Math.max(1, metrics.scale);
+    context.strokeStyle = "rgba(45, 212, 191, 0.98)";
+    context.stroke();
+
+    context.beginPath();
+    context.moveTo(chipX - arm, chipY);
+    context.lineTo(chipX + arm, chipY);
+    context.moveTo(chipX, chipY - arm);
+    context.lineTo(chipX, chipY + arm);
+    context.lineCap = "round";
+    context.lineWidth = Math.max(1.7, metrics.scale * 1.55);
+    context.strokeStyle = "rgba(248, 250, 252, 0.98)";
+    context.stroke();
+    context.restore();
+  }
+
+  function drawVehicleLogoChip(source, centerX, centerY, logoSize, alpha) {
+    if (source?.state !== "alive" || source?.inVehicle !== true) {
+      return;
+    }
+
+    const metrics = state.renderMetrics;
+    const radius = Math.max(
+      6.4 * metrics.scale,
+      Math.min(logoSize * 0.34, metrics.knockPlusSize * 1.28),
+    );
+    const chipX = centerX + logoSize * 0.3;
+    const chipY = centerY - logoSize * 0.3;
+    const carWidth = radius * 1.32;
+    const carHeight = radius * 0.72;
+    const wheelRadius = Math.max(1.15, radius * 0.16);
+
+    context.save();
+    context.globalAlpha = alpha;
+    context.beginPath();
+    context.arc(chipX, chipY, radius, 0, Math.PI * 2);
+    context.fillStyle = "rgba(2, 6, 12, 0.94)";
+    context.fill();
+    context.lineWidth = Math.max(1, metrics.scale);
+    context.strokeStyle = "rgba(251, 191, 36, 0.98)";
+    context.stroke();
+
+    context.translate(chipX, chipY);
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.beginPath();
+    context.moveTo(-carWidth * 0.5, carHeight * 0.1);
+    context.lineTo(-carWidth * 0.32, -carHeight * 0.24);
+    context.lineTo(carWidth * 0.12, -carHeight * 0.24);
+    context.lineTo(carWidth * 0.36, carHeight * 0.1);
+    context.lineTo(carWidth * 0.48, carHeight * 0.12);
+    context.lineTo(carWidth * 0.48, carHeight * 0.38);
+    context.lineTo(-carWidth * 0.5, carHeight * 0.38);
+    context.closePath();
+    context.fillStyle = "rgba(251, 191, 36, 0.98)";
+    context.fill();
+
+    context.beginPath();
+    context.moveTo(-carWidth * 0.22, -carHeight * 0.11);
+    context.lineTo(-carWidth * 0.06, -carHeight * 0.11);
+    context.moveTo(carWidth * 0.08, -carHeight * 0.11);
+    context.lineTo(carWidth * 0.22, carHeight * 0.08);
+    context.lineWidth = Math.max(1, metrics.scale);
+    context.strokeStyle = "rgba(2, 6, 12, 0.8)";
+    context.stroke();
+
+    context.beginPath();
+    context.arc(-carWidth * 0.3, carHeight * 0.38, wheelRadius, 0, Math.PI * 2);
+    context.arc(carWidth * 0.3, carHeight * 0.38, wheelRadius, 0, Math.PI * 2);
+    context.fillStyle = "rgba(248, 250, 252, 0.96)";
+    context.fill();
+    context.restore();
+  }
+
   function drawTeamIdentityBadge(source, anchorX, anchorY, width, height, options = {}) {
     if (!state.showTeamLogos || !source) {
       return false;
@@ -3024,14 +4349,16 @@
     const logoSize = compact ? metrics.teamBadgeLogoSize * 0.9 : metrics.teamBadgeLogoSize;
     const badgeHeight = compact ? logoSize + 5 * metrics.scale : metrics.teamBadgeHeight;
     const paddingX = metrics.teamBadgePaddingX;
-    const playerIconSize = !compact && label ? Math.max(12 * metrics.scale, logoSize * 0.78) : 0;
     context.save();
     context.font = metrics.teamBadgeFont || metrics.labelFont;
-    const labelWidth = compact || !label ? 0 : Math.min(92 * metrics.scale, context.measureText(label).width);
+    const labelWidth =
+      compact || !label
+        ? 0
+        : Math.min(Math.max(96, 130 * metrics.scale), context.measureText(label).width);
     const badgeWidth =
       compact || !label
         ? logoSize + paddingX
-        : logoSize + labelWidth + playerIconSize + paddingX * 4;
+        : logoSize + labelWidth + paddingX * 3;
     const verticalOffset = badgeHeight * 0.5;
     const left = clamp(anchorX - badgeWidth / 2, 2, Math.max(2, width - badgeWidth - 2));
     const top = clamp(anchorY - verticalOffset, 2, Math.max(2, height - badgeHeight - 2));
@@ -3040,8 +4367,14 @@
     context.globalAlpha = alpha;
     context.beginPath();
     drawRoundedRectPath(context, left, top, badgeWidth, badgeHeight, 6 * metrics.scale);
-    context.fillStyle = colorWithAlpha(accent, source.state === "knocked" ? 0.34 : 0.46);
+    context.shadowColor = "rgba(2, 6, 12, 0.5)";
+    context.shadowBlur = Math.max(3, 4 * metrics.scale);
+    context.shadowOffsetY = Math.max(1, 1.2 * metrics.scale);
+    context.fillStyle = source.state === "knocked" ? "rgba(15, 23, 42, 0.9)" : "rgba(2, 6, 12, 0.88)";
     context.fill();
+    context.shadowColor = "transparent";
+    context.shadowBlur = 0;
+    context.shadowOffsetY = 0;
     context.lineWidth = Math.max(1, metrics.scale);
     context.strokeStyle = colorWithAlpha(accent, 0.98);
     context.stroke();
@@ -3057,24 +4390,23 @@
       label || "?",
       1,
     );
+    drawKnockedLogoPlus(source, logoCenterX, logoCenterY, logoSize, alpha);
+    drawVehicleLogoChip(source, logoCenterX, logoCenterY, logoSize, alpha);
 
     if (!compact && label) {
-      const playerIconCenterX = left + badgeWidth - paddingX - playerIconSize / 2;
-      const playerIconCenterY = top + badgeHeight / 2;
-      drawPlayerInitialCircle(source, playerIconCenterX, playerIconCenterY, playerIconSize, accent, 1);
-
       context.font = metrics.teamBadgeFont || metrics.labelFont;
       context.textAlign = "left";
       context.textBaseline = "middle";
-      context.lineWidth = Math.max(2, metrics.scale * 1.6);
-      context.strokeStyle = "rgba(2, 6, 12, 0.9)";
-      context.fillStyle = "rgba(248, 250, 252, 0.95)";
+      context.lineWidth = Math.max(3, metrics.scale * 2.4);
+      context.strokeStyle = "rgba(2, 6, 12, 0.98)";
+      context.fillStyle = "rgba(248, 250, 252, 0.98)";
       const textX = left + paddingX * 2 + logoSize;
       const textY = top + badgeHeight / 2;
       context.strokeText(label, textX, textY);
       context.fillText(label, textX, textY);
     }
 
+    drawCombatRoleMarker(source, left, top, badgeWidth, badgeHeight, width, height, alpha);
     context.restore();
     return true;
   }
@@ -3087,13 +4419,6 @@
       return DEFAULT_TEAM_NAME;
     }
     return DEFAULT_TEAM_NAME;
-  }
-
-  function buildLegendTeamSubtitle(row) {
-    if (row.teamIndex) {
-      return DEFAULT_TEAM_TAG;
-    }
-    return row.teamId || DEFAULT_TEAM_TAG;
   }
 
   function getOrCreateLegendTeamRow(rowsByKey, teamId, teamSlot, branding) {
@@ -3599,37 +4924,6 @@
     return rows.sort((left, right) => left.distanceMeters - right.distanceMeters);
   }
 
-  function buildDistanceMarkup(frame) {
-    const rows = buildDistanceRows(frame);
-    if (rows.length === 0) {
-      return buildEmptyPanelMarkup("Waiting for team distance data.");
-    }
-
-    return rows
-      .slice(0, 10)
-      .map((row) => {
-        const playerHint =
-          row.leftPlayerName && row.rightPlayerName
-            ? `${truncateLabel(row.leftPlayerName, 14)} / ${truncateLabel(row.rightPlayerName, 14)}`
-            : `${row.leftAlive} alive / ${row.rightAlive} alive`;
-        return `
-          <div class="distance-row distance-row--${escapeAttribute(row.tone)}">
-            <div class="distance-row-main">
-              <span class="distance-team">${escapeHtml(row.leftLabel)}</span>
-              <span class="distance-versus">vs</span>
-              <span class="distance-team">${escapeHtml(row.rightLabel)}</span>
-            </div>
-            <div class="distance-row-meta">
-              <span>${escapeHtml(getDistanceNote(row.distanceMeters))}</span>
-              <span>${escapeHtml(playerHint)}</span>
-            </div>
-            <div class="distance-value">${escapeHtml(String(row.distanceMeters))}m</div>
-          </div>
-        `;
-      })
-      .join("");
-  }
-
   function updateLegendPanel(frame) {
     legendPanel.hidden = !state.showLegend;
     if (!state.showLegend) {
@@ -3774,9 +5068,103 @@
     context.restore();
   }
 
+  function resolveFiringDirectionVector(player, x, y, mapDefinition, width, height) {
+    if (
+      Number.isFinite(player.combatTargetX) &&
+      Number.isFinite(player.combatTargetY) &&
+      mapDefinition
+    ) {
+      const targetX = worldToPixelX(player.combatTargetX, mapDefinition, width);
+      const targetY = worldToPixelY(player.combatTargetY, mapDefinition, height);
+      const targetDx = targetX - x;
+      const targetDy = targetY - y;
+      const targetMagnitude = Math.hypot(targetDx, targetDy);
+      if (Number.isFinite(targetMagnitude) && targetMagnitude > 0.001) {
+        return {
+          x: targetDx / targetMagnitude,
+          y: targetDy / targetMagnitude,
+        };
+      }
+    }
+
+    const explicitDirection = normalizeDirectionVector(player.fireDirection);
+    if (explicitDirection) {
+      return explicitDirection;
+    }
+
+    const angle = toFiniteNumber(player.fireAngle, null);
+    if (angle === null) {
+      return null;
+    }
+
+    const radians = (angle * Math.PI) / 180;
+    return {
+      x: Math.sin(radians),
+      y: -Math.cos(radians),
+    };
+  }
+
+  function drawFiringIndicator(player, x, y, mapDefinition, width, height) {
+    if (player.isFiring !== true || player.state === "eliminated") {
+      return;
+    }
+
+    const direction = resolveFiringDirectionVector(player, x, y, mapDefinition, width, height);
+    if (!direction) {
+      return;
+    }
+
+    const metrics = state.renderMetrics;
+    const startOffset = Math.max(metrics.teamBadgeLogoSize * 0.6, metrics.markerRadius + 8 * metrics.scale);
+    const length = metrics.fireArrowLength || Math.max(18, 26 * metrics.scale);
+    const arrowWidth = metrics.fireArrowWidth || Math.max(6, 8 * metrics.scale);
+    const startX = x + direction.x * startOffset;
+    const startY = y + direction.y * startOffset;
+    const endX = x + direction.x * (startOffset + length);
+    const endY = y + direction.y * (startOffset + length);
+    const sideX = -direction.y;
+    const sideY = direction.x;
+
+    context.save();
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.shadowColor = "rgba(251, 146, 60, 0.55)";
+    context.shadowBlur = Math.max(4, metrics.markerGlowBlur * 0.55);
+    context.beginPath();
+    context.moveTo(startX, startY);
+    context.lineTo(endX, endY);
+    context.lineWidth = Math.max(4, metrics.scale * 3.2);
+    context.strokeStyle = "rgba(2, 6, 12, 0.82)";
+    context.stroke();
+
+    context.shadowBlur = 0;
+    context.beginPath();
+    context.moveTo(startX, startY);
+    context.lineTo(endX, endY);
+    context.lineWidth = Math.max(2, metrics.scale * 1.75);
+    context.strokeStyle = "rgba(251, 191, 36, 0.98)";
+    context.stroke();
+
+    context.beginPath();
+    context.moveTo(endX, endY);
+    context.lineTo(
+      endX - direction.x * arrowWidth + sideX * arrowWidth * 0.55,
+      endY - direction.y * arrowWidth + sideY * arrowWidth * 0.55,
+    );
+    context.lineTo(
+      endX - direction.x * arrowWidth - sideX * arrowWidth * 0.55,
+      endY - direction.y * arrowWidth - sideY * arrowWidth * 0.55,
+    );
+    context.closePath();
+    context.fillStyle = "rgba(251, 191, 36, 0.98)";
+    context.fill();
+    context.restore();
+  }
+
   function drawPlayerMarker(player, mapDefinition, width, height) {
     const x = worldToPixelX(player.x, mapDefinition, width);
     const y = worldToPixelY(player.y, mapDefinition, height);
+    drawFiringIndicator(player, x, y, mapDefinition, width, height);
     drawTeamIdentityBadge(player, x, y, width, height);
     drawPlayerDebugText(player, x, y);
   }
@@ -3787,6 +5175,9 @@
     }
 
     for (const player of players) {
+      if (player.inFlightPlane) {
+        continue;
+      }
       if (player.state !== "eliminated") {
         continue;
       }
@@ -3797,6 +5188,9 @@
     }
 
     for (const player of players) {
+      if (player.inFlightPlane) {
+        continue;
+      }
       if (player.state === "eliminated") {
         continue;
       }
@@ -3851,7 +5245,7 @@
     }
   }
 
-  function drawKillPings(now, mapDefinition, width, height) {
+  function _drawKillPings(now, mapDefinition, width, height) {
     if (!mapDefinition || state.killPings.length === 0) {
       return 0;
     }
@@ -4035,22 +5429,6 @@
     return `${source.length} teams`;
   }
 
-  function formatHotZoneSummary(hotZones) {
-    if (!Array.isArray(hotZones) || hotZones.length === 0) {
-      return "--";
-    }
-
-    return hotZones
-      .slice(0, 4)
-      .map(
-        (hotZone) =>
-          `${formatAssistMatchup(hotZone.involvedTeamIds)} | ${Math.round(
-            toFiniteNumber(hotZone.score, 0) || 0,
-          )} pts | ${hotZone.recentCombatCount || hotZone.recentKillCount || 0} combat`,
-      )
-      .join("\n");
-  }
-
   function formatFightHighlightSummary(highlights) {
     if (!Array.isArray(highlights) || highlights.length === 0) {
       return "--";
@@ -4076,36 +5454,6 @@
           highlight.visible ? `visible#${highlight.priorityRank || 1}` : "hidden"
         }`;
       })
-      .join("\n");
-  }
-
-  function formatProximitySummary(proximities) {
-    if (!Array.isArray(proximities) || proximities.length === 0) {
-      return "--";
-    }
-
-    return proximities
-      .slice(0, 5)
-      .map((proximity) => {
-        const distanceMeters = Math.round((toFiniteNumber(proximity.distance, 0) || 0) / 100);
-        return `${formatTeamLabel(proximity.teamA)} vs ${formatTeamLabel(
-          proximity.teamB,
-        )} | ${distanceMeters}m | ${String(proximity.severity || "low").toUpperCase()}`;
-      })
-      .join("\n");
-  }
-
-  function formatFocusSummary(focusCandidates) {
-    if (!Array.isArray(focusCandidates) || focusCandidates.length === 0) {
-      return "--";
-    }
-
-    return focusCandidates
-      .slice(0, 5)
-      .map(
-        (candidate, index) =>
-          `${index + 1}. ${candidate.label} (${Math.round(toFiniteNumber(candidate.score, 0) || 0)})`,
-      )
       .join("\n");
   }
 
@@ -5401,6 +6749,12 @@
       ["animated zone", formatCircle(frame.animatedCircle)],
       ["blue zone", formatCircle(frame.blueCircle)],
       ["flight path", formatFlightPath(frame.flightPath)],
+      [
+        "flight progress",
+        Number.isFinite(frame.flightProgress)
+          ? `${Math.round(frame.flightProgress * 100)}%`
+          : "--",
+      ],
       ["next zone", formatCircle(frame.nextCircle)],
       ["telemetry remaining", zone ? formatRemainingDetails(getZoneDurationMs(zone)) : "--"],
       ["live remaining", formatRemainingDetails(frame.remainingMs)],
@@ -5745,10 +7099,32 @@
     const zoneAnimation = getAnimatedCircleState(state.zone, now);
     const currentCircle = zoneAnimation.circle;
     const nextCircle = getNextCircle(state.zone);
-    const blueCircle = getBlueCircle(state.zone);
+    const rawBlueCircle = getBlueCircle(state.zone);
+    const blueCircle = getRenderableBlueCircle(
+      state.zone,
+      currentCircle,
+      rawBlueCircle,
+      mapDefinition,
+      now,
+    );
     const flightPath = getFlightPath(state.zone, now);
     const zoneShadeCircle = blueCircle ? null : currentCircle;
+    refreshVehicleFallback(now);
     const visiblePlayers = collectVisiblePlayers(now);
+    const flightProgress = getFlightProgress(
+      state.zone,
+      now,
+      flightPath,
+      mapDefinition,
+      visiblePlayers,
+    );
+    const flightPassengerCount = applyFlightPassengerVisibility(
+      visiblePlayers,
+      state.zone,
+      flightPath,
+      flightProgress,
+      mapDefinition,
+    );
     updateMapCamera(
       mapDefinition,
       currentCircle,
@@ -5758,6 +7134,7 @@
       now,
     );
     applyMapCameraStyle(mapDefinition, bounds.width, bounds.height);
+    updateMapTileLayer(mapDefinition, bounds.width, bounds.height);
     const clusters = collectTeamClusters(mapDefinition);
     const hotZones =
       assistSnapshot && Array.isArray(assistSnapshot.hotZones) ? assistSnapshot.hotZones : [];
@@ -5776,6 +7153,7 @@
 
     clearCanvas();
     drawGrid(bounds.width, bounds.height, mapDefinition);
+    drawMapLabels(bounds.width, bounds.height, mapDefinition);
 
     if (mapDefinition && zoneShadeCircle) {
       drawSafeZoneShade(zoneShadeCircle, mapDefinition, bounds.width, bounds.height);
@@ -5799,11 +7177,21 @@
       drawFlightPath(flightPath, mapDefinition, bounds.width, bounds.height, now);
     }
 
-    drawFightHighlights(fightHighlights, mapDefinition, bounds.width, bounds.height, now);
     drawProximityLinks(proximities, mapDefinition, bounds.width, bounds.height);
     drawTeamClusters(clusters, mapDefinition, bounds.width, bounds.height);
-    const activeKillPingCount = drawKillPings(now, mapDefinition, bounds.width, bounds.height);
+    const activeKillPingCount = 0;
     drawPlayers(visiblePlayers, mapDefinition, bounds.width, bounds.height);
+    if (mapDefinition && flightPath) {
+      drawFlightPlane(
+        flightPath,
+        flightProgress,
+        mapDefinition,
+        bounds.width,
+        bounds.height,
+        now,
+        flightPassengerCount,
+      );
+    }
     drawFocusCandidates(focusCandidates, mapDefinition, bounds.width, bounds.height);
     drawWorkflowFocusHighlight(now, mapDefinition, bounds.width, bounds.height);
     drawCircleDiagnostics(
@@ -5820,6 +7208,7 @@
     state.frame.clusters = clusters;
     state.frame.fightHighlights = fightHighlights;
     state.frame.flightPath = flightPath;
+    state.frame.flightProgress = flightProgress;
     state.frame.focusCandidates = focusCandidates;
     state.frame.hotZones = hotZones;
     state.frame.killPingCount = activeKillPingCount;
@@ -5901,6 +7290,9 @@
         break;
       case "team_branding":
         applyTeamBrandingPacket(message.payload || null);
+        break;
+      case "runtime_reset":
+        applyRuntimeReset();
         break;
       case "heartbeat":
         state.lastHeartbeatAt = receivedAt;

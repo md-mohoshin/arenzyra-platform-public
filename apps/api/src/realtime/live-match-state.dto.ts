@@ -7,6 +7,7 @@ import type {
   MatchStateObservedPlayer,
   MatchStatePlayer,
   MatchStateSummary,
+  MatchStateTeamBackpack,
   TeamScoreState,
 } from '../modules/match-control/state.store';
 
@@ -25,6 +26,8 @@ export type LiveMatchTeamDto = {
   totalPlayers?: number | null;
   alive?: boolean;
   eliminated?: boolean;
+  backpack?: MatchStateTeamBackpack | null;
+  equipment?: MatchStateTeamBackpack | null;
   players?: LiveMatchPlayerDto[];
 };
 
@@ -63,6 +66,8 @@ export function mapTeamToDto(team: TeamScoreState): LiveMatchTeamDto {
     totalPlayers: team.totalPlayers,
     alive,
     eliminated: team.eliminated,
+    backpack: team.backpack ?? null,
+    equipment: team.equipment ?? team.backpack ?? null,
     players: team.players,
   };
 }

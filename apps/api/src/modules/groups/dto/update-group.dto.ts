@@ -1,4 +1,11 @@
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class UpdateGroupDto {
   @IsOptional()
@@ -32,7 +39,6 @@ export class UpdateGroupDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(100)
   maxTeams?: number;
 
   @IsOptional()
@@ -42,4 +48,21 @@ export class UpdateGroupDto {
   @IsOptional()
   @IsString()
   qualificationRule?: string | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  qualifiedTeamsCount?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  qualificationBubbleCount?: number | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  qualificationLabel?: string | null;
 }

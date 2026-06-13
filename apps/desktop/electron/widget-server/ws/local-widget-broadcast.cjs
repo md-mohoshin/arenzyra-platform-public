@@ -96,6 +96,14 @@ function createLocalWidgetBroadcast({
           snapshot.teamBranding.timestamp ?? Date.now(),
         );
       }
+      if (snapshot?.widgetVisibility) {
+        send(
+          client,
+          "widget_visibility",
+          snapshot.widgetVisibility,
+          snapshot.widgetVisibility.updatedAt ?? Date.now(),
+        );
+      }
 
       send(
         client,

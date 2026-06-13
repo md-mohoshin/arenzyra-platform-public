@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsHexColor,
   IsIn,
   IsObject,
@@ -94,6 +95,20 @@ export class OrganizationBrandingInputDto {
   @IsOptional()
   @IsHexColor()
   badgeText?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultTeamLogoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultPlayerPhotoUrl?: string;
+}
+
+export class SessionBrandingInputDto extends OrganizationBrandingInputDto {
+  @IsOptional()
+  @IsBoolean()
+  inheritOrganization?: boolean;
 }
 
 // Backwards compatibility for existing imports

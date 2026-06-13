@@ -106,4 +106,22 @@ describe('MatchesService slot lock guard', () => {
     );
     expect(prisma.matchSlot.findFirst).not.toHaveBeenCalled();
   });
+
+  it('blocks roster replacement after a match ends', async () => {
+    const { service, prisma } = buildService(MatchStatus.ENDED);
+
+    await expect(service.addTeams('m-1', ['team-1'], actor)).rejects.toThrow(
+      new ForbiddenException('Slots cannot be edited after match ends'),
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('blocks roster removal after a match ends', async () => {
+    const { service, prisma } = buildService(MatchStatus.ENDED);
+
+    await expect(service.removeTeam('m-1', 'team-1', actor)).rejects.toThrow(
+      new ForbiddenException('Slots cannot be edited after match ends'),
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
 });

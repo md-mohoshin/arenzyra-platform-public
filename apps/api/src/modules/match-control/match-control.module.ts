@@ -5,7 +5,10 @@ import { AuditModule } from '../audit/audit.module';
 import { MatchesModule } from '../matches/matches.module';
 import { ScoringModule } from '../scoring/scoring.module';
 import { ScoreboardModule } from '../scoreboard/scoreboard.module';
-import { MatchControlController } from './match-control.controller';
+import {
+  MatchControlController,
+  MatchControlSummariesController,
+} from './match-control.controller';
 import { MatchAdminControlController } from './match-admin.controller';
 import { MatchControlGateway } from './match-control.gateway';
 import { LiveStateMirrorService } from './live-state-mirror.service';
@@ -20,6 +23,9 @@ import { RealtimeModule } from '../../realtime/realtime.module';
 import { BroadcastModule } from '../broadcast/broadcast.module';
 import { StandingsModule } from '../standings/standings.module';
 import { ProductionModule } from '../production/production.module';
+import { PcobModule } from '../pcob/pcob.module';
+import { TopFraggerModule } from '../widgets/top-fragger/top-fragger.module';
+import { MvpModule } from '../widgets/mvp/mvp.module';
 
 @Module({
   imports: [
@@ -34,8 +40,12 @@ import { ProductionModule } from '../production/production.module';
     BroadcastModule,
     StandingsModule,
     forwardRef(() => ProductionModule),
+    forwardRef(() => PcobModule),
+    TopFraggerModule,
+    MvpModule,
   ],
   controllers: [
+    MatchControlSummariesController,
     MatchControlController,
     MatchAdminControlController,
     OrgMatchControlController,

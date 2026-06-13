@@ -108,6 +108,31 @@ describe('MatchesService lifecycle guards', () => {
     ).resolves.toBeDefined();
   });
 
+  it('refuses to soft-delete a match while LIVE', async () => {
+    const { service, prisma } = buildService({
+      tournamentStatus: TournamentStatus.ACTIVE,
+      matchStatus: MatchStatus.LIVE,
+    });
+
+    await expect(
+      service.softDelete(
+        {
+          id: 'u-1',
+          actorId: 'u-1',
+          role: null,
+          actorRole: null,
+          organizationId: 'org-1',
+          actingOrgId: 'org-1',
+        },
+        'm-1',
+      ),
+    ).rejects.toThrow('Cannot delete match while LIVE');
+
+    expect(prisma.match.update).not.toHaveBeenCalled();
+    expect(prisma.matchSlot.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.matchTeam.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('routes DRAFT reset through match-control to clear prior run state', async () => {
     const { service, prisma, matchControl } = buildService({
       tournamentStatus: TournamentStatus.ACTIVE,

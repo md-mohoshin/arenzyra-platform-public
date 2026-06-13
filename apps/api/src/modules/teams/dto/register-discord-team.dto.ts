@@ -1,9 +1,13 @@
 import {
   ArrayMaxSize,
+  IsBoolean,
   IsArray,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUrl,
+  IsUUID,
   Matches,
   MaxLength,
   ValidateNested,
@@ -29,6 +33,10 @@ export class DiscordTeamMemberInputDto {
   @IsString()
   @MaxLength(100)
   displayName?: string;
+
+  @IsOptional()
+  @IsIn(['LEADER', 'PLAYER'])
+  role?: 'LEADER' | 'PLAYER';
 }
 
 export class RegisterDiscordTeamDto {
@@ -39,7 +47,6 @@ export class RegisterDiscordTeamDto {
 
   @IsString()
   @IsNotEmpty()
-  @MaxLength(24)
   tag!: string;
 
   @IsString()
@@ -48,6 +55,12 @@ export class RegisterDiscordTeamDto {
     message: 'leaderDiscordUserId must be a Discord snowflake',
   })
   leaderDiscordUserId!: string;
+
+  @IsOptional()
+  @IsString()
+  @IsUrl({ require_protocol: true, protocols: ['http', 'https'] })
+  @MaxLength(1000)
+  logoUrl?: string;
 
   @IsOptional()
   @IsString()
@@ -65,4 +78,13 @@ export class RegisterDiscordTeamDto {
   @ValidateNested({ each: true })
   @Type(() => DiscordTeamMemberInputDto)
   members?: DiscordTeamMemberInputDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  allowDiscordMemberTransfer?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @IsUUID()
+  contextSessionId?: string;
 }

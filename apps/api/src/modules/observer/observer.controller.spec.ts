@@ -153,9 +153,9 @@ describe('ObserverController', () => {
       data: {
         pcobSessionId: 'session-1',
         pcobBoundAt: expect.any(Date),
-        pcobMode: true,
-        dataMode: DataMode.PCOB,
-        dataSource: MatchDataSource.PCOB,
+        pcobMode: false,
+        dataMode: DataMode.MANUAL,
+        dataSource: MatchDataSource.API,
         adapterKey: 'pubgm-pcob',
       },
     });
@@ -166,7 +166,7 @@ describe('ObserverController', () => {
         telemetrySource: 'AUTO',
       },
       data: {
-        telemetrySource: 'LAUNCHER',
+        telemetrySource: 'API',
         telemetrySourceLockedAt: expect.any(Date),
       },
     });
@@ -174,14 +174,14 @@ describe('ObserverController', () => {
       where: { matchId: 'match-1' },
       update: {
         metaJson: expect.objectContaining({
-          telemetrySource: 'LAUNCHER',
+          telemetrySource: 'API',
         }),
       },
       create: expect.objectContaining({
         matchId: 'match-1',
         organizationId: 'org-1',
         metaJson: expect.objectContaining({
-          telemetrySource: 'LAUNCHER',
+          telemetrySource: 'API',
         }),
       }),
     });
@@ -198,7 +198,7 @@ describe('ObserverController', () => {
         events: [],
       },
       {
-        sourceOverride: 'LAUNCHER',
+        sourceOverride: 'API',
       },
     );
   });
@@ -260,7 +260,7 @@ describe('ObserverController', () => {
           deletedAt: null,
           status: MatchStatus.LIVE,
           liveState: LiveState.LIVE,
-          telemetrySource: 'LAUNCHER',
+          telemetrySource: 'API',
           telemetrySourceLockedAt: new Date('2026-04-04T18:00:00.000Z'),
           pcobSessionId: 'session-7',
           adapterKey: 'pubgm-pcob',
@@ -269,7 +269,7 @@ describe('ObserverController', () => {
           dataSource: MatchDataSource.PCOB,
           controlState: {
             state: 'LIVE',
-            metaJson: { telemetrySource: 'LAUNCHER' },
+            metaJson: { telemetrySource: 'API' },
             organizationId: 'org-1',
           },
           tournament: { organizationId: 'org-1' },
@@ -322,7 +322,7 @@ describe('ObserverController', () => {
         events: [],
       },
       {
-        sourceOverride: 'LAUNCHER',
+        sourceOverride: 'API',
       },
     );
   });
@@ -506,7 +506,7 @@ describe('ObserverController', () => {
           deletedAt: null,
           status: MatchStatus.LIVE,
           liveState: LiveState.LIVE,
-          telemetrySource: 'LAUNCHER',
+          telemetrySource: 'API',
           telemetrySourceLockedAt: new Date('2026-04-04T18:00:00.000Z'),
           pcobSessionId: 'session-3',
           adapterKey: 'pubgm-pcob',
@@ -515,7 +515,7 @@ describe('ObserverController', () => {
           dataSource: MatchDataSource.PCOB,
           controlState: {
             state: 'LIVE',
-            metaJson: { telemetrySource: 'LAUNCHER' },
+            metaJson: { telemetrySource: 'API' },
             organizationId: 'org-1',
           },
           tournament: { organizationId: 'org-1' },
@@ -571,7 +571,7 @@ describe('ObserverController', () => {
         events: [],
       },
       {
-        sourceOverride: 'LAUNCHER',
+        sourceOverride: 'API',
       },
     );
   });
@@ -588,7 +588,7 @@ describe('ObserverController', () => {
           deletedAt: null,
           status: MatchStatus.LIVE,
           liveState: LiveState.LIVE,
-          telemetrySource: 'LAUNCHER',
+          telemetrySource: 'API',
           telemetrySourceLockedAt: new Date('2026-04-04T18:00:00.000Z'),
           pcobSessionId: 'session-5',
           adapterKey: 'pubgm-manual',
@@ -597,7 +597,7 @@ describe('ObserverController', () => {
           dataSource: MatchDataSource.PCOB,
           controlState: {
             state: 'LIVE',
-            metaJson: { telemetrySource: 'LAUNCHER' },
+            metaJson: { telemetrySource: 'API' },
             organizationId: 'org-1',
           },
           tournament: { organizationId: 'org-1' },
@@ -639,7 +639,7 @@ describe('ObserverController', () => {
     expect(adapterTelemetry.ingestEnvelope).not.toHaveBeenCalled();
   });
 
-  it('ignores launcher telemetry when another telemetry source is already locked', async () => {
+  it('accepts legacy launcher telemetry aliases when the match is locked to automatic API telemetry', async () => {
     const adapterTelemetry = {
       ingestEnvelope: jest.fn(),
     } as any;
@@ -694,12 +694,12 @@ describe('ObserverController', () => {
       } as any),
     ).resolves.toEqual({
       ok: true,
-      ignored: true,
-      reason: 'SOURCE_MISMATCH',
+      queued: true,
       matchId: 'match-8',
+      receivedAt: expect.any(String),
     });
 
-    expect(adapterTelemetry.ingestEnvelope).not.toHaveBeenCalled();
+    expect(adapterTelemetry.ingestEnvelope).toHaveBeenCalled();
   });
 
   it('returns the legacy-disabled response for non-adapter observer telemetry', async () => {

@@ -20,6 +20,11 @@ export class MatchCommandBaseDto {
 
   @IsUUID()
   matchId!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  version?: number;
 }
 
 export class StartMatchCommandDto extends MatchCommandBaseDto {
@@ -35,11 +40,6 @@ export class SetStatusCommandDto extends MatchCommandBaseDto {
 
   @IsEnum(CONTROL_STATES)
   status!: ControlState;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  version?: number;
 }
 
 export class SetFocusCommandDto extends MatchCommandBaseDto {

@@ -216,15 +216,21 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     playersResponse,
     teamsResponse,
     killResponse,
+    backpackResponse,
     circleResponse,
     gameGlobalInfoResponse,
+    routePayloadsResponse,
+    observerSnapshotResponse,
   ] = await Promise.all([
     client.get("/getallinfo"),
     requestOptional(client, "/gettotalplayerlist"),
     requestOptional(client, "/getteaminfolist"),
     requestOptional(client, "/getkillinfo"),
+    requestOptional(client, "/getteambackpackinfo"),
     requestOptional(client, "/getcircleinfo"),
     requestOptional(client, "/getgameglobalinfo"),
+    requestOptional(client, "/getroutepayloads"),
+    requestOptional(client, "/getobserversnapshot"),
   ]);
 
   if (!allInfoResponse || allInfoResponse.status < 200 || allInfoResponse.status >= 300) {
@@ -258,6 +264,22 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     killResponse?.data?.KillList ||
     killResponse?.data?.events ||
     [];
+  const backpacks =
+    backpackResponse?.data?.backpacks ||
+    backpackResponse?.data?.TeamBackpackInfo ||
+    backpackResponse?.data?.teamBackpackInfo ||
+    allInfo?.TeamBackpackInfo ||
+    allInfo?.teamBackpackInfo ||
+    [];
+  const routePayloads =
+    routePayloadsResponse?.data?.routePayloads ||
+    routePayloadsResponse?.data ||
+    null;
+  const observerSnapshot =
+    observerSnapshotResponse?.data?.observerSnapshot ||
+    observerSnapshotResponse?.data?.snapshot ||
+    observerSnapshotResponse?.data ||
+    null;
 
   const circleResponseData = asRecord(circleResponse?.data);
   const baseCirclePayload =
@@ -289,6 +311,7 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     (Array.isArray(players) && players.length > 0) ||
     (Array.isArray(teams) && teams.length > 0) ||
     (Array.isArray(kills) && kills.length > 0) ||
+    (Array.isArray(backpacks) && backpacks.length > 0) ||
     hasObjectKeys(allInfo) ||
     hasObjectKeys(baseCirclePayload) ||
     hasObjectKeys(gameGlobalInfo);
@@ -368,10 +391,14 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     players: Array.isArray(players) ? players : [],
     teams: Array.isArray(teams) ? teams : [],
     kills: Array.isArray(kills) ? kills : [],
+    backpacks: Array.isArray(backpacks) ? backpacks : [],
     circlePayload,
     allInfo,
+    routePayloads,
+    observerSnapshot,
     observer: allInfo?.observingPlayer || allInfo?.ObservingPlayer || null,
     phase,
+    source: "direct-observer",
     empty: !hasSourceData,
   };
 }

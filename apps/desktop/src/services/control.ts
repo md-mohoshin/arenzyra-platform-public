@@ -208,7 +208,10 @@ export function createControlSocket(
   return { connect, disconnect };
 }
 
-export async function fetchControlSnapshot(api: { get: Function }, matchId: string): Promise<BackendSnapshot> {
+export async function fetchControlSnapshot(
+  api: { get: (path: string) => Promise<{ data: unknown }> },
+  matchId: string,
+): Promise<BackendSnapshot> {
   const res = await api.get(`/me/matches/${matchId}/control`);
   const state = res.data as ControlState;
   return toSnapshot(state, []);

@@ -13,8 +13,60 @@ function toNullableBoolean(value) {
   return null;
 }
 
+function normalizeAngleDegrees(value) {
+  const numeric = toFiniteNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+
+  return ((numeric % 360) + 360) % 360;
+}
+
+function normalizeDirectionVector(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!source) {
+    return null;
+  }
+
+  const x = toFiniteNumber(source.x ?? source.X);
+  const y = toFiniteNumber(source.y ?? source.Y);
+  if (x === null || y === null) {
+    return null;
+  }
+
+  const magnitude = Math.hypot(x, y);
+  if (!Number.isFinite(magnitude) || magnitude <= 0.0001) {
+    return null;
+  }
+
+  return {
+    x: x / magnitude,
+    y: y / magnitude,
+  };
+}
+
 function normalizeMapKey(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+const SOURCE_PRIORITY = new Map([
+  ["backend-canonical", 110],
+  ["canonical-backend", 110],
+  ["telemetry-bridge", 100],
+  ["launcher-bridge", 100],
+  ["backend", 90],
+  ["direct-observer", 50],
+  ["mock", 10],
+  ["unknown", 0],
+]);
+
+function normalizeSource(value) {
+  const source = String(value || "").trim().toLowerCase();
+  return source || "unknown";
+}
+
+function sourcePriority(source) {
+  return SOURCE_PRIORITY.get(normalizeSource(source)) ?? 0;
 }
 
 function clonePlayer(player) {
@@ -28,7 +80,11 @@ function clonePlayer(player) {
     kills: player.kills,
     alive: player.alive,
     knocked: player.knocked,
+    inVehicle: player.inVehicle,
     health: player.health,
+    isFiring: player.isFiring,
+    fireAngle: player.fireAngle,
+    fireDirection: player.fireDirection ? { ...player.fireDirection } : null,
   };
 }
 
@@ -38,6 +94,7 @@ function cloneUpdate(update) {
     players: update.players.map(clonePlayer),
     timestamp: update.timestamp,
     receivedAt: update.receivedAt,
+    source: update.source,
     coordinate: update.coordinate ? { ...update.coordinate } : null,
     warnings: [...update.warnings],
   };
@@ -78,18 +135,38 @@ function createPlayerPositionStore() {
               kills: Math.max(0, Math.trunc(toFiniteNumber(player?.kills) ?? 0)),
               alive: toNullableBoolean(player?.alive),
               knocked: toNullableBoolean(player?.knocked),
+              inVehicle: toNullableBoolean(player?.inVehicle),
               health: toFiniteNumber(player?.health),
+              isFiring: toNullableBoolean(player?.isFiring) === true,
+              fireAngle: normalizeAngleDegrees(player?.fireAngle),
+              fireDirection: normalizeDirectionVector(player?.fireDirection),
             };
           })
           .filter(Boolean)
       : [];
 
     const receivedAt = toFiniteNumber(update?.receivedAt) ?? Date.now();
+    const timestamp = toFiniteNumber(update?.timestamp) ?? receivedAt;
+    const source = normalizeSource(update?.source);
+    const current = updatesByMap.get(mapKey);
+    if (
+      current &&
+      (timestamp < current.timestamp ||
+        (timestamp === current.timestamp &&
+          sourcePriority(source) < sourcePriority(current.source)) ||
+        (timestamp === current.timestamp &&
+          sourcePriority(source) === sourcePriority(current.source) &&
+          receivedAt < current.receivedAt))
+    ) {
+      return null;
+    }
+
     const nextUpdate = {
       mapKey,
       players: normalizedPlayers,
-      timestamp: toFiniteNumber(update?.timestamp) ?? receivedAt,
+      timestamp,
       receivedAt,
+      source,
       coordinate: update?.coordinate ? { ...update.coordinate } : null,
       warnings: Array.isArray(update?.warnings) ? [...update.warnings] : [],
     };

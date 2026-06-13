@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import {
+  OrganizationStatus,
   Role,
   TournamentInviteStatus,
   TournamentRegistrationStatus,
@@ -70,6 +71,7 @@ describe('Tournament registration flow (e2e)', () => {
         id: organizationId,
         name: `Registration Org ${seed}`,
         slug: organizationSlug,
+        status: OrganizationStatus.APPROVED,
       },
     });
 

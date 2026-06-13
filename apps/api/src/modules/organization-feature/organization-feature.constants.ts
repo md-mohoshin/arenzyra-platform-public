@@ -40,4 +40,9 @@ export const FEATURE_REGISTRY: FeatureDefinition[] = [
     description: 'Enable widget animations',
     defaultEnabled: true,
   },
+  {
+    key: 'production.discord.enabled',
+    description: 'Enable approved production Discord channels and imports',
+    defaultEnabled: false,
+  },
 ];

@@ -17,36 +17,20 @@ body {
 }
 
 .obs-player-photo-root {
-  --frame-outline: rgba(83, 211, 149, 0.5);
-  --frame-glow: rgba(83, 211, 149, 0.24);
-  --frame-top-light: rgba(224, 245, 233, 0.16);
-  --frame-bottom-shadow: rgba(4, 10, 17, 0.86);
   position: absolute;
-  right: 24px;
-  bottom: 24px;
-  width: min(19vw, 220px);
-  min-width: 150px;
+  left: calc(50% + clamp(250px, 17vw, 340px));
+  bottom: 0;
+  width: clamp(124px, 7.8vw, 154px);
   opacity: 0;
-  transform: translate3d(22px, 0, 0) scale(0.96);
-  transform-origin: 100% 100%;
+  transform: translate3d(14px, 0, 0) scale(0.96);
+  transform-origin: 0 100%;
   transition:
     opacity 180ms ease-out,
     transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
     filter 180ms ease-out;
   pointer-events: none;
-  filter: drop-shadow(0 24px 46px rgba(0, 0, 0, 0.36));
-}
-
-.obs-player-photo-root[data-status="knocked"] {
-  --frame-outline: rgba(245, 165, 36, 0.58);
-  --frame-glow: rgba(245, 165, 36, 0.3);
-  --frame-top-light: rgba(255, 229, 178, 0.18);
-}
-
-.obs-player-photo-root[data-status="eliminated"] {
-  --frame-outline: rgba(240, 84, 84, 0.54);
-  --frame-glow: rgba(240, 84, 84, 0.28);
-  --frame-top-light: rgba(255, 212, 212, 0.16);
+  z-index: 3;
+  filter: none;
 }
 
 .obs-player-photo-root[hidden] {
@@ -65,27 +49,11 @@ body {
 }
 
 .player-photo-shell::before {
-  content: "";
-  position: absolute;
-  inset: 10% -10% -4%;
-  border-radius: 42px;
-  background: radial-gradient(circle at 50% 18%, var(--frame-glow), transparent 62%);
-  filter: blur(22px);
-  opacity: 0.95;
+  content: none;
 }
 
 .player-photo-shell::after {
-  content: "";
-  position: absolute;
-  right: -4%;
-  bottom: 8%;
-  width: 40%;
-  height: 18%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, transparent, var(--frame-glow));
-  filter: blur(14px);
-  opacity: 0.7;
-  transform: rotate(-16deg);
+  content: none;
 }
 
 .player-photo-frame {
@@ -93,81 +61,39 @@ body {
   z-index: 1;
   width: 100%;
   height: 100%;
-  overflow: hidden;
-  border-radius: 34px 34px 20px 20px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(11, 17, 25, 0.14));
-  box-shadow:
-    0 0 0 1px var(--frame-outline),
-    0 20px 40px rgba(0, 0, 0, 0.34),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  isolation: isolate;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  isolation: auto;
 }
 
 .player-photo-frame::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 50% 7%, var(--frame-top-light), transparent 36%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 22%),
-    linear-gradient(180deg, transparent 58%, var(--frame-bottom-shadow));
-  pointer-events: none;
-  z-index: 2;
+  content: none;
 }
 
 .player-photo-frame::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.16), transparent 34%),
-    linear-gradient(315deg, rgba(255, 255, 255, 0.06), transparent 24%);
-  pointer-events: none;
-  z-index: 3;
+  content: none;
 }
 
 .player-photo-frame img {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: cover;
-  object-position: center top;
-  transform: scale(1.02);
-  filter: saturate(1.04) contrast(1.02);
+  object-fit: contain;
+  object-position: center bottom;
+  transform: none;
+  filter: none;
 }
 
 .obs-player-photo-root[data-offline="true"] {
-  filter: grayscale(0.06) drop-shadow(0 18px 34px rgba(0, 0, 0, 0.28));
+  filter: none;
 }
 
 .obs-player-photo-root[data-stale="true"] .player-photo-frame img {
-  filter: saturate(0.76) contrast(0.98);
-}
-
-.obs-player-photo-root[data-status="knocked"] .player-photo-frame {
-  animation: player-photo-pulse 1800ms ease-in-out infinite;
+  filter: none;
 }
 
 .obs-player-photo-root[data-status="eliminated"] .player-photo-frame img {
-  filter: grayscale(0.34) saturate(0.64) contrast(1.02);
-}
-
-@keyframes player-photo-pulse {
-  0%,
-  100% {
-    box-shadow:
-      0 0 0 1px var(--frame-outline),
-      0 20px 40px rgba(0, 0, 0, 0.34),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  }
-
-  50% {
-    box-shadow:
-      0 0 0 1px var(--frame-outline),
-      0 20px 40px rgba(0, 0, 0, 0.34),
-      0 0 24px var(--frame-glow),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  }
+  filter: none;
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import type { BroadcastSection } from "./BroadcastSidebar";
 import { OverlayController, type WidgetTheme, type WidgetAnimation } from "./OverlayController";
 
 type WidgetRow = {

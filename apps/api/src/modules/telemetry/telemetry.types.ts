@@ -2,6 +2,8 @@ import type {
   LiveSyncPlayerOwnership,
   LiveSyncTeamOwnership,
 } from '../../common/live-sync-contract.util';
+import type { AdapterTelemetryTeamBackpack } from '../game-adapters/game-adapter.types';
+import type { MatchStateObservedPlayer } from '../match-control/state.store';
 
 export type TelemetryEventType =
   | 'PLAYER_KILL'
@@ -61,29 +63,17 @@ export const ENGINE_EVENT_TYPES = [
 
 export type EngineEventType = (typeof ENGINE_EVENT_TYPES)[number];
 
-export const CONTROL_COMMAND_TYPES = [
-  'START_MATCH',
-  'END_MATCH',
-  'SET_PLAYER_ALIVE',
-  'SET_PLAYER_KNOCKED',
-  'SET_PLAYER_KILLS',
-  'LOCK_RESULTS',
-] as const;
+export const CONTROL_COMMAND_TYPES = ['START_MATCH', 'END_MATCH'] as const;
 
 export type ControlCommandType = (typeof CONTROL_COMMAND_TYPES)[number];
 
-export const ENGINE_SOURCE_VALUES = [
-  'TELEMETRY',
-  'MANUAL',
-  'HTTP_FALLBACK',
-  'LEGACY_OBSERVER',
-] as const;
+export const ENGINE_SOURCE_VALUES = ['TELEMETRY', 'MANUAL'] as const;
 
 export type EngineSource =
   | (typeof ENGINE_SOURCE_VALUES)[number]
   | (string & Record<never, never>);
 
-export type TelemetryControlMode = 'AUTO' | 'MANUAL' | 'HYBRID';
+export type TelemetryControlMode = 'API' | 'MANUAL';
 
 export type MatchEngineStatus = 'PENDING' | 'LIVE' | 'ENDED' | 'LOCKED';
 
@@ -135,9 +125,11 @@ export type TelemetryPlayerMetadata = {
   avatarUrl?: string | null;
   slotPlayerResultId?: string | null;
   externalPlayerId?: string | null;
+  playerOpenId?: string | null;
   inGameId?: string | null;
   position?: { x: number; y: number } | null;
   observedInTelemetry?: boolean | null;
+  canonicalSeed?: boolean;
   provisional?: boolean;
 };
 
@@ -149,6 +141,16 @@ export type TelemetryTeamMetadata = {
   totalPlayers?: number | null;
   slotResultId?: string | null;
   wasPresentInMatch?: boolean | null;
+  observedInTelemetry?: boolean | null;
+  telemetryAlivePlayers?: number | null;
+  telemetryTotalPlayers?: number | null;
+  telemetryKills?: number | null;
+  telemetryPlacement?: number | null;
+  telemetryBackpack?: AdapterTelemetryTeamBackpack | null;
+  telemetryEquipment?: AdapterTelemetryTeamBackpack | null;
+  telemetryLastSeenAt?: number | null;
+  canonicalSeed?: boolean;
+  provisional?: boolean;
 };
 
 export type TelemetryPlayerState = {
@@ -156,7 +158,9 @@ export type TelemetryPlayerState = {
   teamId: string;
   alive: boolean;
   knocked: boolean;
+  health?: number | null;
   kills: number;
+  assists: number;
   metadata?: TelemetryPlayerMetadata;
   ownership?: LiveSyncPlayerOwnership;
 };
@@ -223,6 +227,7 @@ export type TelemetryMatchState = {
   endedAt: number | null;
   teamsAlive: number;
   circle?: TelemetryCircleState | null;
+  observedPlayer?: MatchStateObservedPlayer | null;
   killFeed?: TelemetryKillFeedItem[];
   events?: TelemetryStateEvent[];
   players: Record<string, TelemetryPlayerState>;
@@ -243,47 +248,7 @@ export type EndMatchCommand = {
   source?: EngineSource;
 };
 
-export type SetPlayerAliveCommand = {
-  type: 'SET_PLAYER_ALIVE';
-  matchId: string;
-  playerId: string;
-  alive: boolean;
-  timestamp?: number;
-  source?: EngineSource;
-};
-
-export type SetPlayerKnockedCommand = {
-  type: 'SET_PLAYER_KNOCKED';
-  matchId: string;
-  playerId: string;
-  knocked: boolean;
-  timestamp?: number;
-  source?: EngineSource;
-};
-
-export type SetPlayerKillsCommand = {
-  type: 'SET_PLAYER_KILLS';
-  matchId: string;
-  playerId: string;
-  kills: number;
-  timestamp?: number;
-  source?: EngineSource;
-};
-
-export type LockResultsCommand = {
-  type: 'LOCK_RESULTS';
-  matchId: string;
-  timestamp?: number;
-  source?: EngineSource;
-};
-
-export type ControlCommand =
-  | StartMatchCommand
-  | EndMatchCommand
-  | SetPlayerAliveCommand
-  | SetPlayerKnockedCommand
-  | SetPlayerKillsCommand
-  | LockResultsCommand;
+export type ControlCommand = StartMatchCommand | EndMatchCommand;
 
 export type TelemetryRosterState = {
   matchId: string;

@@ -4,7 +4,13 @@ import request from 'supertest';
 import { io, Socket } from 'socket.io-client';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
-import { LiveState, MatchStatus, Role } from '@prisma/client';
+import {
+  DataMode,
+  LiveState,
+  MatchDataSource,
+  MatchStatus,
+  Role,
+} from '@prisma/client';
 import { AppModule } from '../src/app.module';
 import { requireEnv } from '../src/common/config/require-env';
 import { PrismaService } from '../src/db/prisma.service';
@@ -152,6 +158,10 @@ describe('Socket contract - pcob', () => {
         organizationId,
         status: MatchStatus.LIVE,
         liveState: LiveState.LIVE,
+        dataSource: MatchDataSource.PCOB,
+        dataMode: DataMode.PCOB,
+        pcobMode: true,
+        pcobSessionId: `sess_${seed}`,
         startedAt: new Date(startedAt),
       },
     });

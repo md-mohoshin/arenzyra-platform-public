@@ -54,6 +54,15 @@ export class LiveBattleRankingService {
     return this.cache.get(broadcastKey)?.snapshot ?? null;
   }
 
+  invalidateMatch(matchId: string): void {
+    this.rosterCache.delete(matchId);
+    for (const [broadcastKey, cached] of this.cache.entries()) {
+      if (cached.snapshot.matchId === matchId) {
+        this.cache.delete(broadcastKey);
+      }
+    }
+  }
+
   async computeSnapshot(
     broadcastKey: string,
     opts: { strict?: boolean; force?: boolean } = {},
@@ -66,10 +75,6 @@ export class LiveBattleRankingService {
       if (opts.strict) throw new NotFoundException('Broadcast key not found');
       return { snapshot: null, changed: false };
     }
-    const branding = await this.branding
-      .getForOrganization(organization.id)
-      .catch(() => null);
-
     const liveMatch = await this.prisma.match.findFirst({
       where: {
         organizationId: organization.id,
@@ -85,12 +90,16 @@ export class LiveBattleRankingService {
         id: true,
         tournamentId: true,
         groupId: true,
+        sessionId: true,
         updatedAt: true,
         status: true,
       },
     });
 
     if (!liveMatch) {
+      const branding = await this.branding
+        .getForOrganization(organization.id)
+        .catch(() => null);
       const snapshot: LiveBattleRankingDto = {
         orgId: organization.id,
         matchId: null,
@@ -103,6 +112,13 @@ export class LiveBattleRankingService {
       return this.upsertCache(broadcastKey, snapshot, opts.force ?? false);
     }
 
+    const branding = await this.branding
+      .getEffectiveBranding({
+        organizationId: organization.id,
+        matchId: liveMatch.id,
+        sessionId: liveMatch.sessionId,
+      })
+      .catch(() => null);
     const snapshot = await this.buildSnapshotForMatch(
       organization.id,
       liveMatch,
@@ -518,11 +534,11 @@ export class LiveBattleRankingService {
       });
     };
 
-    (match?.matchTeams ?? []).forEach((mt) =>
-      mergeTeam(mt.teamId, mt.slot, mt.team),
-    );
     (match?.matchSlots ?? []).forEach((ms) =>
       mergeTeam(ms.teamId, ms.slotNumber, ms.team),
+    );
+    (match?.matchTeams ?? []).forEach((mt) =>
+      mergeTeam(mt.teamId, mt.slot, mt.team),
     );
 
     this.rosterCache.set(matchId, { meta: map, cachedAt: Date.now() });

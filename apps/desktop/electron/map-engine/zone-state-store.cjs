@@ -22,10 +22,80 @@ function normalizeNullableString(value) {
   return null;
 }
 
+function normalizeZoneMode(value) {
+  const normalized = normalizeNullableString(value)?.toLowerCase() ?? null;
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized === "2" ||
+    normalized === "closing" ||
+    normalized === "moving" ||
+    normalized === "shrinking" ||
+    normalized === "shrink" ||
+    normalized === "collapse" ||
+    normalized === "collapsing"
+  ) {
+    return "closing";
+  }
+
+  if (
+    normalized === "0" ||
+    normalized === "1" ||
+    normalized === "waiting" ||
+    normalized === "wait" ||
+    normalized === "idle" ||
+    normalized === "hold" ||
+    normalized === "holding" ||
+    normalized === "opening" ||
+    normalized === "open" ||
+    normalized === "next"
+  ) {
+    return "waiting";
+  }
+
+  return null;
+}
+
+function isOpeningMatchPhase(value) {
+  const normalized = normalizeNullableString(value)?.toLowerCase() ?? "";
+  return (
+    normalized === "plane" ||
+    normalized === "parachuting" ||
+    normalized === "lobby" ||
+    normalized === "waiting"
+  );
+}
+
+const SOURCE_PRIORITY = new Map([
+  ["backend-canonical", 110],
+  ["canonical-backend", 110],
+  ["telemetry-bridge", 100],
+  ["launcher-bridge", 100],
+  ["backend", 90],
+  ["direct-observer", 50],
+  ["mock", 10],
+  ["unknown", 0],
+]);
+
+function normalizeSource(value) {
+  const source = String(value || "").trim().toLowerCase();
+  return source || "unknown";
+}
+
+function sourcePriority(source) {
+  return SOURCE_PRIORITY.get(normalizeSource(source)) ?? 0;
+}
+
 function cloneUpdate(update) {
   return {
     ...update,
     matchPhase: normalizeNullableString(update.matchPhase),
+    mode: normalizeZoneMode(update.mode),
+    zoneMode: normalizeZoneMode(update.zoneMode ?? update.mode),
+    circlesVisible: update.circlesVisible !== false,
+    source: update.source,
     timing: update.timing ? { ...update.timing } : null,
     currentCircle: update.currentCircle ? { ...update.currentCircle } : null,
     nextCircle: update.nextCircle ? { ...update.nextCircle } : null,
@@ -37,6 +107,7 @@ function cloneUpdate(update) {
             end: { ...update.flightPath.end },
           }
         : null,
+    flightPathVisibleUntil: toFiniteNumber(update.flightPathVisibleUntil),
     raw: update.raw
       ? {
           currentCircle: update.raw.currentCircle ? { ...update.raw.currentCircle } : null,
@@ -53,6 +124,28 @@ function cloneUpdate(update) {
       : null,
     coordinate: update.coordinate ? { ...update.coordinate } : null,
     warnings: [...update.warnings],
+  };
+}
+
+function normalizeFlightPath(value) {
+  const startX = toFiniteNumber(value?.start?.x);
+  const startY = toFiniteNumber(value?.start?.y);
+  const endX = toFiniteNumber(value?.end?.x);
+  const endY = toFiniteNumber(value?.end?.y);
+
+  if (startX === null || startY === null || endX === null || endY === null) {
+    return null;
+  }
+
+  return {
+    start: {
+      x: startX,
+      y: startY,
+    },
+    end: {
+      x: endX,
+      y: endY,
+    },
   };
 }
 
@@ -75,15 +168,53 @@ function createZoneStateStore() {
     const centerX = toFiniteNumber(update?.centerX);
     const centerY = toFiniteNumber(update?.centerY);
     const radius = toFiniteNumber(update?.radius);
+    const currentCircle =
+      centerX === null || centerY === null || radius === null
+        ? null
+        : {
+            centerX,
+            centerY,
+            radius,
+          };
+    const flightPath = normalizeFlightPath(update?.flightPath);
 
-    if (!mapKey || centerX === null || centerY === null || radius === null) {
+    if (!mapKey || (!currentCircle && !flightPath)) {
+      return null;
+    }
+    const eventTimestamp = timing.eventTimestamp ?? receivedAt;
+    const source = normalizeSource(update?.source);
+    const current = updatesByMap.get(mapKey);
+    const phase = toFiniteNumber(update?.phase);
+    const currentPhase = toFiniteNumber(current?.phase);
+    if (
+      current &&
+      phase !== null &&
+      currentPhase !== null &&
+      phase < currentPhase &&
+      !isOpeningMatchPhase(update?.matchPhase)
+    ) {
+      return null;
+    }
+
+    if (
+      current &&
+      (eventTimestamp < current.timestamp ||
+        (eventTimestamp === current.timestamp &&
+          sourcePriority(source) < sourcePriority(current.source)) ||
+        (eventTimestamp === current.timestamp &&
+          sourcePriority(source) === sourcePriority(current.source) &&
+          receivedAt < current.receivedAt))
+    ) {
       return null;
     }
 
     const nextUpdate = {
       mapKey,
-      phase: toFiniteNumber(update?.phase),
+      phase,
       matchPhase: normalizeNullableString(update?.matchPhase),
+      mode: normalizeZoneMode(update?.mode),
+      zoneMode: normalizeZoneMode(update?.zoneMode ?? update?.mode),
+      circlesVisible: update?.circlesVisible !== false,
       status: normalizeNullableString(update?.status),
       centerX,
       centerY,
@@ -102,15 +233,12 @@ function createZoneStateStore() {
       timeRemaining:
         timing.remainingMs === null ? toFiniteNumber(update?.timeRemaining) : timing.remainingMs / 1000,
       timeRemainingMs: timing.remainingMs,
-      timestamp: timing.eventTimestamp ?? receivedAt,
+      timestamp: eventTimestamp,
       receivedAt,
+      source,
       targetEndAt: timing.targetEndAt,
       timing,
-      currentCircle: {
-        centerX,
-        centerY,
-        radius,
-      },
+      currentCircle,
       nextCircle:
         toFiniteNumber(update?.nextCenterX) === null ||
         toFiniteNumber(update?.nextCenterY) === null ||
@@ -131,22 +259,8 @@ function createZoneStateStore() {
               centerY: toFiniteNumber(update?.blueCenterY),
               radius: toFiniteNumber(update?.blueRadius),
             },
-      flightPath:
-        toFiniteNumber(update?.flightPath?.start?.x) === null ||
-        toFiniteNumber(update?.flightPath?.start?.y) === null ||
-        toFiniteNumber(update?.flightPath?.end?.x) === null ||
-        toFiniteNumber(update?.flightPath?.end?.y) === null
-          ? null
-          : {
-              start: {
-                x: toFiniteNumber(update?.flightPath?.start?.x),
-                y: toFiniteNumber(update?.flightPath?.start?.y),
-              },
-              end: {
-                x: toFiniteNumber(update?.flightPath?.end?.x),
-                y: toFiniteNumber(update?.flightPath?.end?.y),
-              },
-            },
+      flightPath,
+      flightPathVisibleUntil: toFiniteNumber(update?.flightPathVisibleUntil),
       raw: update?.raw
         ? {
             currentCircle: update.raw.currentCircle

@@ -147,6 +147,7 @@ class TelemetryCollector:
         self.last_error_log_at: dict[str, float] = {}
         self.last_heartbeat_at = 0.0
         self.is_bound = False
+        self.active_match_cache: dict[str, Any] | None = None
 
     def _register_socket_handlers(self) -> None:
         def connect() -> None:
@@ -338,6 +339,9 @@ class TelemetryCollector:
         if self.is_bound:
             return
 
+        active_match = self._fetch_active_match()
+        self._assert_legacy_pcob_match(active_match)
+
         ack_event = threading.Event()
         bind_response: dict[str, Any] = {}
 
@@ -366,10 +370,72 @@ class TelemetryCollector:
             raise RuntimeError("pcob:bind timed out")
 
         response = bind_response.get("value")
+        if isinstance(response, dict) and response.get("reason") == "legacy_pcob_disabled":
+            raise RuntimeError(self._build_legacy_disabled_message(active_match))
         if not isinstance(response, dict) or not response.get("ok"):
             raise RuntimeError(f"pcob:bind rejected: {response}")
 
         self.is_bound = True
+
+    def _fetch_active_match(self) -> dict[str, Any] | None:
+        url = f"{self.config.backend_url}/pcob/active-match"
+        try:
+            response = self.session.get(
+                url,
+                timeout=self.config.request_timeout_sec,
+                headers={"Authorization": f"Bearer {self.config.jwt_token}"},
+            )
+            if response.status_code in (401, 403, 404):
+                return None
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                return None
+            self.active_match_cache = payload
+            return payload
+        except requests.RequestException as exc:
+            self._log_request_error("pcob-active-match", exc)
+            return self.active_match_cache
+
+    def _build_legacy_disabled_message(self, active_match: dict[str, Any] | None) -> str:
+        mode = None
+        active_match_id = None
+        if isinstance(active_match, dict):
+            mode_raw = active_match.get("mode")
+            match_id_raw = active_match.get("matchId")
+            if isinstance(mode_raw, str) and mode_raw.strip():
+                mode = mode_raw.strip().upper()
+            if isinstance(match_id_raw, str) and match_id_raw.strip():
+                active_match_id = match_id_raw.strip()
+
+        detail = []
+        if active_match_id:
+            detail.append(f"activeMatch={active_match_id}")
+        if mode:
+            detail.append(f"mode={mode}")
+        detail_text = f" ({', '.join(detail)})" if detail else ""
+        return (
+            "legacy /pcob producer bind is disabled for this match"
+            f"{detail_text}. Use launcher ob.js -> API ingress for automatic live telemetry, "
+            "or switch the match back to an explicit legacy PCOB source."
+        )
+
+    def _assert_legacy_pcob_match(self, active_match: dict[str, Any] | None) -> None:
+        if not isinstance(active_match, dict):
+            return
+        if active_match.get("active") is not True:
+            return
+        active_match_id = active_match.get("matchId")
+        if isinstance(active_match_id, str) and active_match_id.strip():
+            if active_match_id.strip() != self.config.match_id:
+                return
+        mode_raw = active_match.get("mode")
+        if not isinstance(mode_raw, str):
+            return
+        mode = mode_raw.strip().upper()
+        if mode in ("", "PCOB"):
+            return
+        raise RuntimeError(self._build_legacy_disabled_message(active_match))
 
     def _log_request_error(self, key: str, exc: Exception) -> None:
         now = time.monotonic()
@@ -416,7 +482,7 @@ def parse_args() -> CollectorConfig:
             or os.getenv("ARENZYRA_JWT_TOKEN")
             or os.getenv("JWT_TOKEN")
         ),
-        help="JWT used to authenticate against the Arenzyra /pcob Socket.IO gateway.",
+        help="JWT used to authenticate against the Arenzyra backend. Legacy /pcob producer binds only work for explicit PCOB matches.",
     )
     parser.add_argument(
         "--shadow-base-url",

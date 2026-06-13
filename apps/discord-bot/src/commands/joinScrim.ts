@@ -31,6 +31,12 @@ export const joinScrimCommand = {
       interaction.user.id,
       sessionId,
       tag,
+      interaction.guild,
+      {
+        actorDiscordId: interaction.user.id,
+        actorLabel: interaction.user.tag,
+        sourceChannelId: interaction.channelId ?? null,
+      },
     );
     await interaction.editReply(content);
   },

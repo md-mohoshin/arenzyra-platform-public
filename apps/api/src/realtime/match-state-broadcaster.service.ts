@@ -52,25 +52,13 @@ export class MatchStateBroadcaster {
 
   private eliminatedByMatch = new Map<string, Set<string>>();
 
-  private room(matchId: string, orgId?: string | null): string {
-    return orgId ? `match:${orgId}:${matchId}` : `match:${matchId}`;
-  }
-
   private emit<T>(
     matchId: string,
     event: string,
     payload: T,
     orgId?: string | null,
   ): void {
-    if (!this.realtime.io) return;
-    this.realtime.io
-      .to(`match:${matchId}`)
-      .emit(event as never, payload as never);
-    if (orgId) {
-      this.realtime.io
-        .to(this.room(matchId, orgId))
-        .emit(event as never, payload as never);
-    }
+    this.realtime.emitMatchScopedEvent(matchId, event, payload, orgId);
   }
 
   private async resolveOrganizationId(
@@ -146,9 +134,26 @@ export class MatchStateBroadcaster {
     // Detect newly eliminated teams and broadcast banner event
     const tracked =
       this.eliminatedByMatch.get(state.matchId) ?? new Set<string>();
+    const eliminationEventsBlocked = this.shouldBlockEliminationEvents(state);
     dto.teams.forEach((team) => {
       const isEliminated = (team.alivePlayers ?? 0) === 0;
       if (isEliminated && !tracked.has(team.teamId)) {
+        if (eliminationEventsBlocked) {
+          this.logger.warn(
+            JSON.stringify({
+              tag: '[ELIMINATION][BLOCKED]',
+              stage: 'match-state-broadcaster',
+              action: 'team-elimination-overlay-blocked-during-air-phase',
+              matchId: state.matchId,
+              teamId: team.teamId,
+              phase: state.circle?.phase ?? null,
+              alivePlayers: team.alivePlayers ?? null,
+              totalPlayers: team.totalPlayers ?? null,
+              reason: 'EARLY_PHASE_OVERLAY_ELIMINATION_BLOCKED',
+            }),
+          );
+          return;
+        }
         tracked.add(team.teamId);
         this.overlay.broadcastTeamEliminated(
           {
@@ -234,5 +239,17 @@ export class MatchStateBroadcaster {
     );
     this.emit(payload.matchId, 'camera:suggest', payload, orgId ?? null);
     this.emit(payload.matchId, 'observer:suggestion', payload, orgId ?? null);
+  }
+
+  private shouldBlockEliminationEvents(state: LiveMatchState): boolean {
+    const phase =
+      typeof state.circle?.phase === 'number' &&
+      Number.isFinite(state.circle.phase)
+        ? Math.trunc(state.circle.phase)
+        : null;
+    if (phase !== null && phase < 2) {
+      return true;
+    }
+    return state.initialized !== true && state.status === 'LIVE';
   }
 }

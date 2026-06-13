@@ -2,7 +2,7 @@ import type { PrismaService } from '../../db/prisma.service';
 import { TelemetryPersistenceService } from './telemetry-persistence.service';
 
 describe('TelemetryPersistenceService', () => {
-  it('writes match control state and a passive compatibility snapshot from engine state', async () => {
+  it('writes runtime snapshot metadata without overwriting persisted result rows', async () => {
     const tx = {
       match: {
         findUnique: jest.fn().mockResolvedValue({
@@ -75,6 +75,47 @@ describe('TelemetryPersistenceService', () => {
     expect(tx.matchStateSnapshot.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { matchId: 'match-1' },
+      }),
+    );
+  });
+
+  it('canonicalizes launcher runtime acceptance metadata to API', async () => {
+    const prisma = {
+      match: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'match-1',
+          organizationId: 'org-1',
+          status: 'LIVE',
+          controlState: {
+            state: 'LIVE',
+            organizationId: 'org-1',
+            metaJson: null,
+          },
+        }),
+      },
+      matchControlState: {
+        upsert: jest.fn().mockResolvedValue(undefined),
+      },
+    } as unknown as PrismaService;
+    const service = new TelemetryPersistenceService(prisma);
+
+    await service.markTelemetryAccepted('match-1', {
+      source: 'LAUNCHER',
+      sequence: 12,
+      acceptedAt: '2026-04-01T10:00:00.000Z',
+    });
+
+    expect(prisma.matchControlState.upsert as jest.Mock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          metaJson: expect.objectContaining({
+            telemetryRuntime: expect.objectContaining({
+              lastTransportSource: 'API',
+              lastAcceptedSource: 'API',
+              lastAcceptedSequence: 12,
+            }),
+          }),
+        }),
       }),
     );
   });

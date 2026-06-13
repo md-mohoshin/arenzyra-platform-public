@@ -11,6 +11,10 @@ import express, {
 import { join } from 'path';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ArenzyraWsAdapter } from './common/websocket/arenzyra-ws.adapter';
+import {
+  buildAllowedCorsOrigins,
+  isAllowedCorsOrigin,
+} from './common/cors.util';
 import { validateEnv } from './config/env.validation';
 
 async function bootstrap() {
@@ -18,45 +22,32 @@ async function bootstrap() {
   const { AppModule } = await import('./app.module.js');
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const trustProxy = process.env.TRUST_PROXY === 'true';
+  const allowedHeaders = [
+    'Content-Type',
+    'Authorization',
+    'ngrok-skip-browser-warning',
+  ];
+  const allowedMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
   if (trustProxy) {
     app.set('trust proxy', 1);
   }
 
-  const allowedOrigins = Array.from(
-    new Set(
-      [
-        'http://localhost:3001',
-        'http://127.0.0.1:3001',
-        'http://localhost:3005',
-        'http://127.0.0.1:3005',
-        'http://192.168.0.129:3001',
-        process.env.WEB_APP_ORIGIN,
-        process.env.FRONTEND_ORIGIN,
-      ].filter((value): value is string => Boolean(value?.trim())),
-    ),
-  );
-  const isAllowedOrigin = (origin?: string | null) =>
-    !origin || allowedOrigins.includes(origin);
+  const allowedOrigins = buildAllowedCorsOrigins();
 
   app.enableCors({
     origin: (origin, callback) => {
-      if (isAllowedOrigin(origin)) {
-        callback(null, true);
+      if (!isAllowedCorsOrigin(origin, allowedOrigins)) {
+        callback(null, false);
         return;
       }
 
-      callback(
-        new Error(`Origin ${origin ?? 'unknown'} is not allowed by CORS`),
-      );
+      callback(null, origin ?? true);
     },
     credentials: false,
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'ngrok-skip-browser-warning',
-    ],
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders,
+    methods: allowedMethods,
+    preflightContinue: true,
   });
 
   // Explicitly handle OPTIONS for any unmatched routes to satisfy strict browsers.
@@ -64,21 +55,17 @@ async function bootstrap() {
     if (req.method === 'OPTIONS') {
       const requestOrigin =
         typeof req.headers.origin === 'string' ? req.headers.origin : null;
-      if (!isAllowedOrigin(requestOrigin)) {
+      if (!isAllowedCorsOrigin(requestOrigin, allowedOrigins)) {
         res.sendStatus(403);
         return;
       }
       if (requestOrigin) {
         res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+        res.setHeader('Vary', 'Origin');
       }
-      res.setHeader(
-        'Access-Control-Allow-Methods',
-        'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-      );
-      res.setHeader(
-        'Access-Control-Allow-Headers',
-        'Content-Type, Authorization, ngrok-skip-browser-warning',
-      );
+      res.setHeader('Access-Control-Allow-Methods', allowedMethods.join(','));
+      res.setHeader('Access-Control-Allow-Headers', allowedHeaders.join(', '));
+      res.setHeader('Access-Control-Max-Age', '600');
       res.sendStatus(204);
       return;
     }

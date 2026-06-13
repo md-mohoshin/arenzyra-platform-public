@@ -19,9 +19,12 @@ import {
 } from '@prisma/client';
 import type {
   MatchCreatePayload,
+  MatchResultAdjustmentPayload,
   ManualKillPayload,
+  ManualMatchResultsPayload,
   ManualPlacementPayload,
   AssignSlotDto,
+  MoveSlotDto,
   LobbyStatusValue,
   SyncPreviousMatchSlotsDto,
 } from './matches.service';
@@ -78,13 +81,59 @@ export class MatchesController {
   @Patch('matches/:matchId/results/placements')
   updatePlacements(
     @Param('matchId') matchId: string,
-    @Body() body: { placements: Array<{ teamId: string; placement: number }> },
+    @Body()
+    body: {
+      placements: Array<{ teamId: string; placement: number }>;
+      expectedVersion?: number | null;
+    },
     @Req() req: AuthenticatedRequest,
   ) {
     return this.matches.updatePlacements(
       req.user,
       matchId,
       body?.placements ?? [],
+      body?.expectedVersion ?? null,
+    );
+  }
+
+  @Patch('matches/:matchId/results/manual')
+  updateManualResults(
+    @Param('matchId') matchId: string,
+    @Body() body: ManualMatchResultsPayload,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.matches.updateManualMatchResults(req.user, matchId, body ?? {});
+  }
+
+  @Get('matches/:matchId/results/adjustments')
+  listResultAdjustments(
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.matches.listResultAdjustments(req.user, matchId);
+  }
+
+  @Post('matches/:matchId/results/adjustments')
+  createResultAdjustment(
+    @Param('matchId') matchId: string,
+    @Body() body: MatchResultAdjustmentPayload,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.matches.createResultAdjustment(req.user, matchId, body ?? {});
+  }
+
+  @Post('matches/:matchId/results/adjustments/:adjustmentId/revoke')
+  revokeResultAdjustment(
+    @Param('matchId') matchId: string,
+    @Param('adjustmentId') adjustmentId: string,
+    @Body() body: { reason?: string | null },
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.matches.revokeResultAdjustment(
+      req.user,
+      matchId,
+      adjustmentId,
+      body ?? {},
     );
   }
 
@@ -186,6 +235,15 @@ export class MatchesController {
     );
   }
 
+  @Post('matches/:matchId/slots/move')
+  moveSlot(
+    @Param('matchId') matchId: string,
+    @Body() body: MoveSlotDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.matches.moveSlot(matchId, body, req.user);
+  }
+
   @Post('matches/:matchId/slots/assign')
   assignSlot(
     @Param('matchId') matchId: string,
@@ -255,19 +313,21 @@ export class MatchesController {
     if (!status || !Object.values(MatchStatus).includes(status)) {
       throw new ForbiddenException('Invalid match status');
     }
-    const updated = (await this.matches.setStatus(
-      matchId,
-      status,
-      req.user,
-    )) as Match;
-    if (status === MatchStatus.ENDED) {
-      await this.matchState.transition(
-        matchId,
-        'ENDED',
-        req.user,
-        'set-status ENDED',
-      );
-    }
+    const controlStatus =
+      status === MatchStatus.LIVE
+        ? 'LIVE'
+        : status === MatchStatus.FINISH_PENDING
+          ? 'FINISH_PENDING'
+          : status === MatchStatus.ENDED
+            ? 'FINISH_PENDING'
+            : status === MatchStatus.FINISHED
+              ? 'FINISHED'
+              : 'READY';
+    await this.matchControl.setStatus(req.user, matchId, {
+      status: controlStatus,
+      reason: `set-status ${status}`,
+    });
+    const updated = (await this.matches.get(req.user, matchId)) as Match;
     const organizationId = updated.tournamentId ?? null;
     await this.auditService.log({
       action: AuditAction.MATCH_STATUS_CHANGE,
@@ -375,13 +435,12 @@ export class MatchesController {
   ) {
     await this.matches.getMatchWithOrg(matchId, req.user);
     const previous = await this.matchState.getState(matchId);
-    const next = await this.matchState.transition(
-      matchId,
-      body.state,
-      req.user,
-      body.reason ?? null,
-      body.meta ?? null,
-    );
+    await this.matchControl.setStatus(req.user, matchId, {
+      status: body.state,
+      reason: body.reason ?? undefined,
+      meta: body.meta ?? undefined,
+    });
+    const next = await this.matchState.getState(matchId);
     const lifecycle = await this.matchControl.getLifecycleState(matchId);
     return {
       previousState: previous.state,

@@ -70,8 +70,11 @@ export type LauncherSession = {
 export type LauncherAccessReason =
   | "LICENSE_EXPIRED"
   | "LICENSE_MISSING"
+  | "LICENSE_REVOKED"
   | "LICENSE_SUSPENDED"
   | "LICENSE_INVALID"
+  | "LAUNCHER_PLAN_REQUIRED"
+  | "SUBSCRIPTION_EXPIRED"
   | "OBSERVER_LIMIT_REACHED";
 
 export type LauncherLicense = {
@@ -131,6 +134,13 @@ export type LauncherLiveMatch = {
   matchId: string | null;
   status: string | null;
   source: string | null;
+  tournamentId: string | null;
+  sessionId?: string | null;
+  sessionName?: string | null;
+  stageId: string | null;
+  matchName?: string | null;
+  matchNumber?: number | null;
+  map?: string | null;
 };
 
 export type LauncherSyncCommand = {
@@ -202,15 +212,12 @@ export type MatchControlBinding = {
   dataSource: string | null;
   dataMode: string | null;
   telemetryProvider?: string | null;
-  sourceMode?: "MANUAL" | "AUTO" | null;
+  sourceMode?: "MANUAL" | "API" | null;
   boundAt: string | null;
   lastSeenAt: string | null;
   isConfigured: boolean;
   isBound: boolean;
   isReady: boolean;
-  pcobConfigured?: boolean;
-  pcobBound?: boolean;
-  pcobReady?: boolean;
 };
 
 export type MatchControlSnapshot = {
@@ -268,10 +275,7 @@ export type LauncherWorkflowState =
   | "NEXT_MATCH_AVAILABLE"
   | "NEXT_MATCH_PREPARED";
 
-export type ProductionModeStatus =
-  | "READY"
-  | "READY_WITH_WARNINGS"
-  | "BLOCKED";
+export type ProductionModeStatus = "READY" | "READY_WITH_WARNINGS" | "BLOCKED";
 
 export type ProductionModeCheckKey =
   | "match"
@@ -297,6 +301,7 @@ export type ProductionModeCheckResult = {
 export type ProductionModeResult = {
   status: ProductionModeStatus;
   checkedAt: string;
+  durationMs?: number;
   matchId: string;
   checks: ProductionModeCheckResult[];
   blockingIssues: string[];
@@ -321,6 +326,7 @@ export type TelemetryBridgeStatus = {
   phase: MatchPhase;
   gameTime: number | null;
   aliveTeams: number | null;
+  alivePlayers: number | null;
   circleIndex: number | null;
   circleStatus: string | null;
   totalPackets: number;
@@ -438,6 +444,120 @@ export type ObserverFeedStatus = {
   lastStoppedAt: string | null;
 };
 
+export type VisualModeRegionKey = "killFeed" | "teamPanel" | "scoreboard";
+export type VisualGamePresetKey =
+  | "pubgMobile"
+  | "freeFire"
+  | "valorant"
+  | "codMobile";
+
+export type VisualModeRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type VisualModeRegions = Record<
+  VisualModeRegionKey,
+  VisualModeRegion | null
+>;
+
+export type VisualModeConfig = {
+  gamePresetKey: VisualGamePresetKey;
+  sourceId: string | null;
+  sourceName: string | null;
+  captureFps: number;
+  region: VisualModeRegion | null;
+  regions: VisualModeRegions;
+  activeRegionKey: VisualModeRegionKey;
+  coordinateMode: "percent";
+  reviewBeforePublish: true;
+  autoPublish: false;
+  ocrEnabled: false;
+  aiEnabled: false;
+};
+
+export type VisualCaptureSource = {
+  id: string;
+  name: string;
+  displayId: string | null;
+};
+
+export type VisualModeStatus = VisualModeConfig & {
+  available: boolean;
+  running: boolean;
+  matchId: string | null;
+  sessionId: string | null;
+  connectionStatus: string;
+  framesSeen: number;
+  changesDetected: number;
+  lastFrameAt: string | null;
+  lastChangeAt: string | null;
+  lastError: string | null;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  pipeline: "screen-monitor";
+  calibrationReady: boolean;
+  reviewQueueSize: number;
+  lastReviewCandidateAt: string | null;
+};
+
+export type StartVisualModeResult = VisualModeStatus & {
+  alreadyRunning: boolean;
+};
+
+export type VisualReviewItemStatus = "pending" | "reviewed" | "ignored";
+export type VisualReviewItemOcrStatus =
+  | "not_started"
+  | "processing"
+  | "ready"
+  | "needs_review"
+  | "failed";
+
+export type VisualReviewItem = {
+  id: string;
+  matchId: string | null;
+  sessionId: string | null;
+  gamePresetKey: VisualGamePresetKey;
+  sourceId: string | null;
+  sourceName: string | null;
+  regionKey: VisualModeRegionKey;
+  region: VisualModeRegion | null;
+  capturedAt: string;
+  status: VisualReviewItemStatus;
+  confidence: number;
+  rawText: string;
+  rows: Array<Record<string, unknown>>;
+  warnings: string[];
+  reason: string;
+  frameHash: string;
+  imagePath: string | null;
+  imageUrl: string | null;
+  ocrStatus: VisualReviewItemOcrStatus;
+  ocrError: string | null;
+  ocrPreview: Record<string, unknown> | null;
+  okCount: number;
+  unresolvedCount: number;
+  ambiguousCount: number;
+  applyReady: boolean;
+  reviewedAt?: string | null;
+};
+
+export type VisualReviewQueueState = {
+  items: VisualReviewItem[];
+  pendingCount: number;
+  maxItems: number;
+  reviewBeforePublish: true;
+  autoPublish: false;
+};
+
+export type VisualReviewCaptureResult = {
+  item: VisualReviewItem | null;
+  queue: VisualReviewQueueState;
+  status: VisualModeStatus;
+};
+
 export type StartObserverFeedResult = ObserverFeedStatus & {
   alreadyRunning: boolean;
   expiresIn?: string | null;
@@ -476,6 +596,15 @@ export type WidgetServerStatus = {
   baseUrl: string | null;
   localBaseUrl?: string | null;
   networkBaseUrl?: string | null;
+};
+
+export type PinnedCommentatorDeskWindowStatus = {
+  open: boolean;
+  visible: boolean;
+  clickThrough: boolean;
+  alwaysOnTop: boolean;
+  transparent: boolean;
+  url: string | null;
 };
 
 export type LauncherMapAssetStatus = {
@@ -634,6 +763,118 @@ export type WidgetCatalogState = {
   items: Record<string, WidgetCatalogItemState>;
 };
 
+export type WidgetHotkeyDirection = "auto" | "left" | "right" | "up" | "down";
+
+export type WidgetHotkeyControlSelection = {
+  id: string;
+  widgetKey: string;
+  label: string;
+  enabled: boolean;
+  direction: WidgetHotkeyDirection;
+};
+
+export type WidgetHotkeyControlConfig = {
+  enabled: boolean;
+  key: string;
+  transitionMs: number;
+  widgets: WidgetHotkeyControlSelection[];
+};
+
+export type WidgetHotkeyControlStatus = {
+  featureKey: "feature.widget-hotkey-control";
+  approved: boolean;
+  canUse: boolean;
+  registered: boolean;
+  active: boolean;
+  key: string;
+  keyCode: number | null;
+  error: string | null;
+  reason: string | null;
+  config: WidgetHotkeyControlConfig;
+};
+
+export type AiCasterSettings = {
+  enabled: boolean;
+  muted: boolean;
+  mode: "professional" | "hype";
+  voiceMode: "single" | "dual";
+  primaryVoice: string;
+  secondaryVoice: string;
+  language: string;
+  talkFrequency: "low" | "balanced" | "high";
+  minGapMs: number;
+  maxLineWords: number;
+  speakingSpeed: "slow" | "normal" | "fast";
+  expression: "neutral" | "professional" | "energetic" | "dramatic";
+  priority: "high-value" | "balanced" | "all";
+  profanityFilter: boolean;
+  logLines: boolean;
+  allowedRoles: Array<"ADMIN" | "ORGANIZER">;
+};
+
+export type AiCasterAccessState = {
+  featureKey: "ai-caster";
+  widgetKey: "ai-caster";
+  organization: {
+    id: string;
+    slug: string;
+    name: string | null;
+  } | null;
+  approved: boolean;
+  approval: {
+    widgetKey: string;
+    isApproved: boolean;
+    approvedAt: string | null;
+    approvedBy: string | null;
+  } | null;
+  canConfigure: boolean;
+  canUse: boolean;
+  reason: string | null;
+  settings: AiCasterSettings;
+};
+
+export type AiCasterVoicePreviewPayload = {
+  organizationId?: string | null;
+  voice?: string;
+  role?: "play-by-play" | "analyst";
+  text?: string;
+  mode?: AiCasterSettings["mode"];
+  speakingSpeed?: AiCasterSettings["speakingSpeed"];
+  expression?: AiCasterSettings["expression"];
+};
+
+export type AiCasterVoicePreviewResponse = {
+  audioBase64: string;
+  mimeType: string;
+  model: string;
+  voice: string;
+  role: "play-by-play" | "analyst";
+  text: string;
+};
+
+export type AiCasterLine = {
+  id: string;
+  text: string;
+  voice: string;
+  role: "play-by-play" | "analyst" | "system";
+  style: string;
+  priority: string;
+  createdAt: number;
+  source: string;
+  speakingSpeed?: string;
+  expression?: string;
+  language?: string;
+};
+
+export type AiCasterRuntimeState = {
+  ok: boolean;
+  status: "locked" | "standby" | "live" | "error";
+  reason: string | null;
+  settings: AiCasterSettings;
+  currentLine: AiCasterLine | null;
+  history: AiCasterLine[];
+};
+
 export type MapFocusCenter = {
   x: number;
   y: number;
@@ -782,6 +1023,7 @@ export type ObserverCommandCenterTelemetry = {
   matchId?: string | null;
   packetsPerSecond?: number | null;
   aliveTeams?: number | null;
+  alivePlayers?: number | null;
   gameTime?: number | null;
   circleIndex?: number | null;
   circleStatus?: string | null;

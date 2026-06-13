@@ -43,7 +43,7 @@ describe('match telemetry backfill normalization', () => {
     );
   });
 
-  it('rewrites legacy AUTO rows with a valid PCOB binding to canonical PCOB', () => {
+  it('rewrites legacy AUTO rows with a valid PCOB binding to canonical API', () => {
     const result = analyzeMatchTelemetryBackfill(
       buildRow({
         dataSource: MatchDataSource.AUTO,
@@ -60,25 +60,100 @@ describe('match telemetry backfill normalization', () => {
     if (result.action !== 'normalize') {
       throw new Error('expected normalize action');
     }
-    expect(result.currentProvider).toBe(MatchDataSource.PCOB);
-    expect(result.targetProvider).toBe(MatchDataSource.PCOB);
+    expect(result.currentProvider).toBe(MatchDataSource.API);
+    expect(result.targetProvider).toBe(MatchDataSource.API);
     expect(result.fixCategories).toEqual([
-      'legacy_auto_to_pcob',
+      'legacy_auto_to_api',
       'sync_pcob_compatibility_fields',
     ]);
     expect(result.data).toEqual(
       expect.objectContaining({
-        dataSource: MatchDataSource.PCOB,
+        dataSource: MatchDataSource.API,
       }),
     );
     expect(result.data).not.toHaveProperty('pcobBoundAt');
     expect(result.data).not.toHaveProperty('pcobLastSeenAt');
   });
 
-  it('clears stale PCOB residue on explicit non-PCOB rows', () => {
+  it('leaves canonical explicit API launcher bindings unchanged', () => {
     const result = analyzeMatchTelemetryBackfill(
       buildRow({
         dataSource: MatchDataSource.API,
+        dataMode: DataMode.MANUAL,
+        pcobMode: false,
+        pcobSessionId: 'session-live',
+        pcobBoundAt: new Date('2026-04-01T10:00:00.000Z'),
+        pcobLastSeenAt: new Date('2026-04-01T10:01:00.000Z'),
+        pcobKillSyncEnabled: true,
+        adapterKey: 'pubgm-pcob',
+      }),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        action: 'unchanged',
+        currentProvider: MatchDataSource.API,
+        targetProvider: MatchDataSource.API,
+      }),
+    );
+  });
+
+  it('normalizes explicit API launcher bindings that still carry legacy PCOB compatibility flags', () => {
+    const result = analyzeMatchTelemetryBackfill(
+      buildRow({
+        dataSource: MatchDataSource.API,
+        dataMode: DataMode.PCOB,
+        pcobMode: true,
+        pcobSessionId: 'session-live',
+        pcobBoundAt: new Date('2026-04-01T10:00:00.000Z'),
+        pcobLastSeenAt: new Date('2026-04-01T10:01:00.000Z'),
+        pcobKillSyncEnabled: true,
+        adapterKey: 'pubgm-pcob',
+      }),
+    );
+
+    expect(result.action).toBe('normalize');
+    if (result.action !== 'normalize') {
+      throw new Error('expected normalize action');
+    }
+    expect(result.currentProvider).toBe(MatchDataSource.API);
+    expect(result.targetProvider).toBe(MatchDataSource.API);
+    expect(result.fixCategories).toEqual(['sync_api_binding_fields']);
+    expect(result.data).toEqual(
+      expect.objectContaining({
+        dataMode: DataMode.MANUAL,
+        pcobMode: false,
+      }),
+    );
+    expect(result.data).not.toHaveProperty('pcobBoundAt');
+    expect(result.data).not.toHaveProperty('pcobLastSeenAt');
+    expect(result.data).not.toHaveProperty('pcobKillSyncEnabled');
+  });
+
+  it('flags partial explicit API launcher bindings for manual review', () => {
+    const result = analyzeMatchTelemetryBackfill(
+      buildRow({
+        dataSource: MatchDataSource.API,
+        dataMode: DataMode.MANUAL,
+        pcobMode: false,
+        pcobSessionId: null,
+        adapterKey: 'pubgm-pcob',
+      }),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        action: 'manual-review',
+        currentProvider: MatchDataSource.API,
+        reviewCategories: ['api_provider_partial_observer_binding'],
+      }),
+    );
+  });
+
+  it('clears stale PCOB residue on explicit manual rows', () => {
+    const result = analyzeMatchTelemetryBackfill(
+      buildRow({
+        dataSource: MatchDataSource.MANUAL,
         dataMode: DataMode.MANUAL,
         pcobMode: false,
         pcobSessionId: 'stale-session',
@@ -93,8 +168,8 @@ describe('match telemetry backfill normalization', () => {
     if (result.action !== 'normalize') {
       throw new Error('expected normalize action');
     }
-    expect(result.currentProvider).toBe(MatchDataSource.API);
-    expect(result.targetProvider).toBe(MatchDataSource.API);
+    expect(result.currentProvider).toBe(MatchDataSource.MANUAL);
+    expect(result.targetProvider).toBe(MatchDataSource.MANUAL);
     expect(result.fixCategories).toEqual(['clear_stale_pcob_fields']);
     expect(result.data).toEqual(
       expect.objectContaining({
@@ -107,7 +182,7 @@ describe('match telemetry backfill normalization', () => {
     );
   });
 
-  it('flags explicit PCOB rows missing binding requirements for manual review', () => {
+  it('normalizes explicit PCOB rows missing binding requirements to API', () => {
     const result = analyzeMatchTelemetryBackfill(
       buildRow({
         dataSource: MatchDataSource.PCOB,
@@ -120,9 +195,15 @@ describe('match telemetry backfill normalization', () => {
 
     expect(result).toEqual(
       expect.objectContaining({
-        action: 'manual-review',
-        currentProvider: MatchDataSource.PCOB,
-        reviewCategories: ['pcob_provider_missing_session'],
+        action: 'normalize',
+        currentProvider: MatchDataSource.API,
+        targetProvider: MatchDataSource.API,
+        data: expect.objectContaining({
+          dataSource: MatchDataSource.API,
+          dataMode: DataMode.MANUAL,
+          pcobMode: false,
+          adapterKey: null,
+        }),
       }),
     );
   });

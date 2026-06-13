@@ -329,17 +329,6 @@ function computeZonePressure(zonePacket, fight, config) {
   };
 }
 
-function formatConfidenceDescriptor(confidence) {
-  const normalized = clamp01(toFiniteNumber(confidence, 0) || 0);
-  if (normalized >= 0.82) {
-    return "high confidence";
-  }
-  if (normalized >= 0.64) {
-    return "solid confidence";
-  }
-  return "developing";
-}
-
 function buildPriorityLabel(score) {
   const numeric = toFiniteNumber(score, 0) || 0;
   if (numeric >= 210) {

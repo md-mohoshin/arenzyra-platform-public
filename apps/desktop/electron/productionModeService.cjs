@@ -125,6 +125,7 @@ function createProductionModeService(options = {}) {
   };
 
   async function runPreflight(params = {}) {
+    const preflightStartedAt = Date.now();
     const matchId = String(
       params?.matchId || params?.selectedMatch?.id || "",
     ).trim();
@@ -431,13 +432,29 @@ function createProductionModeService(options = {}) {
       ? [...assetStatus.requiredMissingKeys]
       : [];
 
-    if (selectedMapKey && selectedMapAsset?.assetAvailable !== true) {
+    if (
+      selectedMapKey &&
+      selectedMapAsset?.required === true &&
+      selectedMapAsset?.assetAvailable !== true
+    ) {
       pushCheck({
         key: "assets",
         label: "Assets",
         status: "fail",
         blocking: true,
         message: `Selected map asset is missing for ${selectedMapKey}.`,
+        meta: {
+          selectedMapKey,
+          requiredMissingKeys,
+        },
+      });
+    } else if (selectedMapKey && selectedMapAsset?.assetAvailable !== true) {
+      pushCheck({
+        key: "assets",
+        label: "Assets",
+        status: "warning",
+        blocking: false,
+        message: `Selected map asset is not bundled for ${selectedMapKey}; map widgets will use the fallback asset.`,
         meta: {
           selectedMapKey,
           requiredMissingKeys,
@@ -792,6 +809,7 @@ function createProductionModeService(options = {}) {
     const result = {
       status,
       checkedAt,
+      durationMs: Math.max(0, Date.now() - preflightStartedAt),
       matchId,
       checks,
       blockingIssues,

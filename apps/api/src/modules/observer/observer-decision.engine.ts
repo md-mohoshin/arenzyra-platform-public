@@ -4,6 +4,7 @@ import type {
   MatchStateSourceMode,
   TeamScoreState,
 } from '../match-control/state.store';
+import { isAutomaticMatchStateSourceMode } from '../match-control/state.store';
 import type { FightEvent } from '../telemetry/fight-detection.engine';
 import type { BroadcastEvent } from '../broadcast/broadcast-event.engine';
 import type { StorylineEvent } from '../storyline/storyline.engine';
@@ -52,7 +53,7 @@ export class ObserverDecisionEngine {
   private readonly maxProcessedIds = 4096;
 
   processMatch(input: ObserverDecisionInput): ObserverSuggestion[] {
-    if (input.sourceMode !== 'AUTO') {
+    if (!isAutomaticMatchStateSourceMode(input.sourceMode)) {
       this.stateByMatch.delete(input.matchId);
       return [];
     }

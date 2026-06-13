@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, TelemetryAuthorityMode } from '@prisma/client';
 import { PrismaService } from '../../db/prisma.service';
 import {
   hasManualOverride,
@@ -16,6 +16,7 @@ import {
   TELEMETRY_RUNTIME_ACCEPTED_WINDOW_MS,
   writeTelemetryRuntimeMeta,
 } from '../../common/telemetry-runtime-contract.util';
+import { canonicalizeTelemetryRuntimeSource } from '../../common/telemetry-source.util';
 
 const asJsonRecord = (
   value: Prisma.JsonValue | null | undefined,
@@ -28,6 +29,13 @@ const asJsonRecord = (
 
 const toJsonValue = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
+
+const toPersistedAuthorityMode = (
+  mode: TelemetryMatchState['mode'],
+): TelemetryAuthorityMode =>
+  mode === 'MANUAL'
+    ? TelemetryAuthorityMode.MANUAL
+    : TelemetryAuthorityMode.AUTO;
 
 @Injectable()
 export class TelemetryPersistenceService {
@@ -128,16 +136,16 @@ export class TelemetryPersistenceService {
       await tx.matchControlState.upsert({
         where: { matchId: state.matchId },
         update: {
-          state: nextControlState,
-          authorityMode: state.mode,
+          state: nextControlState as never,
+          authorityMode: toPersistedAuthorityMode(state.mode),
           reason: 'TELEMETRY_ENGINE_SYNC',
           metaJson: toJsonValue(nextMeta),
         },
         create: {
           matchId: state.matchId,
           organizationId: match.organizationId,
-          state: nextControlState,
-          authorityMode: state.mode,
+          state: nextControlState as never,
+          authorityMode: toPersistedAuthorityMode(state.mode),
           reason: 'TELEMETRY_ENGINE_SYNC',
           metaJson: toJsonValue(nextMeta),
         },
@@ -158,6 +166,7 @@ export class TelemetryPersistenceService {
     } = {},
   ) {
     const acceptedAt = this.normalizeTimestamp(params.acceptedAt ?? new Date());
+    const acceptedSource = canonicalizeTelemetryRuntimeSource(params.source);
     if (!acceptedAt) {
       return;
     }
@@ -203,9 +212,9 @@ export class TelemetryPersistenceService {
     const nextMeta = writeTelemetryRuntimeMeta(currentMeta, {
       lastTransportAt: acceptedAt,
       lastPacketAt: acceptedAt,
-      lastTransportSource: params.source ?? null,
+      lastTransportSource: acceptedSource,
       lastAcceptedAt: acceptedAt,
-      lastAcceptedSource: params.source ?? null,
+      lastAcceptedSource: acceptedSource,
       lastAcceptedSequence: params.sequence ?? null,
       lastIgnoredAt: null,
       lastIgnoredReason: null,
@@ -224,9 +233,8 @@ export class TelemetryPersistenceService {
       create: {
         matchId,
         organizationId,
-        state:
-          match.controlState?.state ??
-          deriveControlStateFromMatchStatus(match.status),
+        state: (match.controlState?.state ??
+          deriveControlStateFromMatchStatus(match.status)) as never,
         reason: 'TELEMETRY_RUNTIME_ACCEPTED',
         metaJson: toJsonValue(nextMeta),
       },
@@ -239,7 +247,7 @@ export class TelemetryPersistenceService {
           action: 'telemetry-accepted-transition',
           matchId,
           acceptedAt,
-          source: params.source ?? null,
+          source: acceptedSource,
           sequence: params.sequence ?? null,
         }),
       );

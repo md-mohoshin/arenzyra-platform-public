@@ -23,6 +23,12 @@ export class SuperApplicationsController {
     return { data };
   }
 
+  @Get('summary')
+  async getApplicationSummary() {
+    const data = await this.superService.getApplicationSummary();
+    return { data };
+  }
+
   @Post(':id/approve')
   async approveApplication(@Param('id') id: string, @Req() req: AuthRequest) {
     const data = await this.superService.approveApplication(id, req.user);

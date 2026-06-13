@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { MatchDataSource } from '@prisma/client';
+import { GameKey, MatchDataSource } from '@prisma/client';
 import { PrismaService } from '../../db/prisma.service';
 import type { MatchStateSnapshot } from '../live-sync/match-state.client';
 import { AuditService } from '../audit/audit.service';
@@ -9,6 +9,7 @@ import type { MatchSummary } from './results.types';
 import { deriveResultLockState, type ResultLockContext } from './results.lock';
 import { resolveMatchDataSource } from '../matches/match-datasource.util';
 import { isSessionMatch } from '../../common/match-context.util';
+import { resolvePlacementPointsForGame } from '../../common/game-rules.util';
 
 @Injectable()
 export class ResultsIngestService {
@@ -79,6 +80,109 @@ export class ResultsIngestService {
     return (this.toStringValue(value) ?? '').toLowerCase();
   }
 
+  private normalizeTeamLookup(value: unknown): string {
+    return (this.toStringValue(value) ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '');
+  }
+
+  private toFiniteInteger(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed.length) {
+        return null;
+      }
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) {
+        return Math.trunc(parsed);
+      }
+    }
+    return null;
+  }
+
+  private registerUniqueTeamLookup(
+    map: Map<string, string | null>,
+    value: unknown,
+    teamId: string,
+  ): void {
+    const key = this.normalizeTeamLookup(value);
+    if (!key) {
+      return;
+    }
+    const existing = map.get(key);
+    if (existing === undefined) {
+      map.set(key, teamId);
+      return;
+    }
+    if (existing !== teamId) {
+      map.set(key, null);
+    }
+  }
+
+  private resolveManagedTeamId(
+    team: Pick<
+      MatchStateSnapshot['teams'][number],
+      'id' | 'slot' | 'name' | 'tag'
+    >,
+    lookups: {
+      mapByLiveId: Map<string, string>;
+      slotByTeamId: Map<
+        string,
+        { teamId: string | null; team?: { id: string } | null }
+      >;
+      slotByNumber: Map<
+        number,
+        { teamId: string | null; team?: { id: string } | null }
+      >;
+      teamIdByName: Map<string, string | null>;
+      teamIdByTag: Map<string, string | null>;
+    },
+  ): string | null {
+    const directId = this.toStringValue(team.id);
+    if (directId) {
+      const slotDirect = lookups.slotByTeamId.get(directId);
+      if (slotDirect?.teamId) {
+        return slotDirect.teamId;
+      }
+      if (slotDirect?.team?.id) {
+        return slotDirect.team.id;
+      }
+      const mapped = lookups.mapByLiveId.get(directId);
+      if (mapped) {
+        return mapped;
+      }
+    }
+
+    const slotNumber =
+      this.toFiniteInteger(team.slot) ?? this.toFiniteInteger(team.id);
+    if (slotNumber !== null) {
+      const slotMatch = lookups.slotByNumber.get(slotNumber);
+      if (slotMatch?.teamId) {
+        return slotMatch.teamId;
+      }
+      if (slotMatch?.team?.id) {
+        return slotMatch.team.id;
+      }
+    }
+
+    const byName = lookups.teamIdByName.get(
+      this.normalizeTeamLookup(team.name),
+    );
+    if (byName) {
+      return byName;
+    }
+
+    const byTag = lookups.teamIdByTag.get(this.normalizeTeamLookup(team.tag));
+    if (byTag) {
+      return byTag;
+    }
+
+    return null;
+  }
+
   private payloadExternalPlayerId(player: {
     playerOpenId?: string | null;
     playerOpenID?: string | null;
@@ -122,13 +226,48 @@ export class ResultsIngestService {
 
       const slotResults = await this.prisma.matchSlotResult.findMany({
         where: { matchId },
-        include: { players: true },
+        include: {
+          players: true,
+          team: {
+            select: {
+              id: true,
+              name: true,
+              tag: true,
+            },
+          },
+        },
       });
       const slotByTeam = new Map(
         slotResults
           .filter((sr) => sr.teamId)
           .map((sr) => [sr.teamId as string, sr]),
       );
+      const slotByNumber = new Map(
+        slotResults
+          .filter(
+            (sr): sr is (typeof slotResults)[number] & { slotNumber: number } =>
+              Number.isFinite(sr.slotNumber),
+          )
+          .map((sr) => [Math.trunc(sr.slotNumber), sr] as const),
+      );
+      const teamIdByName = new Map<string, string | null>();
+      const teamIdByTag = new Map<string, string | null>();
+      for (const slot of slotResults) {
+        const managedTeamId = slot.teamId ?? slot.team?.id ?? null;
+        if (!managedTeamId) {
+          continue;
+        }
+        this.registerUniqueTeamLookup(
+          teamIdByName,
+          slot.team?.name ?? null,
+          managedTeamId,
+        );
+        this.registerUniqueTeamLookup(
+          teamIdByTag,
+          slot.team?.tag ?? null,
+          managedTeamId,
+        );
+      }
 
       let killChanged = false;
       let placementPointsChanged = false;
@@ -141,7 +280,13 @@ export class ResultsIngestService {
 
       await this.prisma.$transaction(async (tx) => {
         for (const team of snapshot.teams ?? []) {
-          const managedTeamId = team.id ? mapByLiveId.get(team.id) : null;
+          const managedTeamId = this.resolveManagedTeamId(team, {
+            mapByLiveId,
+            slotByTeamId: slotByTeam,
+            slotByNumber,
+            teamIdByName,
+            teamIdByTag,
+          });
           if (!managedTeamId) continue;
           const slot = slotByTeam.get(managedTeamId);
           if (!slot) continue;
@@ -159,15 +304,15 @@ export class ResultsIngestService {
               : null;
 
           if (kills !== (slot.totalKills ?? 0)) killChanged = true;
-          const placementPoints = this.placementPoints(placement);
+          const placementPoints = this.placementPoints(
+            placement,
+            match.gameKey,
+          );
           if (placementPoints !== (slot.placementPoints ?? 0)) {
             placementPointsChanged = true;
           }
 
-          const points =
-            (match.gameKey ?? '').toUpperCase() === 'PUBG_MOBILE'
-              ? this.computePubgPoints(placement, kills)
-              : placementPoints + kills;
+          const points = placementPoints + kills;
 
           await tx.matchSlotResult.update({
             where: { id: slot.id },
@@ -190,11 +335,11 @@ export class ResultsIngestService {
       });
 
       await this.resultsService.recalculateMatchResults(match.id);
-      this.events.emitResultsUpdated(match.id, 0, { source: 'AUTO' });
+      this.events.emitResultsUpdated(match.id, 0, { source: 'API' });
       this.events.emitLeaderboardUpdated(match.id);
       this.events.emitOverlayPayload(match.id, 1, {
         results: overlayResults,
-        status: snapshot.status ?? 'AUTO',
+        status: snapshot.status ?? 'API',
       });
 
       try {
@@ -207,11 +352,11 @@ export class ResultsIngestService {
           entityId: matchId,
           before: null,
           after: {
-            source: snapshot.status ?? 'AUTO',
+            source: snapshot.status ?? 'API',
             teams: overlayResults.length,
           },
           source: 'SYSTEM',
-          reason: snapshot.status ?? 'AUTO ingest',
+          reason: snapshot.status ?? 'API ingest',
         });
       } catch {
         // ignore audit failures
@@ -369,7 +514,7 @@ export class ResultsIngestService {
           }
         }
 
-        const placementPoints = this.placementPoints(placement);
+        const placementPoints = this.placementPoints(placement, match.gameKey);
         if (placementPoints > 0) {
           const prevPlacementPoints = slotResult.placementPoints ?? 0;
           if (placementPoints !== prevPlacementPoints) {
@@ -377,10 +522,7 @@ export class ResultsIngestService {
           }
         }
 
-        const points =
-          (match.gameKey ?? '').toUpperCase() === 'PUBG_MOBILE'
-            ? this.computePubgPoints(placement, totalKills)
-            : placementPoints + totalKills;
+        const points = placementPoints + totalKills;
 
         await tx.matchSlotResult.update({
           where: { id: slotResult.id },
@@ -421,19 +563,19 @@ export class ResultsIngestService {
         this.events.emitMatchUpdate(match.id, { reason: 'api-results' });
       }
     } else {
-      this.events.emitResultsUpdated(match.id, 0, { source: 'AUTO' });
+      this.events.emitResultsUpdated(match.id, 0, {
+        source: payload.meta?.source ?? 'API',
+      });
     }
   }
 
-  private placementPoints(placement: number | null | undefined): number {
-    if (!placement || placement <= 0) return 0;
-    if (placement === 1) return 10;
-    if (placement === 2) return 6;
-    if (placement === 3) return 5;
-    if (placement === 4) return 4;
-    if (placement === 5) return 3;
-    if (placement === 6) return 2;
-    if (placement === 7 || placement === 8) return 1;
-    return 0;
+  private placementPoints(
+    placement: number | null | undefined,
+    gameKey: string | null | undefined,
+  ): number {
+    const normalized = Object.values(GameKey).includes(gameKey as GameKey)
+      ? (gameKey as GameKey)
+      : GameKey.PUBG_MOBILE;
+    return resolvePlacementPointsForGame(placement, normalized);
   }
 }

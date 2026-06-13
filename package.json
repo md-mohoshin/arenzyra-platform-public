@@ -1,13 +1,45 @@
 {
   "name": "arenzyra-monorepo",
   "private": true,
+  "scripts": {
+    "postinstall": "node -e \"const fs=require('fs');const cp=require('child_process');if(fs.existsSync('apps/api/package.json')){cp.execSync('npm --prefix apps/api run prisma -- generate',{stdio:'inherit'});}else{console.log('Skipping API Prisma generation: apps/api is not present.');}\"",
+    "sync:launcher-downloads": "node scripts/sync-launcher-downloads.cjs",
+    "web:build": "npm --prefix apps/arenzyra-web run build",
+    "web:preview:prod": "npm --prefix apps/arenzyra-web run preview:prod",
+    "web:verify:live": "npm --prefix apps/arenzyra-web run verify:live",
+    "deploy:create-env": "node scripts/create-publish-env.cjs",
+    "deploy:preflight": "node scripts/preflight-publish.cjs --env infra/.env.publish",
+    "deploy:preflight:example": "node scripts/preflight-publish.cjs --env infra/.env.publish.example --allow-placeholders --skip-compose",
+    "deploy:up": "docker compose --env-file infra/.env.publish -f infra/docker-compose.publish.yml up --build -d && node scripts/production-maintenance.cjs",
+    "deploy:up:discord-bot": "docker compose --env-file infra/.env.publish -f infra/docker-compose.publish.yml --profile discord-bot up --build -d discord-bot && node scripts/production-maintenance.cjs",
+    "deploy:maintenance": "node scripts/production-maintenance.cjs",
+    "deploy:maintenance:check": "node scripts/production-maintenance.cjs --check-only",
+    "deploy:ps": "docker compose --env-file infra/.env.publish -f infra/docker-compose.publish.yml ps",
+    "deploy:logs": "docker compose --env-file infra/.env.publish -f infra/docker-compose.publish.yml logs -f",
+    "deploy:verify": "node scripts/verify-publish.cjs",
+    "deploy:studio-qa": "node scripts/live-studio-qa.cjs",
+    "studio:qa:live": "node scripts/live-studio-qa.cjs",
+    "test:validation:phase1:api": "npm --prefix apps/api run test:e2e -- --runInBand test/match-control.validation.e2e-spec.ts",
+    "test:validation:phase1:desktop": "node --test scripts/runtime-source-drift.test.cjs apps/desktop/electron/telemetryBridge.test.cjs apps/desktop/electron/launcher-runtime-policy.test.cjs apps/desktop/electron/direct-observer-transport-payload.test.cjs apps/desktop/electron/widget-server/server.test.cjs apps/desktop/electron/widget-server/direct-observer-snapshot-poller.test.cjs apps/desktop/electron/map-engine/map-widget-engine.test.cjs",
+    "test:validation:phase1": "npm run test:validation:phase1:api && npm run test:validation:phase1:desktop && node scripts/assert-runtime-source-drift.cjs",
+    "test:validation:phase2": "node --test apps/desktop/electron/headless-release-gate.test.cjs",
+    "test:validation:phase3": "npm --prefix apps/arenzyra-web run test:control"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "dependencies": {
-    "axios": "^0.27.2",
+    "axios": "^1.16.1",
     "express": "^5.2.1",
+    "ffmpeg-static": "^5.3.0",
     "socket.io-client": "4.8.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.15",
+      "socket.io-parser": "4.2.6",
+      "ws": "8.20.1"
+    }
   }
 }

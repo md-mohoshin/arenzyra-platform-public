@@ -4,7 +4,11 @@ import { PrismaService } from '../../db/prisma.service';
 import type { AuthUser } from '../../common/auth/auth.types';
 import type { Actor } from '../../common/auth/jwt.strategy';
 import { effectiveOrganizationId } from '../../common/org/org.util';
-import { resolveMatchDataSource } from '../matches/match-datasource.util';
+import {
+  isPcobCompatibilityMatch,
+  resolvePcobCompatibilityMode,
+} from '../../common/match-telemetry-provider.util';
+import { PCOB_ADAPTER_KEY } from '../../common/pcob-binding.util';
 
 @Injectable()
 export class PcobActiveService {
@@ -23,7 +27,7 @@ export class PcobActiveService {
         active: true;
         matchId: string;
         pcobSessionId: string | null;
-        mode: 'PCOB' | 'MANUAL';
+        mode: 'PCOB' | 'API' | 'MANUAL';
       }
   > {
     const userId = user?.id ?? 'unknown';
@@ -56,6 +60,11 @@ export class PcobActiveService {
           { dataSource: MatchDataSource.PCOB },
           { dataMode: DataMode.PCOB },
           { pcobMode: true },
+          {
+            dataSource: MatchDataSource.API,
+            adapterKey: PCOB_ADAPTER_KEY,
+            pcobSessionId: { not: null },
+          },
         ],
         ...(orgId ? { tournament: { organizationId: orgId } } : {}),
       },
@@ -65,20 +74,19 @@ export class PcobActiveService {
         dataMode: true,
         dataSource: true,
         pcobMode: true,
+        adapterKey: true,
       },
     });
+    const compatible = live.filter((match) => isPcobCompatibilityMatch(match));
     this.logger.log(
-      `[active-match] user=${userId} role=${role} org=${orgId ?? 'none'} liveMatches=${live.length} ids=${live.map((m) => m.id).join(',') || 'none'}`,
+      `[active-match] user=${userId} role=${role} org=${orgId ?? 'none'} liveMatches=${compatible.length} ids=${compatible.map((m) => m.id).join(',') || 'none'}`,
     );
-    if (!live.length) return { active: false };
-    if (live.length > 1) {
+    if (!compatible.length) return { active: false };
+    if (compatible.length > 1) {
       throw new BadRequestException('Multiple active matches found');
     }
-    const match = live[0];
-    const mode =
-      resolveMatchDataSource(match) === MatchDataSource.PCOB || match.pcobMode
-        ? 'PCOB'
-        : 'MANUAL';
+    const match = compatible[0];
+    const mode = resolvePcobCompatibilityMode(match);
     return {
       active: true,
       matchId: match.id,
