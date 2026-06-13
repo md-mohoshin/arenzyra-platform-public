@@ -1222,6 +1222,71 @@ test("ban list renders manager names without raw Discord mentions", async () => 
   assert.doesNotMatch(message, /<@!?\d{15,25}>/);
 });
 
+test("manager mention validation keeps clickable labels when Discord member fetch times out", async () => {
+  const service = new DiscordSessionService(createApi({}) as any);
+  (service as any).withTimeout = async () => undefined;
+  const guild = {
+    id: "guild-1",
+    members: {
+      cache: { get: () => null },
+      fetch: async () => {
+        throw new Error("fetch should be timed out by test override");
+      },
+    },
+  } as unknown as Guild;
+
+  const mentionableIds = await (service as any).validatedManagerMentionIds(
+    guild,
+    ["333333333333333333"],
+  );
+  assert.equal(mentionableIds.has("333333333333333333"), true);
+
+  const displayByTeamId = await (service as any).managerMentionByTeamIdForGuild(
+    guild,
+    [
+      createSessionRegistration({
+        teamId: "team-1",
+        leaderDiscordUserId: "333333333333333333",
+        managerDiscordUserIds: ["333333333333333333"],
+      }),
+    ],
+    new Map(),
+  );
+  assert.equal(displayByTeamId.get("team-1"), "<@333333333333333333>");
+});
+
+test("manager mention validation suppresses users Discord confirms as missing", async () => {
+  const service = new DiscordSessionService(createApi({}) as any);
+  const guild = {
+    id: "guild-1",
+    members: {
+      cache: { get: () => null },
+      fetch: async () => {
+        throw new Error("Unknown Member");
+      },
+    },
+  } as unknown as Guild;
+
+  const mentionableIds = await (service as any).validatedManagerMentionIds(
+    guild,
+    ["333333333333333333"],
+  );
+  assert.equal(mentionableIds.has("333333333333333333"), false);
+
+  const displayByTeamId = await (service as any).managerMentionByTeamIdForGuild(
+    guild,
+    [
+      createSessionRegistration({
+        teamId: "team-1",
+        leaderDiscordUserId: "333333333333333333",
+        managerDiscordUserIds: ["333333333333333333"],
+      }),
+    ],
+    new Map(),
+  );
+  assert.equal(displayByTeamId.has("team-1"), false);
+});
+
 test("action log embeds render Discord references as plain text", async () => {
   const sentPayloads: any[] = [];
   const channel = {
@@ -7531,8 +7596,8 @@ test("listSlots falls back to registration manager snapshots when team lookup fa
       }),
     listRegistrations: async () => [
       createSessionRegistration({
-        leaderDiscordUserId: "manager-1",
-        managerDiscordUserIds: ["manager-1"],
+        leaderDiscordUserId: "111111111111111111",
+        managerDiscordUserIds: ["111111111111111111"],
       }),
     ],
     listTeamMembers: async () => {
@@ -7541,7 +7606,9 @@ test("listSlots falls back to registration manager snapshots when team lookup fa
   });
   const guild = {
     members: {
-      cache: new Collection([["manager-1", { user: { bot: false } }]] as any),
+      cache: new Collection([
+        ["111111111111111111", { user: { bot: false } }],
+      ] as any),
       fetch: async () => ({ user: { bot: false } }),
     },
   } as unknown as Guild;
@@ -7549,7 +7616,7 @@ test("listSlots falls back to registration manager snapshots when team lookup fa
   const service = new DiscordSessionService(api as any);
   const result = await service.listSlots("session-1", guild);
 
-  assert.match(result, /\[DXB\] Team DXB <@manager-1>/);
+  assert.match(result, /\[DXB\] Team DXB <@111111111111111111>/);
 });
 
 test("listSlots hides leader mentions that are not visible in the guild", async () => {
@@ -7564,14 +7631,14 @@ test("listSlots hides leader mentions that are not visible in the guild", async 
     listRegistrations: async () => [createSessionRegistration()],
     listTeamMembers: async () => [
       createTeamMember({
-        discordUserId: "leader-1",
+        discordUserId: "222222222222222222",
         discordUsername: "leader",
         displayName: "Leader",
         role: "LEADER",
       }),
       createTeamMember({
         id: "member-2",
-        discordUserId: "missing-1",
+        discordUserId: "333333333333333333",
         discordUsername: "missing-manager",
         displayName: "Missing Manager",
         role: "LEADER",
@@ -7580,9 +7647,11 @@ test("listSlots hides leader mentions that are not visible in the guild", async 
   });
   const guild = {
     members: {
-      cache: new Collection([["leader-1", { user: { bot: false } }]] as any),
+      cache: new Collection([
+        ["222222222222222222", { user: { bot: false } }],
+      ] as any),
       fetch: async ({ user }: { user: string }) => {
-        if (user === "leader-1") {
+        if (user === "222222222222222222") {
           return { user: { bot: false } };
         }
         throw new Error("Unknown Member");
@@ -7593,8 +7662,8 @@ test("listSlots hides leader mentions that are not visible in the guild", async 
   const service = new DiscordSessionService(api as any);
   const result = await service.listSlots("session-1", guild);
 
-  assert.match(result, /\[DXB\] Team DXB <@leader-1>/);
-  assert.doesNotMatch(result, /missing-1/);
+  assert.match(result, /\[DXB\] Team DXB <@222222222222222222>/);
+  assert.doesNotMatch(result, /333333333333333333/);
   assert.doesNotMatch(result, /@Leader/);
   assert.doesNotMatch(result, /@Missing Manager/);
 });

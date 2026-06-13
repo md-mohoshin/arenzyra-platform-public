@@ -8297,11 +8297,13 @@ export class DiscordSessionService {
         }
 
         if (!guild.members.fetch) {
+          validGuildMemberIds.add(discordUserId);
           return;
         }
 
         const remainingMs = validationDeadline - Date.now();
         if (remainingMs <= 0) {
+          validGuildMemberIds.add(discordUserId);
           return;
         }
 
@@ -8311,8 +8313,12 @@ export class DiscordSessionService {
             100,
             Math.min(MANAGER_MENTION_MEMBER_FETCH_TIMEOUT_MS, remainingMs),
           ),
-          null,
+          undefined,
         );
+        if (member === undefined) {
+          validGuildMemberIds.add(discordUserId);
+          return;
+        }
         if (member && member.user?.bot !== true) {
           validGuildMemberIds.add(discordUserId);
           this.rememberValidGuildMember(guild.id, discordUserId);
@@ -8347,8 +8353,10 @@ export class DiscordSessionService {
             .flat()
             .filter((member) => this.isActiveLeaderMember(member))
             .map((member) => member.discordUserId?.trim()),
-        ].filter((discordUserId): discordUserId is string =>
-          Boolean(discordUserId),
+        ].filter(
+          (discordUserId): discordUserId is string =>
+            typeof discordUserId === "string" &&
+            /^\d{15,25}$/.test(discordUserId.trim()),
         ),
       ),
     ];
@@ -8395,6 +8403,7 @@ export class DiscordSessionService {
         );
         if (member === undefined) {
           unverifiedGuildMemberIds.add(discordUserId);
+          validGuildMemberIds.add(discordUserId);
           return;
         }
         if (member && member.user?.bot !== true) {
@@ -8406,7 +8415,7 @@ export class DiscordSessionService {
 
     if (unverifiedGuildMemberIds.size > 0) {
       console.warn(
-        `[DiscordSync] Manager mention validation timed out for ${unverifiedGuildMemberIds.size}/${discordUserIds.length} member(s); skipping unverified clickable mentions so the slot list can refresh safely.`,
+        `[DiscordSync] Manager mention validation timed out for ${unverifiedGuildMemberIds.size}/${discordUserIds.length} member(s); keeping stored manager mentions and only suppressing users Discord confirmed as missing.`,
       );
     }
 
