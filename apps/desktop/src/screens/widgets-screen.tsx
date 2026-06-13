@@ -1,142 +1,434 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getErrorMessage, launcherApi } from "../api/api-client";
 import type {
-  StatusMessage,
+  AiCasterAccessState,
+  AiCasterSettings,
+  PinnedCommentatorDeskWindowStatus,
   WidgetCatalogState,
+  WidgetHotkeyControlConfig,
+  WidgetHotkeyControlSelection,
+  WidgetHotkeyControlStatus,
+  WidgetHotkeyDirection,
   WidgetServerStatus,
 } from "../types";
 import {
   buildWidgetUrl,
   buildWidgetUrlTemplate,
   canBuildWidgetUrl,
-  widgetCategoryOrder,
   widgets,
 } from "../widgets/widgets.config";
 
 const DEFAULT_WIDGET_SERVER_BASE_URL = "http://localhost:5510";
 const WIDGET_SERVER_REFRESH_MS = 5_000;
 const WIDGET_CATALOG_REFRESH_MS = 30_000;
-const AVAILABLE_WIDGETS = widgets;
+const BASE_WIDGETS = widgets;
+const LIVE_MAP_WIDGET_ID = "map";
+const LIVE_MAP_WIDGET_KEY = "map";
+const AI_CASTER_WIDGET_ID = "ai_caster";
+const COMMENTATOR_DESK_WIDGET_ID = "commentator_desk";
+const COMMENTATOR_DESK_WIDGET_KEY = "commentator-desk";
+const NEXT_ZONE_PRO_WIDGET_ID = "next_zone_update_pro_sidebar";
+const NEXT_ZONE_PRO_WIDGET_KEY = "next-zone-update-pro-sidebar";
+const NEXT_ZONE_KINETIC_WIDGET_ID = "next_zone_update_kinetic_hud";
+const NEXT_ZONE_KINETIC_WIDGET_KEY = "next-zone-update-kinetic-hud";
+const HOTKEY_CONTROL_APPROVAL_KEY = "feature.widget-hotkey-control";
+const APPROVAL_ONLY_WIDGET_KEYS = [
+  LIVE_MAP_WIDGET_KEY,
+  COMMENTATOR_DESK_WIDGET_KEY,
+  HOTKEY_CONTROL_APPROVAL_KEY,
+];
+const HOTKEY_WIDGET_OPTIONS: WidgetHotkeyControlSelection[] = [
+  {
+    id: "teams-alive",
+    widgetKey: "teams-alive",
+    label: "Teams Alive",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "leaderboard",
+    widgetKey: "leaderboard",
+    label: "Leaderboard",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "overall-live-ranking",
+    widgetKey: "overall-live-ranking",
+    label: "Overall Live Ranking",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "match-lower-third",
+    widgetKey: "match-lower-third",
+    label: "Match Lower Third",
+    enabled: false,
+    direction: "left",
+  },
+  {
+    id: "match-start-notification",
+    widgetKey: "match-start-notification",
+    label: "Match Start Notification",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "kill-feed",
+    widgetKey: "kill-feed",
+    label: "Kill Feed",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "map-overlay",
+    widgetKey: "map-overlay",
+    label: "Map Overlay",
+    enabled: false,
+    direction: "left",
+  },
+  {
+    id: "player-photo",
+    widgetKey: "player-photo",
+    label: "Player Photo",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "wwcd",
+    widgetKey: "wwcd",
+    label: "WWCD",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "winner",
+    widgetKey: "winner",
+    label: "Winner",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "map",
+    widgetKey: "map",
+    label: "Live Map",
+    enabled: false,
+    direction: "left",
+  },
+  {
+    id: "ai-caster",
+    widgetKey: "ai-caster",
+    label: "AI Caster",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "commentator-desk",
+    widgetKey: "commentator-desk",
+    label: "Commentator Desk",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "next-zone-update",
+    widgetKey: "next-zone-update",
+    label: "Next Zone Update",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "next-zone-update-pro-sidebar",
+    widgetKey: "next-zone-update-pro-sidebar",
+    label: "Next Zone Pro Sidebar",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "next-zone-update-kinetic-hud",
+    widgetKey: "next-zone-update-kinetic-hud",
+    label: "Next Zone Kinetic HUD",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "match-results",
+    widgetKey: "match-results",
+    label: "Match Results",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "overall-standings",
+    widgetKey: "overall-standings",
+    label: "Overall Standings",
+    enabled: false,
+    direction: "right",
+  },
+  {
+    id: "match-summary",
+    widgetKey: "match-summary",
+    label: "Match Summary",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "fight-alert",
+    widgetKey: "fight-alert",
+    label: "Fight Alert",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "achievement-alert",
+    widgetKey: "achievement-alert",
+    label: "Achievement Alert",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "team-eliminated-alert",
+    widgetKey: "team-eliminated-alert",
+    label: "Team Eliminated Alert",
+    enabled: false,
+    direction: "up",
+  },
+];
+const DEFAULT_HOTKEY_CONFIG: WidgetHotkeyControlConfig = {
+  enabled: false,
+  key: "F9",
+  transitionMs: 260,
+  widgets: HOTKEY_WIDGET_OPTIONS,
+};
+const HOTKEY_DIRECTION_OPTIONS: Array<{
+  value: WidgetHotkeyDirection;
+  label: string;
+}> = [
+  { value: "auto", label: "Auto" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+  { value: "up", label: "Up" },
+  { value: "down", label: "Down" },
+];
+const DEFAULT_SELECTED_WIDGET_ID =
+  BASE_WIDGETS.find(
+    (widget) =>
+      widget.id !== LIVE_MAP_WIDGET_ID &&
+      widget.id !== AI_CASTER_WIDGET_ID &&
+      widget.id !== COMMENTATOR_DESK_WIDGET_ID,
+  )?.id ??
+  BASE_WIDGETS[0]?.id ??
+  "";
 const PERMANENT_WIDGET_KEYS = Array.from(
   new Set(
-    widgets
+    BASE_WIDGETS
       .filter((widget) => widget.routeKind === "permanent" && widget.widgetKey)
       .map((widget) => widget.widgetKey as string),
   ),
 );
-
-const DEFAULT_WIDGET_STATUS: StatusMessage = {
-  tone: "neutral",
-  title: "Widget preview ready",
-  detail: "Select a local or branded widget to preview and copy OBS browser source URLs.",
-};
-
-const formatLastUpdate = (value: number | null | undefined) => {
-  if (!value || !Number.isFinite(value)) {
-    return "--";
-  }
-
-  return new Date(value).toLocaleTimeString();
-};
-
-const buildCategoryGroups = () => {
-  const groups = new Map<string, typeof widgets>();
-
-  AVAILABLE_WIDGETS.forEach((widget) => {
-    const current = groups.get(widget.category) ?? [];
-    current.push(widget);
-    groups.set(widget.category, current);
-  });
-
-  const knownCategories = widgetCategoryOrder.filter((category) =>
-    groups.has(category),
-  );
-  const dynamicCategories = Array.from(groups.keys())
-    .filter((category) => !widgetCategoryOrder.includes(category))
-    .sort((left, right) => left.localeCompare(right));
-
-  return [...knownCategories, ...dynamicCategories].map((category) => ({
-    category,
-    items: groups.get(category) ?? [],
-  }));
-};
+const AI_CASTER_VOICE_OPTIONS = [
+  { value: "play-by-play", label: "Default play-by-play" },
+  { value: "analyst", label: "Default analyst" },
+  { value: "coral", label: "Coral" },
+  { value: "onyx", label: "Onyx" },
+  { value: "nova", label: "Nova" },
+  { value: "shimmer", label: "Shimmer" },
+  { value: "echo", label: "Echo" },
+  { value: "alloy", label: "Alloy" },
+  { value: "sage", label: "Sage" },
+  { value: "fable", label: "Fable" },
+  { value: "ash", label: "Ash" },
+  { value: "ballad", label: "Ballad" },
+  { value: "verse", label: "Verse" },
+  { value: "marin", label: "Marin" },
+  { value: "cedar", label: "Cedar" },
+] as const;
 
 const getWidgetPreviewBaseUrl = (widgetServer: WidgetServerStatus | null) =>
   widgetServer?.localBaseUrl ||
   widgetServer?.baseUrl ||
   DEFAULT_WIDGET_SERVER_BASE_URL;
 
-const getResolvedRouteLabel = (widget: (typeof widgets)[number]) =>
-  widget.routeKind === "permanent" && widget.widgetKey
-    ? `${widget.widgetKey} | ${widget.path}`
-    : widget.path;
+const getAiCasterVoiceOptions = (current?: string | null) => {
+  const value = String(current || "").trim();
+  if (
+    !value ||
+    AI_CASTER_VOICE_OPTIONS.some((option) => option.value === value)
+  ) {
+    return AI_CASTER_VOICE_OPTIONS;
+  }
+  return [{ value, label: value }, ...AI_CASTER_VOICE_OPTIONS];
+};
+
+const normalizeHotkeyDraft = (
+  config?: WidgetHotkeyControlConfig | null,
+): WidgetHotkeyControlConfig => {
+  const source = config ?? DEFAULT_HOTKEY_CONFIG;
+  const configured = new Map(
+    (Array.isArray(source.widgets) ? source.widgets : []).map((widget) => [
+      widget.widgetKey,
+      widget,
+    ]),
+  );
+
+  return {
+    enabled: source.enabled === true,
+    key: String(source.key || DEFAULT_HOTKEY_CONFIG.key).trim() || "F9",
+    transitionMs:
+      Number.isFinite(Number(source.transitionMs)) &&
+      Number(source.transitionMs) >= 80 &&
+      Number(source.transitionMs) <= 1000
+        ? Math.round(Number(source.transitionMs))
+        : DEFAULT_HOTKEY_CONFIG.transitionMs,
+    widgets: HOTKEY_WIDGET_OPTIONS.map((option) => {
+      const existing = configured.get(option.widgetKey);
+      return {
+        ...option,
+        enabled: existing?.enabled === true,
+        direction: existing?.direction ?? option.direction,
+      };
+    }),
+  };
+};
 
 type WidgetsScreenProps = {
   organizationId: string | null;
 };
 
-export function WidgetsScreen(_props: WidgetsScreenProps) {
-  const [widgetServer, setWidgetServer] = useState<WidgetServerStatus | null>(null);
-  const [widgetCatalog, setWidgetCatalog] = useState<WidgetCatalogState | null>(null);
-  const [serverLoading, setServerLoading] = useState(true);
-  const [catalogLoading, setCatalogLoading] = useState(false);
+export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
+  const [widgetServer, setWidgetServer] = useState<WidgetServerStatus | null>(
+    null,
+  );
+  const [widgetCatalog, setWidgetCatalog] = useState<WidgetCatalogState | null>(
+    null,
+  );
+  const [, setServerLoading] = useState(true);
   const [serverError, setServerError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [selectedWidgetId, setSelectedWidgetId] = useState(
-    AVAILABLE_WIDGETS[0]?.id ?? "",
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [aiCasterAccess, setAiCasterAccess] =
+    useState<AiCasterAccessState | null>(null);
+  const [aiCasterDraftSettings, setAiCasterDraftSettings] =
+    useState<AiCasterSettings | null>(null);
+  const [aiCasterError, setAiCasterError] = useState<string | null>(null);
+  const [aiCasterSaving, setAiCasterSaving] = useState(false);
+  const [aiCasterPreviewing, setAiCasterPreviewing] = useState<
+    "play-by-play" | "analyst" | null
+  >(null);
+  const [pinnedDeskStatus, setPinnedDeskStatus] =
+    useState<PinnedCommentatorDeskWindowStatus | null>(null);
+  const [pinnedDeskError, setPinnedDeskError] = useState<string | null>(null);
+  const [pinnedDeskBusy, setPinnedDeskBusy] = useState<
+    "open" | "close" | "click-through" | null
+  >(null);
+  const [hotkeyControl, setHotkeyControl] =
+    useState<WidgetHotkeyControlStatus | null>(null);
+  const [hotkeyDraft, setHotkeyDraft] = useState<WidgetHotkeyControlConfig>(
+    DEFAULT_HOTKEY_CONFIG,
   );
-  const [status, setStatus] = useState<StatusMessage>(DEFAULT_WIDGET_STATUS);
-  const { organizationId } = _props;
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const [hotkeySaving, setHotkeySaving] = useState(false);
+  const [hotkeyTesting, setHotkeyTesting] = useState<"hide" | "show" | null>(
+    null,
+  );
+  const hotkeyUnsavedRef = useRef(false);
+  const aiCasterPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const aiCasterUnsavedRef = useRef(false);
+  const [selectedWidgetId, setSelectedWidgetId] = useState(
+    DEFAULT_SELECTED_WIDGET_ID,
+  );
+  const liveMapCatalogState =
+    widgetCatalog?.items?.[LIVE_MAP_WIDGET_KEY] ?? null;
+  const commentatorDeskCatalogState =
+    widgetCatalog?.items?.[COMMENTATOR_DESK_WIDGET_KEY] ?? null;
+  const nextZoneProCatalogState =
+    widgetCatalog?.items?.[NEXT_ZONE_PRO_WIDGET_KEY] ?? null;
+  const nextZoneKineticCatalogState =
+    widgetCatalog?.items?.[NEXT_ZONE_KINETIC_WIDGET_KEY] ?? null;
+  const hotkeyControlCatalogState =
+    widgetCatalog?.items?.[HOTKEY_CONTROL_APPROVAL_KEY] ?? null;
+  const liveMapApproved = liveMapCatalogState?.approved === true;
+  const commentatorDeskApproved =
+    commentatorDeskCatalogState?.approved === true;
+  const nextZoneProApproved = nextZoneProCatalogState?.approved === true;
+  const nextZoneKineticApproved =
+    nextZoneKineticCatalogState?.approved === true;
+  const hotkeyControlApproved = hotkeyControlCatalogState?.approved === true;
+  const aiCasterApproved = aiCasterAccess?.approved === true;
+  const availableWidgets = useMemo(
+    () =>
+      BASE_WIDGETS.filter((widget) => {
+        if (widget.id === LIVE_MAP_WIDGET_ID) {
+          return liveMapApproved;
+        }
+        if (widget.id === AI_CASTER_WIDGET_ID) {
+          return aiCasterApproved;
+        }
+        if (widget.id === COMMENTATOR_DESK_WIDGET_ID) {
+          return commentatorDeskApproved;
+        }
+        if (widget.id === NEXT_ZONE_PRO_WIDGET_ID) {
+          return nextZoneProApproved;
+        }
+        if (widget.id === NEXT_ZONE_KINETIC_WIDGET_ID) {
+          return nextZoneKineticApproved;
+        }
+        return true;
+      }),
+    [
+      aiCasterApproved,
+      commentatorDeskApproved,
+      liveMapApproved,
+      nextZoneKineticApproved,
+      nextZoneProApproved,
+    ],
+  );
 
   useEffect(() => {
-    if (!AVAILABLE_WIDGETS.some((widget) => widget.id === selectedWidgetId)) {
-      setSelectedWidgetId(AVAILABLE_WIDGETS[0]?.id ?? "");
+    if (!availableWidgets.some((widget) => widget.id === selectedWidgetId)) {
+      setSelectedWidgetId(availableWidgets[0]?.id ?? "");
     }
-  }, [selectedWidgetId]);
-
-  const refreshWidgetCatalog = async (showLoading: boolean) => {
-    if (!organizationId || PERMANENT_WIDGET_KEYS.length === 0) {
-      setWidgetCatalog(null);
-      setCatalogError(
-        organizationId ? null : "Organization unavailable for branded widget resolution.",
-      );
-      setCatalogLoading(false);
-      return;
-    }
-
-    if (showLoading) {
-      setCatalogLoading(true);
-    }
-
-    try {
-      const catalog = await launcherApi.getWidgetCatalogState(
-        organizationId,
-        PERMANENT_WIDGET_KEYS,
-      );
-      setWidgetCatalog(catalog);
-      setCatalogError(null);
-    } catch (error) {
-      setCatalogError(getErrorMessage(error));
-    } finally {
-      if (showLoading) {
-        setCatalogLoading(false);
-      }
-    }
-  };
+  }, [availableWidgets, selectedWidgetId]);
 
   useEffect(() => {
     let cancelled = false;
 
-    const load = async (showLoading: boolean) => {
-      if (cancelled) {
+    const loadCatalog = async () => {
+      if (
+        !organizationId ||
+        (PERMANENT_WIDGET_KEYS.length === 0 &&
+          APPROVAL_ONLY_WIDGET_KEYS.length === 0)
+      ) {
+        setWidgetCatalog(null);
+        setCatalogError(
+          organizationId
+            ? null
+            : "Organization unavailable for branded widget resolution.",
+        );
         return;
       }
-      await refreshWidgetCatalog(showLoading);
+
+      try {
+        const result = await launcherApi.getWidgetCatalogState(
+          organizationId,
+          PERMANENT_WIDGET_KEYS,
+          APPROVAL_ONLY_WIDGET_KEYS,
+        );
+        if (cancelled) {
+          return;
+        }
+        setWidgetCatalog(result);
+        setCatalogError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setCatalogError(getErrorMessage(error));
+      }
     };
 
-    void load(true);
+    void loadCatalog();
     const timer = window.setInterval(() => {
-      void load(false);
+      void loadCatalog();
     }, WIDGET_CATALOG_REFRESH_MS);
 
     return () => {
@@ -148,35 +440,103 @@ export function WidgetsScreen(_props: WidgetsScreenProps) {
   useEffect(() => {
     let cancelled = false;
 
-    const loadWidgetsState = async (showLoading: boolean) => {
-      if (showLoading) {
-        setServerLoading(true);
-      }
-
-      const serverResult = await launcherApi
-        .getWidgetServerStatus()
-        .then((value) => ({ status: "fulfilled" as const, value }))
-        .catch((reason) => ({ status: "rejected" as const, reason }));
-
-      if (cancelled) {
+    const loadAccess = async () => {
+      if (!organizationId) {
+        setAiCasterAccess(null);
+        setAiCasterError("Organization unavailable for AI caster access.");
         return;
       }
 
-      if (serverResult.status === "fulfilled") {
-        setWidgetServer(serverResult.value);
-        setServerError(null);
-      } else {
-        setServerError(getErrorMessage(serverResult.reason));
-      }
-
-      if (showLoading) {
-        setServerLoading(false);
+      try {
+        const access = await launcherApi.getAiCasterAccess(organizationId);
+        if (cancelled) {
+          return;
+        }
+        setAiCasterAccess(access);
+        if (!aiCasterUnsavedRef.current) {
+          setAiCasterDraftSettings(access.settings);
+        }
+        setAiCasterError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setAiCasterError(getErrorMessage(error));
       }
     };
 
-    void loadWidgetsState(true);
+    void loadAccess();
     const timer = window.setInterval(() => {
-      void loadWidgetsState(false);
+      void loadAccess();
+    }, WIDGET_CATALOG_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [organizationId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadHotkeyControl = async () => {
+      if (!organizationId || !hotkeyControlApproved) {
+        setHotkeyControl(null);
+        setHotkeyDraft(DEFAULT_HOTKEY_CONFIG);
+        setHotkeyError(null);
+        return;
+      }
+
+      try {
+        const status = await launcherApi.getWidgetHotkeyControl(organizationId);
+        if (cancelled) {
+          return;
+        }
+        setHotkeyControl(status);
+        if (!hotkeyUnsavedRef.current) {
+          setHotkeyDraft(normalizeHotkeyDraft(status.config));
+        }
+        setHotkeyError(status.error);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setHotkeyError(getErrorMessage(error));
+      }
+    };
+
+    void loadHotkeyControl();
+    const timer = window.setInterval(() => {
+      void loadHotkeyControl();
+    }, WIDGET_CATALOG_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hotkeyControlApproved, organizationId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPinnedDesk = async () => {
+      try {
+        const status = await launcherApi.getPinnedCommentatorDeskWindow();
+        if (cancelled) {
+          return;
+        }
+        setPinnedDeskStatus(status);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setPinnedDeskError(getErrorMessage(error));
+      }
+    };
+
+    void loadPinnedDesk();
+    const timer = window.setInterval(() => {
+      void loadPinnedDesk();
     }, WIDGET_SERVER_REFRESH_MS);
 
     return () => {
@@ -185,16 +545,59 @@ export function WidgetsScreen(_props: WidgetsScreenProps) {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadServer = async (showLoading: boolean) => {
+      if (showLoading) {
+        setServerLoading(true);
+      }
+
+      try {
+        const result = await launcherApi.getWidgetServerStatus();
+        if (cancelled) {
+          return;
+        }
+        setWidgetServer(result);
+        setServerError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setServerError(getErrorMessage(error));
+      } finally {
+        if (!cancelled && showLoading) {
+          setServerLoading(false);
+        }
+      }
+    };
+
+    void loadServer(true);
+    const timer = window.setInterval(() => {
+      void loadServer(false);
+    }, WIDGET_SERVER_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      aiCasterPreviewAudioRef.current?.pause();
+      aiCasterPreviewAudioRef.current = null;
+    };
+  }, []);
+
   const selectedWidget =
-    AVAILABLE_WIDGETS.find((widget) => widget.id === selectedWidgetId) ||
-    AVAILABLE_WIDGETS[0] ||
+    availableWidgets.find((widget) => widget.id === selectedWidgetId) ??
+    availableWidgets[0] ??
     null;
-  const groupedWidgets = buildCategoryGroups();
   const previewBaseUrl = getWidgetPreviewBaseUrl(widgetServer);
-  const previewHeight = selectedWidget?.previewHeight ?? 520;
   const selectedPermanentState =
     selectedWidget?.routeKind === "permanent" && selectedWidget.widgetKey
-      ? widgetCatalog?.items?.[selectedWidget.widgetKey] ?? null
+      ? (widgetCatalog?.items?.[selectedWidget.widgetKey] ?? null)
       : null;
   const selectedWidgetInstanceKey =
     selectedPermanentState?.widgetInstanceKey ?? null;
@@ -206,326 +609,833 @@ export function WidgetsScreen(_props: WidgetsScreenProps) {
   const localTemplateUrl = selectedWidget
     ? buildWidgetUrlTemplate(previewBaseUrl, selectedWidget)
     : "";
-
-  const localDevUrl =
-    selectedWidget && selectedCanBuildUrl
+  const localUrl = selectedWidget
+    ? selectedCanBuildUrl
       ? buildWidgetUrl(previewBaseUrl, selectedWidget, {
           widgetInstanceKey: selectedWidgetInstanceKey,
         })
-      : "";
-  const lanDevUrl =
+      : localTemplateUrl
+    : "";
+  const lanUrl =
     selectedWidget && selectedCanBuildUrl && widgetServer?.networkBaseUrl
       ? buildWidgetUrl(widgetServer.networkBaseUrl, selectedWidget, {
           widgetInstanceKey: selectedWidgetInstanceKey,
         })
       : "";
-  const previewWidgetUrl = selectedWidget ? localDevUrl : "";
-  const previewReady = Boolean(previewWidgetUrl);
-  const selectedRouteKind =
-    selectedWidget?.routeKind === "permanent" ? "Branded" : "Raw";
+  const note =
+    copyError ||
+    serverError ||
+    (selectedWidget?.id === "ai_caster" ? aiCasterError : null) ||
+    (selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID
+      ? pinnedDeskError
+      : null) ||
+    (selectedWidget?.routeKind === "permanent" &&
+    selectedPermanentState?.message
+      ? selectedPermanentState.message
+      : null) ||
+    (!selectedCanBuildUrl && selectedWidget?.routeKind === "permanent"
+      ? catalogError
+      : null);
+  const noteTone =
+    copyError || serverError || catalogError || aiCasterError || pinnedDeskError
+      ? "danger"
+      : "neutral";
 
-  const refreshWidgetsView = async () => {
-    setServerLoading(true);
-
-    const serverResult = await launcherApi
-      .getWidgetServerStatus()
-      .then((value) => ({ status: "fulfilled" as const, value }))
-      .catch((reason) => ({ status: "rejected" as const, reason }));
-
-    if (serverResult.status === "fulfilled") {
-      const nextStatus = serverResult.value;
-      setWidgetServer(nextStatus);
-      setServerError(null);
-      await refreshWidgetCatalog(false);
-      const localUrl =
-        nextStatus.localBaseUrl || nextStatus.baseUrl || DEFAULT_WIDGET_SERVER_BASE_URL;
-      setStatus({
-        tone: "success",
-        title: "Widget URLs refreshed",
-        detail: nextStatus.networkBaseUrl
-          ? `Local: ${localUrl} | Network: ${nextStatus.networkBaseUrl}`
-          : `Local: ${localUrl}`,
-      });
-    } else {
-      const detail = getErrorMessage(serverResult.reason);
-      setServerError(detail);
-      setStatus({
-        tone: "error",
-        title: "Widget server unavailable",
-        detail,
-      });
-    }
-
-    setServerLoading(false);
-  };
-
-  const handleCopyValue = async (value: string, detail: string) => {
+  const handleCopyValue = async (value: string) => {
     if (!value) {
       return;
     }
 
     try {
       await launcherApi.copyText(value);
-      setStatus({
-        tone: "success",
-        title: "URL copied",
-        detail,
-      });
+      setCopyError(null);
     } catch (error) {
-      setStatus({
-        tone: "error",
-        title: "Copy failed",
-        detail: getErrorMessage(error),
-      });
+      setCopyError(getErrorMessage(error));
     }
   };
 
-  const handleOpenInBrowser = async () => {
-    if (!previewWidgetUrl || !selectedWidget) {
+  const openPinnedCommentatorDesk = async () => {
+    setPinnedDeskBusy("open");
+    try {
+      const status = await launcherApi.openPinnedCommentatorDeskWindow({
+        clickThrough: pinnedDeskStatus?.clickThrough === true,
+      });
+      setPinnedDeskStatus(status);
+      setPinnedDeskError(null);
+    } catch (error) {
+      setPinnedDeskError(getErrorMessage(error));
+    } finally {
+      setPinnedDeskBusy(null);
+    }
+  };
+
+  const closePinnedCommentatorDesk = async () => {
+    setPinnedDeskBusy("close");
+    try {
+      const status = await launcherApi.closePinnedCommentatorDeskWindow();
+      setPinnedDeskStatus(status);
+      setPinnedDeskError(null);
+    } catch (error) {
+      setPinnedDeskError(getErrorMessage(error));
+    } finally {
+      setPinnedDeskBusy(null);
+    }
+  };
+
+  const setPinnedCommentatorDeskClickThrough = async (clickThrough: boolean) => {
+    setPinnedDeskBusy("click-through");
+    try {
+      const status =
+        await launcherApi.setPinnedCommentatorDeskClickThrough(clickThrough);
+      setPinnedDeskStatus(status);
+      setPinnedDeskError(null);
+    } catch (error) {
+      setPinnedDeskError(getErrorMessage(error));
+    } finally {
+      setPinnedDeskBusy(null);
+    }
+  };
+
+  const editAiCaster = (settings: Partial<AiCasterSettings>) => {
+    const currentSettings = aiCasterDraftSettings ?? aiCasterAccess?.settings;
+    if (!currentSettings) {
       return;
     }
 
+    aiCasterUnsavedRef.current = true;
+    setAiCasterDraftSettings({
+      ...currentSettings,
+      ...settings,
+    });
+    setAiCasterError(null);
+  };
+
+  const saveAiCaster = async () => {
+    if (!organizationId) {
+      setAiCasterError("Organization unavailable for AI caster settings.");
+      return;
+    }
+    if (!aiCasterDraftSettings) {
+      setAiCasterError("AI caster settings are not loaded yet.");
+      return;
+    }
+
+    setAiCasterSaving(true);
     try {
-      await launcherApi.openExternal(previewWidgetUrl);
-      setStatus({
-        tone: "neutral",
-        title: "Opened in browser",
-        detail: `${selectedWidget.name} was opened in your default browser.`,
-      });
+      const access = await launcherApi.updateAiCasterSettings(
+        aiCasterDraftSettings,
+        organizationId,
+      );
+      setAiCasterAccess(access);
+      setAiCasterDraftSettings(access.settings);
+      aiCasterUnsavedRef.current = false;
+      setAiCasterError(null);
     } catch (error) {
-      setStatus({
-        tone: "error",
-        title: "Open failed",
-        detail: getErrorMessage(error),
+      setAiCasterError(getErrorMessage(error));
+    } finally {
+      setAiCasterSaving(false);
+    }
+  };
+
+  const aiCasterSettings =
+    aiCasterDraftSettings ?? aiCasterAccess?.settings ?? null;
+  const aiCasterDirty =
+    Boolean(aiCasterAccess?.settings && aiCasterSettings) &&
+    JSON.stringify(aiCasterSettings) !==
+      JSON.stringify(aiCasterAccess?.settings);
+
+  const resetAiCasterDraft = () => {
+    if (!aiCasterAccess?.settings) {
+      return;
+    }
+    aiCasterUnsavedRef.current = false;
+    setAiCasterDraftSettings(aiCasterAccess.settings);
+    setAiCasterError(null);
+  };
+
+  const editHotkeyDraft = (changes: Partial<WidgetHotkeyControlConfig>) => {
+    hotkeyUnsavedRef.current = true;
+    setHotkeyDraft((current) => ({
+      ...normalizeHotkeyDraft(current),
+      ...changes,
+    }));
+    setHotkeyError(null);
+  };
+
+  const editHotkeyWidget = (
+    widgetKey: string,
+    changes: Partial<WidgetHotkeyControlSelection>,
+  ) => {
+    hotkeyUnsavedRef.current = true;
+    setHotkeyDraft((current) => {
+      const normalized = normalizeHotkeyDraft(current);
+      return {
+        ...normalized,
+        widgets: normalized.widgets.map((widget) =>
+          widget.widgetKey === widgetKey
+            ? {
+                ...widget,
+                ...changes,
+              }
+            : widget,
+        ),
+      };
+    });
+    setHotkeyError(null);
+  };
+
+  const saveHotkeyControl = async () => {
+    if (!organizationId) {
+      setHotkeyError("Organization unavailable for widget hotkey control.");
+      return;
+    }
+
+    setHotkeySaving(true);
+    try {
+      const status = await launcherApi.updateWidgetHotkeyControl(
+        normalizeHotkeyDraft(hotkeyDraft),
+        organizationId,
+      );
+      setHotkeyControl(status);
+      setHotkeyDraft(normalizeHotkeyDraft(status.config));
+      hotkeyUnsavedRef.current = false;
+      setHotkeyError(status.error);
+    } catch (error) {
+      setHotkeyError(getErrorMessage(error));
+    } finally {
+      setHotkeySaving(false);
+    }
+  };
+
+  const resetHotkeyDraft = () => {
+    hotkeyUnsavedRef.current = false;
+    setHotkeyDraft(normalizeHotkeyDraft(hotkeyControl?.config));
+    setHotkeyError(hotkeyControl?.error ?? null);
+  };
+
+  const previewHotkeyControl = async (active: boolean) => {
+    if (!organizationId) {
+      setHotkeyError("Organization unavailable for widget hotkey control.");
+      return;
+    }
+
+    setHotkeyTesting(active ? "hide" : "show");
+    try {
+      const status = await launcherApi.triggerWidgetHotkeyControl(
+        active,
+        organizationId,
+      );
+      setHotkeyControl(status);
+      setHotkeyError(status.error);
+    } catch (error) {
+      setHotkeyError(getErrorMessage(error));
+    } finally {
+      setHotkeyTesting(null);
+    }
+  };
+
+  const hotkeyDirty =
+    Boolean(hotkeyControl?.config) &&
+    JSON.stringify(normalizeHotkeyDraft(hotkeyDraft)) !==
+      JSON.stringify(normalizeHotkeyDraft(hotkeyControl?.config));
+  const hotkeyEnabledCount = hotkeyDraft.widgets.filter(
+    (widget) => widget.enabled,
+  ).length;
+  const pinnedDeskOpen = pinnedDeskStatus?.open === true;
+  const pinnedDeskClickThrough = pinnedDeskStatus?.clickThrough === true;
+  const pinnedDeskCanOpen =
+    selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID &&
+    widgetServer?.running === true &&
+    selectedCanBuildUrl;
+
+  const previewAiCasterVoice = async (
+    role: "play-by-play" | "analyst",
+    voice: string,
+  ) => {
+    if (!organizationId) {
+      setAiCasterError("Organization unavailable for AI caster voice preview.");
+      return;
+    }
+    if (!aiCasterSettings) {
+      setAiCasterError("AI caster settings are not loaded yet.");
+      return;
+    }
+
+    setAiCasterPreviewing(role);
+    try {
+      const preview = await launcherApi.previewAiCasterVoice({
+        organizationId,
+        role,
+        voice,
+        mode: aiCasterSettings.mode,
+        speakingSpeed: aiCasterSettings.speakingSpeed,
+        expression: aiCasterSettings.expression,
       });
+      const audio = new Audio(
+        `data:${preview.mimeType};base64,${preview.audioBase64}`,
+      );
+      aiCasterPreviewAudioRef.current?.pause();
+      aiCasterPreviewAudioRef.current = audio;
+      audio.onended = () => {
+        if (aiCasterPreviewAudioRef.current === audio) {
+          aiCasterPreviewAudioRef.current = null;
+        }
+      };
+      await audio.play();
+      setAiCasterError(null);
+    } catch (error) {
+      setAiCasterError(getErrorMessage(error));
+    } finally {
+      setAiCasterPreviewing(null);
     }
   };
 
   return (
-    <div className="app-shell widgets-screen">
-      <div className="hero-card widgets-hero widgets-hero--simple">
-        <div className="hero-copy">
-          <span className="eyebrow">OBS Widgets</span>
-          <h1>Local and branded OBS widgets.</h1>
-          <p>
-            Select a widget, preview it locally, and copy the URL for OBS
-            browser sources.
-          </p>
-          <div className="hero-actions">
-            <button
-              className="secondary-button"
-              onClick={() => {
-                void refreshWidgetsView();
-              }}
-              disabled={serverLoading}
-              type="button"
-            >
-              {serverLoading ? "Refreshing..." : "Refresh Widget URLs"}
-            </button>
-          </div>
-        </div>
+    <div className="app-shell widgets-minimal">
+      <div className="widgets-minimal__frame">
+        <aside className="widgets-minimal__catalog">
+          <span className="widgets-minimal__kicker">Widgets</span>
+          <h1>Widget URLs</h1>
 
-        <div className="hero-meta">
-          <div className="meta-pill">
-            <span>Widget Server</span>
-            <strong>
-              {serverLoading
-                ? "Checking..."
-                : widgetServer?.running
-                  ? "Running"
-                : "Stopped"}
-            </strong>
-          </div>
-              <div className="meta-pill">
-                <span>Browser Clients</span>
-                <strong>{widgetServer?.clientCount ?? 0}</strong>
-              </div>
-              <div className="meta-pill">
-                <span>Branded Widgets</span>
-                <strong>
-                  {catalogLoading
-                    ? "Resolving..."
-                    : widgetCatalog?.organizationSlug
-                      ? "Resolved"
-                      : "Pending"}
-                </strong>
-              </div>
-              <div className="meta-pill">
-                <span>Last Broadcast</span>
-                <strong>{formatLastUpdate(widgetServer?.lastBroadcastAt)}</strong>
-          </div>
-        </div>
-      </div>
-
-      <div className="widgets-layout">
-        <section className="panel widgets-catalog">
-          <div className="panel-heading">
-            <span className="panel-kicker">Widget Catalog</span>
-            <h2>Available OBS Widgets</h2>
-          </div>
-
-          {groupedWidgets.length ? (
-            <div className="widgets-category-list">
-              {groupedWidgets.map((group) => (
-                <div key={group.category} className="widgets-category">
-                  <div className="widgets-category__title">{group.category}</div>
-                  <div className="widgets-category__items">
-                    {group.items.map((widget) => {
-                      const isSelected = widget.id === selectedWidget?.id;
-                      return (
-                        <button
-                          key={widget.id}
-                          className={`widgets-category__item${isSelected ? " is-active" : ""}`}
-                          onClick={() => setSelectedWidgetId(widget.id)}
-                          type="button"
-                        >
-                          <span>{widget.name}</span>
-                          <small>{getResolvedRouteLabel(widget)}</small>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+          {availableWidgets.length ? (
+            <div className="widgets-minimal__list">
+              {availableWidgets.map((widget) => {
+                const isSelected = widget.id === selectedWidget?.id;
+                return (
+                  <button
+                    key={widget.id}
+                    className={`widgets-minimal__item${
+                      isSelected ? " is-active" : ""
+                    }`}
+                    onClick={() => setSelectedWidgetId(widget.id)}
+                    type="button"
+                  >
+                    {widget.name}
+                  </button>
+                );
+              })}
             </div>
           ) : (
-            <div className="empty-state">
-              No widget entries are configured yet. Add new entries in
-              <code> src/widgets/widgets.config.ts</code>.
-            </div>
+            <div className="empty-state">No widget entries are configured.</div>
           )}
-        </section>
+        </aside>
 
-        <section className="panel widgets-preview-panel">
-          <div className="panel-heading">
-            <span className="panel-kicker">Preview</span>
+        <section className="widgets-minimal__panel">
+          <div className="widgets-minimal__panel-header">
+            <span className="widgets-minimal__kicker">Selected Widget</span>
             <h2>{selectedWidget?.name || "Select a widget"}</h2>
           </div>
 
-          {selectedWidget ? (
-            <>
-              <p className="widgets-preview-panel__description">
-                {selectedWidget.description}
-              </p>
+          <div className="widgets-minimal__urls">
+            <div className="widgets-minimal__url-card">
+              <span>Local URL</span>
+              <code>{localUrl || "--"}</code>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  void handleCopyValue(selectedCanBuildUrl ? localUrl : "");
+                }}
+                type="button"
+                disabled={!selectedCanBuildUrl || !localUrl}
+              >
+                Copy Local URL
+              </button>
+            </div>
 
-              {serverError ? (
-                <div className="status-card status-card--error">
-                  <strong>Widget server check failed</strong>
-                  <p>{serverError}</p>
+            <div className="widgets-minimal__url-card">
+              <span>LAN URL</span>
+              <code>{lanUrl || "--"}</code>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  void handleCopyValue(lanUrl);
+                }}
+                type="button"
+                disabled={!lanUrl}
+              >
+                Copy LAN URL
+              </button>
+            </div>
+          </div>
+
+          {note ? (
+            <div
+              className={`widgets-minimal__note${
+                noteTone === "danger" ? " widgets-minimal__note--danger" : ""
+              }`}
+            >
+              {note}
+            </div>
+          ) : null}
+
+          {hotkeyControlApproved ? (
+            <div className="widgets-minimal__settings widgets-minimal__hotkey">
+              <div className="widgets-minimal__settings-row">
+                <div>
+                  <span className="widgets-minimal__kicker">Launcher Hotkey</span>
+                  <strong>
+                    {hotkeyControl?.registered
+                      ? `Registered on ${hotkeyControl.key}`
+                      : hotkeyDraft.enabled
+                        ? "Waiting for a valid setup"
+                        : "Disabled"}
+                  </strong>
                 </div>
-              ) : null}
-
-              <div className={`status-card status-card--${status.tone}`}>
-                <strong>{status.title}</strong>
-                <p>{status.detail}</p>
+                <div className="widgets-minimal__settings-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={hotkeySaving}
+                    onClick={() => {
+                      editHotkeyDraft({
+                        enabled: !hotkeyDraft.enabled,
+                      });
+                    }}
+                  >
+                    {hotkeyDraft.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!hotkeyControl?.canUse || hotkeyTesting !== null}
+                    onClick={() => {
+                      void previewHotkeyControl(true);
+                    }}
+                  >
+                    {hotkeyTesting === "hide" ? "Hiding..." : "Hide Preview"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!hotkeyControl?.canUse || hotkeyTesting !== null}
+                    onClick={() => {
+                      void previewHotkeyControl(false);
+                    }}
+                  >
+                    {hotkeyTesting === "show" ? "Showing..." : "Show Preview"}
+                  </button>
+                </div>
               </div>
 
-              {catalogError && selectedWidget.routeKind === "permanent" ? (
-                <div className="status-card status-card--error">
-                  <strong>Branded widget resolution failed</strong>
-                  <p>{catalogError}</p>
-                </div>
-              ) : null}
-
-              {selectedWidget.routeKind === "permanent" &&
-              selectedPermanentState?.message ? (
-                <div className="status-card status-card--neutral">
-                  <strong>Widget instance pending</strong>
-                  <p>{selectedPermanentState.message}</p>
-                </div>
-              ) : null}
-
-              <div className="widgets-url-grid">
-                <div className="path-card">
-                  <span className="path-label">
-                    Local {selectedRouteKind} OBS URL
-                  </span>
-                  {!localDevUrl && localTemplateUrl ? (
-                    <p className="path-card__note">{localTemplateUrl}</p>
-                  ) : null}
-                  <div className="path-card__actions">
-                    <button
-                      className="secondary-button"
-                      onClick={() =>
-                        void handleCopyValue(
-                          localDevUrl,
-                          `${selectedWidget.name} local ${selectedRouteKind.toLowerCase()} OBS URL copied to the clipboard.`,
-                        )
-                      }
-                      type="button"
-                      disabled={!localDevUrl}
-                    >
-                      Copy Local OBS URL
-                    </button>
-                  </div>
-                </div>
-
-                <div className="path-card">
-                  <span className="path-label">
-                    LAN {selectedRouteKind} OBS URL
-                  </span>
-                  {lanDevUrl ? (
-                    <p className="path-card__note">
-                      Use this when OBS is on another PC in the same network.
-                    </p>
-                  ) : (
-                    <p className="path-card__note">
-                      LAN URL unavailable until the widget server exposes a network address.
-                    </p>
-                  )}
-                  <div className="path-card__actions">
-                    <button
-                      className="secondary-button"
-                      onClick={() =>
-                        void handleCopyValue(
-                          lanDevUrl,
-                          `${selectedWidget.name} LAN ${selectedRouteKind.toLowerCase()} OBS URL copied to the clipboard.`,
-                        )
-                      }
-                      type="button"
-                      disabled={!lanDevUrl}
-                    >
-                      Copy LAN OBS URL
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {previewReady ? (
-                <div className="widgets-preview-frame" style={{ minHeight: `${previewHeight}px` }}>
-                  <iframe
-                    key={previewWidgetUrl}
-                    className="widgets-preview-frame__iframe"
-                    src={previewWidgetUrl}
-                    style={{ minHeight: `${previewHeight}px` }}
-                    title={selectedWidget.name}
+              <div className="widgets-minimal__settings-grid">
+                <label className="field">
+                  <span>Hold key</span>
+                  <input
+                    value={hotkeyDraft.key}
+                    disabled={hotkeySaving}
+                    onChange={(event) => {
+                      editHotkeyDraft({
+                        key: event.target.value,
+                      });
+                    }}
+                    placeholder="F9"
                   />
-                </div>
-              ) : (
-                <div className="status-card">
-                  <strong>Widget preview unavailable</strong>
-                  <p>
-                    The local OBS route for this widget is not available.
-                  </p>
-                </div>
-              )}
+                </label>
 
-              <div className="widgets-actions">
+                <label className="field">
+                  <span>Slide speed</span>
+                  <input
+                    type="number"
+                    min={80}
+                    max={1000}
+                    step={20}
+                    value={hotkeyDraft.transitionMs}
+                    disabled={hotkeySaving}
+                    onChange={(event) => {
+                      editHotkeyDraft({
+                        transitionMs: Number(event.target.value),
+                      });
+                    }}
+                  />
+                </label>
+              </div>
+
+              <div className="widgets-minimal__hotkey-summary">
+                <span>{hotkeyEnabledCount} selected</span>
+                <span>
+                  {hotkeyControl?.active
+                    ? "Widgets hidden"
+                    : hotkeyControl?.registered
+                      ? "Listening"
+                      : hotkeyControl?.reason ?? "Not registered"}
+                </span>
+              </div>
+
+              <div className="widgets-minimal__hotkey-list">
+                {hotkeyDraft.widgets.map((widget) => (
+                  <div
+                    className="widgets-minimal__hotkey-item"
+                    key={widget.widgetKey}
+                  >
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={widget.enabled}
+                        disabled={hotkeySaving}
+                        onChange={(event) => {
+                          editHotkeyWidget(widget.widgetKey, {
+                            enabled: event.target.checked,
+                          });
+                        }}
+                      />
+                      <span>{widget.label}</span>
+                    </label>
+                    <select
+                      value={widget.direction}
+                      disabled={hotkeySaving || !widget.enabled}
+                      onChange={(event) => {
+                        editHotkeyWidget(widget.widgetKey, {
+                          direction: event.target
+                            .value as WidgetHotkeyDirection,
+                        });
+                      }}
+                    >
+                      {HOTKEY_DIRECTION_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+
+              {hotkeyError ? (
+                <div className="widgets-minimal__note widgets-minimal__note--danger">
+                  {hotkeyError}
+                </div>
+              ) : null}
+
+              <div className="widgets-minimal__settings-actions widgets-minimal__settings-actions--footer">
                 <button
-                  className="primary-button"
-                  onClick={() => void handleOpenInBrowser()}
+                  className="secondary-button"
                   type="button"
-                  disabled={!previewWidgetUrl}
+                  disabled={!hotkeyDirty || hotkeySaving}
+                  onClick={() => {
+                    void saveHotkeyControl();
+                  }}
                 >
-                  Open Preview in Browser
+                  {hotkeySaving ? "Saving..." : "Save hotkey"}
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={!hotkeyDirty || hotkeySaving}
+                  onClick={resetHotkeyDraft}
+                >
+                  Reset
                 </button>
               </div>
-            </>
-          ) : (
-            <div className="empty-state">
-              Select a widget from the left panel to preview its OBS source URL.
             </div>
-          )}
+          ) : null}
+
+          {selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID ? (
+            <div className="widgets-minimal__settings">
+              <div className="widgets-minimal__settings-row">
+                <div>
+                  <span className="widgets-minimal__kicker">Pinned Window</span>
+                  <strong>
+                    {pinnedDeskOpen
+                      ? pinnedDeskClickThrough
+                        ? "Transparent and click-through"
+                        : "Transparent and movable"
+                      : "Closed"}
+                  </strong>
+                </div>
+                <div className="widgets-minimal__settings-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!pinnedDeskCanOpen || pinnedDeskBusy !== null}
+                    onClick={() => {
+                      void openPinnedCommentatorDesk();
+                    }}
+                  >
+                    {pinnedDeskBusy === "open" ? "Opening..." : "Open Pinned Desk"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!pinnedDeskOpen || pinnedDeskBusy !== null}
+                    onClick={() => {
+                      void closePinnedCommentatorDesk();
+                    }}
+                  >
+                    {pinnedDeskBusy === "close" ? "Closing..." : "Close"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="widgets-minimal__settings-actions widgets-minimal__settings-actions--footer">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={!pinnedDeskOpen || pinnedDeskBusy !== null}
+                  onClick={() => {
+                    void setPinnedCommentatorDeskClickThrough(
+                      !pinnedDeskClickThrough,
+                    );
+                  }}
+                >
+                  {pinnedDeskBusy === "click-through"
+                    ? "Updating..."
+                    : pinnedDeskClickThrough
+                      ? "Disable click-through"
+                      : "Enable click-through"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {selectedWidget?.id === "ai_caster" ? (
+            <div className="widgets-minimal__settings">
+              <div className="widgets-minimal__settings-row">
+                <div>
+                  <span className="widgets-minimal__kicker">Access</span>
+                  <strong>
+                    {aiCasterAccess?.canUse
+                      ? "Approved and live"
+                      : aiCasterAccess?.approved
+                        ? "Approved"
+                        : "Needs SuperAdmin approval"}
+                  </strong>
+                </div>
+                <div className="widgets-minimal__settings-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                    onClick={() => {
+                      editAiCaster({
+                        enabled: !(aiCasterSettings?.enabled ?? false),
+                      });
+                    }}
+                  >
+                    {aiCasterSettings?.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                    onClick={() => {
+                      editAiCaster({
+                        muted: !(aiCasterSettings?.muted ?? false),
+                      });
+                    }}
+                  >
+                    {aiCasterSettings?.muted ? "Unmute" : "Mute"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="widgets-minimal__settings-grid">
+                <label className="field">
+                  <span>Mode</span>
+                  <select
+                    value={aiCasterSettings?.mode ?? "professional"}
+                    disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                    onChange={(event) => {
+                      editAiCaster({
+                        mode: event.target.value as AiCasterSettings["mode"],
+                      });
+                    }}
+                  >
+                    <option value="professional">Professional</option>
+                    <option value="hype">Hype</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Voices</span>
+                  <select
+                    value={aiCasterSettings?.voiceMode ?? "single"}
+                    disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                    onChange={(event) => {
+                      editAiCaster({
+                        voiceMode: event.target
+                          .value as AiCasterSettings["voiceMode"],
+                      });
+                    }}
+                  >
+                    <option value="single">Single voice</option>
+                    <option value="dual">Two voices</option>
+                  </select>
+                </label>
+
+                <div className="widgets-minimal__voice-control">
+                  <label className="field">
+                    <span>Primary voice</span>
+                    <select
+                      value={aiCasterSettings?.primaryVoice ?? "play-by-play"}
+                      disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                      onChange={(event) => {
+                        editAiCaster({
+                          primaryVoice: event.target.value,
+                        });
+                      }}
+                    >
+                      {getAiCasterVoiceOptions(
+                        aiCasterSettings?.primaryVoice,
+                      ).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={
+                      !aiCasterAccess?.canConfigure ||
+                      aiCasterSaving ||
+                      aiCasterPreviewing !== null
+                    }
+                    onClick={() => {
+                      void previewAiCasterVoice(
+                        "play-by-play",
+                        aiCasterSettings?.primaryVoice ?? "play-by-play",
+                      );
+                    }}
+                  >
+                    {aiCasterPreviewing === "play-by-play"
+                      ? "Playing..."
+                      : "Preview"}
+                  </button>
+                </div>
+
+                <div className="widgets-minimal__voice-control">
+                  <label className="field">
+                    <span>Secondary voice</span>
+                    <select
+                      value={aiCasterSettings?.secondaryVoice ?? "analyst"}
+                      disabled={
+                        !aiCasterAccess?.canConfigure ||
+                        aiCasterSaving ||
+                        aiCasterSettings?.voiceMode !== "dual"
+                      }
+                      onChange={(event) => {
+                        editAiCaster({
+                          secondaryVoice: event.target.value,
+                        });
+                      }}
+                    >
+                      {getAiCasterVoiceOptions(
+                        aiCasterSettings?.secondaryVoice,
+                      ).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={
+                      !aiCasterAccess?.canConfigure ||
+                      aiCasterSettings?.voiceMode !== "dual" ||
+                      aiCasterSaving ||
+                      aiCasterPreviewing !== null
+                    }
+                    onClick={() => {
+                      void previewAiCasterVoice(
+                        "analyst",
+                        aiCasterSettings?.secondaryVoice ?? "analyst",
+                      );
+                    }}
+                  >
+                    {aiCasterPreviewing === "analyst"
+                      ? "Playing..."
+                      : "Preview"}
+                  </button>
+                </div>
+
+                <label className="field">
+                  <span>Talk frequency</span>
+                  <select
+                    value={aiCasterSettings?.talkFrequency ?? "balanced"}
+                    disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                    onChange={(event) => {
+                      editAiCaster({
+                        talkFrequency: event.target
+                          .value as AiCasterSettings["talkFrequency"],
+                      });
+                    }}
+                  >
+                    <option value="low">Low</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="high">High</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Speaking speed</span>
+                  <select
+                    value={aiCasterSettings?.speakingSpeed ?? "normal"}
+                    disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                    onChange={(event) => {
+                      editAiCaster({
+                        speakingSpeed: event.target
+                          .value as AiCasterSettings["speakingSpeed"],
+                      });
+                    }}
+                  >
+                    <option value="slow">Slow</option>
+                    <option value="normal">Normal</option>
+                    <option value="fast">Fast</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Expression</span>
+                  <select
+                    value={aiCasterSettings?.expression ?? "professional"}
+                    disabled={!aiCasterAccess?.canConfigure || aiCasterSaving}
+                    onChange={(event) => {
+                      editAiCaster({
+                        expression: event.target
+                          .value as AiCasterSettings["expression"],
+                      });
+                    }}
+                  >
+                    <option value="neutral">Neutral</option>
+                    <option value="professional">Professional</option>
+                    <option value="energetic">Energetic</option>
+                    <option value="dramatic">Dramatic</option>
+                  </select>
+                </label>
+              </div>
+              <div className="widgets-minimal__settings-actions widgets-minimal__settings-actions--footer">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={
+                    !aiCasterAccess?.canConfigure ||
+                    !aiCasterDirty ||
+                    aiCasterSaving
+                  }
+                  onClick={() => {
+                    void saveAiCaster();
+                  }}
+                >
+                  {aiCasterSaving ? "Saving..." : "Save changes"}
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={!aiCasterDirty || aiCasterSaving}
+                  onClick={resetAiCasterDraft}
+                >
+                  Reset
+                </button>
+              </div>
+              <span className="widgets-minimal__fine-print">
+                Voice previews use the current local selection. Changes apply
+                after saving.
+              </span>
+            </div>
+          ) : null}
         </section>
       </div>
     </div>

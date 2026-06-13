@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Arenzyra Ranking Table Widget</title>
+    <style>
+      {{fontCssImport}}
+      * { box-sizing: border-box; }
+      html,
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        font-family: {{fontFamily}};
+        background: {{background}};
+        color: {{textPrimary}};
+      }
+      .frame {
+        width: 100%;
+        height: 100%;
+        padding: {{framePaddingTop}} {{framePaddingRight}} {{framePaddingBottom}} {{framePaddingLeft}};
+        position: relative;
+        overflow: hidden;
+      }
+      .ranking-shell {
+        position: relative;
+        z-index: 10;
+        height: 100%;
+      }
+      .overlay-layer {
+        position: absolute;
+        height: auto;
+        max-width: none;
+        object-fit: contain;
+        pointer-events: none;
+      }
+      .ranking-heading {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: {{titleHeight}};
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        text-transform: uppercase;
+      }
+      .ranking-eyebrow {
+        margin-bottom: 6px;
+        padding: 5px 12px;
+        border-radius: 4px;
+        background: {{primarySurface}};
+        color: #061015;
+        font-size: 16px;
+        font-weight: 900;
+        letter-spacing: 0;
+        line-height: 1.1;
+      }
+      .ranking-title {
+        max-width: 1040px;
+        color: {{textPrimary}};
+        font-size: {{titleSize}};
+        font-weight: 950;
+        line-height: 0.95;
+        letter-spacing: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ranking-subtitle {
+        max-width: 920px;
+        margin-top: 7px;
+        color: {{textMuted}};
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ranking-table {
+        position: absolute;
+        left: {{tableX}};
+        top: {{tableY}};
+        width: {{tableWidth}};
+        height: {{tableHeight}};
+        min-height: 0;
+        display: grid;
+        grid-template-columns: repeat({{groupColumns}}, minmax(0, 1fr));
+        gap: {{groupGap}};
+        align-items: start;
+        overflow: hidden;
+      }
+      .ranking-table-group {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: {{rowGap}};
+      }
+      .ranking-table-header,
+      .ranking-table-row {
+        display: grid;
+        grid-template-columns: {{columnTemplate}};
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .ranking-table-header {
+        min-height: {{headerHeight}};
+        padding: 0 14px;
+        border-radius: 8px;
+        background: {{primarySurface}};
+        color: #071014;
+        font-size: {{headerFontSize}};
+        font-weight: 950;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+      .ranking-table-header .ranking-header-cell {
+        color: #071014;
+        font-size: inherit;
+        line-height: 1;
+      }
+      .ranking-table-row {
+        min-height: {{rowHeight}};
+        padding: 0 14px;
+        border-radius: {{rowRadius}};
+        background: {{panelSurface}};
+        border: 1px solid {{border}};
+        box-shadow: 0 9px 20px rgba(0, 0, 0, 0.2);
+      }
+      .ranking-cell {
+        min-width: 0;
+        font-size: {{metricFontSize}};
+        font-weight: 950;
+        line-height: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ranking-cell--left {
+        text-align: left;
+      }
+      .ranking-cell--center {
+        text-align: center;
+      }
+      .ranking-cell--right {
+        text-align: right;
+      }
+      .ranking-cell--total {
+        color: {{textPrimary}};
+      }
+      .ranking-cell--team {
+        text-align: left;
+      }
+      .ranking-team {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: {{logoSize}} minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+      }
+      .ranking-team-logo {
+        width: {{logoSize}};
+        height: {{logoSize}};
+        object-fit: contain;
+        display: block;
+      }
+      .ranking-team-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: {{textPrimary}};
+        font-size: {{teamFontSize}};
+        font-weight: 950;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+      .ranking-total {
+        color: {{textPrimary}};
+      }
+      .ranking-empty {
+        grid-column: 1 / -1;
+        min-height: 260px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 12px;
+        border: 1px dashed {{border}};
+        background: {{panelSurface}};
+        color: {{textMuted}};
+        font-size: 24px;
+        font-weight: 800;
+        text-align: center;
+      }
+      .ranking-footer {
+        position: absolute;
+        left: {{tableX}};
+        top: calc({{tableY}} + {{tableHeight}} + 5px);
+        width: {{tableWidth}};
+        color: {{textMuted}};
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1;
+        letter-spacing: 0;
+        text-align: right;
+        text-transform: uppercase;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      {{overlayLayersHtml}}
+      <div class="ranking-shell">
+        <div class="ranking-heading">
+          {{eyebrowHtml}}
+          <div class="ranking-title">{{title}}</div>
+          {{subtitleHtml}}
+        </div>
+        <div class="ranking-table">{{groupsHtml}}</div>
+        {{footerHtml}}
+      </div>
+    </div>
+  </body>
+</html>

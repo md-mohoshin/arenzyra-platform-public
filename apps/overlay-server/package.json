@@ -1,5 +1,5 @@
 {
-  "name": "overlay-server",
+  "name": "arenzyra-overlay-server",
   "version": "0.1.0",
   "description": "Overlay control system for PUBG tournament platform",
   "main": "server.js",

@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rift Recall Rail Preview</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap");
+
+      :root {
+        --primary: #12d8ff;
+        --secondary: #2f72ff;
+        --accent: #f5c84b;
+        --text: #f5f8ff;
+        --muted: rgba(245, 248, 255, 0.72);
+        --panel: rgba(7, 10, 16, 0.93);
+        --out: #ef4444;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 35% 25%, rgba(18, 216, 255, 0.16), transparent 32%),
+          radial-gradient(circle at 82% 68%, rgba(245, 200, 75, 0.12), transparent 28%),
+          linear-gradient(135deg, #08111e 0%, #071018 44%, #03060d 100%);
+        font-family: "Rajdhani", ui-sans-serif, system-ui, sans-serif;
+        color: var(--text);
+      }
+
+      .scene {
+        position: relative;
+        width: 100%;
+        height: 100%;
+      }
+
+      .board {
+        position: absolute;
+        right: 58px;
+        top: 188px;
+        width: 448px;
+      }
+
+      .slash {
+        position: absolute;
+        right: -18px;
+        top: -12px;
+        width: 233px;
+        height: 70px;
+        background: linear-gradient(90deg, var(--primary), rgba(245, 200, 75, 0.7));
+        transform: skewX(-18deg);
+        transform-origin: top right;
+      }
+
+      .panel {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background:
+          repeating-linear-gradient(115deg, transparent 0 22px, rgba(255, 255, 255, 0.034) 22px 23px),
+          linear-gradient(90deg, rgba(18, 216, 255, 0.16), transparent 45%, rgba(47, 114, 255, 0.1)),
+          var(--panel);
+        box-shadow: 0 26px 90px rgba(0, 0, 0, 0.54);
+      }
+
+      .inner {
+        position: relative;
+        z-index: 1;
+        padding: 18px;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: end;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+
+      .subtitle {
+        color: var(--primary);
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+
+      .title {
+        margin-top: 2px;
+        font-size: 36px;
+        font-weight: 700;
+        line-height: 0.84;
+        text-transform: uppercase;
+        text-shadow: 0 2px 12px rgba(0, 0, 0, 0.7);
+      }
+
+      .match {
+        min-width: 58px;
+        padding: 7px 12px;
+        background: #f5f8ff;
+        color: #05070b;
+        font-size: 16px;
+        font-weight: 700;
+        text-align: center;
+        text-transform: uppercase;
+        transform: skewX(-14deg);
+      }
+
+      .match span {
+        display: block;
+        transform: skewX(14deg);
+      }
+
+      .rows {
+        position: relative;
+        height: 224px;
+      }
+
+      .row {
+        position: absolute;
+        left: 0;
+        right: 0;
+        display: grid;
+        grid-template-columns: 66px 174px 44px 56px minmax(78px, 1fr);
+        height: 40px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background:
+          linear-gradient(90deg, rgba(255, 255, 255, 0.055), transparent 72%),
+          rgba(255, 255, 255, 0.06),
+          rgba(7, 16, 24, 0.92);
+      }
+
+      .row.leader {
+        border-color: rgba(255, 255, 255, 0.18);
+        background:
+          linear-gradient(90deg, rgba(245, 200, 75, 0.16), transparent 58%),
+          rgba(255, 255, 255, 0.06),
+          rgba(7, 16, 24, 0.92);
+      }
+
+      .row.out {
+        opacity: 0.82;
+        background:
+          linear-gradient(90deg, rgba(255, 255, 255, 0.055), transparent 72%),
+          rgba(255, 255, 255, 0.035),
+          rgba(7, 16, 24, 0.82);
+      }
+
+      .rank {
+        display: grid;
+        place-items: center;
+        font-size: 31px;
+        font-weight: 700;
+        line-height: 1;
+        color: #05070b;
+      }
+
+      .team {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 8px;
+        border-left: 8px solid rgba(255, 255, 255, 0.2);
+        padding: 0 12px;
+      }
+
+      .logo {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        flex-shrink: 0;
+        place-items: center;
+        border: 1px solid rgba(18, 216, 255, 0.34);
+        background: linear-gradient(180deg, rgba(18, 216, 255, 0.28), rgba(4, 37, 55, 0.9));
+        font-size: 13px;
+        font-weight: 700;
+        color: #fff;
+      }
+
+      .team-name {
+        min-width: 0;
+        overflow: hidden;
+        font-size: 24px;
+        font-weight: 700;
+        line-height: 0.95;
+        text-overflow: ellipsis;
+        text-transform: uppercase;
+        white-space: nowrap;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.68);
+      }
+
+      .recall {
+        display: grid;
+        place-items: center;
+      }
+
+      .recall-slots {
+        display: flex;
+        height: 22px;
+        align-items: end;
+        gap: 3px;
+        border: 1px solid rgba(245, 248, 255, 0.12);
+        padding: 3px 4px;
+        background: rgba(2, 7, 19, 0.5);
+        box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.42);
+        transform: skewX(-14deg);
+      }
+
+      .recall-slot {
+        position: relative;
+        display: block;
+        width: 6px;
+        overflow: hidden;
+        border: 1px solid;
+      }
+
+      .recall-slot:nth-child(1) {
+        height: 12px;
+      }
+
+      .recall-slot:nth-child(2) {
+        height: 13px;
+      }
+
+      .recall-slot:nth-child(3) {
+        height: 14px;
+      }
+
+      .recall-slot:nth-child(4) {
+        height: 15px;
+      }
+
+      .recall-slot.clear {
+        border-color: rgba(18, 216, 255, 0.5);
+        background: linear-gradient(90deg, rgba(18, 216, 255, 0.44), rgba(18, 216, 255, 0.28));
+        opacity: 0.94;
+      }
+
+      .recall-slot.needed {
+        border-color: rgba(245, 200, 75, 0.86);
+        background: linear-gradient(90deg, rgba(245, 200, 75, 0.95), rgba(18, 216, 255, 0.54));
+        box-shadow: 0 0 12px rgba(245, 200, 75, 0.3);
+      }
+
+      .recall-slot.closed {
+        border-color: rgba(245, 248, 255, 0.36);
+        background: rgba(245, 248, 255, 0.18);
+        opacity: 0.82;
+      }
+
+      .recall-slot.out {
+        border-color: rgba(239, 68, 68, 0.44);
+        background: repeating-linear-gradient(
+          135deg,
+          rgba(239, 68, 68, 0.28) 0 3px,
+          rgba(18, 6, 8, 0.74) 3px 6px
+        );
+        opacity: 0.78;
+      }
+
+      .alive {
+        display: grid;
+        place-items: center;
+        padding-left: 16px;
+      }
+
+      .bars {
+        display: flex;
+        align-items: end;
+        justify-content: center;
+        gap: 4px;
+      }
+
+      .bar {
+        position: relative;
+        width: 6px;
+        min-width: 6px;
+        height: 16px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.34);
+        background: rgba(255, 255, 255, 0.08);
+        filter: saturate(1.32) contrast(1.12);
+      }
+
+      .bar::after {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: 100%;
+        content: "";
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(18, 216, 255, 0.94));
+      }
+
+      .bar.dead {
+        border-color: rgba(239, 68, 68, 0.34);
+        background: rgba(59, 20, 20, 0.62);
+      }
+
+      .bar.dead::after {
+        background: linear-gradient(180deg, rgba(239, 68, 68, 0.42), rgba(59, 20, 20, 0.92));
+      }
+
+      .points {
+        display: grid;
+        align-items: center;
+        justify-items: end;
+        padding-right: 20px;
+        text-align: right;
+      }
+
+      .points strong {
+        font-size: 31px;
+        line-height: 1;
+      }
+
+      footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 12px;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+
+      .footer-slashes {
+        display: flex;
+        align-items: end;
+        gap: 5px;
+      }
+
+      .footer-slashes i {
+        display: block;
+        width: 8px;
+        height: 24px;
+        transform: skewX(-22deg);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="scene">
+      <section class="board">
+        <div class="slash"></div>
+        <div class="panel">
+          <div class="inner">
+            <header>
+              <div>
+                <div class="subtitle">Rift / Live</div>
+                <div class="title">Squad Ladder</div>
+              </div>
+              <div class="match"><span>Rondo</span></div>
+            </header>
+
+            <div class="rows">
+              <article class="row leader" style="transform: translate3d(0, 0, 0)">
+                <div class="rank" style="background: var(--accent)">01</div>
+                <div class="team">
+                  <div class="logo">A</div>
+                  <div class="team-name">144</div>
+                </div>
+                <div class="recall">
+                  <div class="recall-slots">
+                    <i class="recall-slot clear"></i><i class="recall-slot clear"></i><i class="recall-slot clear"></i><i class="recall-slot clear"></i>
+                  </div>
+                </div>
+                <div class="alive">
+                  <div class="bars"><i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar"></i></div>
+                </div>
+                <div class="points"><strong>12</strong></div>
+              </article>
+
+              <article class="row" style="transform: translate3d(0, 46px, 0)">
+                <div class="rank" style="background: var(--secondary); color: #fff">02</div>
+                <div class="team">
+                  <div class="logo">A</div>
+                  <div class="team-name">INV</div>
+                </div>
+                <div class="recall">
+                  <div class="recall-slots">
+                    <i class="recall-slot clear"></i><i class="recall-slot clear"></i><i class="recall-slot clear"></i><i class="recall-slot needed"></i>
+                  </div>
+                </div>
+                <div class="alive">
+                  <div class="bars"><i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar dead"></i></div>
+                </div>
+                <div class="points"><strong>08</strong></div>
+              </article>
+
+              <article class="row" style="transform: translate3d(0, 92px, 0)">
+                <div class="rank" style="background: var(--primary); color: #05070b">03</div>
+                <div class="team">
+                  <div class="logo">A</div>
+                  <div class="team-name">ERA</div>
+                </div>
+                <div class="recall">
+                  <div class="recall-slots">
+                    <i class="recall-slot clear"></i><i class="recall-slot clear"></i><i class="recall-slot needed"></i><i class="recall-slot needed"></i>
+                  </div>
+                </div>
+                <div class="alive">
+                  <div class="bars"><i class="bar"></i><i class="bar"></i><i class="bar dead"></i><i class="bar dead"></i></div>
+                </div>
+                <div class="points"><strong>06</strong></div>
+              </article>
+
+              <article class="row" style="transform: translate3d(0, 138px, 0)">
+                <div class="rank" style="background: var(--primary); color: #05070b">04</div>
+                <div class="team">
+                  <div class="logo">A</div>
+                  <div class="team-name">RW</div>
+                </div>
+                <div class="recall">
+                  <div class="recall-slots">
+                    <i class="recall-slot clear"></i><i class="recall-slot clear"></i><i class="recall-slot closed"></i><i class="recall-slot closed"></i>
+                  </div>
+                </div>
+                <div class="alive">
+                  <div class="bars"><i class="bar"></i><i class="bar"></i><i class="bar"></i><i class="bar"></i></div>
+                </div>
+                <div class="points"><strong>05</strong></div>
+              </article>
+
+              <article class="row out" style="transform: translate3d(0, 184px, 0)">
+                <div class="rank" style="background: var(--primary); color: #05070b">05</div>
+                <div class="team">
+                  <div class="logo">A</div>
+                  <div class="team-name">F16</div>
+                </div>
+                <div class="recall">
+                  <div class="recall-slots">
+                    <i class="recall-slot out"></i><i class="recall-slot out"></i><i class="recall-slot out"></i><i class="recall-slot out"></i>
+                  </div>
+                </div>
+                <div class="alive">
+                  <div class="bars"><i class="bar dead"></i><i class="bar dead"></i><i class="bar dead"></i><i class="bar dead"></i></div>
+                </div>
+                <div class="points"><strong>03</strong></div>
+              </article>
+            </div>
+
+            <footer>
+              <span>Signal board / observer data</span>
+              <span class="footer-slashes">
+                <i style="background: var(--primary)"></i>
+                <i style="background: var(--secondary)"></i>
+                <i style="background: var(--accent)"></i>
+              </span>
+            </footer>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

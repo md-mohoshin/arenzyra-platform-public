@@ -44,9 +44,40 @@ export class StandingsController {
     });
   }
 
+  @Get('sessions/:sessionId/standings')
+  @Public()
+  async session(
+    @Param('sessionId') sessionId: string,
+    @Query('mode') mode?: string,
+  ) {
+    if (mode === 'active_snapshot') {
+      const snap = this.snapshots.getLatestSnapshot('SESSION', sessionId);
+      if (snap) return snap.data;
+    }
+    return this.standings.computeStandings({
+      scope: 'SESSION',
+      scopeId: sessionId,
+    });
+  }
+
+  @Get('matches/:matchId/standings')
+  @Public()
+  async match(@Param('matchId') matchId: string, @Query('mode') mode?: string) {
+    if (mode === 'active_snapshot') {
+      const snap = this.snapshots.getLatestSnapshot('MATCH', matchId);
+      if (snap) return snap.data;
+    }
+    return this.standings.computeStandings({
+      scope: 'MATCH',
+      scopeId: matchId,
+    });
+  }
+
   private resolveScope(pathScope: string): Scope {
     if (pathScope === 'tournaments') return 'TOURNAMENT';
     if (pathScope === 'stages') return 'STAGE';
+    if (pathScope === 'sessions') return 'SESSION';
+    if (pathScope === 'matches') return 'MATCH';
     return 'GROUP';
   }
 

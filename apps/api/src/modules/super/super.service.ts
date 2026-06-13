@@ -1,11 +1,14 @@
 import {
   AuditAction,
+  GameKey,
   LicenseStatus,
   LicenseType,
   KycStatus,
+  OrganizerAccessMode,
   Organization,
   OrganizationApplicationStatus,
   OrganizationStatus,
+  OrganizationSubscriptionStatus,
   Prisma,
   Role,
   UserStatus,
@@ -22,14 +25,24 @@ import { DEFAULT_ORGANIZATION_BRANDING } from '../organization-branding/organiza
 import { VisualAssetsService } from '../visual-assets/visual-assets.service';
 import { OrganizationFeatureService } from '../organization-feature/organization-feature.service';
 import { withOrgScope } from '../../common/org/org.util';
+import { syncLauncherLicenseState } from '../../common/org/launcher-license-state.util';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrgStatusDto } from './dto/update-org-status.dto';
 import { UpdateOrgKycDto } from './dto/update-org-kyc.dto';
 import { UpdateOrgOwnerDto } from './dto/update-org-owner.dto';
+import { UpdateOrgAccessModeDto } from './dto/update-org-access-mode.dto';
+import { UpdateOrgSubscriptionDto } from './dto/update-org-subscription.dto';
+import { UpdateOrgPlanDto } from './dto/update-org-plan.dto';
 import { SuperBanUserDto } from './dto/ban-user.dto';
 import { generateBroadcastKey } from '../../common/crypto/broadcast-key.util';
 import { CreateLicenseDto } from './dto/create-license.dto';
 import { UpdateLicenseDto } from './dto/update-license.dto';
+import {
+  getOrganizationPlan,
+  normalizeOrganizationPlanId,
+  resolvePlanFromApplication,
+  sanitizeGameKeysForPlan,
+} from '../../common/org/organization-plan.util';
 
 type OrgWithOwner = Organization & {
   owner?: { id: string; email: string | null; name: string | null } | null;
@@ -64,11 +77,25 @@ type OrganizationApplicationRecord = {
   name: string;
   email: string;
   applicantName: string;
+  country: string | null;
+  whatsappNumber: string | null;
+  discordUsername: string | null;
+  websiteUrl: string | null;
+  contactMessage: string | null;
+  requestedPlan: string | null;
+  requestedPlanId: string | null;
+  requestedGameKey: GameKey | null;
+  requestedGameKeys: GameKey[];
+  requestedAddOns: string | null;
+  requestedAddOnIds: string[];
+  paymentMethod: string | null;
   rejectionReason: string | null;
   status: OrganizationApplicationStatus;
   createdAt: Date;
   updatedAt: Date;
 };
+
+const TRIAL_DAYS = 7;
 
 @Injectable()
 export class SuperService {
@@ -123,15 +150,20 @@ export class SuperService {
       ownerUserId: org.ownerUserId ?? null,
       ownerEmail: org.owner?.email ?? null,
       ownerName: org.owner?.name ?? null,
+      accessMode: org.accessMode,
+      planId: org.planId,
+      enabledGames: org.enabledGames ?? [],
+      enabledAddOns: org.enabledAddOns ?? [],
+      subscriptionStatus: org.subscriptionStatus,
+      trialStartedAt: org.trialStartedAt,
+      trialEndsAt: org.trialEndsAt,
+      paidUntil: org.paidUntil,
       createdAt: org.createdAt,
       updatedAt: org.updatedAt,
     };
   }
 
   private mapLicense(license: OrganizationLicense) {
-    const now = Date.now();
-    const expiresAt = license.expiresAt.getTime();
-
     return {
       id: license.id,
       organizationId: license.organizationId,
@@ -142,7 +174,7 @@ export class SuperService {
       expiresAt: license.expiresAt,
       createdAt: license.createdAt,
       updatedAt: license.updatedAt,
-      valid: license.status === LicenseStatus.ACTIVE && expiresAt > now,
+      valid: license.status === LicenseStatus.ACTIVE,
     };
   }
 
@@ -163,6 +195,18 @@ export class SuperService {
       name: application.name,
       email: application.email,
       applicantName: application.applicantName,
+      country: application.country ?? null,
+      whatsappNumber: application.whatsappNumber ?? null,
+      discordUsername: application.discordUsername ?? null,
+      websiteUrl: application.websiteUrl ?? null,
+      contactMessage: application.contactMessage ?? null,
+      requestedPlan: application.requestedPlan ?? null,
+      requestedPlanId: application.requestedPlanId ?? null,
+      requestedGameKey: application.requestedGameKey ?? null,
+      requestedGameKeys: application.requestedGameKeys ?? [],
+      requestedAddOns: application.requestedAddOns ?? null,
+      requestedAddOnIds: application.requestedAddOnIds ?? [],
+      paymentMethod: application.paymentMethod ?? null,
       rejectionReason: application.rejectionReason ?? null,
       status: application.status,
       createdAt: application.createdAt,
@@ -177,6 +221,14 @@ export class SuperService {
       ownerUserId?: string | null;
       status?: OrganizationStatus;
       kycStatus?: KycStatus;
+      accessMode?: OrganizerAccessMode;
+      planId?: string | null;
+      enabledGames?: GameKey[] | null;
+      enabledAddOns?: string[] | null;
+      subscriptionStatus?: OrganizationSubscriptionStatus;
+      trialStartedAt?: Date | null;
+      trialEndsAt?: Date | null;
+      paidUntil?: Date | null;
     },
     tx: Prisma.TransactionClient,
   ) {
@@ -186,6 +238,18 @@ export class SuperService {
         slug: await this.uniqueSlug(params.name, params.slug, tx),
         status: params.status ?? OrganizationStatus.APPROVED,
         kycStatus: params.kycStatus ?? KycStatus.PENDING,
+        accessMode: params.accessMode ?? OrganizerAccessMode.FULL_PRODUCTION,
+        planId:
+          params.planId ?? getOrganizationPlan(null, params.accessMode).id,
+        enabledGames:
+          params.enabledGames ??
+          getOrganizationPlan(null, params.accessMode).defaultGameKeys,
+        enabledAddOns: params.enabledAddOns ?? [],
+        subscriptionStatus:
+          params.subscriptionStatus ?? OrganizationSubscriptionStatus.ACTIVE,
+        trialStartedAt: params.trialStartedAt ?? null,
+        trialEndsAt: params.trialEndsAt ?? null,
+        paidUntil: params.paidUntil ?? null,
         isActive: true,
         broadcastKey: generateBroadcastKey(),
         ...(params.ownerUserId
@@ -205,6 +269,21 @@ export class SuperService {
     });
 
     return created;
+  }
+
+  private buildTrialWindow(now = new Date()) {
+    return {
+      trialStartedAt: now,
+      trialEndsAt: new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000),
+    };
+  }
+
+  private parseDate(value: string, fieldName: string) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException(`${fieldName} must be a valid ISO date`);
+    }
+    return date;
   }
 
   private async bootstrapOrganizationDefaults(organizationId: string) {
@@ -254,6 +333,18 @@ export class SuperService {
         name: true,
         email: true,
         applicantName: true,
+        country: true,
+        whatsappNumber: true,
+        discordUsername: true,
+        websiteUrl: true,
+        contactMessage: true,
+        requestedPlan: true,
+        requestedPlanId: true,
+        requestedGameKey: true,
+        requestedGameKeys: true,
+        requestedAddOns: true,
+        requestedAddOnIds: true,
+        paymentMethod: true,
         rejectionReason: true,
         status: true,
         createdAt: true,
@@ -264,9 +355,28 @@ export class SuperService {
     return applications.map((application) => this.mapApplication(application));
   }
 
+  async getApplicationSummary() {
+    const [pendingCount, latestPending] = await this.prisma.$transaction([
+      this.prisma.organizationApplication.count({
+        where: { status: OrganizationApplicationStatus.PENDING },
+      }),
+      this.prisma.organizationApplication.findFirst({
+        where: { status: OrganizationApplicationStatus.PENDING },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      }),
+    ]);
+
+    return {
+      pendingCount,
+      latestPendingCreatedAt: latestPending?.createdAt ?? null,
+    };
+  }
+
   async approveApplication(id: string, actor: Actor) {
     const result = await this.prisma
       .$transaction(async (tx) => {
+        const trial = this.buildTrialWindow();
         const claim = await tx.organizationApplication.updateMany({
           where: {
             id,
@@ -300,6 +410,18 @@ export class SuperService {
             name: true,
             email: true,
             applicantName: true,
+            country: true,
+            whatsappNumber: true,
+            discordUsername: true,
+            websiteUrl: true,
+            contactMessage: true,
+            requestedPlan: true,
+            requestedPlanId: true,
+            requestedGameKey: true,
+            requestedGameKeys: true,
+            requestedAddOns: true,
+            requestedAddOnIds: true,
+            paymentMethod: true,
             rejectionReason: true,
             passwordHash: true,
             status: true,
@@ -333,12 +455,20 @@ export class SuperService {
           throw new BadRequestException('Organization name is already in use');
         }
 
+        const planEntitlements = resolvePlanFromApplication({
+          requestedPlanId: application.requestedPlanId,
+          requestedPlan: application.requestedPlan,
+          requestedGameKey: application.requestedGameKey,
+          requestedGameKeys: application.requestedGameKeys,
+        });
+
         const user = await tx.user.create({
           data: {
             email: application.email,
             password: application.passwordHash,
             name: application.applicantName,
             role: Role.ORGANIZER,
+            organizerAccessMode: planEntitlements.accessMode,
             status: UserStatus.ACTIVE,
           },
           select: {
@@ -357,6 +487,13 @@ export class SuperService {
             ownerUserId: user.id,
             status: OrganizationStatus.APPROVED,
             kycStatus: KycStatus.PENDING,
+            accessMode: planEntitlements.accessMode,
+            planId: planEntitlements.planId,
+            enabledGames: planEntitlements.enabledGames,
+            enabledAddOns: application.requestedAddOnIds,
+            subscriptionStatus: OrganizationSubscriptionStatus.TRIALING,
+            trialStartedAt: trial.trialStartedAt,
+            trialEndsAt: trial.trialEndsAt,
           },
           tx,
         );
@@ -379,6 +516,13 @@ export class SuperService {
               slug: organization.slug,
               ownerUserId: user.id,
               status: organization.status,
+              accessMode: organization.accessMode,
+              planId: organization.planId,
+              enabledGames: organization.enabledGames,
+              enabledAddOns: organization.enabledAddOns,
+              subscriptionStatus: organization.subscriptionStatus,
+              trialStartedAt: organization.trialStartedAt,
+              trialEndsAt: organization.trialEndsAt,
               applicationId: application.id,
             },
             source: 'SUPER',
@@ -431,6 +575,18 @@ export class SuperService {
         name: true,
         email: true,
         applicantName: true,
+        country: true,
+        whatsappNumber: true,
+        discordUsername: true,
+        websiteUrl: true,
+        contactMessage: true,
+        requestedPlan: true,
+        requestedPlanId: true,
+        requestedGameKey: true,
+        requestedGameKeys: true,
+        requestedAddOns: true,
+        requestedAddOnIds: true,
+        paymentMethod: true,
         rejectionReason: true,
         status: true,
         createdAt: true,
@@ -458,6 +614,18 @@ export class SuperService {
         name: true,
         email: true,
         applicantName: true,
+        country: true,
+        whatsappNumber: true,
+        discordUsername: true,
+        websiteUrl: true,
+        contactMessage: true,
+        requestedPlan: true,
+        requestedPlanId: true,
+        requestedGameKey: true,
+        requestedGameKeys: true,
+        requestedAddOns: true,
+        requestedAddOnIds: true,
+        paymentMethod: true,
         rejectionReason: true,
         status: true,
         createdAt: true,
@@ -489,6 +657,19 @@ export class SuperService {
       this.validateOwnerCandidate(owner);
     }
 
+    const requestedAccessMode =
+      dto.accessMode === 'DISCORD_ONLY'
+        ? OrganizerAccessMode.DISCORD_ONLY
+        : OrganizerAccessMode.FULL_PRODUCTION;
+    const plan = getOrganizationPlan(dto.planId, requestedAccessMode);
+    const enabledGames = sanitizeGameKeysForPlan(
+      plan.id,
+      dto.enabledGames ?? null,
+    );
+    const enabledAddOns = (dto.enabledAddOns ?? [])
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+
     const organization = await this.prisma
       .$transaction(async (tx) => {
         const created = await this.createOrganizationRecord(
@@ -496,8 +677,12 @@ export class SuperService {
             name: dto.name,
             slug: dto.slug,
             ownerUserId: ownerId,
-            status: OrganizationStatus.APPROVED,
-            kycStatus: KycStatus.PENDING,
+            status: dto.status ?? OrganizationStatus.APPROVED,
+            kycStatus: dto.kycStatus ?? KycStatus.PENDING,
+            accessMode: plan.accessMode,
+            planId: plan.id,
+            enabledGames,
+            enabledAddOns,
           },
           tx,
         );
@@ -505,7 +690,10 @@ export class SuperService {
         if (ownerId) {
           await tx.user.update({
             where: { id: ownerId },
-            data: { organizationId: created.id },
+            data: {
+              organizationId: created.id,
+              organizerAccessMode: created.accessMode,
+            },
           });
         }
 
@@ -522,6 +710,11 @@ export class SuperService {
               slug: created.slug,
               ownerUserId: ownerId ?? null,
               status: created.status,
+              kycStatus: created.kycStatus,
+              accessMode: created.accessMode,
+              planId: created.planId,
+              enabledGames: created.enabledGames,
+              enabledAddOns: created.enabledAddOns,
             },
             source: 'SUPER',
             reason: dto.ownerUserId ? 'owner assigned on create' : undefined,
@@ -549,8 +742,11 @@ export class SuperService {
       where: { id: organization.id },
       include: { owner: { select: { id: true, email: true, name: true } } },
     });
+    if (!enriched) {
+      throw new NotFoundException('Organization not found');
+    }
 
-    return this.mapOrg(enriched as OrgWithOwner);
+    return this.mapOrg(enriched);
   }
 
   async listOrganizations(
@@ -602,9 +798,10 @@ export class SuperService {
 
   async listOrganizationLicenses(id: string) {
     await this.requireOrganization(id);
+    await syncLauncherLicenseState(this.prisma, id);
     const licenses = await this.prisma.license.findMany({
       where: { organizationId: id },
-      orderBy: [{ createdAt: 'desc' }],
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
     });
     return licenses.map((license) => this.mapLicense(license));
   }
@@ -793,6 +990,11 @@ export class SuperService {
           expiresAt,
         },
       });
+      await syncLauncherLicenseState(this.prisma, id);
+      const saved =
+        (await this.prisma.license.findUnique({
+          where: { id: created.id },
+        })) ?? created;
 
       await this.prisma.auditLog.create({
         data: {
@@ -803,18 +1005,18 @@ export class SuperService {
           userId: actor.id,
           before: Prisma.JsonNull,
           after: {
-            licenseKey: created.licenseKey,
-            type: created.type,
-            status: created.status,
-            maxObservers: created.maxObservers,
-            expiresAt: created.expiresAt,
+            licenseKey: saved.licenseKey,
+            type: saved.type,
+            status: saved.status,
+            maxObservers: saved.maxObservers,
+            expiresAt: saved.expiresAt,
           },
           source: 'SUPER',
           reason: 'license created',
         },
       });
 
-      return this.mapLicense(created);
+      return this.mapLicense(saved);
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -872,6 +1074,11 @@ export class SuperService {
         where: { id: licenseId },
         data,
       });
+      await syncLauncherLicenseState(this.prisma, id);
+      const saved =
+        (await this.prisma.license.findUnique({
+          where: { id: licenseId },
+        })) ?? updated;
 
       await this.prisma.auditLog.create({
         data: {
@@ -888,18 +1095,18 @@ export class SuperService {
             expiresAt: existing.expiresAt,
           },
           after: {
-            licenseKey: updated.licenseKey,
-            type: updated.type,
-            status: updated.status,
-            maxObservers: updated.maxObservers,
-            expiresAt: updated.expiresAt,
+            licenseKey: saved.licenseKey,
+            type: saved.type,
+            status: saved.status,
+            maxObservers: saved.maxObservers,
+            expiresAt: saved.expiresAt,
           },
           source: 'SUPER',
           reason: 'license updated',
         },
       });
 
-      return this.mapLicense(updated);
+      return this.mapLicense(saved);
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -949,7 +1156,7 @@ export class SuperService {
       },
     });
 
-    return this.mapOrg(updated as OrgWithOwner);
+    return this.mapOrg(updated);
   }
 
   async updateOrganizationKyc(id: string, dto: UpdateOrgKycDto, actor: Actor) {
@@ -988,7 +1195,210 @@ export class SuperService {
       },
     });
 
-    return this.mapOrg(updated as OrgWithOwner);
+    return this.mapOrg(updated);
+  }
+
+  async updateOrganizationAccessMode(
+    id: string,
+    dto: UpdateOrgAccessModeDto,
+    actor: Actor,
+  ) {
+    const org = await this.prisma.organization.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!org) throw new NotFoundException('Organization not found');
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const next = await tx.organization.update({
+        where: { id },
+        data: { accessMode: dto.accessMode },
+        include: { owner: { select: { id: true, email: true, name: true } } },
+      });
+
+      await tx.user.updateMany({
+        where: {
+          organizationId: id,
+          deletedAt: null,
+          role: { in: [Role.ADMIN, Role.ORGANIZER] },
+        },
+        data: { organizerAccessMode: dto.accessMode },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.ADMIN_ADJUSTMENT,
+          entityType: 'ORGANIZATION',
+          entityId: id,
+          organizationId: id,
+          userId: actor.id,
+          before: { accessMode: org.accessMode },
+          after: { accessMode: next.accessMode },
+          source: 'SUPER',
+        },
+      });
+
+      await syncLauncherLicenseState(tx, id);
+
+      return next;
+    });
+
+    return this.mapOrg(updated);
+  }
+
+  async updateOrganizationPlan(
+    id: string,
+    dto: UpdateOrgPlanDto,
+    actor: Actor,
+  ) {
+    const org = await this.prisma.organization.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!org) throw new NotFoundException('Organization not found');
+
+    const normalizedPlanId = normalizeOrganizationPlanId(dto.planId);
+    if (!normalizedPlanId) {
+      throw new BadRequestException('Invalid organization plan');
+    }
+
+    const plan = getOrganizationPlan(normalizedPlanId);
+    const enabledGames = sanitizeGameKeysForPlan(
+      normalizedPlanId,
+      dto.enabledGames ?? plan.defaultGameKeys,
+    );
+    const enabledAddOns = (dto.enabledAddOns ?? [])
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const next = await tx.organization.update({
+        where: { id },
+        data: {
+          planId: plan.id,
+          accessMode: plan.accessMode,
+          enabledGames,
+          enabledAddOns,
+        },
+        include: { owner: { select: { id: true, email: true, name: true } } },
+      });
+
+      await tx.user.updateMany({
+        where: {
+          organizationId: id,
+          deletedAt: null,
+          role: { in: [Role.ADMIN, Role.ORGANIZER] },
+        },
+        data: { organizerAccessMode: plan.accessMode },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.ADMIN_ADJUSTMENT,
+          entityType: 'ORGANIZATION_PLAN',
+          entityId: id,
+          organizationId: id,
+          userId: actor.id,
+          before: {
+            planId: org.planId,
+            accessMode: org.accessMode,
+            enabledGames: org.enabledGames,
+            enabledAddOns: org.enabledAddOns,
+          },
+          after: {
+            planId: next.planId,
+            accessMode: next.accessMode,
+            enabledGames: next.enabledGames,
+            enabledAddOns: next.enabledAddOns,
+          },
+          source: 'SUPER',
+        },
+      });
+
+      return next;
+    });
+
+    return this.mapOrg(updated);
+  }
+
+  async updateOrganizationSubscription(
+    id: string,
+    dto: UpdateOrgSubscriptionDto,
+    actor: Actor,
+  ) {
+    const org = await this.prisma.organization.findFirst({
+      where: { id, deletedAt: null },
+    });
+    if (!org) throw new NotFoundException('Organization not found');
+
+    const data: Prisma.OrganizationUpdateInput = {
+      subscriptionStatus: dto.subscriptionStatus,
+    };
+
+    if (dto.restartTrial === true) {
+      const trial = this.buildTrialWindow();
+      data.trialStartedAt = trial.trialStartedAt;
+      data.trialEndsAt = trial.trialEndsAt;
+      data.paidUntil = null;
+      data.subscriptionStatus = OrganizationSubscriptionStatus.TRIALING;
+    } else {
+      if (dto.trialEndsAt !== undefined) {
+        data.trialEndsAt =
+          dto.trialEndsAt === null
+            ? null
+            : this.parseDate(dto.trialEndsAt, 'trialEndsAt');
+      }
+
+      if (dto.paidUntil !== undefined) {
+        data.paidUntil =
+          dto.paidUntil === null
+            ? null
+            : this.parseDate(dto.paidUntil, 'paidUntil');
+      }
+
+      if (dto.subscriptionStatus === OrganizationSubscriptionStatus.ACTIVE) {
+        data.isActive = true;
+        data.status = OrganizationStatus.APPROVED;
+      }
+
+      if (dto.subscriptionStatus === OrganizationSubscriptionStatus.EXPIRED) {
+        data.paidUntil = null;
+      }
+    }
+
+    const updated = await this.prisma.organization.update({
+      where: { id },
+      data,
+      include: { owner: { select: { id: true, email: true, name: true } } },
+    });
+    await syncLauncherLicenseState(this.prisma, id);
+
+    await this.prisma.auditLog.create({
+      data: {
+        action: AuditAction.ADMIN_ADJUSTMENT,
+        entityType: 'ORGANIZATION_SUBSCRIPTION',
+        entityId: id,
+        organizationId: id,
+        userId: actor.id,
+        before: {
+          subscriptionStatus: org.subscriptionStatus,
+          trialStartedAt: org.trialStartedAt,
+          trialEndsAt: org.trialEndsAt,
+          paidUntil: org.paidUntil,
+          status: org.status,
+          isActive: org.isActive,
+        },
+        after: {
+          subscriptionStatus: updated.subscriptionStatus,
+          trialStartedAt: updated.trialStartedAt,
+          trialEndsAt: updated.trialEndsAt,
+          paidUntil: updated.paidUntil,
+          status: updated.status,
+          isActive: updated.isActive,
+        },
+        source: 'SUPER',
+      },
+    });
+
+    return this.mapOrg(updated);
   }
 
   async updateOrganizationOwner(
@@ -1064,7 +1474,7 @@ export class SuperService {
       },
     });
 
-    return this.mapOrg(updated as OrgWithOwner);
+    return this.mapOrg(updated);
   }
 
   async banUser(userId: string, dto: SuperBanUserDto, actor: Actor) {

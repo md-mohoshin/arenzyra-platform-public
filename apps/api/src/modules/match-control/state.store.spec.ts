@@ -4,6 +4,8 @@ import {
   computeAliveTeams,
   computeTotalTeams,
   countPlayers,
+  isAutomaticMatchStateSourceMode,
+  toCanonicalMatchStateSourceMode,
   type LiveMatchState,
 } from './state.store';
 
@@ -180,5 +182,20 @@ describe('MatchControlStateStore', () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+
+  it('treats API, AUTO, and HYBRID as automatic source aliases', () => {
+    expect(isAutomaticMatchStateSourceMode('API')).toBe(true);
+    expect(isAutomaticMatchStateSourceMode('AUTO')).toBe(true);
+    expect(isAutomaticMatchStateSourceMode('HYBRID')).toBe(true);
+    expect(isAutomaticMatchStateSourceMode('MANUAL')).toBe(false);
+  });
+
+  it('canonicalizes automatic source aliases to API', () => {
+    expect(toCanonicalMatchStateSourceMode('API')).toBe('API');
+    expect(toCanonicalMatchStateSourceMode('AUTO')).toBe('API');
+    expect(toCanonicalMatchStateSourceMode('HYBRID')).toBe('API');
+    expect(toCanonicalMatchStateSourceMode('MANUAL')).toBe('MANUAL');
+    expect(toCanonicalMatchStateSourceMode(null)).toBeNull();
   });
 });

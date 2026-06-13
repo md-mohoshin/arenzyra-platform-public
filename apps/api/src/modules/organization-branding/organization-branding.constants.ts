@@ -47,6 +47,8 @@ export type OrganizationBrandingInput = Partial<BrandingInputs> & {
   glowAccent?: string | null;
   badgeBg?: string | null;
   badgeText?: string | null;
+  defaultTeamLogoUrl?: string | null;
+  defaultPlayerPhotoUrl?: string | null;
   authoringMode?: BrandingAuthoringMode | null;
   minimalConfig?: MinimalBrandingConfig | null;
   advancedConfig?: AdvancedBrandingConfig | null;
@@ -56,9 +58,17 @@ export type OrganizationBrandingDto = BrandingTokens & {
   organizationId?: string | null;
   backgroundSolid: string;
   secondaryColor: string;
+  defaultTeamLogoUrl: string | null;
+  defaultPlayerPhotoUrl: string | null;
   authoringMode: BrandingAuthoringMode;
   minimalConfig: MinimalBrandingConfig;
   advancedConfig: AdvancedBrandingConfig;
+};
+
+export type SessionBrandingDto = OrganizationBrandingDto & {
+  sessionId: string;
+  inheritOrganization: boolean;
+  source: 'organization' | 'session';
 };
 
 export { BrandingMode, GradientDirection };
@@ -104,6 +114,8 @@ export const DEFAULT_ORGANIZATION_BRANDING: OrganizationBrandingDto = {
   organizationId: null,
   backgroundSolid: DEFAULT_BRAND_INPUTS.widgetBackground,
   secondaryColor: '#0093FF',
+  defaultTeamLogoUrl: null,
+  defaultPlayerPhotoUrl: null,
   authoringMode: 'minimal',
   minimalConfig: DEFAULT_MINIMAL_BRANDING_CONFIG,
   advancedConfig: DEFAULT_ADVANCED_BRANDING_CONFIG,

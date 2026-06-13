@@ -13,6 +13,7 @@ import {
   TelemetrySourceRejectedException,
   enforceTelemetrySourceAllowed,
 } from '../../common/telemetry-source.util';
+import { resolvePcobCompatibilityMode } from '../../common/match-telemetry-provider.util';
 
 const jwtSecret = env.JWT_SECRET;
 
@@ -540,6 +541,20 @@ export class PcobGateway {
             ack?.({ ok: false, reason: 'forbidden' });
             return;
           }
+          const match = await this.prisma.match.findUnique({
+            where: { id: matchId },
+            select: {
+              dataSource: true,
+              dataMode: true,
+              pcobMode: true,
+              pcobSessionId: true,
+              adapterKey: true,
+            },
+          });
+          if (!match || resolvePcobCompatibilityMode(match) !== 'PCOB') {
+            ack?.({ ok: false, reason: 'legacy_pcob_disabled' });
+            return;
+          }
           this.bindings.set(socket.id, {
             matchId,
             source: payload?.source,
@@ -659,11 +674,50 @@ export class PcobGateway {
     socket?: PcobSocket,
   ): Promise<boolean> {
     try {
+      const match = await this.prisma.match.findUnique({
+        where: { id: matchId },
+        select: {
+          id: true,
+          deletedAt: true,
+          organizationId: true,
+          status: true,
+          liveState: true,
+          telemetrySource: true,
+          telemetrySourceLockedAt: true,
+          dataSource: true,
+          dataMode: true,
+          pcobMode: true,
+          pcobSessionId: true,
+          adapterKey: true,
+          controlState: {
+            select: {
+              state: true,
+              metaJson: true,
+              organizationId: true,
+            },
+          },
+          tournament: {
+            select: {
+              organizationId: true,
+            },
+          },
+        },
+      });
+      const compatibilityMode = match
+        ? resolvePcobCompatibilityMode(match)
+        : 'MANUAL';
+      if (compatibilityMode === 'MANUAL') {
+        socket?.emit('match:error', {
+          matchId,
+          reason: 'telemetry_source_guard_failed',
+        });
+        return false;
+      }
       await enforceTelemetrySourceAllowed({
         prisma: this.prisma,
         logger: this.logger,
-        matchId,
-        incomingSource: 'PCOB',
+        match,
+        incomingSource: compatibilityMode === 'API' ? 'API' : 'PCOB',
       });
     } catch (error) {
       if (error instanceof TelemetrySourceRejectedException) {

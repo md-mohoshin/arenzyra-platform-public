@@ -20,6 +20,7 @@ const isWindows = process.platform === "win32";
 const defaultRepoRoot = "C:\\arenzyra";
 const npmCmd = isWindows ? "npm.cmd" : "npm";
 const shellCommand = process.env.ComSpec || "cmd.exe";
+const allowLegacyShadowApi = process.env.ALLOW_LEGACY_SHADOW_API === "1";
 
 const projectRoot =
   process.env.ARENZYRA_ROOT && fs.existsSync(process.env.ARENZYRA_ROOT)
@@ -44,6 +45,7 @@ const shadowApiNoisePaths = new Set([
 const serviceStates = new Map();
 const childProcesses = new Map();
 const stoppingServices = new Set();
+const APP_USER_MODEL_ID = "com.arenzyra.launcher";
 
 let healthRunning = false;
 let systemBusy = false;
@@ -73,6 +75,13 @@ function resolvePythonCommand(baseDir, candidates) {
     return localPath;
   }
   return isWindows ? "py" : "python3";
+}
+
+function resolveWindowIconPath() {
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "icon.ico")]
+    : [path.join(__dirname, "build", "icon.ico")];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
 function serviceMonitor(service) {
@@ -129,9 +138,9 @@ function processTimeoutDetail(service) {
 
 function createServiceDefinitions() {
   const shadowDir = joinAppPath("shadow_api");
+  const matchStateDir = joinAppPath("match-state-service");
   const mediaAiDir = joinAppPath("media-ai-service");
-
-  return [
+  const services = [
     {
       id: "api",
       name: "API",
@@ -143,36 +152,6 @@ function createServiceDefinitions() {
         command: npmCmd,
         args: ["run", "start:prod"],
         preview: "npm run start:prod",
-      }),
-    },
-    {
-      id: "shadow-api",
-      name: "Shadow API",
-      kind: "required",
-      cwd: shadowDir,
-      port: 5000,
-      startTimeoutMs: 15000,
-      command: () => ({
-        command: resolvePythonCommand(shadowDir, [
-          "venv\\Scripts\\python.exe",
-          "Scripts\\python.exe",
-          "venv/bin/python",
-        ]),
-        args: ["shadow_receiver.py"],
-        preview: "python shadow_receiver.py",
-      }),
-    },
-    {
-      id: "match-state-service",
-      name: "Match State Service",
-      kind: "required",
-      cwd: joinAppPath("match-state-service"),
-      port: 4000,
-      startTimeoutMs: 20000,
-      command: () => ({
-        command: npmCmd,
-        args: ["run", "start"],
-        preview: "npm run start",
       }),
     },
     {
@@ -231,6 +210,44 @@ function createServiceDefinitions() {
       }),
     },
   ];
+
+  if (allowLegacyShadowApi && fs.existsSync(shadowDir)) {
+    services.splice(1, 0, {
+      id: "shadow-api",
+      name: "Legacy Shadow API",
+      kind: "optional",
+      cwd: shadowDir,
+      port: 5000,
+      startTimeoutMs: 15000,
+      command: () => ({
+        command: resolvePythonCommand(shadowDir, [
+          "venv\\Scripts\\python.exe",
+          "Scripts\\python.exe",
+          "venv/bin/python",
+        ]),
+        args: ["shadow_receiver.py"],
+        preview: "python shadow_receiver.py",
+      }),
+    });
+
+    if (fs.existsSync(matchStateDir)) {
+      services.splice(2, 0, {
+        id: "match-state-service",
+        name: "Legacy Match State Service",
+        kind: "optional",
+        cwd: matchStateDir,
+        port: 4000,
+        startTimeoutMs: 20000,
+        command: () => ({
+          command: npmCmd,
+          args: ["run", "start"],
+          preview: "npm run start",
+        }),
+      });
+    }
+  }
+
+  return services;
 }
 
 const serviceDefinitions = createServiceDefinitions();
@@ -257,7 +274,7 @@ function shouldSuppressLog(scope, message) {
     return false;
   }
 
-  if (scope !== "Shadow API") {
+  if (scope !== "Legacy Shadow API") {
     return false;
   }
 
@@ -830,6 +847,7 @@ async function restartAllServices() {
 }
 
 function createWindow() {
+  const iconPath = resolveWindowIconPath();
   const window = new BrowserWindow({
     width: 1180,
     height: 860,
@@ -837,6 +855,7 @@ function createWindow() {
     minHeight: 760,
     backgroundColor: "#101314",
     title: "Arenzyra System Launcher",
+    icon: iconPath || undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -846,6 +865,10 @@ function createWindow() {
 
   window.removeMenu();
   window.loadFile("index.html");
+}
+
+if (isWindows) {
+  app.setAppUserModelId(APP_USER_MODEL_ID);
 }
 
 ipcMain.handle("launcher:get-state", async () => {
@@ -905,6 +928,23 @@ ipcMain.handle("launcher:service-action", async (_event, payload) => {
 app.whenReady().then(async () => {
   createWindow();
   await refreshServiceStates();
+  if (!allowLegacyShadowApi) {
+    pushLog(
+      "SYSTEM",
+      "Legacy Shadow API is disabled. Canonical live automatic ingest is launcher ob.js -> API.",
+    );
+  } else if (!fs.existsSync(joinAppPath("shadow_api"))) {
+    pushLog(
+      "SYSTEM",
+      "ALLOW_LEGACY_SHADOW_API=1 is set, but apps/shadow_api was not found.",
+    );
+  }
+  if (allowLegacyShadowApi && !fs.existsSync(joinAppPath("match-state-service"))) {
+    pushLog(
+      "SYSTEM",
+      "ALLOW_LEGACY_SHADOW_API=1 is set, but apps/match-state-service was not found.",
+    );
+  }
   broadcastState();
 
   if (isWindows) {

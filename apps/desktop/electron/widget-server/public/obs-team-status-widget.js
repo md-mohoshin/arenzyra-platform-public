@@ -649,6 +649,12 @@
     disposeAllPlayerRefs();
   }
 
+  function applyRuntimeReset() {
+    state.wsConnected = false;
+    resetTeamRuntime();
+    scheduleSync();
+  }
+
   function reconcileOptimisticKills(previousTeam, nextTeam) {
     if (!previousTeam || !nextTeam) {
       return;
@@ -1284,6 +1290,11 @@
 
     if (message.type === "player_positions") {
       handlePlayerPositions(message);
+      return;
+    }
+
+    if (message.type === "runtime_reset") {
+      applyRuntimeReset();
     }
   }
 

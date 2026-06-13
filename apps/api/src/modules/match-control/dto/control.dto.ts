@@ -1,6 +1,7 @@
 import {
   IsEnum,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -11,11 +12,16 @@ export const CONTROL_STATES = [
   'READY',
   'COUNTDOWN',
   'LIVE',
-  'PAUSED',
-  'ENDED',
-  'CONFIRMED',
+  'FINISH_PENDING',
+  'FINISHED',
 ] as const;
 export type ControlState = (typeof CONTROL_STATES)[number];
+export type PersistedControlState =
+  | ControlState
+  | 'COUNTDOWN'
+  | 'PAUSED'
+  | 'ENDED'
+  | 'CONFIRMED';
 // Backward compatibility for legacy imports
 export const CONTROL_STATUSES = CONTROL_STATES;
 export type ControlStatus = ControlState;
@@ -28,6 +34,14 @@ export class SetStatusDto {
   @IsInt()
   @Min(0)
   version?: number;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
+
+  @IsOptional()
+  @IsObject()
+  meta?: Record<string, unknown>;
 }
 
 export class UpdateScoreDto {

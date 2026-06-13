@@ -28,6 +28,7 @@ import type {
 } from './dto/tournament.dto';
 import { deriveControlLiveState } from '../../common/live-state.util';
 import { effectiveOrganizationId } from '../../common/org/org.util';
+import { assertOrganizationGameAccess } from '../../common/org/organization-plan.util';
 import { LiveService } from '../live/live.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { PcobNamespaceGateway } from '../../realtime/pcob-namespace.gateway';
@@ -38,38 +39,8 @@ import {
   isMatchFinishedStatus,
   MATCH_FINISHED_STATUSES,
 } from '../../common/match-status.util';
-
-const DEFAULT_RULESET = {
-  version: 'pubgm-v2',
-  kill: 1,
-  placement: {
-    '1': 10,
-    '2': 6,
-    '3': 5,
-    '4': 4,
-    '5': 3,
-    '6': 2,
-    '7': 1,
-    '8': 1,
-    '9': 0,
-    '10': 0,
-    '11': 0,
-    '12': 0,
-    '13': 0,
-    '14': 0,
-    '15': 0,
-    '16': 0,
-    '17': 0,
-    '18': 0,
-    '19': 0,
-    '20': 0,
-    '21': 0,
-    '22': 0,
-    '23': 0,
-    '24': 0,
-    '25': 0,
-  },
-};
+import { defaultTournamentRulesetForGame } from '../../common/game-rules.util';
+import { buildQualificationSettingsData } from '../../common/qualification-settings.util';
 
 @Injectable()
 export class TournamentsService {
@@ -404,6 +375,8 @@ export class TournamentsService {
       throw new ForbiddenException('Organization context missing');
     }
 
+    const game = body.game ?? GameKey.PUBG_MOBILE;
+    await assertOrganizationGameAccess(this.prisma, organizationId, game);
     const created = await this.prisma.tournament.create({
       data: {
         organizationId,
@@ -418,8 +391,10 @@ export class TournamentsService {
         endDate,
         timezone: body.timezone,
         status: body.status ?? undefined,
-        game: body.game ?? GameKey.PUBG_MOBILE,
-        ruleset: (body.ruleset ?? DEFAULT_RULESET) as Prisma.InputJsonValue,
+        game,
+        ...buildQualificationSettingsData(body),
+        ruleset: (body.ruleset ??
+          defaultTournamentRulesetForGame(game)) as Prisma.InputJsonValue,
       },
     });
 
@@ -465,6 +440,7 @@ export class TournamentsService {
     if (body?.bannerUrl !== undefined) data.bannerUrl = body.bannerUrl ?? null;
     if (body?.logoUrl !== undefined) data.logoUrl = body.logoUrl ?? null;
     if (body?.status !== undefined) data.status = body.status ?? undefined;
+    Object.assign(data, buildQualificationSettingsData(body));
 
     if (body?.status === 'COMPLETED') {
       const nonOfficial = await this.prisma.match.count({
@@ -937,12 +913,20 @@ export class TournamentsService {
     return {
       tournament: {
         name: tournament.name,
-        game: 'PUBG Mobile',
+        game:
+          tournament.game === GameKey.FREE_FIRE
+            ? 'Free Fire'
+            : tournament.game === GameKey.VALORANT
+              ? 'VALORANT'
+              : tournament.game === GameKey.CALL_OF_DUTY
+                ? 'Call of Duty Mobile'
+                : 'PUBG Mobile',
         organizer: tournament.organization?.name ?? 'N/A',
         start_date: this.formatDate(tournament.startDate ?? null),
         end_date: this.formatDate(tournament.endDate ?? null),
       },
-      scoring: tournament.ruleset ?? DEFAULT_RULESET,
+      scoring:
+        tournament.ruleset ?? defaultTournamentRulesetForGame(tournament.game),
       stages: stages.map((stage) => ({
         name: stage.name,
         groups: stage.groups.map((group) => ({

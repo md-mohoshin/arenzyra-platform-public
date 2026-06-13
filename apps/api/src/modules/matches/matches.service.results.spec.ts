@@ -12,9 +12,78 @@ import type { BroadcastService } from '../broadcast/broadcast.service';
 import type { MatchControlService } from '../match-control/match-control.service';
 
 describe('MatchesService.getResults', () => {
+  it('syncs live telemetry results before reading organizer results', async () => {
+    const prisma = {
+      _dmmf: { modelMap: { Match: { fields: [] } } },
+      adminAdjustment: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      matchSlotResult: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'slot-result-1',
+            matchId: 'match-live',
+            teamId: 'team-1',
+            slotNumber: 1,
+            wasPresentInMatch: true,
+            placement: null,
+            totalPoints: 0,
+            points: 0,
+            players: [],
+            team: { id: 'team-1', name: 'Team One', tag: 'ONE', logoUrl: null },
+          },
+        ]),
+      },
+    } as unknown as PrismaService;
+
+    const results = {
+      syncLiveTelemetryResultsForRead: jest.fn().mockResolvedValue(undefined),
+      ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ResultsService;
+
+    const service = new MatchesService(
+      prisma,
+      {} as unknown as ScoringService,
+      {} as unknown as PcobGateway,
+      {} as unknown as AdaptersService,
+      {} as unknown as ScoreboardService,
+      results,
+      {} as unknown as ResultsEventsService,
+      {} as unknown as StandingsService,
+      {} as unknown as BroadcastService,
+      {} as unknown as AuditService,
+      {} as unknown as MatchControlService,
+      null as any,
+    );
+
+    jest.spyOn(service as any, 'ensureMatchOrg').mockResolvedValue({
+      id: 'match-live',
+      dataSource: 'PCOB',
+      dataMode: 'AUTO',
+      status: 'LIVE',
+      liveState: 'LIVE',
+      controlState: {
+        metaJson: null,
+        state: 'LIVE',
+      },
+    });
+
+    await service.getResults({ id: 'user-1' } as any, 'match-live');
+
+    expect(
+      (results as any).syncLiveTelemetryResultsForRead,
+    ).toHaveBeenCalledWith('match-live');
+    expect((results as any).ensureResultsFromSlots).toHaveBeenCalledWith(
+      'match-live',
+    );
+  });
+
   it('excludes unassigned slot results from the organizer payload', async () => {
     const prisma = {
       _dmmf: { modelMap: { Match: { fields: [] } } },
+      adminAdjustment: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
       matchSlotResult: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -91,6 +160,7 @@ describe('MatchesService.getResults', () => {
     } as unknown as PrismaService;
 
     const results = {
+      syncLiveTelemetryResultsForRead: jest.fn().mockResolvedValue(undefined),
       ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
     } as unknown as ResultsService;
     const controlStateStore = {
@@ -174,10 +244,10 @@ describe('MatchesService.getResults', () => {
       },
     });
 
-    const response = await service.getResults(
+    const response = (await service.getResults(
       { id: 'user-1' } as any,
       'match-1',
-    );
+    )) as any;
 
     expect(response.results).toHaveLength(2);
     expect(response.results.map((row) => row.teamId)).toEqual([
@@ -189,6 +259,8 @@ describe('MatchesService.getResults', () => {
     expect(controlStateStore.get).toHaveBeenCalledWith('match-1');
     expect(response.liveMirrorVersion).toBe(6);
     expect(response.liveSyncVersion).toBe(4);
+    expect(response.sourceMode).toBe('MANUAL');
+    expect(response.telemetryProvider).toBe('MANUAL');
     expect(response.overrideReleaseAllowed).toBe(true);
     expect(response.overrideReleaseReason).toBeNull();
     expect(response.overrideAudit?.[0]).toMatchObject({
@@ -233,6 +305,9 @@ describe('MatchesService.getResults', () => {
   it('returns canonical anonymous player keys in organizer results payloads', async () => {
     const prisma = {
       _dmmf: { modelMap: { Match: { fields: [] } } },
+      adminAdjustment: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
       matchSlotResult: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -263,6 +338,7 @@ describe('MatchesService.getResults', () => {
     } as unknown as PrismaService;
 
     const results = {
+      syncLiveTelemetryResultsForRead: jest.fn().mockResolvedValue(undefined),
       ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
     } as unknown as ResultsService;
 
@@ -289,10 +365,10 @@ describe('MatchesService.getResults', () => {
       controlState: null,
     });
 
-    const response = await service.getResults(
+    const response = (await service.getResults(
       { id: 'user-1' } as any,
       'match-1',
-    );
+    )) as any;
 
     expect(response.results).toHaveLength(1);
     const anonymousTeam = response.results[0] as unknown as
@@ -301,6 +377,381 @@ describe('MatchesService.getResults', () => {
     expect(anonymousTeam?.players[0]).toMatchObject({
       id: 'player-result-anon',
       playerId: 'slot-player:player-result-anon',
+    });
+  });
+
+  it('prefers live mirror team state for live automatic organizer results', async () => {
+    const prisma = {
+      _dmmf: { modelMap: { Match: { fields: [] } } },
+      adminAdjustment: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      matchSlotResult: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'slot-result-1',
+            matchId: 'match-1',
+            teamId: 'team-1',
+            slotNumber: 1,
+            wasPresentInMatch: true,
+            placement: 16,
+            totalKills: 0,
+            totalPoints: 0,
+            points: 0,
+            eliminatedAt: new Date('2026-04-20T00:00:00.000Z'),
+            players: [
+              {
+                id: 'player-result-1',
+                playerId: 'player-1',
+                playerName: 'Alpha',
+                kills: 0,
+                knocks: 0,
+                isKnocked: false,
+                isAlive: false,
+                player: {
+                  externalPlayerId: null,
+                  id: 'player-1',
+                  ign: 'Alpha',
+                  photoUrl: null,
+                  realName: null,
+                },
+              },
+            ],
+            team: { id: 'team-1', name: 'Team One', tag: 'ONE', logoUrl: null },
+          },
+          {
+            id: 'slot-result-2',
+            matchId: 'match-1',
+            teamId: 'team-2',
+            slotNumber: 2,
+            wasPresentInMatch: true,
+            placement: 17,
+            totalKills: 0,
+            totalPoints: 0,
+            points: 0,
+            eliminatedAt: new Date('2026-04-20T00:00:00.000Z'),
+            players: [
+              {
+                id: 'player-result-2',
+                playerId: 'player-2',
+                playerName: 'Bravo',
+                kills: 0,
+                knocks: 0,
+                isKnocked: false,
+                isAlive: false,
+                player: {
+                  externalPlayerId: null,
+                  id: 'player-2',
+                  ign: 'Bravo',
+                  photoUrl: null,
+                  realName: null,
+                },
+              },
+            ],
+            team: { id: 'team-2', name: 'Team Two', tag: 'TWO', logoUrl: null },
+          },
+          {
+            id: 'slot-result-3',
+            matchId: 'match-1',
+            teamId: 'team-3',
+            slotNumber: 3,
+            wasPresentInMatch: false,
+            placement: null,
+            totalKills: 0,
+            totalPoints: 0,
+            points: 0,
+            eliminatedAt: null,
+            players: [],
+            team: {
+              id: 'team-3',
+              name: 'Team Three',
+              tag: 'THR',
+              logoUrl: null,
+            },
+          },
+        ]),
+      },
+    } as unknown as PrismaService;
+
+    const results = {
+      syncLiveTelemetryResultsForRead: jest.fn().mockResolvedValue(undefined),
+      ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ResultsService;
+
+    const controlStateStore = {
+      get: jest.fn().mockResolvedValue({
+        version: 9,
+        status: 'LIVE',
+        matchId: 'match-1',
+        startedAt: '2026-04-20T00:00:00.000Z',
+        endedAt: null,
+        updatedAt: '2026-04-20T00:00:05.000Z',
+        summary: {
+          totalTeams: 2,
+          aliveTeams: 2,
+          totalPlayers: 7,
+          alivePlayers: 6,
+        },
+        teams: [
+          {
+            teamId: 'team-1',
+            name: 'Team One',
+            tag: 'ONE',
+            slot: 1,
+            presenceStatus: 'ACTIVE',
+            kills: 4,
+            placement: null,
+            points: null,
+            logoUrl: null,
+            hasTelemetryPresence: true,
+            alivePlayers: 3,
+            totalPlayers: 4,
+            alive: true,
+            eliminated: false,
+            players: [],
+          },
+          {
+            teamId: 'team-2',
+            name: 'Team Two',
+            tag: 'TWO',
+            slot: 2,
+            presenceStatus: 'ACTIVE',
+            kills: 2,
+            placement: null,
+            points: null,
+            logoUrl: null,
+            hasTelemetryPresence: true,
+            alivePlayers: 3,
+            totalPlayers: 3,
+            alive: true,
+            eliminated: false,
+            players: [],
+          },
+        ],
+      }),
+    };
+
+    const service = new MatchesService(
+      prisma,
+      {} as unknown as ScoringService,
+      {} as unknown as PcobGateway,
+      {} as unknown as AdaptersService,
+      {} as unknown as ScoreboardService,
+      results,
+      {} as unknown as ResultsEventsService,
+      {} as unknown as StandingsService,
+      {} as unknown as BroadcastService,
+      {} as unknown as AuditService,
+      {} as unknown as MatchControlService,
+      controlStateStore as any,
+    );
+
+    jest.spyOn(service as any, 'ensureMatchOrg').mockResolvedValue({
+      id: 'match-1',
+      dataSource: 'PCOB',
+      dataMode: 'AUTO',
+      status: 'LIVE',
+      liveState: 'LIVE',
+      controlState: {
+        metaJson: null,
+        state: 'LIVE',
+      },
+    });
+
+    const response = (await service.getResults(
+      { id: 'user-1' } as any,
+      'match-1',
+    )) as any;
+
+    expect(response.totalTeamsCount).toBe(2);
+    expect(response.aliveTeamsCount).toBe(2);
+    expect(response.liveMirrorVersion).toBe(9);
+    expect(response.sourceMode).toBe('API');
+    expect(response.telemetryProvider).toBe('API');
+    expect(
+      response.results.find((row) => row.teamId === 'team-1'),
+    ).toMatchObject({
+      presenceStatus: 'ACTIVE',
+      alivePlayers: 3,
+      eliminated: false,
+      kills: 4,
+      hasTelemetryPresence: true,
+    });
+    expect(
+      response.results.find((row) => row.teamId === 'team-2'),
+    ).toMatchObject({
+      presenceStatus: 'ACTIVE',
+      alivePlayers: 3,
+      eliminated: false,
+      kills: 2,
+      hasTelemetryPresence: true,
+    });
+    expect(
+      response.results.find((row) => row.teamId === 'team-3'),
+    ).toMatchObject({
+      presenceStatus: 'NO_SHOW',
+      alivePlayers: null,
+      hasTelemetryPresence: false,
+    });
+  });
+
+  it('surfaces live-only unassigned telemetry teams in organizer results without slot assignment', async () => {
+    const prisma = {
+      _dmmf: { modelMap: { Match: { fields: [] } } },
+      adminAdjustment: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      matchSlotResult: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'slot-result-1',
+            matchId: 'match-1',
+            teamId: 'team-1',
+            slotNumber: 1,
+            wasPresentInMatch: true,
+            placement: null,
+            totalKills: 0,
+            totalPoints: 0,
+            points: 0,
+            eliminatedAt: null,
+            players: [
+              {
+                id: 'player-result-1',
+                playerId: 'player-1',
+                playerName: 'Alpha',
+                kills: 0,
+                knocks: 0,
+                isKnocked: false,
+                isAlive: true,
+                player: {
+                  externalPlayerId: null,
+                  id: 'player-1',
+                  ign: 'Alpha',
+                  photoUrl: null,
+                  realName: null,
+                },
+              },
+            ],
+            team: { id: 'team-1', name: 'Team One', tag: 'ONE', logoUrl: null },
+          },
+        ]),
+      },
+    } as unknown as PrismaService;
+
+    const results = {
+      syncLiveTelemetryResultsForRead: jest.fn().mockResolvedValue(undefined),
+      ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ResultsService;
+
+    const controlStateStore = {
+      get: jest.fn().mockResolvedValue({
+        version: 12,
+        status: 'LIVE',
+        matchId: 'match-1',
+        startedAt: '2026-04-20T00:00:00.000Z',
+        endedAt: null,
+        updatedAt: '2026-04-20T00:00:05.000Z',
+        summary: {
+          totalTeams: 2,
+          aliveTeams: 2,
+          totalPlayers: 8,
+          alivePlayers: 6,
+        },
+        teams: [
+          {
+            teamId: 'team-1',
+            name: 'Team One',
+            tag: 'ONE',
+            slot: 1,
+            presenceStatus: 'ACTIVE',
+            kills: 0,
+            placement: null,
+            points: null,
+            logoUrl: null,
+            hasTelemetryPresence: true,
+            alivePlayers: 4,
+            totalPlayers: 4,
+            alive: true,
+            eliminated: false,
+            players: [],
+          },
+          {
+            teamId: 'live-ghost',
+            name: 'Ghost Squad',
+            tag: 'GST',
+            slot: 2,
+            presenceStatus: 'ACTIVE',
+            kills: 3,
+            placement: 12,
+            points: 9,
+            logoUrl: null,
+            hasTelemetryPresence: true,
+            alivePlayers: 2,
+            totalPlayers: 4,
+            alive: true,
+            eliminated: false,
+            players: [],
+          },
+        ],
+      }),
+    };
+
+    const service = new MatchesService(
+      prisma,
+      {} as unknown as ScoringService,
+      {} as unknown as PcobGateway,
+      {} as unknown as AdaptersService,
+      {} as unknown as ScoreboardService,
+      results,
+      {} as unknown as ResultsEventsService,
+      {} as unknown as StandingsService,
+      {} as unknown as BroadcastService,
+      {} as unknown as AuditService,
+      {} as unknown as MatchControlService,
+      controlStateStore as any,
+    );
+
+    jest.spyOn(service as any, 'ensureMatchOrg').mockResolvedValue({
+      id: 'match-1',
+      dataSource: 'PCOB',
+      dataMode: 'AUTO',
+      status: 'LIVE',
+      liveState: 'LIVE',
+      controlState: {
+        metaJson: null,
+        state: 'LIVE',
+      },
+    });
+
+    const response = (await service.getResults(
+      { id: 'user-1' } as any,
+      'match-1',
+    )) as any;
+
+    expect(response.results).toHaveLength(2);
+    expect(response.totalTeamsCount).toBe(2);
+    expect(response.aliveTeamsCount).toBe(2);
+    expect(
+      response.results.find((row) => row.teamId === 'live-ghost'),
+    ).toMatchObject({
+      id: 'live-unassigned:live-ghost',
+      teamId: 'live-ghost',
+      liveTeamId: 'live-ghost',
+      isLiveOnlyUnassigned: true,
+      presenceStatus: 'ACTIVE',
+      kills: 3,
+      teamKills: 3,
+      alivePlayers: 2,
+      placement: 12,
+      totalPoints: 9,
+      hasTelemetryPresence: true,
+      teamLocked: true,
+      players: [],
+      team: {
+        id: 'live-ghost',
+        name: 'Ghost Squad',
+        tag: 'GST',
+      },
     });
   });
 
@@ -348,6 +799,9 @@ describe('MatchesService.getResults', () => {
 
     const prisma = {
       _dmmf: { modelMap: { Match: { fields: [] } } },
+      adminAdjustment: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
       matchSlotResult: {
         findMany: jest.fn().mockResolvedValue(slotResults),
       },
@@ -360,6 +814,7 @@ describe('MatchesService.getResults', () => {
       {} as unknown as AdaptersService,
       {} as unknown as ScoreboardService,
       {
+        syncLiveTelemetryResultsForRead: jest.fn().mockResolvedValue(undefined),
         ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
       } as unknown as ResultsService,
       {} as unknown as ResultsEventsService,
@@ -381,10 +836,10 @@ describe('MatchesService.getResults', () => {
       controlState: null,
     });
 
-    const response = await service.getResults(
+    const response = (await service.getResults(
       { id: 'user-1' } as any,
       'match-1',
-    );
+    )) as any;
 
     const activeRows = response.results.filter(
       (row) => row.presenceStatus === 'ACTIVE',
@@ -452,6 +907,10 @@ describe('MatchesService manual presence recovery', () => {
     const scoring = {
       recomputeMatchAndTournament: jest.fn(),
     } as unknown as ScoringService;
+    const resultsEvents = {
+      emitResultsUpdated: jest.fn(),
+      emitLeaderboardUpdated: jest.fn(),
+    } as unknown as ResultsEventsService;
     const service = new MatchesService(
       prisma,
       scoring,
@@ -461,7 +920,7 @@ describe('MatchesService manual presence recovery', () => {
       {
         assertSlotPresentForMutation: jest.fn().mockResolvedValue(undefined),
       } as unknown as ResultsService,
-      {} as unknown as ResultsEventsService,
+      resultsEvents,
       {} as unknown as StandingsService,
       {} as unknown as BroadcastService,
       {} as unknown as AuditService,
@@ -490,6 +949,26 @@ describe('MatchesService manual presence recovery', () => {
     expect((prisma as any).matchEvent.create).toHaveBeenCalled();
     expect((prisma as any).matchSlotResult.updateMany).toHaveBeenCalled();
     expect((scoring as any).recomputeMatchAndTournament).toHaveBeenCalled();
+    expect((resultsEvents as any).emitResultsUpdated).toHaveBeenCalledWith(
+      'match-1',
+      0,
+      expect.objectContaining({
+        source: 'MANUAL',
+        mode: 'MANUAL_SCORING',
+        type: 'PLACEMENT',
+        teamId: 'team-1',
+        placement: 5,
+      }),
+    );
+    expect((resultsEvents as any).emitLeaderboardUpdated).toHaveBeenCalledWith(
+      'match-1',
+      expect.objectContaining({
+        source: 'MANUAL',
+        mode: 'MANUAL_SCORING',
+        type: 'PLACEMENT',
+        teamId: 'team-1',
+      }),
+    );
   });
 
   it('allows manual kill edits to promote a missing team back into manual control', async () => {
@@ -506,6 +985,10 @@ describe('MatchesService manual presence recovery', () => {
     const scoring = {
       recomputeMatchAndTournament: jest.fn(),
     } as unknown as ScoringService;
+    const resultsEvents = {
+      emitResultsUpdated: jest.fn(),
+      emitLeaderboardUpdated: jest.fn(),
+    } as unknown as ResultsEventsService;
     const service = new MatchesService(
       prisma,
       scoring,
@@ -515,7 +998,7 @@ describe('MatchesService manual presence recovery', () => {
       {
         assertSlotPresentForMutation: jest.fn().mockResolvedValue(undefined),
       } as unknown as ResultsService,
-      {} as unknown as ResultsEventsService,
+      resultsEvents,
       {} as unknown as StandingsService,
       {} as unknown as BroadcastService,
       {} as unknown as AuditService,
@@ -551,5 +1034,25 @@ describe('MatchesService manual presence recovery', () => {
     expect((prisma as any).matchEvent.deleteMany).toHaveBeenCalled();
     expect((prisma as any).matchEvent.createMany).toHaveBeenCalled();
     expect((scoring as any).recomputeMatchAndTournament).toHaveBeenCalled();
+    expect((resultsEvents as any).emitResultsUpdated).toHaveBeenCalledWith(
+      'match-1',
+      0,
+      expect.objectContaining({
+        source: 'MANUAL',
+        mode: 'MANUAL_SCORING',
+        type: 'KILL',
+        teamId: 'team-1',
+        delta: 1,
+      }),
+    );
+    expect((resultsEvents as any).emitLeaderboardUpdated).toHaveBeenCalledWith(
+      'match-1',
+      expect.objectContaining({
+        source: 'MANUAL',
+        mode: 'MANUAL_SCORING',
+        type: 'KILL',
+        teamId: 'team-1',
+      }),
+    );
   });
 });

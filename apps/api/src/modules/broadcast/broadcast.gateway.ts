@@ -25,22 +25,12 @@ import { LiveBattleRankingService } from '../widgets/live-battle-ranking.service
 import type { MatchLiveStatePayload } from '../realtime/match-live-state.types';
 import { resolveTeamBranding } from '../../common/team-branding.util';
 import { CanonicalControlReadService } from '../realtime/canonical-control-read.service';
+import { buildAllowedCorsOrigins } from '../../common/cors.util';
 
 const DEFAULT_WIDGET_TEAM_NAME = 'Arenzyra';
 const DEFAULT_WIDGET_TEAM_TAG = 'AZ';
 
-const widgetBroadcastAllowedOrigins = Array.from(
-  new Set(
-    [
-      'http://localhost:3001',
-      'http://127.0.0.1:3001',
-      'http://localhost:3005',
-      'http://127.0.0.1:3005',
-      process.env.WEB_APP_ORIGIN,
-      process.env.FRONTEND_ORIGIN,
-    ].filter((value): value is string => Boolean(value?.trim())),
-  ),
-);
+const widgetBroadcastAllowedOrigins = buildAllowedCorsOrigins();
 
 @WebSocketGateway({
   namespace: '/widget-broadcast',
@@ -247,6 +237,29 @@ export class WidgetBroadcastGateway implements OnModuleDestroy {
     await this.emitLiveRankingSnapshot(broadcastKey);
   }
 
+  async emitLiveBattleRankingForMatch(matchId: string) {
+    const match = await this.prisma.match.findFirst({
+      where: { id: matchId, deletedAt: null },
+      select: {
+        organizationId: true,
+        organization: { select: { broadcastKey: true } },
+      },
+    });
+    const broadcastKey =
+      match?.organization?.broadcastKey ??
+      (
+        await this.prisma.organization.findFirst({
+          where: { id: match?.organizationId ?? '' },
+          select: { broadcastKey: true },
+        })
+      )?.broadcastKey ??
+      null;
+    if (!broadcastKey) return;
+    this.liveBattleRanking.invalidateMatch(matchId);
+    await this.pushLiveBattleRanking(broadcastKey, true);
+    await this.pushLiveState(broadcastKey, { force: true });
+  }
+
   private async emitLiveRankingSnapshot(broadcastKey: string) {
     try {
       const payload = await this.fetchLiveRankingSnapshot(broadcastKey);
@@ -266,6 +279,7 @@ export class WidgetBroadcastGateway implements OnModuleDestroy {
       matchId: payload.matchId ?? null,
       teams: (payload.teams ?? []).map((team) => ({
         teamId: team.teamId,
+        slot: team.slot ?? null,
         players: (team.players ?? []).map((p) => ({
           id: p.playerId,
           a: p.isAlive,
@@ -418,7 +432,7 @@ export class WidgetBroadcastGateway implements OnModuleDestroy {
     const fromSnapshot =
       (snapshot.rows ?? [])
         .filter((row: WidgetTeamSlotRow) => row.wasPresentInMatch === true)
-        .map((row: WidgetTeamSlotRow, idx: number) => {
+        .map((row: WidgetTeamSlotRow) => {
           const teamId = row.teamId ?? `slot-${row.slot}`;
           const kills = Number(row.totalKills ?? 0);
           const placementPoints = Number(row.placementPoints ?? 0);
@@ -433,10 +447,7 @@ export class WidgetBroadcastGateway implements OnModuleDestroy {
 
           return {
             teamId,
-            teamName:
-              row.teamName ??
-              row.teamTag ??
-              DEFAULT_WIDGET_TEAM_NAME,
+            teamName: row.teamName ?? row.teamTag ?? DEFAULT_WIDGET_TEAM_NAME,
             teamTag: row.teamTag ?? DEFAULT_WIDGET_TEAM_TAG,
             teamLogo: row.teamLogoUrl ?? TEAM_LOGO_PLACEHOLDER,
             placement: row.placement ?? null,

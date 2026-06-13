@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { Role } from '@prisma/client';
 import { AuthController } from '../src/auth/auth.controller';
@@ -31,6 +31,13 @@ describe('AuthController (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
     await app.init();
   });
 
@@ -67,6 +74,23 @@ describe('AuthController (e2e)', () => {
       }),
     );
     expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('login rejects client-supplied organizationId overrides', async () => {
+    const server = app.getHttpServer() as Parameters<typeof request>[0];
+    const res = await request(server)
+      .post('/auth/login')
+      .send({
+        email: 'user@example.com',
+        password: 'secret',
+        organizationId: 'forged-org',
+      })
+      .expect(400);
+
+    expect(res.body.message).toContain(
+      'property organizationId should not exist',
+    );
+    expect(auth.login).not.toHaveBeenCalled();
   });
 
   it('refresh accepts a refresh token in the request body', async () => {

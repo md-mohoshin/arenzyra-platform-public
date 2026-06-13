@@ -2,6 +2,7 @@ import {
   DataMode,
   MatchDataSource,
   SessionRegistrationStatus,
+  TeamBanScope,
 } from '@prisma/client';
 import { MatchesService } from './matches.service';
 
@@ -36,6 +37,9 @@ describe('MatchesService session creation compatibility', () => {
       },
       matchSlot: {
         createMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      teamBan: {
+        findMany: jest.fn().mockResolvedValue([]),
       },
     };
 
@@ -121,7 +125,6 @@ describe('MatchesService session creation compatibility', () => {
             SessionRegistrationStatus.CHECKED_IN,
           ],
         },
-        slotNumber: { not: null },
       },
       select: {
         teamId: true,
@@ -130,32 +133,70 @@ describe('MatchesService session creation compatibility', () => {
       orderBy: { slotNumber: 'asc' },
     });
     expect(tx.sessionRegistration.findMany).toHaveBeenCalledTimes(1);
+    expect(tx.teamBan.findMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        organizationId: 'org-1',
+        teamId: { in: ['team-a', 'team-b'] },
+        revokedAt: null,
+        AND: [
+          {
+            OR: [
+              { scope: TeamBanScope.TEAM },
+              { scope: TeamBanScope.SESSION, sessionId: 'session-1' },
+            ],
+          },
+        ],
+      }),
+      select: { teamId: true },
+    });
     expect(tx.matchTeam.createMany).toHaveBeenCalledWith({
       data: [
-        { matchId: 'match-session-1', teamId: 'team-a', slot: 1 },
-        { matchId: 'match-session-1', teamId: 'team-b', slot: 2 },
+        { matchId: 'match-session-1', teamId: 'team-a', slot: null },
+        { matchId: 'match-session-1', teamId: 'team-b', slot: null },
       ],
       skipDuplicates: true,
     });
-    expect(tx.matchSlot.createMany).toHaveBeenCalledWith({
-      data: [
-        {
-          matchId: 'match-session-1',
-          slotNumber: 1,
-          teamId: 'team-a',
-          lobbyStatus: 'WAITING',
-          playersInLobby: 0,
-        },
-        {
-          matchId: 'match-session-1',
-          slotNumber: 2,
-          teamId: 'team-b',
-          lobbyStatus: 'WAITING',
-          playersInLobby: 0,
-        },
-      ],
+    expect(tx.matchSlot.createMany).not.toHaveBeenCalled();
+  });
+
+  it('does not seed teams that are actively banned from the scrim', async () => {
+    const { service, tx } = buildService();
+
+    tx.teamBan.findMany.mockResolvedValue([{ teamId: 'team-b' }]);
+
+    jest.spyOn(service as any, 'resolveSessionContext').mockResolvedValue({
+      sessionId: 'session-1',
+      organizationId: 'org-1',
+      slotCount: 2,
+    });
+    jest
+      .spyOn(service as any, 'buildSessionMatchCreateInput')
+      .mockResolvedValue({
+        id: 'match-session-1',
+        name: 'Session Match',
+        organizationId: 'org-1',
+        sessionId: 'session-1',
+        tournamentId: null,
+        stageId: null,
+        groupId: null,
+        slotCount: 2,
+        dataMode: DataMode.MANUAL,
+        dataSource: MatchDataSource.MANUAL,
+      });
+    jest
+      .spyOn(service as any, 'pruneUnsupportedMatchFields')
+      .mockImplementation((value: unknown) => value);
+    jest.spyOn(service as any, 'seedControlState').mockResolvedValue(undefined);
+
+    await service.createForSession(actor as any, 'session-1', {
+      name: 'Session Match',
+    });
+
+    expect(tx.matchTeam.createMany).toHaveBeenCalledWith({
+      data: [{ matchId: 'match-session-1', teamId: 'team-a', slot: null }],
       skipDuplicates: true,
     });
+    expect(tx.matchSlot.createMany).not.toHaveBeenCalled();
   });
 
   it('treats the seeded lobby as a snapshot and does not re-read registrations after creation', async () => {
@@ -191,10 +232,10 @@ describe('MatchesService session creation compatibility', () => {
 
     expect(tx.sessionRegistration.findMany).toHaveBeenCalledTimes(1);
     expect(tx.matchTeam.createMany).toHaveBeenCalledTimes(1);
-    expect(tx.matchSlot.createMany).toHaveBeenCalledTimes(1);
+    expect(tx.matchSlot.createMany).not.toHaveBeenCalled();
   });
 
-  it('preserves seeded slot numbers exactly as the confirmed session snapshot', async () => {
+  it('loads event teams as candidates without pre-assigning session slot numbers', async () => {
     const { service, tx } = buildService();
 
     tx.sessionRegistration.findMany.mockResolvedValue([
@@ -232,30 +273,12 @@ describe('MatchesService session creation compatibility', () => {
 
     expect(tx.matchTeam.createMany).toHaveBeenCalledWith({
       data: [
-        { matchId: 'match-session-1', teamId: 'team-a', slot: 3 },
-        { matchId: 'match-session-1', teamId: 'team-b', slot: 5 },
+        { matchId: 'match-session-1', teamId: 'team-a', slot: null },
+        { matchId: 'match-session-1', teamId: 'team-b', slot: null },
       ],
       skipDuplicates: true,
     });
-    expect(tx.matchSlot.createMany).toHaveBeenCalledWith({
-      data: [
-        {
-          matchId: 'match-session-1',
-          slotNumber: 3,
-          teamId: 'team-a',
-          lobbyStatus: 'WAITING',
-          playersInLobby: 0,
-        },
-        {
-          matchId: 'match-session-1',
-          slotNumber: 5,
-          teamId: 'team-b',
-          lobbyStatus: 'WAITING',
-          playersInLobby: 0,
-        },
-      ],
-      skipDuplicates: true,
-    });
+    expect(tx.matchSlot.createMany).not.toHaveBeenCalled();
   });
 
   it('keeps the existing tournament create flow delegating through group context', async () => {

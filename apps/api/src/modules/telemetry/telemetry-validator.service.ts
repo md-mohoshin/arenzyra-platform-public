@@ -82,26 +82,6 @@ export class TelemetryValidatorService {
           throw new BadRequestException('Match results are already locked');
         }
         return;
-      case 'LOCK_RESULTS':
-        if (state.status !== 'ENDED' && state.teamsAlive > 1) {
-          throw new BadRequestException(
-            'Results can only be locked after the match has ended',
-          );
-        }
-        return;
-      case 'SET_PLAYER_ALIVE':
-        this.assertPlayerExists(state, command.playerId, command.type);
-        return;
-      case 'SET_PLAYER_KNOCKED': {
-        this.assertPlayerExists(state, command.playerId, command.type);
-        return;
-      }
-      case 'SET_PLAYER_KILLS':
-        this.assertPlayerExists(state, command.playerId, command.type);
-        if (!Number.isInteger(command.kills) || command.kills < 0) {
-          throw new BadRequestException('kills must be a non-negative integer');
-        }
-        return;
       default:
         throw new BadRequestException('Unsupported control command');
     }

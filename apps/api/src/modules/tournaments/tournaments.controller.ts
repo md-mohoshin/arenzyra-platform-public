@@ -33,16 +33,12 @@ export class TournamentsController {
   constructor(private svc: TournamentsService) {}
 
   @Get()
-  list(@Req() req: AuthRequest) {
-    const orgIdParam = req.params?.orgId;
-    const routeOrgId = Array.isArray(orgIdParam)
-      ? orgIdParam[0]
-      : (orgIdParam ?? null);
-    const orgId = req.orgId ?? routeOrgId ?? null;
-    if (!orgId) {
+  list(@Param('orgId') orgId: string, @Req() req: AuthRequest) {
+    const scopedOrgId = req.orgId ?? orgId ?? null;
+    if (!scopedOrgId) {
       throw new ForbiddenException('Organization context missing');
     }
-    return this.svc.listForActor(orgId, req.user);
+    return this.svc.listForActor(scopedOrgId, req.user);
   }
 
   @Get(':tournamentId')

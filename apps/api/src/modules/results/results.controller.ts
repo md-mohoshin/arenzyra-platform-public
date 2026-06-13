@@ -13,7 +13,6 @@ import { Role } from '@prisma/client';
 import type { AuthenticatedRequest } from '../../common/auth/auth.types';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { Roles } from '../../common/auth/roles.decorator';
-import { Public } from '../../common/auth/public.decorator';
 import { ResultsApprovalService } from './results-approval.service';
 import { ResultsManualService } from './results-manual.service';
 import { ResultsService } from './results.service';
@@ -136,10 +135,22 @@ export class ResultsController {
     return { slots };
   }
 
+  @Post('results/no-show-auto-bans')
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.ORGANIZER, Role.REFEREE)
+  async applyNoShowAutoBans(
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.results.applyCurrentNoShowAutoBans(req.user, matchId);
+  }
+
   @Get('slot-results')
-  @Public()
-  async listSlotResultsPublic(@Param('matchId') matchId: string) {
-    const slots = await this.results.listSlotResultsPublic(matchId);
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.ORGANIZER, Role.REFEREE)
+  async listSlotResultsPublic(
+    @Param('matchId') matchId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const slots = await this.results.listSlotResults(req.user, matchId);
     return { slots };
   }
 
@@ -226,6 +237,7 @@ export class ResultsController {
     body: {
       kills?: number | null;
       knocks?: number | null;
+      assists?: number | null;
       alive?: boolean | null;
       isKnocked?: boolean | null;
       isAlive?: boolean | null;
@@ -252,6 +264,7 @@ export class ResultsController {
     body: {
       kills?: number | null;
       knocks?: number | null;
+      assists?: number | null;
       alive?: boolean | null;
       isKnocked?: boolean | null;
       isAlive?: boolean | null;
@@ -279,15 +292,5 @@ export class ResultsController {
     await this.results.ensureResultsEditable(match, actor);
     await this.initService.initResultsFromSlots(match.id);
     return { ok: true };
-  }
-
-  @Get('results/debug-shadow')
-  @Roles(Role.SUPER_ADMIN)
-  async debugShadow(@Param('matchId') matchId: string) {
-    const [killInfo, aliveInfo] = await Promise.all([
-      this.results.debugShadowKillInfo(matchId),
-      this.results.debugShadowAliveInfo(matchId),
-    ]);
-    return { ok: true, killInfo, aliveInfo };
   }
 }

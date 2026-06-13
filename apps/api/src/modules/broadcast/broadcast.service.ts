@@ -22,7 +22,7 @@ import {
 import type { MatchLiveStatePayload } from '../realtime/match-live-state.types';
 import { CanonicalControlReadService } from '../realtime/canonical-control-read.service';
 import { OrganizationBrandingService } from '../organization-branding/organization-branding.service';
-import { resolveOrganizationLiveMatchConflicts } from '../../common/live-match-conflict.util';
+import { detectOrganizationLiveMatchConflicts } from '../../common/live-match-conflict.util';
 import { MATCH_FINISHED_STATUSES } from '../../common/match-status.util';
 import { normalizePublicAssetUrl } from '../../common/public-asset-url.util';
 
@@ -58,7 +58,8 @@ type BroadcastTournamentDto = {
 
 type BroadcastMatchDto = {
   id: string;
-  tournamentId: string;
+  tournamentId: string | null;
+  sessionId: string | null;
   name?: string | null;
   number?: number | null;
   map?: string | null;
@@ -110,7 +111,8 @@ type PlayerRow = {
 
 type MatchWithRelations = {
   id: string;
-  tournamentId: string;
+  tournamentId: string | null;
+  sessionId: string | null;
   stageId: string | null;
   groupId: string | null;
   organizationId: string;
@@ -132,6 +134,13 @@ type MatchWithRelations = {
     status: string | null;
     liveState: LiveState | null;
     shortName: string | null;
+    logoUrl: string | null;
+    bannerUrl: string | null;
+  } | null;
+  session: {
+    id: string;
+    name: string;
+    status: string | null;
     logoUrl: string | null;
     bannerUrl: string | null;
   } | null;
@@ -171,6 +180,7 @@ export class BroadcastService {
   private readonly matchSelect: Prisma.MatchSelect = {
     id: true,
     tournamentId: true,
+    sessionId: true,
     stageId: true,
     groupId: true,
     organizationId: true,
@@ -193,6 +203,15 @@ export class BroadcastService {
         status: true,
         liveState: true,
         shortName: true,
+        logoUrl: true,
+        bannerUrl: true,
+      },
+    },
+    session: {
+      select: {
+        id: true,
+        name: true,
+        status: true,
         logoUrl: true,
         bannerUrl: true,
       },
@@ -317,11 +336,11 @@ export class BroadcastService {
       }
     };
 
-    (match.matchTeams ?? []).forEach((row) =>
-      upsert(row.team, row.slot ?? null, row.tournamentTeam?.seed ?? null),
-    );
     (match.matchSlots ?? []).forEach((row) =>
       upsert(row.team, row.slotNumber ?? null, null),
+    );
+    (match.matchTeams ?? []).forEach((row) =>
+      upsert(row.team, row.slot ?? null, row.tournamentTeam?.seed ?? null),
     );
 
     return Array.from(teams.values()).sort((a, b) => {
@@ -338,6 +357,7 @@ export class BroadcastService {
     return {
       id: match.id,
       tournamentId: match.tournamentId,
+      sessionId: match.sessionId,
       name: match.name ?? null,
       number: match.matchNumber ?? null,
       map: match.map ?? null,
@@ -362,6 +382,41 @@ export class BroadcastService {
       logoUrl: normalizePublicAssetUrl(t.logoUrl),
       bannerUrl: normalizePublicAssetUrl(t.bannerUrl),
     };
+  }
+
+  private mapSessionAsTournament(
+    session: MatchWithRelations['session'] | null,
+  ): BroadcastTournamentDto | null {
+    if (!session) return null;
+    return {
+      id: session.id,
+      name: session.name,
+      status: session.status ?? null,
+      liveState: null,
+      shortName: null,
+      logoUrl: normalizePublicAssetUrl(session.logoUrl),
+      bannerUrl: normalizePublicAssetUrl(session.bannerUrl),
+    };
+  }
+
+  private mapSeries(
+    match: MatchWithRelations | null | undefined,
+    fallbackTournament?: MatchWithRelations['tournament'] | null,
+  ): BroadcastTournamentDto | null {
+    return (
+      this.mapTournament(match?.tournament ?? fallbackTournament ?? null) ??
+      this.mapSessionAsTournament(match?.session ?? null)
+    );
+  }
+
+  private getSeriesName(match: MatchWithRelations | null | undefined) {
+    return match?.tournament?.name ?? match?.session?.name ?? null;
+  }
+
+  private getSeriesLogo(match: MatchWithRelations | null | undefined) {
+    return normalizePublicAssetUrl(
+      match?.tournament?.logoUrl ?? match?.session?.logoUrl ?? null,
+    );
   }
 
   private mapSponsors(
@@ -424,13 +479,15 @@ export class BroadcastService {
   private async findLiveMatch(
     orgId: string,
     preferredTournamentId?: string | null,
+    preferredSessionId?: string | null,
   ): Promise<MatchWithRelations | null> {
-    await this.reconcileLiveMatchConflicts(orgId);
+    await this.detectLiveMatchConflicts(orgId);
     const where: Prisma.MatchWhereInput = {
       organizationId: orgId,
       deletedAt: null,
       status: MatchStatus.LIVE,
       ...(preferredTournamentId ? { tournamentId: preferredTournamentId } : {}),
+      ...(preferredSessionId ? { sessionId: preferredSessionId } : {}),
     };
     return (await this.prisma.match.findFirst({
       where,
@@ -446,16 +503,26 @@ export class BroadcastService {
   private async findActiveMatch(
     orgId: string,
     preferredTournamentId?: string | null,
+    preferredSessionId?: string | null,
   ): Promise<MatchWithRelations | null> {
-    const live = await this.findLiveMatch(orgId, preferredTournamentId);
+    const live = await this.findLiveMatch(
+      orgId,
+      preferredTournamentId,
+      preferredSessionId,
+    );
     if (live) return live;
 
-    return this.findUpcomingMatch(orgId, preferredTournamentId);
+    return this.findUpcomingMatch(
+      orgId,
+      preferredTournamentId,
+      preferredSessionId,
+    );
   }
 
   private async findUpcomingMatch(
     orgId: string,
     preferredTournamentId?: string | null,
+    preferredSessionId?: string | null,
   ): Promise<MatchWithRelations | null> {
     const staleCutoff = new Date(Date.now() - UPCOMING_MATCH_STALE_WINDOW_MS);
 
@@ -485,6 +552,7 @@ export class BroadcastService {
         ...(preferredTournamentId
           ? { tournamentId: preferredTournamentId }
           : {}),
+        ...(preferredSessionId ? { sessionId: preferredSessionId } : {}),
       },
       orderBy: [
         // earliest upcoming (closest scheduled)
@@ -498,9 +566,18 @@ export class BroadcastService {
 
   private async findLatestMatch(
     orgId: string,
+    preferredTournamentId?: string | null,
+    preferredSessionId?: string | null,
   ): Promise<MatchWithRelations | null> {
     return (await this.prisma.match.findFirst({
-      where: { organizationId: orgId, deletedAt: null },
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        ...(preferredTournamentId
+          ? { tournamentId: preferredTournamentId }
+          : {}),
+        ...(preferredSessionId ? { sessionId: preferredSessionId } : {}),
+      },
       orderBy: [
         { liveAt: 'desc' },
         { startedAt: 'desc' },
@@ -584,6 +661,7 @@ export class BroadcastService {
   private async fetchSponsors(
     tournamentId: string | null,
     orgId: string,
+    sessionId?: string | null,
   ): Promise<
     Array<{
       id: string;
@@ -596,6 +674,33 @@ export class BroadcastService {
       isActive?: boolean | null;
     }>
   > {
+    if (sessionId) {
+      return this.prisma.sessionSponsor.findMany({
+        where: {
+          sessionId,
+          organizationId: orgId,
+          isActive: true,
+          deletedAt: null,
+          session: { organizationId: orgId, deletedAt: null },
+        },
+        orderBy: [
+          { tier: 'asc' },
+          { displayOrder: 'asc' },
+          { createdAt: 'asc' },
+        ],
+        select: {
+          id: true,
+          name: true,
+          logoUrl: true,
+          tier: true,
+          displayOrder: true,
+          websiteUrl: true,
+          rotationIntervalSeconds: true,
+          isActive: true,
+        },
+      });
+    }
+
     if (!tournamentId) return [];
     return this.prisma.tournamentSponsor.findMany({
       where: {
@@ -620,8 +725,16 @@ export class BroadcastService {
 
   async getBranding(
     organizationId: string,
+    context?: { matchId?: string | null; sessionId?: string | null },
   ): Promise<Record<string, unknown> | null> {
     try {
+      if (context?.matchId || context?.sessionId) {
+        return await this.branding.getEffectiveBranding({
+          organizationId,
+          matchId: context.matchId ?? null,
+          sessionId: context.sessionId ?? null,
+        });
+      }
       return await this.branding.getForOrganization(organizationId);
     } catch {
       return null;
@@ -643,7 +756,7 @@ export class BroadcastService {
   }
 
   async findLiveMatchForBroadcastOrg(organizationId: string) {
-    await this.reconcileLiveMatchConflicts(organizationId);
+    await this.detectLiveMatchConflicts(organizationId);
     const liveMatches = await this.prisma.match.findMany({
       where: {
         organizationId,
@@ -654,6 +767,18 @@ export class BroadcastService {
         group: true,
         stage: true,
         tournament: {
+          include: {
+            sponsors: {
+              where: { isActive: true },
+              orderBy: [
+                { tier: 'asc' },
+                { displayOrder: 'asc' },
+                { createdAt: 'asc' },
+              ],
+            },
+          },
+        },
+        session: {
           include: {
             sponsors: {
               where: { isActive: true },
@@ -687,14 +812,14 @@ export class BroadcastService {
     return liveMatch as unknown as MatchWithRelations;
   }
 
-  private async reconcileLiveMatchConflicts(organizationId: string) {
-    const resolved = await resolveOrganizationLiveMatchConflicts(
+  private async detectLiveMatchConflicts(organizationId: string) {
+    const resolved = await detectOrganizationLiveMatchConflicts(
       this.prisma,
       organizationId,
     );
-    if (resolved.endedIds.length > 0) {
+    if (resolved.wouldEndIds.length > 0) {
       this.logger.warn(
-        `[Broadcast] resolved LIVE conflict org=${organizationId} kept=${resolved.keptId ?? 'none'} ended=${resolved.endedIds.join(',')}`,
+        `[Broadcast] LIVE conflict detected org=${organizationId} preferred=${resolved.keptId ?? 'none'} live=${resolved.liveIds.join(',')} blockedAutoEnd=${resolved.wouldEndIds.join(',')}`,
       );
     }
   }
@@ -719,15 +844,26 @@ export class BroadcastService {
     return {
       id: liveMatch.id,
       matchId: liveMatch.id,
+      tournamentId: liveMatch.tournamentId ?? null,
+      sessionId: liveMatch.sessionId ?? null,
+      stageId: liveMatch.stageId ?? null,
+      groupId: liveMatch.groupId ?? null,
       status: liveMatch.status,
+      liveState: liveMatch.liveState ?? null,
       matchNumber: liveMatch.matchNumber ?? liveMatch.name ?? null,
+      matchName: liveMatch.name ?? null,
       map: liveMatch.map ?? null,
-      tournamentName: liveMatch.tournament?.name ?? null,
+      tournamentName: this.getSeriesName(liveMatch),
+      tournamentLogo: this.getSeriesLogo(liveMatch),
       stageName: liveMatch.stage?.name ?? liveMatch.group?.name ?? null,
       startsAt:
         liveMatch.scheduledAt?.toISOString?.() ??
         liveMatch.liveAt?.toISOString?.() ??
         liveMatch.startedAt?.toISOString?.() ??
+        liveMatch.updatedAt?.toISOString?.() ??
+        null,
+      endedAt:
+        (liveMatch as { endedAt?: Date | null }).endedAt?.toISOString?.() ??
         null,
     };
   }
@@ -756,12 +892,14 @@ export class BroadcastService {
     const sponsors = await this.fetchSponsors(
       match.tournamentId ?? null,
       organization.id,
+      match.sessionId ?? null,
     );
 
     return {
       id: match.id,
       matchId: match.id,
       tournamentId: match.tournamentId ?? null,
+      sessionId: match.sessionId ?? null,
       stageId: match.stageId ?? null,
       groupId: match.groupId ?? null,
       status: match.status,
@@ -769,8 +907,8 @@ export class BroadcastService {
       matchNumber: match.matchNumber ?? match.name ?? null,
       matchName: match.name ?? null,
       map: match.map ?? null,
-      tournamentName: match.tournament?.name ?? null,
-      tournamentLogo: normalizePublicAssetUrl(match.tournament?.logoUrl),
+      tournamentName: this.getSeriesName(match),
+      tournamentLogo: this.getSeriesLogo(match),
       sponsors: this.mapSponsors(sponsors),
       stageName: match.stage?.name ?? match.group?.name ?? null,
       startsAt:
@@ -811,12 +949,14 @@ export class BroadcastService {
     const sponsors = await this.fetchSponsors(
       match.tournamentId ?? null,
       organization.id,
+      match.sessionId ?? null,
     );
 
     return {
       id: match.id,
       matchId: match.id,
       tournamentId: match.tournamentId ?? null,
+      sessionId: match.sessionId ?? null,
       stageId: match.stageId ?? null,
       groupId: match.groupId ?? null,
       status: match.status,
@@ -824,8 +964,8 @@ export class BroadcastService {
       matchNumber: match.matchNumber ?? match.name ?? null,
       matchName: match.name ?? null,
       map: match.map ?? null,
-      tournamentName: match.tournament?.name ?? null,
-      tournamentLogo: normalizePublicAssetUrl(match.tournament?.logoUrl),
+      tournamentName: this.getSeriesName(match),
+      tournamentLogo: this.getSeriesLogo(match),
       sponsors: this.mapSponsors(sponsors),
       stageName: match.stage?.name ?? match.group?.name ?? null,
       startsAt:
@@ -877,12 +1017,14 @@ export class BroadcastService {
     const sponsors = await this.fetchSponsors(
       match.tournamentId ?? null,
       organization.id,
+      match.sessionId ?? null,
     );
 
     return {
       id: match.id,
       matchId: match.id,
       tournamentId: match.tournamentId ?? null,
+      sessionId: match.sessionId ?? null,
       stageId: match.stageId ?? null,
       groupId: match.groupId ?? null,
       status: match.status,
@@ -890,8 +1032,8 @@ export class BroadcastService {
       matchNumber: match.matchNumber ?? match.name ?? null,
       matchName: match.name ?? null,
       map: match.map ?? null,
-      tournamentName: match.tournament?.name ?? null,
-      tournamentLogo: normalizePublicAssetUrl(match.tournament?.logoUrl),
+      tournamentName: this.getSeriesName(match),
+      tournamentLogo: this.getSeriesLogo(match),
       sponsors: this.mapSponsors(sponsors),
       stageName: match.stage?.name ?? match.group?.name ?? null,
       startsAt:
@@ -929,12 +1071,14 @@ export class BroadcastService {
     const sponsors = await this.fetchSponsors(
       match.tournamentId ?? null,
       organization.id,
+      match.sessionId ?? null,
     );
 
     return {
       id: match.id,
       matchId: match.id,
       tournamentId: match.tournamentId ?? null,
+      sessionId: match.sessionId ?? null,
       stageId: match.stageId ?? null,
       groupId: match.groupId ?? null,
       status: match.status,
@@ -942,8 +1086,8 @@ export class BroadcastService {
       matchNumber: match.matchNumber ?? match.name ?? null,
       matchName: match.name ?? null,
       map: match.map ?? null,
-      tournamentName: match.tournament?.name ?? null,
-      tournamentLogo: normalizePublicAssetUrl(match.tournament?.logoUrl),
+      tournamentName: this.getSeriesName(match),
+      tournamentLogo: this.getSeriesLogo(match),
       sponsors: this.mapSponsors(sponsors),
       stageName: match.stage?.name ?? match.group?.name ?? null,
       startsAt:
@@ -973,10 +1117,13 @@ export class BroadcastService {
       throw new NotFoundException('Organization not found');
     }
 
-    const [branding, liveMatch] = await Promise.all([
-      this.getBranding(organization.id),
-      this.findLiveMatchForBroadcastOrg(organization.id).catch(() => null),
-    ]);
+    const liveMatch = await this.findLiveMatchForBroadcastOrg(
+      organization.id,
+    ).catch(() => null);
+    const branding = await this.getBranding(organization.id, {
+      matchId: liveMatch?.id ?? null,
+      sessionId: liveMatch?.sessionId ?? null,
+    });
 
     return {
       organizationId: organization.id,
@@ -984,6 +1131,7 @@ export class BroadcastService {
       branding,
       matchId: liveMatch?.id ?? null,
       liveMatchId: liveMatch?.id ?? null,
+      sessionId: liveMatch?.sessionId ?? null,
       liveState: liveMatch?.liveState ?? null,
       status: liveMatch?.status ?? null,
     };
@@ -1003,10 +1151,14 @@ export class BroadcastService {
       return null;
     }
 
-    const branding = await this.getBranding(organization.id);
+    const branding = await this.getBranding(organization.id, {
+      matchId: match.id,
+      sessionId: match.sessionId,
+    });
     const sponsors = await this.fetchSponsors(
       match?.tournamentId ?? null,
       organization.id,
+      match?.sessionId ?? null,
     );
 
     return {
@@ -1014,8 +1166,8 @@ export class BroadcastService {
       matchId: match?.id ?? null,
       groupId: match?.groupId ?? null,
       tournamentId: match?.tournamentId ?? null,
-      tournamentName: match?.tournament?.name ?? null,
-      tournamentLogo: normalizePublicAssetUrl(match?.tournament?.logoUrl),
+      tournamentName: this.getSeriesName(match),
+      tournamentLogo: this.getSeriesLogo(match),
       stageName: match?.stage?.name ?? null,
       groupName: match?.group?.name ?? null,
       matchNumber: match?.matchNumber ?? null,
@@ -1046,18 +1198,22 @@ export class BroadcastService {
     const match =
       (await this.findLiveMatch(organization.id)) ??
       (await this.findLatestMatch(organization.id));
-    const tournament =
-      match?.tournament ??
-      (await this.findTournament(organization.id, match?.tournamentId ?? null));
+    const tournament = match
+      ? match.tournament
+      : await this.findTournament(organization.id, null);
     const sponsors = await this.fetchSponsors(
       tournament?.id ?? null,
       organization.id,
+      match?.sessionId ?? null,
     );
-    const branding = await this.getBranding(organization.id);
+    const branding = await this.getBranding(organization.id, {
+      matchId: match?.id ?? null,
+      sessionId: match?.sessionId ?? null,
+    });
 
     return {
       widgetKey,
-      tournament: this.mapTournament(tournament),
+      tournament: this.mapSeries(match, tournament),
       match: this.mapMatch(match),
       teams: this.mapTeams(match ?? undefined),
       sponsors: this.mapSponsors(sponsors),
@@ -1085,7 +1241,7 @@ export class BroadcastService {
       this.liveLogCache.set(broadcastKey, { matchId: null, ts: Date.now() });
     }
 
-    const branding = await this.getBranding(organization.id);
+    let branding = await this.getBranding(organization.id);
 
     let liveMatch: MatchWithRelations | null = null;
     try {
@@ -1101,7 +1257,6 @@ export class BroadcastService {
       }
       throw err;
     }
-
     if (!liveMatch) {
       return {
         matchId: null,
@@ -1115,6 +1270,11 @@ export class BroadcastService {
           : {}),
       };
     }
+
+    branding = await this.getBranding(organization.id, {
+      matchId: liveMatch.id,
+      sessionId: liveMatch.sessionId,
+    });
 
     const cache = this.liveLogCache.get(broadcastKey);
     const shouldLogMatch = !cache || cache.matchId !== liveMatch.id;
@@ -1157,7 +1317,7 @@ export class BroadcastService {
     const teams =
       snapshot.rows
         ?.filter((row) => row.wasPresentInMatch === true)
-        .map((row, idx) => {
+        .map((row) => {
           const teamId = row.teamId ?? `slot-${row.slot}`;
           const kills = Number(row.totalKills ?? 0);
           const placementPoints = Number(row.placementPoints ?? 0);
@@ -1168,10 +1328,7 @@ export class BroadcastService {
           const aliveCount = aliveLookup[teamId] ?? null;
           return {
             teamId,
-            teamName:
-              row.teamName ??
-              row.teamTag ??
-              DEFAULT_WIDGET_TEAM_NAME,
+            teamName: row.teamName ?? row.teamTag ?? DEFAULT_WIDGET_TEAM_NAME,
             teamLogo: row.teamLogoUrl ?? TEAM_LOGO_PLACEHOLDER,
             kills,
             placement: row.placement ?? null,
@@ -1268,12 +1425,16 @@ export class BroadcastService {
     const sponsors = await this.fetchSponsors(
       match.tournamentId,
       match.organizationId,
+      match.sessionId,
     );
-    const branding = await this.getBranding(match.organizationId);
+    const branding = await this.getBranding(match.organizationId, {
+      matchId: match.id,
+      sessionId: match.sessionId,
+    });
 
     const payload: BroadcastPayload = {
       widgetKey,
-      tournament: this.mapTournament(match.tournament),
+      tournament: this.mapSeries(match),
       match: this.mapMatch(match),
       teams: this.mapTeams(match),
       sponsors: this.mapSponsors(sponsors),
@@ -1288,29 +1449,45 @@ export class BroadcastService {
   async emitForOrganization(
     organizationId: string,
     widgetKey = 'broadcast',
-    options?: { matchId?: string | null; tournamentId?: string | null },
+    options?: {
+      matchId?: string | null;
+      tournamentId?: string | null;
+      sessionId?: string | null;
+    },
   ): Promise<BroadcastPayload | null> {
     const match =
       (options?.matchId
         ? await this.findMatchById(options.matchId)
-        : await this.findLiveMatch(organizationId, options?.tournamentId)) ??
-      (await this.findLatestMatch(organizationId));
-
-    const tournament =
-      match?.tournament ??
-      (await this.findTournament(
+        : await this.findLiveMatch(
+            organizationId,
+            options?.tournamentId,
+            options?.sessionId,
+          )) ??
+      (await this.findLatestMatch(
         organizationId,
-        options?.tournamentId ?? match?.tournamentId ?? null,
+        options?.tournamentId,
+        options?.sessionId,
       ));
+
+    const tournament = match
+      ? match.tournament
+      : await this.findTournament(
+          organizationId,
+          options?.tournamentId ?? null,
+        );
 
     const sponsors = await this.fetchSponsors(
       tournament?.id ?? null,
       organizationId,
+      match?.sessionId ?? options?.sessionId ?? null,
     );
-    const branding = await this.getBranding(organizationId);
+    const branding = await this.getBranding(organizationId, {
+      matchId: match?.id ?? null,
+      sessionId: match?.sessionId ?? options?.sessionId ?? null,
+    });
     const payload: BroadcastPayload = {
       widgetKey,
-      tournament: this.mapTournament(tournament),
+      tournament: this.mapSeries(match, tournament),
       match: this.mapMatch(match ?? null),
       teams: this.mapTeams(match ?? undefined),
       sponsors: this.mapSponsors(sponsors),
@@ -1360,7 +1537,10 @@ export class BroadcastService {
         params?.tournamentId ?? resolvedMatch?.tournamentId ?? null,
       ));
 
-    const branding = await this.getBranding(orgId);
+    const branding = await this.getBranding(orgId, {
+      matchId: resolvedMatch?.id ?? null,
+      sessionId: resolvedMatch?.sessionId ?? null,
+    });
     const payload: MatchLowerThirdEventPayload = {
       widgetKey: 'match-lower-third',
       tournament: this.mapTournament(tournament),

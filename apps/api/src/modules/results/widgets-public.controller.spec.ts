@@ -1,10 +1,17 @@
+import { ForbiddenException } from '@nestjs/common';
 import { WidgetsPublicController } from './widgets-public.controller';
+import { requireMatchOrganization } from '../../common/org/org.util';
 
 jest.mock('../../common/org/org.util', () => ({
   requireMatchOrganization: jest.fn().mockResolvedValue(undefined),
 }));
 
 describe('WidgetsPublicController', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (requireMatchOrganization as jest.Mock).mockResolvedValue(undefined);
+  });
+
   it('returns the canonical public control snapshot for widgets', async () => {
     const results = {
       listSlotResultsPublic: jest.fn(),
@@ -45,19 +52,15 @@ describe('WidgetsPublicController', () => {
         },
         binding: {
           sessionId: 'session-1',
-          adapterKey: 'pubgm-pcob',
-          dataSource: 'PCOB',
+          dataSource: 'API',
           dataMode: 'AUTO',
-          telemetryProvider: 'PCOB',
-          sourceMode: 'AUTO',
+          telemetryProvider: 'API',
+          sourceMode: 'API',
           boundAt: '2026-04-01T09:29:00.000Z',
           lastSeenAt: '2026-04-01T09:58:00.000Z',
           isConfigured: true,
           isBound: true,
           isReady: false,
-          pcobConfigured: true,
-          pcobBound: true,
-          pcobReady: false,
         },
         locks: {
           lifecycleLocked: true,
@@ -109,19 +112,15 @@ describe('WidgetsPublicController', () => {
       },
       binding: {
         sessionId: 'session-1',
-        adapterKey: 'pubgm-pcob',
-        dataSource: 'PCOB',
+        dataSource: 'API',
         dataMode: 'AUTO',
-        telemetryProvider: 'PCOB',
-        sourceMode: 'AUTO',
+        telemetryProvider: 'API',
+        sourceMode: 'API',
         boundAt: '2026-04-01T09:29:00.000Z',
         lastSeenAt: '2026-04-01T09:58:00.000Z',
         isConfigured: true,
         isBound: true,
         isReady: false,
-        pcobConfigured: true,
-        pcobBound: true,
-        pcobReady: false,
       },
       locks: {
         lifecycleLocked: true,
@@ -129,5 +128,67 @@ describe('WidgetsPublicController', () => {
         resultsLocked: true,
       },
     });
+  });
+
+  it('returns scoped public slot results using the safe projection service', async () => {
+    const results = {
+      listSlotResultsPublic: jest.fn().mockResolvedValue([
+        {
+          id: 'slot-1',
+          slotNumber: 1,
+          totalKills: 3,
+          players: [],
+        },
+      ]),
+      getWidgetStatePublic: jest.fn(),
+    } as any;
+    const controller = new WidgetsPublicController(
+      results,
+      {} as any,
+      {
+        getLifecycleState: jest.fn(),
+      } as any,
+    );
+
+    await expect(
+      controller.listSlotResults('match-1', 'org-1', { user: null } as any),
+    ).resolves.toEqual({
+      slots: [
+        {
+          id: 'slot-1',
+          slotNumber: 1,
+          totalKills: 3,
+          players: [],
+        },
+      ],
+    });
+
+    expect(results.listSlotResultsPublic).toHaveBeenCalledWith('match-1', {
+      organizationId: 'org-1',
+      actor: null,
+    });
+  });
+
+  it('rejects public slot reads for a different organization', async () => {
+    const results = {
+      listSlotResultsPublic: jest.fn(),
+      getWidgetStatePublic: jest.fn(),
+    } as any;
+    const controller = new WidgetsPublicController(
+      results,
+      {} as any,
+      {
+        getLifecycleState: jest.fn(),
+      } as any,
+    );
+    (requireMatchOrganization as jest.Mock).mockRejectedValue(
+      new ForbiddenException('Cross-organization access is forbidden'),
+    );
+
+    await expect(
+      controller.listSlotResults('match-1', 'org-1', { user: null } as any),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(results.listSlotResultsPublic).not.toHaveBeenCalled();
   });
 });

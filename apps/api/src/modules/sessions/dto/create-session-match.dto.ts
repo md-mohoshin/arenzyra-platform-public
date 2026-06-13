@@ -2,6 +2,7 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -12,8 +13,8 @@ import { Type } from 'class-transformer';
 import {
   DataMode,
   MatchDataSource,
+  MatchResultSource,
   MatchStatus,
-  PcobStatus,
 } from '@prisma/client';
 
 export class CreateSessionMatchDto {
@@ -37,20 +38,20 @@ export class CreateSessionMatchDto {
   recallEnabled?: boolean;
 
   @IsOptional()
-  @IsEnum(DataMode)
+  @IsBoolean()
+  loadTeamsFromEvent?: boolean;
+
+  @IsOptional()
+  @IsIn([DataMode.MANUAL])
   dataMode?: DataMode;
 
   @IsOptional()
-  @IsEnum(MatchDataSource)
+  @IsIn([MatchDataSource.MANUAL, MatchDataSource.API])
   dataSource?: MatchDataSource;
 
   @IsOptional()
-  @IsEnum(PcobStatus)
-  pcobStatus?: PcobStatus;
-
-  @IsOptional()
-  @IsString()
-  pcobSessionId?: string;
+  @IsEnum(MatchResultSource)
+  resultSource?: MatchResultSource;
 
   @IsOptional()
   @Type(() => Number)

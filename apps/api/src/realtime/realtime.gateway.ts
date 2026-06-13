@@ -11,6 +11,7 @@ import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
 import type { Actor } from '../common/auth/jwt.strategy';
 import { PrismaService } from '../db/prisma.service';
 import { effectiveOrganizationId } from '../common/org/org.util';
+import { readLiveSyncContract } from '../common/live-sync-contract.util';
 import type { OrganizationBrandingDto } from '../modules/organization-branding/organization-branding.constants';
 import type {
   ObserverKillFeedUpdatePayload,
@@ -47,6 +48,21 @@ type JwtPayload = {
 type BindMatchPayload = { matchId: string };
 type BindTournamentPayload = { tournamentId: string };
 type TelemetryPayload = Record<string, unknown>;
+export type MatchControlUpdateEventType =
+  | 'CONTROL_STATE_CHANGED'
+  | 'RESULTS_CHANGED'
+  | 'RESULTS_LOCK_CHANGED'
+  | 'SLOTS_CHANGED';
+
+export type MatchControlUpdatePayload = {
+  matchId: string;
+  orgId: string | null;
+  controlVersion: number | null;
+  resultsVersion: number | null;
+  sequence: number;
+  eventType: MatchControlUpdateEventType;
+};
+
 type ServerToClientEvents = {
   'auth:ok': (payload: { clientId: string | null; role: Role | null }) => void;
   'match:error': (payload: { reason: string }) => void;
@@ -85,6 +101,7 @@ type ServerToClientEvents = {
     status: 'UPCOMING' | 'LIVE' | 'ENDED' | 'PAUSED' | 'CANCELLED';
     updatedAt: string;
   }) => void;
+  'match:control:update': (payload: MatchControlUpdatePayload) => void;
   'match:live-ranking': (payload: LiveRankingPayload) => void;
   'tournament:overall-ranking': (payload: OverallRankingPayload) => void;
   'broadcast:event': (payload: Record<string, unknown>) => void;
@@ -187,6 +204,30 @@ export class RealtimeGateway {
   io!: RTServer;
 
   private readonly logger = new Logger('RealtimeGateway');
+  private readonly controlEventSequence = new Map<string, number>();
+  private readonly publicRealtimeEvents = new Set<string>([
+    'match:state',
+    'match:update',
+    'match_state_updated',
+    'observer:state:update',
+    'observer:killfeed:update',
+    'observer:match:finished',
+    'observer:achievement',
+    'observer:team:eliminated',
+    'fight:detected',
+    'match:winner',
+    'match:status-updated',
+    'match:live-ranking',
+    'kill:feed',
+    'match:end',
+    'broadcast-phase',
+    'match-ended',
+    'tournament:overall-ranking',
+    'organization:branding-updated',
+    'organization:theme-updated',
+  ]);
+  private readonly publicStripFieldPattern =
+    /(token|secret|jwt|auth|authorization|cookie|signature|credential|control|internal|private|write|writable|mutable|editable|permission|capability|override|actor|impersonat|clientid|role)/i;
 
   constructor(
     private readonly jwt: JwtService,
@@ -205,23 +246,34 @@ export class RealtimeGateway {
           socket.data.organizationId = effectiveOrganizationId(
             socket.data.user,
           );
-          if (socket.data.organizationId) {
-            void socket.join(`org:${socket.data.organizationId}`);
-          }
         } catch {
           next(new Error('Unauthorized'));
           return;
         }
       }
+      const authenticated = this.isAuthenticated(socket);
+      const orgFromQuery = this.extractOrgId(socket);
+      const resolvedOrgId = authenticated
+        ? (socket.data.organizationId ?? orgFromQuery)
+        : orgFromQuery;
+      if (resolvedOrgId) {
+        socket.data.organizationId = resolvedOrgId;
+        void this.joinRoom(
+          socket,
+          authenticated
+            ? this.orgRoom(resolvedOrgId)
+            : this.publicOrgRoom(resolvedOrgId),
+        );
+      }
       const matchId = this.extractMatchId(socket);
       if (matchId) {
         socket.data.matchId = matchId;
-        void socket.join(`match:${matchId}`);
-      }
-      const orgFromQuery = this.extractOrgId(socket);
-      if (orgFromQuery) {
-        socket.data.organizationId = socket.data.organizationId ?? orgFromQuery;
-        void socket.join(`org:${orgFromQuery}`);
+        void this.joinRoom(
+          socket,
+          authenticated
+            ? this.matchRoom(matchId)
+            : this.publicMatchRoom(matchId),
+        );
       }
       next();
     });
@@ -339,9 +391,9 @@ export class RealtimeGateway {
     socket.data.organizationId =
       tournament.organizationId ?? socket.data.organizationId ?? null;
 
-    await socket.join(`tournament:${tournamentId}`);
+    await this.joinRoom(socket, this.tournamentRoom(tournamentId));
     if (socket.data.organizationId) {
-      await socket.join(`org:${socket.data.organizationId}`);
+      await this.joinRoom(socket, this.orgRoom(socket.data.organizationId));
     }
     void this.rankingEmitter.emitOverallRanking(tournamentId, { force: true });
   }
@@ -351,10 +403,14 @@ export class RealtimeGateway {
     branding: OrganizationBrandingDto,
   ) {
     if (!organizationId) return;
-    this.io?.to(`org:${organizationId}`).emit('organization:branding-updated', {
+    this.emitOrganizationEvent(
       organizationId,
-      branding,
-    });
+      'organization:branding-updated',
+      {
+        organizationId,
+        branding,
+      },
+    );
   }
 
   emitThemeUpdated(
@@ -362,7 +418,7 @@ export class RealtimeGateway {
     branding: OrganizationBrandingDto,
   ) {
     if (!organizationId) return;
-    this.io?.to(`org:${organizationId}`).emit('organization:theme-updated', {
+    this.emitOrganizationEvent(organizationId, 'organization:theme-updated', {
       organizationId,
       branding,
     });
@@ -373,10 +429,14 @@ export class RealtimeGateway {
     features: Record<string, { enabled: boolean; config?: unknown }>,
   ) {
     if (!organizationId) return;
-    this.io?.to(`org:${organizationId}`).emit('organization:features-updated', {
+    this.emitOrganizationEvent(
       organizationId,
-      features,
-    });
+      'organization:features-updated',
+      {
+        organizationId,
+        features,
+      },
+    );
   }
 
   emitWidgetVersion(
@@ -389,12 +449,14 @@ export class RealtimeGateway {
     },
   ) {
     if (!organizationId) return;
-    this.io
-      ?.to(`org:${organizationId}`)
-      .emit('organization:widget-version-updated', {
+    this.emitOrganizationEvent(
+      organizationId,
+      'organization:widget-version-updated',
+      {
         organizationId,
         ...payload,
-      });
+      },
+    );
   }
 
   emitTournamentDeleted(
@@ -402,7 +464,7 @@ export class RealtimeGateway {
     tournamentId: string,
   ) {
     if (!organizationId) return;
-    this.io?.to(`org:${organizationId}`).emit('tournament:deleted', {
+    this.emitOrganizationEvent(organizationId, 'tournament:deleted', {
       tournamentId,
     });
   }
@@ -415,14 +477,76 @@ export class RealtimeGateway {
       updatedAt: string;
     },
   ) {
-    this.io
-      ?.to(`match:${payload.matchId}`)
-      .emit('match:status-updated', payload);
-    if (organizationId) {
-      this.io
-        ?.to(`org:${organizationId}`)
-        .emit('match:status-updated', payload);
+    this.emitMatchScopedEvent(
+      payload.matchId,
+      'match:status-updated',
+      payload,
+      organizationId,
+    );
+  }
+
+  async emitMatchControlUpdate(
+    matchId: string,
+    eventType: MatchControlUpdateEventType,
+    overrides: {
+      orgId?: string | null;
+      controlVersion?: number | null;
+      resultsVersion?: number | null;
+    } = {},
+  ): Promise<MatchControlUpdatePayload | null> {
+    if (!this.io || !matchId) {
+      return null;
     }
+
+    const snapshot =
+      overrides.orgId !== undefined &&
+      overrides.controlVersion !== undefined &&
+      overrides.resultsVersion !== undefined
+        ? null
+        : await this.prisma.match.findFirst({
+            where: { id: matchId, deletedAt: null },
+            select: {
+              organizationId: true,
+              tournament: { select: { organizationId: true } },
+              controlState: {
+                select: {
+                  organizationId: true,
+                  version: true,
+                  metaJson: true,
+                },
+              },
+            },
+          });
+
+    if (!snapshot && overrides.orgId === undefined) {
+      return null;
+    }
+
+    const orgId =
+      overrides.orgId ??
+      snapshot?.organizationId ??
+      snapshot?.controlState?.organizationId ??
+      snapshot?.tournament?.organizationId ??
+      null;
+    const controlVersion =
+      overrides.controlVersion ?? snapshot?.controlState?.version ?? null;
+    const resultsVersion =
+      overrides.resultsVersion ??
+      (snapshot
+        ? readLiveSyncContract(snapshot.controlState?.metaJson ?? null).version
+        : null);
+    const sequence = this.nextControlEventSequence(matchId, orgId);
+    const payload: MatchControlUpdatePayload = {
+      matchId,
+      orgId,
+      controlVersion,
+      resultsVersion,
+      sequence,
+      eventType,
+    };
+
+    this.emitMatchScopedEvent(matchId, 'match:control:update', payload, orgId);
+    return payload;
   }
 
   emitMatchWinner(payload: {
@@ -433,28 +557,37 @@ export class RealtimeGateway {
     logoUrl: string | null;
   }) {
     if (!payload?.matchId) return;
-    this.io?.to(`match:${payload.matchId}`).emit('match:winner', payload);
+    this.emitMatchScopedEvent(payload.matchId, 'match:winner', payload, null);
   }
 
   emitObserverMatchFinished(payload: ObserverMatchFinishedPayload) {
     if (!payload?.matchId) return;
-    this.io
-      ?.to(`match:${payload.matchId}`)
-      .emit('observer:match:finished', payload);
+    this.emitMatchScopedEvent(
+      payload.matchId,
+      'observer:match:finished',
+      payload,
+      null,
+    );
   }
 
   emitObserverAchievement(payload: ObserverAchievementPayload) {
     if (!payload?.matchId) return;
-    this.io
-      ?.to(`match:${payload.matchId}`)
-      .emit('observer:achievement', payload);
+    this.emitMatchScopedEvent(
+      payload.matchId,
+      'observer:achievement',
+      payload,
+      null,
+    );
   }
 
   emitObserverTeamEliminated(payload: ObserverTeamEliminationPayload) {
     if (!payload?.matchId) return;
-    this.io
-      ?.to(`match:${payload.matchId}`)
-      .emit('observer:team:eliminated', payload);
+    this.emitMatchScopedEvent(
+      payload.matchId,
+      'observer:team:eliminated',
+      payload,
+      null,
+    );
   }
 
   emitFightDetected(payload: {
@@ -472,7 +605,71 @@ export class RealtimeGateway {
     lastEventAt: string;
   }) {
     if (!payload?.matchId) return;
-    this.io?.to(`match:${payload.matchId}`).emit('fight:detected', payload);
+    this.emitMatchScopedEvent(payload.matchId, 'fight:detected', payload, null);
+  }
+
+  emitMatchScopedEvent(
+    matchId: string,
+    event: string,
+    payload: unknown,
+    organizationId?: string | null,
+  ) {
+    if (!this.io || !matchId) return;
+
+    this.emitRoom(this.matchRoom(matchId), event, payload);
+    if (organizationId) {
+      this.emitRoom(this.orgRoom(organizationId), event, payload);
+    }
+
+    const publicPayload = this.buildPublicPayload(event, payload);
+    if (publicPayload === null) {
+      return;
+    }
+
+    this.emitRoom(this.publicMatchRoom(matchId), event, publicPayload);
+    if (organizationId) {
+      this.emitRoom(this.publicOrgRoom(organizationId), event, publicPayload);
+    }
+  }
+
+  emitTournamentScopedEvent(
+    tournamentId: string,
+    event: string,
+    payload: unknown,
+    organizationId?: string | null,
+  ) {
+    if (!this.io || !tournamentId) return;
+
+    this.emitRoom(this.tournamentRoom(tournamentId), event, payload);
+    if (organizationId) {
+      this.emitRoom(this.orgRoom(organizationId), event, payload);
+    }
+
+    if (!organizationId) {
+      return;
+    }
+
+    const publicPayload = this.buildPublicPayload(event, payload);
+    if (publicPayload === null) {
+      return;
+    }
+
+    this.emitRoom(this.publicOrgRoom(organizationId), event, publicPayload);
+  }
+
+  emitOrganizationEvent(
+    organizationId: string,
+    event: string,
+    payload: unknown,
+  ) {
+    if (!this.io || !organizationId) return;
+
+    this.emitRoom(this.orgRoom(organizationId), event, payload);
+    const publicPayload = this.buildPublicPayload(event, payload);
+    if (publicPayload === null) {
+      return;
+    }
+    this.emitRoom(this.publicOrgRoom(organizationId), event, publicPayload);
   }
 
   private extractMatchId(socket: RTSocket): string | null {
@@ -506,6 +703,86 @@ export class RealtimeGateway {
   private stripBearer(value: string): string {
     if (!value) return value;
     return value.toLowerCase().startsWith('bearer ') ? value.slice(7) : value;
+  }
+
+  private isAuthenticated(socket: RTSocket): boolean {
+    return Boolean(socket.data.user);
+  }
+
+  private isPublicJoin(room: string): boolean {
+    return room.startsWith('public:match:') || room.startsWith('public:org:');
+  }
+
+  private joinRoom(socket: RTSocket, room: string): Promise<void> | void {
+    if (!room) return;
+    if (!this.isAuthenticated(socket) && !this.isPublicJoin(room)) {
+      return;
+    }
+    return socket.join(room);
+  }
+
+  private emitRoom(room: string, event: string, payload: unknown) {
+    this.io?.to(room).emit(event as never, payload as never);
+  }
+
+  private buildPublicPayload(event: string, payload: unknown): unknown {
+    if (!this.publicRealtimeEvents.has(String(event))) {
+      return null;
+    }
+    return this.sanitizePublicPayload(payload);
+  }
+
+  private sanitizePublicPayload(payload: unknown): unknown {
+    if (Array.isArray(payload)) {
+      return payload.map((item) => this.sanitizePublicPayload(item));
+    }
+    if (payload instanceof Date) {
+      return payload.toISOString();
+    }
+    if (!payload || typeof payload !== 'object') {
+      return payload;
+    }
+
+    return Object.entries(payload as Record<string, unknown>).reduce<
+      Record<string, unknown>
+    >((acc, [key, value]) => {
+      if (this.publicStripFieldPattern.test(key)) {
+        return acc;
+      }
+      acc[key] = this.sanitizePublicPayload(value);
+      return acc;
+    }, {});
+  }
+
+  private matchRoom(matchId: string): string {
+    return `match:${matchId}`;
+  }
+
+  private orgRoom(organizationId: string): string {
+    return `org:${organizationId}`;
+  }
+
+  private tournamentRoom(tournamentId: string): string {
+    return `tournament:${tournamentId}`;
+  }
+
+  private publicMatchRoom(matchId: string): string {
+    return `public:match:${matchId}`;
+  }
+
+  private publicOrgRoom(organizationId: string): string {
+    return `public:org:${organizationId}`;
+  }
+
+  private nextControlEventSequence(
+    matchId: string,
+    orgId: string | null,
+  ): number {
+    const key = `${orgId ?? 'none'}:${matchId}`;
+    const previous = this.controlEventSequence.get(key) ?? 0;
+    const next = Math.max(Date.now(), previous + 1);
+    this.controlEventSequence.set(key, next);
+    return next;
   }
 
   private toActor(payload: JwtPayload): Actor & { clientId?: string | null } {

@@ -97,6 +97,30 @@ body {
   -webkit-user-drag: none;
 }
 
+#map-tile-layer {
+  position: absolute;
+  width: var(--map-image-width, 100%);
+  height: var(--map-image-height, 100%);
+  left: var(--map-image-left, 0%);
+  top: var(--map-image-top, 0%);
+  display: none;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+#map-tile-layer[data-active="true"] {
+  display: block;
+}
+
+#map-tile-layer img {
+  position: absolute;
+  display: block;
+  max-width: none;
+  max-height: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 #map-overlay {
   position: absolute;
   inset: 0;

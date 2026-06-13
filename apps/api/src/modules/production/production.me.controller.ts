@@ -2,7 +2,10 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
+  Get,
   Param,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -11,14 +14,68 @@ import { Role } from '@prisma/client';
 import type { AuthRequest } from '../../common/auth/auth.types';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { Roles } from '../../common/auth/roles.decorator';
+import { effectiveOrganizationId } from '../../common/org/org.util';
 import type { AdminAdjustmentDto, PcobBindDto } from './dto/adjustment.dto';
+import {
+  CreateProductionDiscordSetDto,
+  UpdateProductionDiscordConfigDto,
+} from './dto/production-discord.dto';
 import { ProductionService } from './production.service';
+
+function organizationIdFromRequest(req: AuthRequest) {
+  const organizationId = effectiveOrganizationId(req.user);
+  if (!organizationId) {
+    throw new ForbiddenException('Organization context required');
+  }
+  return organizationId;
+}
 
 @Controller('me/production')
 @UseGuards(JwtAuthGuard)
 @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.ORGANIZER)
 export class MeProductionController {
   constructor(private svc: ProductionService) {}
+
+  @Get('discord-config')
+  getDiscordConfig(@Req() req: AuthRequest) {
+    return this.svc.getProductionDiscordConfig(
+      organizationIdFromRequest(req),
+      req.user,
+    );
+  }
+
+  @Patch('discord-config')
+  updateDiscordConfig(
+    @Body() body: UpdateProductionDiscordConfigDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.updateProductionDiscordConfig(
+      organizationIdFromRequest(req),
+      body,
+      req.user,
+    );
+  }
+
+  @Post('discord-config/sets')
+  createDiscordSet(
+    @Body() body: CreateProductionDiscordSetDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.createProductionDiscordSet(
+      organizationIdFromRequest(req),
+      body,
+      req.user,
+    );
+  }
+
+  @Delete('discord-config/sets/:setKey')
+  deleteDiscordSet(@Param('setKey') setKey: string, @Req() req: AuthRequest) {
+    return this.svc.deleteProductionDiscordSet(
+      organizationIdFromRequest(req),
+      setKey,
+      req.user,
+    );
+  }
 
   @Post('matches/:matchId/start')
   startMatch(@Param('matchId') matchId: string, @Req() req: AuthRequest) {
@@ -78,6 +135,47 @@ export class MeProductionController {
 @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.ORGANIZER)
 export class OrgMeProductionController {
   constructor(private svc: ProductionService) {}
+
+  @Get('discord-config')
+  getDiscordConfig(@Req() req: AuthRequest) {
+    return this.svc.getProductionDiscordConfig(
+      organizationIdFromRequest(req),
+      req.user,
+    );
+  }
+
+  @Patch('discord-config')
+  updateDiscordConfig(
+    @Body() body: UpdateProductionDiscordConfigDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.updateProductionDiscordConfig(
+      organizationIdFromRequest(req),
+      body,
+      req.user,
+    );
+  }
+
+  @Post('discord-config/sets')
+  createDiscordSet(
+    @Body() body: CreateProductionDiscordSetDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.createProductionDiscordSet(
+      organizationIdFromRequest(req),
+      body,
+      req.user,
+    );
+  }
+
+  @Delete('discord-config/sets/:setKey')
+  deleteDiscordSet(@Param('setKey') setKey: string, @Req() req: AuthRequest) {
+    return this.svc.deleteProductionDiscordSet(
+      organizationIdFromRequest(req),
+      setKey,
+      req.user,
+    );
+  }
 
   @Post('matches/:matchId/start')
   startMatch(@Param('matchId') matchId: string, @Req() req: AuthRequest) {

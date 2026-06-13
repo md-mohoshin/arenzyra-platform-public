@@ -116,6 +116,12 @@
     render();
   }
 
+  function applyRuntimeReset() {
+    state.latestMarker = null;
+    state.latestMarkerId = null;
+    render();
+  }
+
   function handleMessage(raw) {
     let message = null;
 
@@ -131,6 +137,11 @@
 
     if (message.type === "production_support") {
       applyProductionSupport(message.payload);
+      return;
+    }
+
+    if (message.type === "runtime_reset") {
+      applyRuntimeReset();
     }
   }
 

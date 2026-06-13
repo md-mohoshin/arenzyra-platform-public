@@ -1,9 +1,14 @@
 import {
+  IsArray,
   IsBoolean,
+  IsInt,
+  IsIn,
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 const DISCORD_SNOWFLAKE_OR_EMPTY = /^\d*$/;
@@ -106,6 +111,11 @@ export class UpdateOrganizationDiscordConfigDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
+  logoChannelIds?: string | null;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(32)
   @Matches(DISCORD_SNOWFLAKE_OR_EMPTY, {
     message: 'organizerRoleId must be a Discord snowflake',
@@ -142,6 +152,69 @@ export class UpdateOrganizationDiscordConfigDto {
   @IsString()
   @MaxLength(120)
   participantRoleName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  @Matches(DISCORD_SNOWFLAKE_OR_EMPTY, {
+    message: 'earlyAccessRoleId must be a Discord snowflake',
+  })
+  earlyAccessRoleId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  earlyAccessRoleName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  @Matches(DISCORD_SNOWFLAKE_OR_EMPTY, {
+    message: 'vipAccessRoleId must be a Discord snowflake',
+  })
+  vipAccessRoleId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  vipAccessRoleName?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(32, { each: true })
+  @Matches(DISCORD_SNOWFLAKE_OR_EMPTY, {
+    each: true,
+    message: 'staffRoleIds must contain Discord snowflakes',
+  })
+  staffRoleIds?: string[] | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2_500_000)
+  botAvatarDataUri?: string | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  maxSessionCount?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  maxGuildCount?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['PRIMARY', 'CONNECTED', 'ALL_BOT'])
+  eventServerAccessMode?: 'PRIMARY' | 'CONNECTED' | 'ALL_BOT';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  accessExpiresAt?: string | null;
 
   @IsOptional()
   @IsBoolean()

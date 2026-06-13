@@ -12,17 +12,43 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function requireAnyEnv(...names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  throw new Error(`Missing required environment variable: ${names.join(' or ')}`);
+}
+
 function optionalEnv(name: string): string | null {
   const value = process.env[name]?.trim();
   return value ? value : null;
 }
 
+function optionalBooleanEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) {
+    return fallback;
+  }
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
 export const botConfig = {
   envFilePath,
-  discordToken: requireEnv('DISCORD_TOKEN'),
+  nodeEnv: optionalEnv('NODE_ENV') ?? 'development',
+  discordBotInstance: optionalEnv('ARENZYRA_DISCORD_BOT_INSTANCE'),
+  discordToken: requireAnyEnv('DISCORD_BOT_TOKEN', 'DISCORD_TOKEN'),
   discordClientId: requireEnv('DISCORD_CLIENT_ID'),
   discordGuildId: optionalEnv('DISCORD_GUILD_ID'),
+  messageContentIntent: optionalBooleanEnv('DISCORD_MESSAGE_CONTENT_INTENT', false),
+  registerGlobalCommands: optionalBooleanEnv(
+    'DISCORD_REGISTER_GLOBAL_COMMANDS',
+    true,
+  ),
   apiBaseUrl: requireEnv('ARENZYRA_API_BASE_URL'),
+  apiServiceToken: optionalEnv('ARENZYRA_API_SERVICE_TOKEN'),
   apiToken: optionalEnv('ARENZYRA_API_TOKEN'),
   apiRefreshToken: optionalEnv('ARENZYRA_API_REFRESH_TOKEN'),
   apiEmail: optionalEnv('ARENZYRA_API_EMAIL'),
@@ -32,11 +58,27 @@ export const botConfig = {
 } as const;
 
 if (
+  botConfig.nodeEnv === 'production' &&
+  botConfig.discordBotInstance !== 'production'
+) {
+  throw new Error(
+    'Refusing to start the production Discord bot without ARENZYRA_DISCORD_BOT_INSTANCE=production. Set this only on the single approved production host.',
+  );
+}
+
+if (botConfig.nodeEnv === 'production' && !botConfig.messageContentIntent) {
+  throw new Error(
+    'Refusing to start the production Discord bot without DISCORD_MESSAGE_CONTENT_INTENT=true. Text commands such as %register require Discord Message Content intent.',
+  );
+}
+
+if (
+  !botConfig.apiServiceToken &&
   !botConfig.apiToken &&
   !botConfig.apiRefreshToken &&
   !(botConfig.apiEmail && botConfig.apiPassword)
 ) {
   throw new Error(
-    'Configure ARENZYRA_API_TOKEN, ARENZYRA_API_REFRESH_TOKEN, or ARENZYRA_API_EMAIL/ARENZYRA_API_PASSWORD for backend auth.',
+    'Configure ARENZYRA_API_SERVICE_TOKEN, ARENZYRA_API_TOKEN, ARENZYRA_API_REFRESH_TOKEN, or ARENZYRA_API_EMAIL/ARENZYRA_API_PASSWORD for backend auth.',
   );
 }

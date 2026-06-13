@@ -10,10 +10,7 @@ import {
   launcherApi,
 } from "./api/api-client";
 import { authService } from "./auth/auth-service";
-import {
-  DesktopSidebar,
-  type DesktopPage,
-} from "./components/desktop-sidebar";
+import { DesktopSidebar } from "./components/desktop-sidebar";
 import { DashboardScreen } from "./screens/dashboard-screen";
 import { LicenseExpiredScreen } from "./screens/license-expired-screen";
 import { LicenseSuspendedScreen } from "./screens/license-suspended-screen";
@@ -27,8 +24,6 @@ import {
 import packageJson from "../package.json";
 import { DEFAULT_RENDERER_API_BASE } from "./default-api-base";
 import type {
-  FileFilter,
-  GenerateBrandingResult,
   ConnectorSetupStatus,
   LauncherAccessReason,
   LauncherAccessState,
@@ -49,8 +44,13 @@ import type {
   StatusMessage,
   SyncTeamsResult,
   TelemetryBridgeStatus,
-  TelemetrySourceStatus,
   TournamentSummary,
+  VisualCaptureSource,
+  VisualGamePresetKey,
+  VisualModeRegion,
+  VisualModeRegionKey,
+  VisualModeStatus,
+  VisualReviewQueueState,
 } from "./types";
 
 const LEGACY_STORAGE_KEYS = {
@@ -81,6 +81,9 @@ const FALLBACKS: LauncherDefaults = {
   shadowTrackerPath: "",
 };
 
+const ACTIVE_EVENT_TOURNAMENT_ID = "__active_event__";
+const ACTIVE_EVENT_STAGE_ID = "__active_event_stage__";
+
 const DEFAULT_TELEMETRY_STATUS: TelemetryBridgeStatus = {
   running: false,
   matchId: null,
@@ -91,6 +94,7 @@ const DEFAULT_TELEMETRY_STATUS: TelemetryBridgeStatus = {
   phase: null,
   gameTime: null,
   aliveTeams: null,
+  alivePlayers: null,
   circleIndex: null,
   circleStatus: null,
   totalPackets: 0,
@@ -129,6 +133,185 @@ const DEFAULT_OBSERVER_FEED_STATUS: ObserverFeedStatus = {
   lastStoppedAt: null,
 };
 
+const VISUAL_REGION_LABELS: Record<VisualModeRegionKey, string> = {
+  killFeed: "Kill feed",
+  teamPanel: "Team panel",
+  scoreboard: "Scoreboard",
+};
+
+const DEFAULT_VISUAL_GAME_PRESET_KEY: VisualGamePresetKey = "pubgMobile";
+
+const VISUAL_GAME_PRESET_LABELS: Record<VisualGamePresetKey, string> = {
+  pubgMobile: "PUBG Mobile",
+  freeFire: "Free Fire",
+  valorant: "VALORANT",
+  codMobile: "COD Mobile",
+};
+
+const VISUAL_GAME_REGION_PRESETS: Record<
+  VisualGamePresetKey,
+  Record<VisualModeRegionKey, VisualModeRegion>
+> = {
+  pubgMobile: {
+    killFeed: { x: 66, y: 8, width: 32, height: 30 },
+    teamPanel: { x: 0, y: 12, width: 24, height: 76 },
+    scoreboard: { x: 18, y: 10, width: 64, height: 76 },
+  },
+  freeFire: {
+    killFeed: { x: 61, y: 9, width: 37, height: 34 },
+    teamPanel: { x: 0, y: 14, width: 26, height: 72 },
+    scoreboard: { x: 16, y: 12, width: 68, height: 74 },
+  },
+  valorant: {
+    killFeed: { x: 71, y: 9, width: 27, height: 32 },
+    teamPanel: { x: 0, y: 5, width: 100, height: 13 },
+    scoreboard: { x: 20, y: 12, width: 60, height: 70 },
+  },
+  codMobile: {
+    killFeed: { x: 64, y: 8, width: 34, height: 34 },
+    teamPanel: { x: 0, y: 10, width: 26, height: 78 },
+    scoreboard: { x: 18, y: 10, width: 64, height: 76 },
+  },
+};
+
+const normalizeVisualGamePresetKey = (
+  value: string | null | undefined,
+): VisualGamePresetKey =>
+  value === "freeFire" || value === "valorant" || value === "codMobile"
+    ? value
+    : DEFAULT_VISUAL_GAME_PRESET_KEY;
+
+const getVisualRegionPreset = (
+  gamePresetKey: string | null | undefined,
+  regionKey: VisualModeRegionKey,
+): VisualModeRegion =>
+  VISUAL_GAME_REGION_PRESETS[normalizeVisualGamePresetKey(gamePresetKey)][
+    regionKey
+  ];
+
+const createVisualPresetRegions = (gamePresetKey: string | null | undefined) => {
+  const preset =
+    VISUAL_GAME_REGION_PRESETS[normalizeVisualGamePresetKey(gamePresetKey)];
+  return {
+    killFeed: { ...preset.killFeed },
+    teamPanel: { ...preset.teamPanel },
+    scoreboard: { ...preset.scoreboard },
+  };
+};
+
+const mergeVisualRegionsWithPreset = (
+  gamePresetKey: string | null | undefined,
+  regions: VisualModeStatus["regions"] | null | undefined,
+  overrideKey?: VisualModeRegionKey,
+  overrideRegion?: VisualModeRegion,
+) => {
+  const presetRegions = createVisualPresetRegions(gamePresetKey);
+  const nextRegions = {
+    killFeed: regions?.killFeed ?? presetRegions.killFeed,
+    teamPanel: regions?.teamPanel ?? presetRegions.teamPanel,
+    scoreboard: regions?.scoreboard ?? presetRegions.scoreboard,
+  };
+  if (overrideKey && overrideRegion) {
+    nextRegions[overrideKey] = overrideRegion;
+  }
+  return nextRegions;
+};
+
+const normalizeVisualRegionKey = (
+  value: string | null | undefined,
+): VisualModeRegionKey =>
+  value === "teamPanel" || value === "scoreboard" ? value : "killFeed";
+
+const clampVisualRegionNumber = (
+  value: number,
+  min: number,
+  max: number,
+  fallback: number,
+) => {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(value * 100) / 100));
+};
+
+const normalizeVisualRegion = (
+  value: Partial<VisualModeRegion> | null | undefined,
+  fallback: VisualModeRegion,
+): VisualModeRegion => {
+  const x = clampVisualRegionNumber(Number(value?.x), 0, 99, fallback.x);
+  const y = clampVisualRegionNumber(Number(value?.y), 0, 99, fallback.y);
+  return {
+    x,
+    y,
+    width: clampVisualRegionNumber(
+      Number(value?.width),
+      1,
+      Math.max(1, 100 - x),
+      fallback.width,
+    ),
+    height: clampVisualRegionNumber(
+      Number(value?.height),
+      1,
+      Math.max(1, 100 - y),
+      fallback.height,
+    ),
+  };
+};
+
+const resolveVisualRegionDraft = (
+  status: VisualModeStatus,
+  key: VisualModeRegionKey,
+) =>
+  normalizeVisualRegion(
+    status.regions?.[key] ?? (status.activeRegionKey === key ? status.region : null),
+    getVisualRegionPreset(status.gamePresetKey, key),
+  );
+
+const createDefaultVisualRegions = () => ({
+  killFeed: null,
+  teamPanel: null,
+  scoreboard: null,
+});
+
+const DEFAULT_VISUAL_MODE_STATUS: VisualModeStatus = {
+  available: false,
+  running: false,
+  matchId: null,
+  sessionId: null,
+  gamePresetKey: DEFAULT_VISUAL_GAME_PRESET_KEY,
+  sourceId: null,
+  sourceName: null,
+  captureFps: 2,
+  region: null,
+  regions: createDefaultVisualRegions(),
+  activeRegionKey: "killFeed",
+  coordinateMode: "percent",
+  calibrationReady: false,
+  reviewBeforePublish: true,
+  autoPublish: false,
+  ocrEnabled: false,
+  aiEnabled: false,
+  connectionStatus: "stopped",
+  framesSeen: 0,
+  changesDetected: 0,
+  lastFrameAt: null,
+  lastChangeAt: null,
+  lastError: null,
+  startedAt: null,
+  stoppedAt: null,
+  pipeline: "screen-monitor",
+  reviewQueueSize: 0,
+  lastReviewCandidateAt: null,
+};
+
+const DEFAULT_VISUAL_REVIEW_QUEUE: VisualReviewQueueState = {
+  items: [],
+  pendingCount: 0,
+  maxItems: 20,
+  reviewBeforePublish: true,
+  autoPublish: false,
+};
+
 const DEFAULT_STATUS: StatusMessage = {
   tone: "neutral",
   title: "Authentication required",
@@ -138,6 +321,7 @@ const DEFAULT_STATUS: StatusMessage = {
 
 const LIVE_MATCH_REFRESH_MS = 15_000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+type DesktopRoute = "desk" | "widgets";
 
 const normalizeStateKey = (value: string | null | undefined) =>
   String(value || "")
@@ -275,10 +459,6 @@ const isLiveTournament = (
   tournament: Pick<TournamentSummary, "liveState" | "status"> | null | undefined,
 ) => isLiveState(tournament?.liveState) || isLiveState(tournament?.status);
 
-const isLiveStage = (
-  stage: Pick<StageSummary, "liveState"> | null | undefined,
-) => isLiveState(stage?.liveState);
-
 const isLiveMatch = (
   match: Pick<MatchSummary, "liveState" | "status"> | null | undefined,
 ) => isLiveState(match?.liveState) || isLiveState(match?.status);
@@ -288,37 +468,6 @@ const joinDetailParts = (...parts: Array<string | null | undefined>) =>
     .map((part) => String(part || "").trim())
     .filter(Boolean)
     .join(" ");
-
-const formatTelemetrySourceDetail = (
-  source: TelemetrySourceStatus | null | undefined,
-  sourceError: string | null | undefined,
-) => {
-  if (sourceError) {
-    return `ob.js auto-start skipped: ${sourceError}`;
-  }
-
-  if (!source) {
-    return "";
-  }
-
-  const pidSuffix = source.pid ? ` with PID ${source.pid}` : "";
-  const connectorDetail = formatConnectorSetupDetail(source.connector);
-  if (source.started) {
-    const sourceDetail = source.ready
-      ? `ob.js started${pidSuffix}.`
-      : `ob.js started${pidSuffix} and is warming up.`;
-    return joinDetailParts(connectorDetail, sourceDetail);
-  }
-
-  if (source.alreadyRunning) {
-    const sourceDetail = source.ready
-      ? "ob.js already running."
-      : "ob.js already running and is warming up.";
-    return joinDetailParts(connectorDetail, sourceDetail);
-  }
-
-  return connectorDetail;
-};
 
 const formatConnectorSetupDetail = (
   connector: ConnectorSetupStatus | null | undefined,
@@ -374,13 +523,13 @@ const getPreferredSelectionId = <T extends { id: string }>(
   currentId: string,
   preferredId?: string | null,
 ) => {
-  if (items.some((item) => item.id === currentId)) {
-    return currentId;
-  }
-
   const normalizedPreferredId = String(preferredId || "").trim();
   if (normalizedPreferredId && items.some((item) => item.id === normalizedPreferredId)) {
     return normalizedPreferredId;
+  }
+
+  if (items.some((item) => item.id === currentId)) {
+    return currentId;
   }
 
   return items[0]?.id ?? "";
@@ -410,43 +559,21 @@ const findPreferredLiveMatch = (
   );
 };
 
-const shouldPreferLiveMatchSelection = (
-  currentMatch: MatchSummary | null,
-  matchControls: Record<string, MatchControlSnapshot>,
-  preferredLiveMatchId?: string | null,
-) => {
-  const normalizedPreferredLiveMatchId = String(preferredLiveMatchId || "").trim();
-  if (!normalizedPreferredLiveMatchId) {
-    return false;
-  }
-
-  if (!currentMatch) {
-    return true;
-  }
-
-  if (currentMatch.id === normalizedPreferredLiveMatchId) {
-    return false;
-  }
-
-  const currentControl = matchControls[currentMatch.id] ?? null;
-  const currentLifecycleStatus = getControlLifecycleStatus(currentControl);
-  const currentIsLive =
-    currentLifecycleStatus === "LIVE" || isLiveMatch(currentMatch);
-
-  return (
-    !currentIsLive ||
-    currentControl?.isFinalizing === true ||
-    currentControl?.isLocked === true ||
-    isMatchLockedStatus(currentLifecycleStatus)
-  );
-};
-
 const findPreferredStageId = (
   stages: StageSummary[],
   matches: MatchSummary[],
   matchControls: Record<string, MatchControlSnapshot>,
+  resolvedLiveStageId?: string | null,
   resolvedLiveMatchId?: string | null,
 ) => {
+  const normalizedResolvedLiveStageId = String(resolvedLiveStageId || "").trim();
+  if (
+    normalizedResolvedLiveStageId &&
+    stages.some((stage) => stage.id === normalizedResolvedLiveStageId)
+  ) {
+    return normalizedResolvedLiveStageId;
+  }
+
   const liveMatch = findPreferredLiveMatch(
     matches,
     matchControls,
@@ -462,8 +589,92 @@ const findPreferredStageId = (
   return stages[0]?.id ?? "";
 };
 
-const findPreferredTournamentId = (tournaments: TournamentSummary[]) =>
-  tournaments.find((tournament) => isLiveTournament(tournament))?.id ?? "";
+const findPreferredTournamentId = (
+  tournaments: TournamentSummary[],
+  resolvedLiveTournamentId?: string | null,
+) => {
+  const normalizedResolvedLiveTournamentId = String(
+    resolvedLiveTournamentId || "",
+  ).trim();
+  if (
+    normalizedResolvedLiveTournamentId &&
+    tournaments.some((tournament) => tournament.id === normalizedResolvedLiveTournamentId)
+  ) {
+    return normalizedResolvedLiveTournamentId;
+  }
+
+  return tournaments.find((tournament) => isLiveTournament(tournament))?.id ?? "";
+};
+
+const isActiveEventLiveMatch = (
+  match: LauncherLiveMatch | null | undefined,
+) => Boolean(match?.matchId && !match.tournamentId);
+
+const formatActiveEventMatchName = (match: LauncherLiveMatch) => {
+  const namedMatch = String(match.matchName || "").trim();
+  if (namedMatch) {
+    return namedMatch;
+  }
+
+  if (typeof match.matchNumber === "number") {
+    return `Match ${match.matchNumber}`;
+  }
+
+  return "Active Match";
+};
+
+const buildActiveEventTournament = (
+  match: LauncherLiveMatch,
+  organizationName?: string | null,
+): TournamentSummary => {
+  const sessionName = String(match.sessionName || "").trim();
+  return {
+    id: ACTIVE_EVENT_TOURNAMENT_ID,
+    name: sessionName
+      ? `${sessionName} (Event)`
+      : `${organizationName || "Active"} Event`,
+    status: match.status,
+    liveState: match.status,
+    stageCount: 1,
+    matchCount: 1,
+  };
+};
+
+const buildActiveEventStage = (match: LauncherLiveMatch): StageSummary => ({
+  id: ACTIVE_EVENT_STAGE_ID,
+  name: String(match.sessionName || "").trim() || "Event Session",
+  order: 0,
+  maxTeams: null,
+  liveState: match.status,
+  groupCount: 0,
+  matchCount: 1,
+  groups: [],
+});
+
+const buildActiveEventMatch = (match: LauncherLiveMatch): MatchSummary => ({
+  id: match.matchId || "",
+  name: formatActiveEventMatchName(match),
+  stageId: ACTIVE_EVENT_STAGE_ID,
+  groupId: null,
+  map: match.map ?? null,
+  status: match.status,
+  liveState: match.status,
+  dataMode: null,
+  matchNumber: match.matchNumber ?? null,
+  group: null,
+});
+
+const removeActiveEventTournament = (tournaments: TournamentSummary[]) =>
+  tournaments.filter((tournament) => tournament.id !== ACTIVE_EVENT_TOURNAMENT_ID);
+
+const withActiveEventTournament = (
+  tournaments: TournamentSummary[],
+  match: LauncherLiveMatch,
+  organizationName?: string | null,
+) => [
+  buildActiveEventTournament(match, organizationName),
+  ...removeActiveEventTournament(tournaments),
+];
 
 const normalizeOptionalApiBase = (value: string) => {
   const trimmed = value.trim();
@@ -576,10 +787,28 @@ const getBlockedStatus = (
   access: LauncherAccessState | null,
 ): StatusMessage => {
   switch (access?.reason) {
+    case "LAUNCHER_PLAN_REQUIRED":
+      return {
+        tone: "error",
+        title: "Launcher plan required",
+        detail:
+          "This organization is not on the launcher plan. Contact Arenzyra support before starting production.",
+      };
+    case "SUBSCRIPTION_EXPIRED":
+      return {
+        tone: "error",
+        title: "Subscription expired",
+        detail:
+          "Launcher access is blocked until this organization's subscription or trial is active again.",
+      };
+    case "LICENSE_REVOKED":
     case "LICENSE_SUSPENDED":
       return {
         tone: "error",
-        title: "License suspended",
+        title:
+          access.reason === "LICENSE_REVOKED"
+            ? "Launcher access revoked"
+            : "Launcher access suspended",
         detail:
           "Launcher access is blocked for this organization. Contact Arenzyra support.",
       };
@@ -594,9 +823,9 @@ const getBlockedStatus = (
     case "LICENSE_MISSING":
       return {
         tone: "error",
-        title: "License required",
+        title: "Launcher access blocked",
         detail:
-          "No active Arenzyra production license is assigned to this organization.",
+          "Launcher access is not available for this organization. Contact Arenzyra support.",
       };
     case "LICENSE_EXPIRED":
     default:
@@ -621,8 +850,8 @@ export default function App() {
   const [session, setSession] = useState<LauncherSession | null>(null);
   const [access, setAccess] = useState<LauncherAccessState | null>(null);
   const [shadowTrackerPath, setShadowTrackerPath] = useState("");
-  const [teamAssetsDir, setTeamAssetsDir] = useState(FALLBACKS.teamAssetsDir);
-  const [brandingConfigPath, setBrandingConfigPath] = useState(
+  const [, setTeamAssetsDir] = useState(FALLBACKS.teamAssetsDir);
+  const [, setBrandingConfigPath] = useState(
     FALLBACKS.brandingConfigPath,
   );
   const [telemetryBridgeAvailable, setTelemetryBridgeAvailable] = useState(false);
@@ -631,19 +860,37 @@ export default function App() {
   );
   const [observerFeedStatus, setObserverFeedStatus] =
     useState<ObserverFeedStatus>(DEFAULT_OBSERVER_FEED_STATUS);
+  const [visualModeStatus, setVisualModeStatus] = useState<VisualModeStatus>(
+    DEFAULT_VISUAL_MODE_STATUS,
+  );
+  const [visualSources, setVisualSources] = useState<VisualCaptureSource[]>([]);
+  const [visualSourcesLoading, setVisualSourcesLoading] = useState(false);
+  const [visualModeError, setVisualModeError] = useState<string | null>(null);
+  const [selectedVisualSourceId, setSelectedVisualSourceId] = useState("");
+  const [visualCaptureFps, setVisualCaptureFps] = useState(
+    DEFAULT_VISUAL_MODE_STATUS.captureFps,
+  );
+  const [visualActiveRegionKey, setVisualActiveRegionKey] =
+    useState<VisualModeRegionKey>(DEFAULT_VISUAL_MODE_STATUS.activeRegionKey);
+  const [visualRegionDraft, setVisualRegionDraft] = useState<VisualModeRegion>(
+    getVisualRegionPreset(DEFAULT_VISUAL_GAME_PRESET_KEY, "killFeed"),
+  );
+  const [visualRegionDirty, setVisualRegionDirty] = useState(false);
+  const [visualReviewQueue, setVisualReviewQueue] =
+    useState<VisualReviewQueueState>(DEFAULT_VISUAL_REVIEW_QUEUE);
   const [selectedMatchControl, setSelectedMatchControl] =
     useState<MatchControlSnapshot | null>(null);
   const [matchControlIndex, setMatchControlIndex] = useState<
     Record<string, MatchControlSnapshot>
   >({});
   const [status, setStatus] = useState<StatusMessage>(DEFAULT_STATUS);
-  const [slots, setSlots] = useState<LauncherSlot[]>([]);
+  const [, setSlots] = useState<LauncherSlot[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [loadingMatch, setLoadingMatch] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+  const [, setLastSyncTime] = useState<string | null>(null);
   const [liveMatch, setLiveMatch] = useState<LauncherLiveMatch | null>(null);
   const [dashboard, setDashboard] = useState(createEmptyDashboardState());
-  const [activePage, setActivePage] = useState<DesktopPage>("launcher");
+  const [currentRoute, setCurrentRoute] = useState<DesktopRoute>("desk");
   const [finishedMatchId, setFinishedMatchId] = useState<string | null>(null);
   const [nextMatchSuggestion, setNextMatchSuggestion] =
     useState<NextMatchSuggestion | null>(null);
@@ -659,10 +906,32 @@ export default function App() {
     useState<ProductionModeResult | null>(null);
   const lastFinishedLogRef = useRef<string | null>(null);
   const lastSuggestedLogRef = useRef<string | null>(null);
+  const lastAppliedActiveEventMatchIdRef = useRef<string | null>(null);
+  const visualRegionDirtyRef = useRef(false);
+
+  const updateVisualRegionDirty = (dirty: boolean) => {
+    visualRegionDirtyRef.current = dirty;
+    setVisualRegionDirty(dirty);
+  };
+
+  const resetVisualModeUiState = () => {
+    setVisualModeStatus(DEFAULT_VISUAL_MODE_STATUS);
+    setVisualSources([]);
+    setVisualModeError(null);
+    setSelectedVisualSourceId("");
+    setVisualCaptureFps(DEFAULT_VISUAL_MODE_STATUS.captureFps);
+    setVisualActiveRegionKey(DEFAULT_VISUAL_MODE_STATUS.activeRegionKey);
+    setVisualRegionDraft(
+      getVisualRegionPreset(DEFAULT_VISUAL_GAME_PRESET_KEY, "killFeed"),
+    );
+    updateVisualRegionDirty(false);
+    setVisualReviewQueue(DEFAULT_VISUAL_REVIEW_QUEUE);
+  };
 
   const resetDashboard = () => {
     const emptyState = createEmptyDashboardState();
     setDashboard(emptyState);
+    setCurrentRoute("desk");
     setSelectedMatchControl(null);
     setMatchControlIndex({});
     setSlots([]);
@@ -677,6 +946,7 @@ export default function App() {
     setProductionModeResult(null);
     lastFinishedLogRef.current = null;
     lastSuggestedLogRef.current = null;
+    lastAppliedActiveEventMatchIdRef.current = null;
   };
 
   const applyConfigSnapshot = (config: LauncherConfig) => {
@@ -763,6 +1033,7 @@ export default function App() {
     setLoadingMatch(false);
     setTelemetryStatus(DEFAULT_TELEMETRY_STATUS);
     setObserverFeedStatus(DEFAULT_OBSERVER_FEED_STATUS);
+    resetVisualModeUiState();
     resetDashboard();
     setStatus({
       tone: "error",
@@ -797,6 +1068,7 @@ export default function App() {
     setLoadingMatch(false);
     setTelemetryStatus(DEFAULT_TELEMETRY_STATUS);
     setObserverFeedStatus(DEFAULT_OBSERVER_FEED_STATUS);
+    resetVisualModeUiState();
     resetDashboard();
     setStatus(getBlockedStatus(nextAccess));
   };
@@ -971,6 +1243,7 @@ export default function App() {
 
     setLiveMatch(null);
     setTelemetryStatus(DEFAULT_TELEMETRY_STATUS);
+    resetVisualModeUiState();
   }, [access]);
 
   useEffect(() => {
@@ -1013,6 +1286,75 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [session, access, apiBase]);
+
+  const applyVisualModeStatus = (nextStatus: VisualModeStatus | null) => {
+    const normalizedStatus = {
+      ...DEFAULT_VISUAL_MODE_STATUS,
+      ...(nextStatus || {}),
+      gamePresetKey: normalizeVisualGamePresetKey(nextStatus?.gamePresetKey),
+    };
+    const nextRegionKey = normalizeVisualRegionKey(
+      normalizedStatus.activeRegionKey,
+    );
+    setVisualModeStatus(normalizedStatus);
+    setSelectedVisualSourceId(normalizedStatus.sourceId || "");
+    setVisualCaptureFps(
+      normalizedStatus.captureFps || DEFAULT_VISUAL_MODE_STATUS.captureFps,
+    );
+    setVisualActiveRegionKey(nextRegionKey);
+    if (!visualRegionDirtyRef.current) {
+      setVisualRegionDraft(resolveVisualRegionDraft(normalizedStatus, nextRegionKey));
+    }
+    setVisualModeError(normalizedStatus.lastError || null);
+  };
+
+  const applyVisualReviewQueue = (
+    nextQueue: VisualReviewQueueState | null,
+  ) => {
+    setVisualReviewQueue(nextQueue || DEFAULT_VISUAL_REVIEW_QUEUE);
+  };
+
+  const refreshVisualReviewQueue = async () => {
+    try {
+      const queue = await launcherApi.getVisualReviewQueue();
+      applyVisualReviewQueue(queue);
+      return queue;
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        handleUnauthorized();
+        return DEFAULT_VISUAL_REVIEW_QUEUE;
+      }
+      if (isAccessDeniedError(error)) {
+        handleAccessDenied(error);
+        return DEFAULT_VISUAL_REVIEW_QUEUE;
+      }
+      setVisualModeError(getErrorMessage(error));
+      return DEFAULT_VISUAL_REVIEW_QUEUE;
+    }
+  };
+
+  const refreshVisualSources = async () => {
+    setVisualSourcesLoading(true);
+    try {
+      const sources = await launcherApi.listVisualSources();
+      setVisualSources(sources);
+      setVisualModeError(null);
+      return sources;
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        handleUnauthorized();
+        return [];
+      }
+      if (isAccessDeniedError(error)) {
+        handleAccessDenied(error);
+        return [];
+      }
+      setVisualModeError(getErrorMessage(error));
+      return [];
+    } finally {
+      setVisualSourcesLoading(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1134,11 +1476,6 @@ export default function App() {
             handleAccessDenied(error);
             return;
           }
-          setStatus({
-            tone: "error",
-            title: "Telemetry unavailable",
-            detail: getErrorMessage(error),
-          });
         }
       }
     };
@@ -1153,6 +1490,53 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [session, access, telemetryBridgeAvailable]);
+
+  useEffect(() => {
+    if (!hasAuthenticatedSession(session) || !hasAllowedLauncherAccess(access)) {
+      resetVisualModeUiState();
+      return;
+    }
+
+    let cancelled = false;
+
+    const refreshVisualStatus = async () => {
+      try {
+        const [nextStatus, nextQueue] = await Promise.all([
+          launcherApi.getVisualModeStatus(),
+          launcherApi.getVisualReviewQueue(),
+        ]);
+        if (!cancelled) {
+          applyVisualModeStatus(nextStatus || DEFAULT_VISUAL_MODE_STATUS);
+          applyVisualReviewQueue(nextQueue || DEFAULT_VISUAL_REVIEW_QUEUE);
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        applyVisualModeStatus(DEFAULT_VISUAL_MODE_STATUS);
+        if (isUnauthorizedError(error)) {
+          handleUnauthorized();
+          return;
+        }
+        if (isAccessDeniedError(error)) {
+          handleAccessDenied(error);
+          return;
+        }
+        setVisualModeError(getErrorMessage(error));
+      }
+    };
+
+    void refreshVisualStatus();
+    void refreshVisualSources();
+    const timer = window.setInterval(() => {
+      void refreshVisualStatus();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [session, access]);
 
   useEffect(() => {
     if (
@@ -1294,8 +1678,6 @@ export default function App() {
     };
   }, [session, access, dashboard.matches]);
 
-  const selectedMatch =
-    dashboard.matches.find((match) => match.id === dashboard.selectedMatchId) || null;
   const activeSelectedMatchControl = getActiveSelectedMatchControl(
     dashboard.selectedMatchId,
     selectedMatchControl,
@@ -1334,7 +1716,7 @@ export default function App() {
         tone: "neutral",
         title: "Match Locked",
         detail:
-          "Backend locked this match. Telemetry cannot restart until an admin unlocks it.",
+          "Backend locked this match. Observer controls stay unavailable until an admin unlocks it.",
       });
     }
   }, [
@@ -1455,7 +1837,16 @@ export default function App() {
         }
         setDashboard((current) => ({
           ...current,
-          tournaments,
+          tournaments: current.tournaments.some(
+            (tournament) => tournament.id === ACTIVE_EVENT_TOURNAMENT_ID,
+          )
+            ? [
+                current.tournaments.find(
+                  (tournament) => tournament.id === ACTIVE_EVENT_TOURNAMENT_ID,
+                ) as TournamentSummary,
+                ...removeActiveEventTournament(tournaments),
+              ]
+            : tournaments,
         }));
         if (!tournaments.length) {
           setStatus({
@@ -1491,6 +1882,86 @@ export default function App() {
   }, [session, access]);
 
   useEffect(() => {
+    const activeEventMatch = isActiveEventLiveMatch(liveMatch)
+      ? liveMatch
+      : null;
+
+    if (!activeEventMatch) {
+      lastAppliedActiveEventMatchIdRef.current = null;
+      setDashboard((current) => {
+        if (
+          !current.tournaments.some(
+            (tournament) => tournament.id === ACTIVE_EVENT_TOURNAMENT_ID,
+          )
+        ) {
+          return current;
+        }
+
+        const activeEventSelected =
+          current.selectedTournamentId === ACTIVE_EVENT_TOURNAMENT_ID;
+        return {
+          ...current,
+          tournaments: removeActiveEventTournament(current.tournaments),
+          selectedTournamentId: activeEventSelected
+            ? ""
+            : current.selectedTournamentId,
+          selectedStageId: activeEventSelected ? "" : current.selectedStageId,
+          selectedMatchId: activeEventSelected ? "" : current.selectedMatchId,
+          stages: activeEventSelected ? [] : current.stages,
+          matches: activeEventSelected ? [] : current.matches,
+        };
+      });
+      return;
+    }
+
+    const activeMatchId = activeEventMatch.matchId;
+    if (!activeMatchId) {
+      return;
+    }
+
+    const shouldForceSelect =
+      lastAppliedActiveEventMatchIdRef.current !== activeMatchId;
+    lastAppliedActiveEventMatchIdRef.current = activeMatchId;
+
+    setDashboard((current) => {
+      const eventTournaments = withActiveEventTournament(
+        current.tournaments,
+        activeEventMatch,
+        session?.organization?.name ?? null,
+      );
+      const eventStage = buildActiveEventStage(activeEventMatch);
+      const eventMatch = buildActiveEventMatch(activeEventMatch);
+      const forceSelect =
+        shouldForceSelect ||
+        current.selectedTournamentId === ACTIVE_EVENT_TOURNAMENT_ID ||
+        !current.selectedMatchId;
+
+      return {
+        ...current,
+        tournaments: eventTournaments,
+        ...(forceSelect
+          ? {
+              selectedTournamentId: ACTIVE_EVENT_TOURNAMENT_ID,
+              selectedStageId: eventStage.id,
+              selectedMatchId: eventMatch.id,
+              stages: [eventStage],
+              matches: [eventMatch],
+            }
+          : {}),
+      };
+    });
+  }, [
+    liveMatch?.matchId,
+    liveMatch?.tournamentId,
+    liveMatch?.sessionName,
+    liveMatch?.matchName,
+    liveMatch?.matchNumber,
+    liveMatch?.map,
+    liveMatch?.status,
+    session?.organization?.name,
+  ]);
+
+  useEffect(() => {
     if (!dashboard.tournaments.length) {
       if (dashboard.selectedTournamentId) {
         setDashboard((current) => ({
@@ -1504,7 +1975,7 @@ export default function App() {
     const nextTournamentId = getPreferredSelectionId(
       dashboard.tournaments,
       dashboard.selectedTournamentId,
-      findPreferredTournamentId(dashboard.tournaments),
+      findPreferredTournamentId(dashboard.tournaments, liveMatch?.tournamentId),
     );
 
     if (nextTournamentId !== dashboard.selectedTournamentId) {
@@ -1513,7 +1984,7 @@ export default function App() {
         selectedTournamentId: nextTournamentId,
       }));
     }
-  }, [dashboard.tournaments, dashboard.selectedTournamentId]);
+  }, [dashboard.tournaments, dashboard.selectedTournamentId, liveMatch?.tournamentId]);
 
   useEffect(() => {
     if (
@@ -1528,6 +1999,30 @@ export default function App() {
         selectedStageId: "",
         selectedMatchId: "",
       }));
+      setSlots([]);
+      return;
+    }
+
+    const activeEventMatch = isActiveEventLiveMatch(liveMatch)
+      ? liveMatch
+      : null;
+    if (
+      dashboard.selectedTournamentId === ACTIVE_EVENT_TOURNAMENT_ID &&
+      activeEventMatch
+    ) {
+      const eventStage = buildActiveEventStage(activeEventMatch);
+      const eventMatch = buildActiveEventMatch(activeEventMatch);
+      setDashboard((current) =>
+        current.selectedTournamentId !== ACTIVE_EVENT_TOURNAMENT_ID
+          ? current
+          : {
+              ...current,
+              stages: [eventStage],
+              matches: [eventMatch],
+              selectedStageId: eventStage.id,
+              selectedMatchId: eventMatch.id,
+            },
+      );
       setSlots([]);
       return;
     }
@@ -1570,7 +2065,7 @@ export default function App() {
             tone: "neutral",
             title: "Tournament loaded",
             detail:
-              "Live production matches are auto-detected when available. You can still change the selection manually.",
+              "Live production matches are auto-detected and selected automatically when available.",
           });
         }
       } catch (error) {
@@ -1602,7 +2097,18 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [session, access, dashboard.selectedTournamentId]);
+  }, [
+    session,
+    access,
+    dashboard.selectedTournamentId,
+    liveMatch?.matchId,
+    liveMatch?.tournamentId,
+    liveMatch?.sessionName,
+    liveMatch?.matchName,
+    liveMatch?.matchNumber,
+    liveMatch?.map,
+    liveMatch?.status,
+  ]);
 
   useEffect(() => {
     if (!dashboard.stages.length) {
@@ -1615,26 +2121,13 @@ export default function App() {
       return;
     }
 
-    const currentSelectedMatch =
-      dashboard.matches.find((match) => match.id === dashboard.selectedMatchId) || null;
-    const preferredLiveMatch = findPreferredLiveMatch(
+    const preferredStageId = findPreferredStageId(
+      dashboard.stages,
       dashboard.matches,
       matchControlIndex,
+      liveMatch?.stageId,
       liveMatch?.matchId,
     );
-    const preferredStageId =
-      shouldPreferLiveMatchSelection(
-        currentSelectedMatch,
-        matchControlIndex,
-        preferredLiveMatch?.id,
-      )
-        ? preferredLiveMatch?.stageId || ""
-        : findPreferredStageId(
-            dashboard.stages,
-            dashboard.matches,
-            matchControlIndex,
-            liveMatch?.matchId,
-          );
     const nextStageId = getPreferredSelectionId(
       dashboard.stages,
       dashboard.selectedStageId,
@@ -1651,6 +2144,7 @@ export default function App() {
     dashboard.stages,
     dashboard.matches,
     matchControlIndex,
+    liveMatch?.stageId,
     liveMatch?.matchId,
     dashboard.selectedStageId,
     dashboard.selectedMatchId,
@@ -1683,13 +2177,7 @@ export default function App() {
     )?.id;
     const nextMatchId = getPreferredSelectionId(
       filteredMatches,
-      shouldPreferLiveMatchSelection(
-        currentSelectedMatch,
-        matchControlIndex,
-        preferredLiveMatchId,
-      )
-        ? ""
-        : dashboard.selectedMatchId,
+      currentSelectedMatch?.id || dashboard.selectedMatchId,
       preferredLiveMatchId ?? "",
     );
 
@@ -1850,15 +2338,6 @@ export default function App() {
     selectedMatchLifecycleStatus,
   ]);
 
-  const chooseFile = async (
-    title: string,
-    filters: FileFilter[],
-    defaultPath: string,
-  ) => {
-    const selected = await launcherApi.chooseFile(title, filters, defaultPath);
-    return selected || "";
-  };
-
   const runAction = async (
     key: string,
     title: string,
@@ -1915,6 +2394,271 @@ export default function App() {
 
     return matchId;
   };
+
+  const handleVisualSourceChange = (sourceId: string) => {
+    const selectedSource =
+      visualSources.find((source) => source.id === sourceId) || null;
+    setSelectedVisualSourceId(sourceId);
+    setVisualModeError(null);
+    void launcherApi
+      .setVisualModeConfig({
+        sourceId: sourceId || null,
+        sourceName: selectedSource?.name ?? null,
+        captureFps: visualCaptureFps,
+      })
+      .then((config) => {
+        setVisualCaptureFps(config.captureFps);
+      })
+      .catch((error) => {
+        setVisualModeError(getErrorMessage(error));
+      });
+  };
+
+  const handleVisualFpsChange = (captureFps: number) => {
+    const nextFps = Number.isFinite(captureFps)
+      ? Math.min(6, Math.max(1, Math.round(captureFps)))
+      : DEFAULT_VISUAL_MODE_STATUS.captureFps;
+    const selectedSource =
+      visualSources.find((source) => source.id === selectedVisualSourceId) ||
+      null;
+    setVisualCaptureFps(nextFps);
+    setVisualModeError(null);
+    void launcherApi
+      .setVisualModeConfig({
+        sourceId: selectedVisualSourceId || null,
+        sourceName: selectedSource?.name ?? visualModeStatus.sourceName,
+        captureFps: nextFps,
+      })
+      .catch((error) => {
+        setVisualModeError(getErrorMessage(error));
+      });
+  };
+
+  const handleVisualGamePresetChange = (value: string) => {
+    const nextGamePresetKey = normalizeVisualGamePresetKey(value);
+    const nextRegions = createVisualPresetRegions(nextGamePresetKey);
+    const nextRegion = nextRegions[visualActiveRegionKey];
+    setVisualRegionDraft(nextRegion);
+    updateVisualRegionDirty(false);
+    setVisualModeError(null);
+    void launcherApi
+      .setVisualModeConfig({
+        gamePresetKey: nextGamePresetKey,
+        activeRegionKey: visualActiveRegionKey,
+        region: nextRegion,
+        regions: nextRegions,
+      })
+      .then((config) => {
+        setVisualModeStatus((current) => ({
+          ...current,
+          ...config,
+          calibrationReady: Boolean(config.region),
+          reviewQueueSize: current.reviewQueueSize,
+          lastReviewCandidateAt: current.lastReviewCandidateAt,
+        }));
+      })
+      .catch((error) => {
+        setVisualModeError(getErrorMessage(error));
+      });
+  };
+
+  const handleVisualRegionKeyChange = (value: string) => {
+    const nextKey = normalizeVisualRegionKey(value);
+    setVisualActiveRegionKey(nextKey);
+    setVisualRegionDraft(resolveVisualRegionDraft(visualModeStatus, nextKey));
+    updateVisualRegionDirty(false);
+    setVisualModeError(null);
+    void launcherApi
+      .setVisualModeConfig({
+        activeRegionKey: nextKey,
+      })
+      .catch((error) => {
+        setVisualModeError(getErrorMessage(error));
+      });
+  };
+
+  const handleVisualRegionDraftChange = (
+    field: keyof VisualModeRegion,
+    value: number,
+  ) => {
+    setVisualRegionDraft((current) => {
+      const next = normalizeVisualRegion(
+        {
+          ...current,
+          [field]: value,
+        },
+        getVisualRegionPreset(visualModeStatus.gamePresetKey, visualActiveRegionKey),
+      );
+      return next;
+    });
+    updateVisualRegionDirty(true);
+  };
+
+  const saveVisualCalibration = async () =>
+    runAction("save-visual-calibration", "Saving calibration", async () => {
+      const nextRegion = normalizeVisualRegion(
+        visualRegionDraft,
+        getVisualRegionPreset(visualModeStatus.gamePresetKey, visualActiveRegionKey),
+      );
+      const nextRegions = mergeVisualRegionsWithPreset(
+        visualModeStatus.gamePresetKey,
+        visualModeStatus.regions,
+        visualActiveRegionKey,
+        nextRegion,
+      );
+      const config = await launcherApi.setVisualModeConfig({
+        gamePresetKey: normalizeVisualGamePresetKey(visualModeStatus.gamePresetKey),
+        activeRegionKey: visualActiveRegionKey,
+        region: nextRegion,
+        regions: nextRegions,
+      });
+      updateVisualRegionDirty(false);
+      setVisualModeStatus((current) => ({
+        ...current,
+        ...config,
+        calibrationReady: Boolean(config.region),
+        reviewQueueSize: current.reviewQueueSize,
+        lastReviewCandidateAt: current.lastReviewCandidateAt,
+      }));
+      setVisualRegionDraft(resolveVisualRegionDraft(
+        {
+          ...visualModeStatus,
+          ...config,
+          calibrationReady: Boolean(config.region),
+          reviewQueueSize: visualModeStatus.reviewQueueSize,
+          lastReviewCandidateAt: visualModeStatus.lastReviewCandidateAt,
+        },
+        visualActiveRegionKey,
+      ));
+      setStatus({
+        tone: "success",
+        title: "Calibration saved",
+        detail: `${VISUAL_REGION_LABELS[visualActiveRegionKey]} capture area is ready for review-only Visual Mode.`,
+      });
+    });
+
+  const captureVisualReviewCandidate = async () =>
+    runAction("capture-visual-review", "Capturing visual review", async () => {
+      const result = await launcherApi.captureVisualReviewCandidate();
+      applyVisualModeStatus(result.status || DEFAULT_VISUAL_MODE_STATUS);
+      applyVisualReviewQueue(result.queue || DEFAULT_VISUAL_REVIEW_QUEUE);
+      setStatus({
+        tone: "neutral",
+        title: "Capture queued",
+        detail:
+          "Visual candidate was added to the local review queue. Publishing is still blocked.",
+      });
+    });
+
+  const runVisualReviewOcr = async (id: string) =>
+    runAction("run-visual-review-ocr", "Running visual OCR", async () => {
+      const queue = await launcherApi.runVisualReviewOcr(id);
+      applyVisualReviewQueue(queue);
+      const item = queue.items.find((entry) => entry.id === id);
+      setStatus({
+        tone: item?.ocrStatus === "failed" ? "error" : "success",
+        title:
+          item?.ocrStatus === "failed"
+            ? "OCR preview failed"
+            : "OCR preview ready",
+        detail:
+          item?.ocrError ||
+          "Captured frame was sent to the existing OCR review parser.",
+      });
+    });
+
+  const clearVisualReviewQueue = async () =>
+    runAction("clear-visual-review", "Clearing visual queue", async () => {
+      const queue = await launcherApi.clearVisualReviewQueue();
+      applyVisualReviewQueue(queue);
+      setStatus({
+        tone: "neutral",
+        title: "Review queue cleared",
+        detail: "Visual Mode review candidates were removed locally.",
+      });
+    });
+
+  const ignoreVisualReviewItem = async (id: string) => {
+    try {
+      const queue = await launcherApi.ignoreVisualReviewItem(id);
+      applyVisualReviewQueue(queue);
+    } catch (error) {
+      setVisualModeError(getErrorMessage(error));
+    }
+  };
+
+  const markVisualReviewItemReviewed = async (id: string) => {
+    try {
+      const queue = await launcherApi.markVisualReviewItemReviewed(id);
+      applyVisualReviewQueue(queue);
+    } catch (error) {
+      setVisualModeError(getErrorMessage(error));
+    }
+  };
+
+  const toggleVisualMode = async () =>
+    runAction(
+      visualModeStatus.running ? "stop-visual-mode" : "start-visual-mode",
+      visualModeStatus.running ? "Stopping visual mode" : "Starting visual mode",
+      async () => {
+        if (visualModeStatus.running) {
+          const nextStatus = await launcherApi.stopVisualMode();
+          applyVisualModeStatus(nextStatus || DEFAULT_VISUAL_MODE_STATUS);
+          setStatus({
+            tone: "neutral",
+            title: "Visual mode stopped",
+            detail: "Screen monitoring is no longer running.",
+          });
+          return;
+        }
+
+        if (telemetryStatus.running || observerFeedStatus.running) {
+          throw new Error(
+            "Stop Telemetry Bridge or Observer Feed before starting Visual Mode.",
+          );
+        }
+
+        const matchId = requireActionableMatchId();
+        if (!selectedVisualSourceId) {
+          throw new Error("Select a screen or window source first.");
+        }
+
+        const selectedSource =
+          visualSources.find((source) => source.id === selectedVisualSourceId) ||
+          null;
+        const nextRegion = normalizeVisualRegion(
+          visualRegionDraft,
+          getVisualRegionPreset(visualModeStatus.gamePresetKey, visualActiveRegionKey),
+        );
+        const nextRegions = mergeVisualRegionsWithPreset(
+          visualModeStatus.gamePresetKey,
+          visualModeStatus.regions,
+          visualActiveRegionKey,
+          nextRegion,
+        );
+        const nextStatus = await launcherApi.startVisualMode({
+          matchId,
+          config: {
+            gamePresetKey: normalizeVisualGamePresetKey(visualModeStatus.gamePresetKey),
+            sourceId: selectedVisualSourceId,
+            sourceName: selectedSource?.name ?? null,
+            captureFps: visualCaptureFps,
+            activeRegionKey: visualActiveRegionKey,
+            region: nextRegion,
+            regions: nextRegions,
+          },
+        });
+        updateVisualRegionDirty(false);
+        applyVisualModeStatus(nextStatus || DEFAULT_VISUAL_MODE_STATUS);
+        void refreshVisualReviewQueue();
+        setStatus({
+          tone: "success",
+          title: nextStatus.alreadyRunning ? "Visual mode ready" : "Visual mode started",
+          detail:
+            "Screen monitoring is active in review-only mode. OCR and AI publishing stay blocked until manual review.",
+        });
+      },
+    );
 
   const handleLogin = async () => {
     const normalizedEmail = email.trim().toLowerCase();
@@ -2005,326 +2749,129 @@ export default function App() {
       setPassword("");
       setTelemetryStatus(DEFAULT_TELEMETRY_STATUS);
       setObserverFeedStatus(DEFAULT_OBSERVER_FEED_STATUS);
+      resetVisualModeUiState();
       resetDashboard();
       setStatus(DEFAULT_STATUS);
     }
   };
 
-  const syncTeams = async () =>
-    runAction("sync", "Syncing teams", async () => {
-      const matchId = requireActionableMatchId();
-      const result = await launcherApi.syncTeams(matchId);
-      applySyncResult(
-        result,
-        "Teams synced",
-        formatSyncDetail(
-          result,
-          `Prepared ${result.syncedCount} assigned teams from ${result.slotCount} slots for match ${result.matchId}. Logos are stored in ${result.teamAssetsDir}.`,
-        ),
-      );
+  const runProductionPreflight = async (
+    matchId: string,
+    selectedMatch: MatchSummary,
+  ) => {
+    setWorkflowState("PRODUCTION_CHECKING");
+    const result = await launcherApi.enterProductionMode({
+      matchId,
+      shadowTrackerPath,
+      selectedMatch: {
+        id: selectedMatch.id,
+        name: selectedMatch.name || null,
+        map: selectedMatch.map || null,
+        status: selectedMatch.status || null,
+        liveState: selectedMatch.liveState || null,
+        matchNumber:
+          typeof selectedMatch.matchNumber === "number"
+            ? selectedMatch.matchNumber
+            : null,
+      },
     });
 
-  const generateBranding = async () =>
-    runAction("branding", "Generating branding", async () => {
-      const matchId = requireActionableMatchId();
-      const result: GenerateBrandingResult = await launcherApi.generateBranding(
-        matchId,
-      );
-      setSlots(result.slots || []);
-      setTeamAssetsDir(result.teamAssetsDir || FALLBACKS.teamAssetsDir);
-      setBrandingConfigPath(
-        result.brandingConfigPath || FALLBACKS.brandingConfigPath,
-      );
-      setLastSyncTime(new Date().toISOString());
+    setProductionModeResult(result);
+    applyProductionArtifacts(result);
+
+    if (result.status === "BLOCKED") {
+      setWorkflowState("PRODUCTION_BLOCKED");
       setStatus({
-        tone: "success",
-        title: "Branding file generated",
-        detail: `Wrote ${result.teamCount} team branding entries for match ${result.matchId} to ${result.brandingConfigPath}.`,
-      });
-    });
-
-  const launchShadowTracker = async () =>
-    runAction("shadowtracker", "Launching ShadowTracker", async () => {
-      const matchId = requireActionableMatchId();
-      const result = await launcherApi.launchShadowTracker(
-        shadowTrackerPath,
-        matchId,
-      );
-
-      if (result.executablePath) {
-        setShadowTrackerPath(result.executablePath);
-      }
-      if (result.telemetry) {
-        setTelemetryStatus(result.telemetry);
-      }
-
-      const launchDetail = result.pid
-        ? `Started ShadowTrackerExtra.exe with PID ${result.pid}.`
-        : "Started ShadowTrackerExtra.exe.";
-      const telemetrySourceDetail = formatTelemetrySourceDetail(
-        result.telemetrySource,
-        result.telemetrySourceError,
-      );
-
-      setStatus({
-        tone: result.telemetrySourceError ? "neutral" : "success",
-        title: "ShadowTracker launched",
-        detail: joinDetailParts(
-          launchDetail,
-          telemetrySourceDetail,
-          `Telemetry remains stopped for match ${matchId} until Production Mode passes and you start it manually.`,
-        ),
-      });
-    });
-
-  const enterProductionMode = async () =>
-    runAction("production-mode", "Entering production mode", async () => {
-      const matchId = requireSelectedMatchId();
-      const selectedMatch =
-        dashboard.matches.find((match) => match.id === matchId) || null;
-
-      if (!selectedMatch) {
-        throw new Error("Select a match before entering production mode.");
-      }
-
-      setWorkflowState("PRODUCTION_CHECKING");
-      const result = await launcherApi.enterProductionMode({
-        matchId,
-        shadowTrackerPath,
-        selectedMatch: {
-          id: selectedMatch.id,
-          name: selectedMatch.name || null,
-          map: selectedMatch.map || null,
-          status: selectedMatch.status || null,
-          liveState: selectedMatch.liveState || null,
-          matchNumber:
-            typeof selectedMatch.matchNumber === "number"
-              ? selectedMatch.matchNumber
-              : null,
-        },
-      });
-
-      setProductionModeResult(result);
-      applyProductionArtifacts(result);
-
-      if (result.status === "BLOCKED") {
-        setWorkflowState("PRODUCTION_BLOCKED");
-        setStatus({
-          tone: "error",
-          title: "Production blocked",
-          detail:
-            result.blockingIssues[0] ||
-            "Resolve the blocking preflight issues before starting telemetry.",
-        });
-        return;
-      }
-
-      setWorkflowState("PRODUCTION_READY");
-      setStatus({
-        tone: result.status === "READY_WITH_WARNINGS" ? "neutral" : "success",
-        title:
-          result.status === "READY_WITH_WARNINGS"
-            ? "Production ready with warnings"
-            : "Production Ready",
+        tone: "error",
+        title: "Production blocked",
         detail:
-          result.warnings[0] ||
-          "Preflight passed. Telemetry can be started manually for the selected match.",
+          result.blockingIssues[0] ||
+          "Resolve the blocking preflight issues before starting the observer desk.",
       });
-    });
+      return result;
+    }
 
-  const startTelemetryBridge = async () =>
-    runAction("telemetry", "Starting telemetry bridge", async () => {
-      if (!telemetryBridgeAvailable) {
-        throw new Error(
-          "Telemetry bridge IPC is unavailable. Restart the Electron launcher to load the latest main process.",
-        );
-      }
+    setWorkflowState("PRODUCTION_READY");
+    return result;
+  };
 
-      const matchId = requireSelectedMatchId();
-      const selectedProductionModeResult =
-        productionModeResult?.matchId === matchId ? productionModeResult : null;
+  const startObserverFeedRuntime = async () => {
+    if (!telemetryBridgeAvailable) {
+      throw new Error("Launcher IPC is unavailable.");
+    }
 
-      if (observerFeedStatus.running) {
-        throw new Error(
-          "Stop the direct Observer Feed before starting the Telemetry Bridge.",
-        );
-      }
+    if (!isProductionEligibleLifecycleStatus(selectedMatchLifecycleStatus)) {
+      throw new Error("Current match is not eligible for observer feed start.");
+    }
 
-      if (
-        !selectedProductionModeResult ||
-        !isProductionReadyStatus(selectedProductionModeResult.status) ||
-        workflowState === "PRODUCTION_BLOCKED"
-      ) {
-        console.warn(
-          `[Production] Telemetry start refused: production mode not ready matchId=${matchId} workflowState=${workflowState} productionStatus=${
-            selectedProductionModeResult?.status || "none"
-          }`,
-        );
-        throw new Error(
-          "Enter Production Mode and resolve any blocking issues before starting telemetry.",
-        );
-      }
-
-      if (!isProductionEligibleLifecycleStatus(selectedMatchLifecycleStatus)) {
-        console.warn(
-          `[Production] Telemetry start refused: lifecycle not eligible matchId=${matchId} lifecycleStatus=${selectedMatchLifecycleStatus || "unknown"}`,
-        );
-        throw new Error(
-          "Current match is not eligible for telemetry start. Refresh the match state and retry.",
-        );
-      }
-
-      let result;
-      try {
-        result = await launcherApi.startTelemetryBridge(requireActionableMatchId());
-      } catch (error) {
-        if (dashboard.selectedTournamentId) {
-          try {
-            const [stages, matches] = await Promise.all([
-              launcherApi.listStages(dashboard.selectedTournamentId),
-              launcherApi.listMatches(dashboard.selectedTournamentId),
-            ]);
-            setDashboard((current) =>
-              current.selectedTournamentId !== dashboard.selectedTournamentId
-                ? current
-                : {
-                    ...current,
-                    stages,
-                    matches,
-                  },
-            );
-          } catch (refreshError) {
-            console.warn(
-              `[Production] Match refresh failed after telemetry start rejection: ${getErrorMessage(refreshError)}`,
-            );
-          }
-        }
-
-        try {
-          await refreshLiveMatchNow();
-        } catch (refreshError) {
-          console.warn(
-            `[Production] Live match refresh failed after telemetry start rejection: ${getErrorMessage(refreshError)}`,
-          );
-        }
-
-        try {
-          const nextTelemetryStatus = await launcherApi.getTelemetryStatus();
-          setTelemetryStatus(nextTelemetryStatus || DEFAULT_TELEMETRY_STATUS);
-        } catch (statusError) {
-          console.warn(
-            `[Production] Telemetry status refresh failed after start rejection: ${getErrorMessage(statusError)}`,
-          );
-          setTelemetryStatus(DEFAULT_TELEMETRY_STATUS);
-        }
-
-        throw error;
-      }
-
-      if (result.matchId && result.matchId !== dashboard.selectedMatchId) {
-        const resolvedMatch =
-          dashboard.matches.find((match) => match.id === result.matchId) || null;
-        setDashboard((current) => ({
-          ...current,
-          selectedStageId: resolvedMatch?.stageId ?? current.selectedStageId,
-          selectedMatchId: result.matchId || current.selectedMatchId,
-        }));
-      }
-      setTelemetryStatus(result);
-      setWorkflowState("PRODUCTION_LIVE");
-      await refreshLiveMatchNow();
-      const telemetrySourceDetail = formatTelemetrySourceDetail(
-        result.telemetrySource,
-        result.telemetrySourceError,
-      );
-      setStatus({
-        tone: result.telemetrySourceError ? "neutral" : "success",
-        title: result.alreadyRunning
-          ? "Telemetry bridge already running"
-          : "Telemetry bridge started",
-        detail: joinDetailParts(
-          telemetrySourceDetail,
-          `Sending authenticated ShadowTracker telemetry for match ${
-            result.matchId || dashboard.selectedMatchId
-          }. Bridge transport: ${result.connectionStatus.toUpperCase()}. Backend telemetry acceptance is shown in Runtime Status.`,
-        ),
-      });
-    });
-
-  const stopTelemetryBridge = async () =>
-    runAction("telemetry-stop", "Stopping telemetry bridge", async () => {
-      const result = await launcherApi.stopTelemetryBridge();
-      setTelemetryStatus(result || DEFAULT_TELEMETRY_STATUS);
-      setStatus({
-        tone: "neutral",
-        title: "Telemetry bridge stopped",
-        detail: `Bridge transport: ${(
-          result?.connectionStatus || DEFAULT_TELEMETRY_STATUS.connectionStatus
-        ).toUpperCase()}.`,
-      });
-    });
-
-  const startObserverFeed = async () =>
-    runAction("observer-feed", "Starting observer feed", async () => {
-      if (!telemetryBridgeAvailable) {
-        throw new Error(
-          "Launcher IPC is unavailable. Restart the Electron launcher and retry.",
-        );
-      }
-
-      const matchId = requireSelectedMatchId();
-      const selectedProductionModeResult =
-        productionModeResult?.matchId === matchId ? productionModeResult : null;
-
-      if (telemetryStatus.running) {
-        throw new Error(
-          "Stop the Telemetry Bridge before enabling the direct Observer Feed.",
-        );
-      }
-
-      if (
-        !selectedProductionModeResult ||
-        !isProductionReadyStatus(selectedProductionModeResult.status) ||
-        workflowState === "PRODUCTION_BLOCKED"
-      ) {
-        throw new Error(
-          "Enter Production Mode and resolve any blocking issues before enabling the direct Observer Feed.",
-        );
-      }
-
-      if (!isProductionEligibleLifecycleStatus(selectedMatchLifecycleStatus)) {
-        throw new Error(
-          "Current match is not eligible for direct Observer Feed start. Refresh the match state and retry.",
-        );
-      }
-
-      const result = await launcherApi.startObserverFeed(requireActionableMatchId());
-      setObserverFeedStatus(result);
-      setWorkflowState("PRODUCTION_LIVE");
-      await refreshLiveMatchNow();
-      setStatus({
-        tone: "success",
-        title: result.alreadyRunning
-          ? "Observer feed already running"
-          : "Observer feed started",
-        detail: joinDetailParts(
-          "ob.js is now forwarding ShadowTracker telemetry directly to Arenzyra.",
+    const result = await launcherApi.startObserverFeed(
+      requireActionableMatchId(),
+    );
+    setObserverFeedStatus(result || DEFAULT_OBSERVER_FEED_STATUS);
+    setStatus({
+      tone: "success",
+      title: result.alreadyRunning
+        ? "Observer feed ready"
+        : "Observer feed started",
+      detail:
+        joinDetailParts(
           formatConnectorSetupDetail(result.connector),
           formatObserverFeedDetail(result),
-        ),
-      });
+          result.expiresIn ? `Lease expires in ${result.expiresIn}.` : null,
+        ) || "Observer feed started.",
     });
+    void refreshLiveMatchNow();
+  };
 
-  const stopObserverFeed = async () =>
-    runAction("observer-feed-stop", "Stopping observer feed", async () => {
-      const result = await launcherApi.stopObserverFeed();
-      setObserverFeedStatus(result || DEFAULT_OBSERVER_FEED_STATUS);
-      setStatus({
-        tone: "neutral",
-        title: "Observer feed stopped",
-        detail: "Direct ob.js forwarding has been disabled.",
-      });
+  const stopObserverFeedRuntime = async () => {
+    const result = await launcherApi.stopObserverFeed();
+    setObserverFeedStatus(result || DEFAULT_OBSERVER_FEED_STATUS);
+    setStatus({
+      tone: "neutral",
+      title: "Observer feed stopped",
+      detail: "Observer feed runtime is no longer running.",
     });
+  };
+
+  const getReusableProductionModeResult = (matchId: string) => {
+    if (
+      productionModeResult?.matchId === matchId &&
+      (productionModeResult.status === "READY" ||
+        productionModeResult.status === "READY_WITH_WARNINGS")
+    ) {
+      return productionModeResult;
+    }
+    return null;
+  };
+
+  const toggleLiveDesk = async () =>
+    runAction(
+      observerFeedStatus.running ? "stop-observer-feed" : "start-live-desk",
+      observerFeedStatus.running ? "Stopping observer feed" : "Starting live desk",
+      async () => {
+        if (observerFeedStatus.running) {
+          await stopObserverFeedRuntime();
+          return;
+        }
+
+        const matchId = requireSelectedMatchId();
+        const selectedMatch =
+          dashboard.matches.find((match) => match.id === matchId) || null;
+
+        if (!selectedMatch) {
+          throw new Error("No match selected.");
+        }
+
+        const result =
+          getReusableProductionModeResult(matchId) ??
+          (await runProductionPreflight(matchId, selectedMatch));
+        if (result.status === "BLOCKED") {
+          return;
+        }
+
+        await startObserverFeedRuntime();
+      },
+    );
 
   const prepareNextMatch = async () =>
     runAction("prepare-next-match", "Preparing next match", async () => {
@@ -2373,6 +2920,7 @@ export default function App() {
         await launcherApi.resetTelemetryForMatchSwitch();
       setTelemetryStatus(resetTelemetry || DEFAULT_TELEMETRY_STATUS);
       setObserverFeedStatus(DEFAULT_OBSERVER_FEED_STATUS);
+      resetVisualModeUiState();
       setSlots([]);
       setLastSyncTime(null);
       setFinishedMatchId(null);
@@ -2399,18 +2947,12 @@ export default function App() {
           (typeof suggestion.nextMatch.matchNumber === "number"
             ? `Match ${suggestion.nextMatch.matchNumber}`
             : suggestion.nextMatch.id)
-        }. Telemetry remains stopped until you start it manually.`,
+        }. Observer stays idle until you start it manually.`,
       });
       console.info(
         `[Flow] Next match prepared and ready: matchId=${suggestion.nextMatch.id}`,
       );
     });
-
-  useEffect(() => {
-    if (!hasAuthenticatedSession(session) || !hasAllowedLauncherAccess(access)) {
-      setActivePage("launcher");
-    }
-  }, [session, access]);
 
   const filteredMatches = dashboard.selectedStageId
     ? dashboard.matches.filter((match) => match.stageId === dashboard.selectedStageId)
@@ -2457,6 +2999,8 @@ export default function App() {
     if (
       (telemetryStatus.running &&
         telemetryStatus.matchId === dashboard.selectedMatchId) ||
+      (visualModeStatus.running &&
+        visualModeStatus.matchId === dashboard.selectedMatchId) ||
       (observerFeedStatus.running &&
         observerFeedStatus.matchId === dashboard.selectedMatchId)
     ) {
@@ -2491,7 +3035,10 @@ export default function App() {
       return;
     }
 
-    if (busyAction === "production-mode" && workflowState === "PRODUCTION_CHECKING") {
+    if (
+      (busyAction === "production-mode" || busyAction === "start-live-desk") &&
+      workflowState === "PRODUCTION_CHECKING"
+    ) {
       return;
     }
 
@@ -2534,6 +3081,8 @@ export default function App() {
     selectedMatchLocked,
     telemetryStatus.matchId,
     telemetryStatus.running,
+    visualModeStatus.matchId,
+    visualModeStatus.running,
     workflowState,
   ]);
 
@@ -2559,14 +3108,12 @@ export default function App() {
       <LoginScreen
         email={email}
         password={password}
-        keepSignedIn={keepSignedIn}
         appVersion={LAUNCHER_VERSION}
         busy={authBusy}
         booting={booting}
         error={authError}
         onEmailChange={setEmail}
         onPasswordChange={setPassword}
-        onKeepSignedInChange={setKeepSignedIn}
         onSubmit={() => void handleLogin()}
       />
     );
@@ -2608,122 +3155,119 @@ export default function App() {
     );
   }
 
+  const lifecycleActionError = getMatchLifecycleActionError(
+    selectedMatchLifecycleStatus,
+  );
+  const organizationId =
+    session.organization?.id ?? session.user.organizationId ?? null;
+  const organizationName = session.organization?.name ?? null;
+  const observerRunningForSelectedMatch =
+    observerFeedStatus.running &&
+    observerFeedStatus.matchId === dashboard.selectedMatchId;
+  const canStartObserverFeed =
+    telemetryBridgeAvailable &&
+    Boolean(dashboard.selectedMatchId) &&
+    !observerFeedStatus.running &&
+    !lifecycleActionError;
+  const canStartVisualMode =
+    visualModeStatus.available &&
+    Boolean(dashboard.selectedMatchId) &&
+    !visualModeStatus.running &&
+    !telemetryStatus.running &&
+    !observerFeedStatus.running &&
+    !lifecycleActionError;
+
   return (
     <div className="desktop-shell">
       <DesktopSidebar
-        activePage={activePage}
         session={session}
-        onPageChange={setActivePage}
+        workflowState={workflowState}
+        observerRunning={observerRunningForSelectedMatch}
+        currentRoute={currentRoute}
+        onNavigate={setCurrentRoute}
         onLogout={() => void handleLogout()}
       />
-
-      <main className="desktop-main">
-        {activePage === "widgets" ? (
+      {currentRoute === "widgets" ? (
+        <main className="desktop-main desktop-main--widgets">
           <WidgetsScreen
-            organizationId={session.organization?.id || session.user.organizationId || null}
+            organizationId={organizationId}
           />
-        ) : (
-          <DashboardScreen
-            apiBase={apiBase}
-            session={session}
-            access={access}
-            license={access.license}
-            tournaments={dashboard.tournaments}
-            stages={dashboard.stages}
-            matches={filteredMatches}
-            selectedTournamentId={dashboard.selectedTournamentId}
-            selectedStageId={dashboard.selectedStageId}
-            selectedMatchId={dashboard.selectedMatchId}
-            teamAssetsDir={teamAssetsDir}
-            brandingConfigPath={brandingConfigPath}
-            shadowTrackerPath={shadowTrackerPath}
-            telemetryBridgeAvailable={telemetryBridgeAvailable}
-            telemetryStatus={telemetryStatus}
-            matchControl={activeSelectedMatchControl}
-            matchLifecycleStatus={selectedMatchLifecycleStatus}
-            matchLocked={selectedMatchLocked}
-            matchFinalizing={selectedMatchFinalizing}
-            nextMatchSuggestion={nextMatchSuggestion?.nextMatch ?? null}
-            nextMatchLoading={nextMatchLoading}
-            nextMatchError={nextMatchError}
-            preparingNextMatch={busyAction === "prepare-next-match"}
-            productionModeResult={selectedProductionModeResult}
-            enteringProductionMode={busyAction === "production-mode"}
-            canStartTelemetry={
-              telemetryStatus.running ||
-              (productionModeReady &&
-                !observerFeedStatus.running &&
-                !productionModeBlocked &&
-                isProductionEligibleLifecycleStatus(selectedMatchLifecycleStatus) &&
-                !selectedMatchFinalizing &&
-                !selectedMatchLocked)
-            }
-            observerFeedStatus={observerFeedStatus}
-            canStartObserverFeed={
-              observerFeedStatus.running ||
-              (productionModeReady &&
-                !telemetryStatus.running &&
-                !productionModeBlocked &&
-                isProductionEligibleLifecycleStatus(selectedMatchLifecycleStatus) &&
-                !selectedMatchFinalizing &&
-                !selectedMatchLocked)
-            }
-            status={status}
-            slots={slots}
-            lastSyncTime={lastSyncTime}
-            busyAction={busyAction}
-            loadingMatch={loadingMatch}
-            onTournamentChange={(value) =>
-              setDashboard((current) => ({
-                ...current,
-                selectedTournamentId: value,
-              }))
-            }
-            onStageChange={(value) =>
-              setDashboard((current) => ({
-                ...current,
-                selectedStageId: value,
-              }))
-            }
-            onMatchChange={(value) =>
-              setDashboard((current) => ({
-                ...current,
-                selectedMatchId: value,
-              }))
-            }
-            onShadowTrackerPathChange={setShadowTrackerPath}
-            onBrowseShadowTracker={() =>
-              void chooseFile(
-                "Select ShadowTrackerExtra.exe",
-                [{ name: "Executable", extensions: ["exe"] }],
-                shadowTrackerPath,
-              ).then((selected) => {
-                if (selected) {
-                  setShadowTrackerPath(selected);
-                }
-              })
-            }
-            onSyncTeams={() => void syncTeams()}
-            onGenerateBranding={() => void generateBranding()}
-            onLaunchShadowTracker={() => void launchShadowTracker()}
-            onEnterProductionMode={() => void enterProductionMode()}
-            onToggleTelemetry={() =>
-              void (
-                telemetryStatus.running ? stopTelemetryBridge() : startTelemetryBridge()
-              )
-            }
-            onToggleObserverFeed={() =>
-              void (
-                observerFeedStatus.running
-                  ? stopObserverFeed()
-                  : startObserverFeed()
-              )
-            }
-            onPrepareNextMatch={() => void prepareNextMatch()}
-            onLogout={() => void handleLogout()}
-          />
-        )}
-      </main>
+        </main>
+      ) : (
+        <DashboardScreen
+          organizationName={organizationName}
+          liveMatch={liveMatch}
+          workflowState={workflowState}
+          productionStatus={selectedProductionModeResult?.status ?? null}
+          tournaments={dashboard.tournaments}
+          stages={dashboard.stages}
+          matches={filteredMatches}
+          selectedTournamentId={dashboard.selectedTournamentId}
+          selectedStageId={dashboard.selectedStageId}
+          selectedMatchId={dashboard.selectedMatchId}
+          matchLifecycleStatus={selectedMatchLifecycleStatus}
+          matchLocked={selectedMatchLocked}
+          matchFinalizing={selectedMatchFinalizing}
+          nextMatchSuggestion={nextMatchSuggestion}
+          nextMatchLoading={nextMatchLoading}
+          nextMatchError={nextMatchError}
+          preparingNextMatch={busyAction === "prepare-next-match"}
+          observerFeedStatus={observerFeedStatus}
+          visualModeStatus={visualModeStatus}
+          visualGamePresetLabels={VISUAL_GAME_PRESET_LABELS}
+          visualSources={visualSources}
+          selectedVisualSourceId={selectedVisualSourceId}
+          visualCaptureFps={visualCaptureFps}
+          visualActiveRegionKey={visualActiveRegionKey}
+          visualRegionDraft={visualRegionDraft}
+          visualRegionDirty={visualRegionDirty}
+          visualReviewQueue={visualReviewQueue}
+          visualSourcesLoading={visualSourcesLoading}
+          visualModeError={visualModeError}
+          canStartObserverFeed={canStartObserverFeed}
+          canStartVisualMode={canStartVisualMode}
+          status={status}
+          busyAction={busyAction}
+          loadingMatch={loadingMatch}
+          onTournamentChange={(tournamentId) =>
+            setDashboard((current) => ({
+              ...current,
+              selectedTournamentId: tournamentId,
+            }))
+          }
+          onStageChange={(stageId) =>
+            setDashboard((current) => ({
+              ...current,
+              selectedStageId: stageId,
+            }))
+          }
+          onMatchChange={(matchId) =>
+            setDashboard((current) => ({
+              ...current,
+              selectedMatchId: matchId,
+            }))
+          }
+          onToggleLiveDesk={() => void toggleLiveDesk()}
+          onVisualGamePresetChange={handleVisualGamePresetChange}
+          onVisualSourceChange={handleVisualSourceChange}
+          onVisualFpsChange={handleVisualFpsChange}
+          onVisualRegionKeyChange={handleVisualRegionKeyChange}
+          onVisualRegionDraftChange={handleVisualRegionDraftChange}
+          onSaveVisualCalibration={() => void saveVisualCalibration()}
+          onCaptureVisualReviewCandidate={() =>
+            void captureVisualReviewCandidate()
+          }
+          onRunVisualReviewOcr={(id) => void runVisualReviewOcr(id)}
+          onClearVisualReviewQueue={() => void clearVisualReviewQueue()}
+          onIgnoreVisualReviewItem={(id) => void ignoreVisualReviewItem(id)}
+          onMarkVisualReviewItemReviewed={(id) =>
+            void markVisualReviewItemReviewed(id)
+          }
+          onRefreshVisualSources={() => void refreshVisualSources()}
+          onToggleVisualMode={() => void toggleVisualMode()}
+          onPrepareNextMatch={() => void prepareNextMatch()}
+        />
+      )}
     </div>
   );
 }

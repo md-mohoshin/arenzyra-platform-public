@@ -48,6 +48,15 @@ const envFlagEnabled = (value: string | null | undefined): boolean => {
   );
 };
 
+const OPEN_ID_LIKE_MIN_LENGTH = 14;
+
+const isRealPubgUidCandidate = (value: string | null | undefined): boolean => {
+  const normalized = value?.trim() ?? '';
+  return (
+    /^\d+$/.test(normalized) && normalized.length < OPEN_ID_LIKE_MIN_LENGTH
+  );
+};
+
 @Injectable()
 export class LiveSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('LiveSync');
@@ -370,20 +379,29 @@ export class LiveSyncService implements OnModuleInit, OnModuleDestroy {
           externalId: true,
           externalPlayerId: true,
           playerOpenId: true,
+          inGameId: true,
+          pubgPlayerId: true,
+          pubgIdSource: true,
         },
       }),
     ]);
     const teamMap = new Map(
       mappings.map((m) => [m.liveTeamId, m.managedTeamId]),
     );
-    const playerByExternalId = new Map(
-      players
-        .filter((player) => player.playerOpenId ?? player.externalPlayerId)
-        .map((player) => [
-          (player.playerOpenId ?? player.externalPlayerId) as string,
-          player,
-        ]),
-    );
+    const playerByExternalId = new Map<string, (typeof players)[number]>();
+    for (const player of players) {
+      for (const identity of [
+        player.externalPlayerId,
+        player.pubgPlayerId,
+        player.inGameId,
+        player.externalId,
+        player.playerOpenId,
+      ]) {
+        if (identity && !playerByExternalId.has(identity)) {
+          playerByExternalId.set(identity, player);
+        }
+      }
+    }
 
     for (const lp of livePlayers) {
       const existing = await this.prisma.playerMapping.findUnique({
@@ -412,23 +430,39 @@ export class LiveSyncService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (candidate && externalPlayerId) {
+        const realPubgUid = isRealPubgUidCandidate(externalPlayerId);
         const needsUpdate =
           candidate.externalId !== externalPlayerId ||
           candidate.externalPlayerId !== externalPlayerId ||
-          candidate.playerOpenId !== externalPlayerId ||
+          (realPubgUid &&
+            (candidate.inGameId !== externalPlayerId ||
+              candidate.pubgPlayerId !== externalPlayerId ||
+              candidate.playerOpenId === externalPlayerId ||
+              candidate.pubgIdSource !== 'PCOB')) ||
+          (!realPubgUid && candidate.playerOpenId !== externalPlayerId) ||
           candidate.ign !== resolvedIgn ||
           candidate.teamId !== (targetTeamId ?? null);
         if (needsUpdate) {
+          const data: Prisma.PlayerUncheckedUpdateInput = {
+            teamId: targetTeamId ?? undefined,
+            ign: resolvedIgn,
+            externalSource: 'PUBG_TELEMETRY',
+            externalId: externalPlayerId,
+            externalPlayerId,
+          };
+          if (realPubgUid) {
+            data.inGameId = externalPlayerId;
+            data.pubgPlayerId = externalPlayerId;
+            data.pubgIdSource = 'PCOB';
+            if (candidate.playerOpenId === externalPlayerId) {
+              data.playerOpenId = null;
+            }
+          } else {
+            data.playerOpenId = externalPlayerId;
+          }
           candidate = await this.prisma.player.update({
             where: { id: candidate.id },
-            data: {
-              teamId: targetTeamId ?? undefined,
-              ign: resolvedIgn,
-              externalSource: 'PUBG_TELEMETRY',
-              externalId: externalPlayerId,
-              externalPlayerId,
-              playerOpenId: externalPlayerId,
-            },
+            data,
             select: {
               id: true,
               ign: true,
@@ -437,48 +471,85 @@ export class LiveSyncService implements OnModuleInit, OnModuleDestroy {
               externalId: true,
               externalPlayerId: true,
               playerOpenId: true,
+              inGameId: true,
+              pubgPlayerId: true,
+              pubgIdSource: true,
             },
           });
           playerByExternalId.set(externalPlayerId, candidate);
         }
       }
 
-      if (
-        organizationId &&
-        externalPlayerId &&
-        (!candidate || !(candidate.playerOpenId ?? candidate.externalPlayerId))
-      ) {
-        candidate = await this.prisma.player.upsert({
-          where: { playerOpenId: externalPlayerId },
-          create: {
-            organizationId,
-            teamId: targetTeamId ?? undefined,
-            ign: resolvedIgn,
-            photoUrl: resolvePlayerPhoto(null),
-            source: PlayerSource.API,
-            externalSource: 'PUBG_TELEMETRY',
-            externalId: externalPlayerId,
-            externalPlayerId,
-            playerOpenId: externalPlayerId,
-          },
-          update: {
-            teamId: targetTeamId ?? undefined,
-            ign: resolvedIgn,
-            externalSource: 'PUBG_TELEMETRY',
-            externalId: externalPlayerId,
-            externalPlayerId,
-            playerOpenId: externalPlayerId,
-          },
-          select: {
-            id: true,
-            ign: true,
-            teamId: true,
-            photoUrl: true,
-            externalId: true,
-            externalPlayerId: true,
-            playerOpenId: true,
-          },
-        });
+      if (organizationId && externalPlayerId && !candidate) {
+        const realPubgUid = isRealPubgUidCandidate(externalPlayerId);
+        const select = {
+          id: true,
+          ign: true,
+          teamId: true,
+          photoUrl: true,
+          externalId: true,
+          externalPlayerId: true,
+          playerOpenId: true,
+          inGameId: true,
+          pubgPlayerId: true,
+          pubgIdSource: true,
+        } satisfies Prisma.PlayerSelect;
+        candidate = realPubgUid
+          ? await this.prisma.player.upsert({
+              where: {
+                organizationId_externalPlayerId: {
+                  organizationId,
+                  externalPlayerId,
+                },
+              },
+              create: {
+                organizationId,
+                teamId: targetTeamId ?? undefined,
+                ign: resolvedIgn,
+                photoUrl: resolvePlayerPhoto(null),
+                source: PlayerSource.API,
+                externalSource: 'PUBG_TELEMETRY',
+                externalId: externalPlayerId,
+                externalPlayerId,
+                inGameId: externalPlayerId,
+                pubgPlayerId: externalPlayerId,
+                pubgIdSource: 'PCOB',
+              },
+              update: {
+                teamId: targetTeamId ?? undefined,
+                ign: resolvedIgn,
+                externalSource: 'PUBG_TELEMETRY',
+                externalId: externalPlayerId,
+                externalPlayerId,
+                inGameId: externalPlayerId,
+                pubgPlayerId: externalPlayerId,
+                pubgIdSource: 'PCOB',
+              },
+              select,
+            })
+          : await this.prisma.player.upsert({
+              where: { playerOpenId: externalPlayerId },
+              create: {
+                organizationId,
+                teamId: targetTeamId ?? undefined,
+                ign: resolvedIgn,
+                photoUrl: resolvePlayerPhoto(null),
+                source: PlayerSource.API,
+                externalSource: 'PUBG_TELEMETRY',
+                externalId: externalPlayerId,
+                externalPlayerId,
+                playerOpenId: externalPlayerId,
+              },
+              update: {
+                teamId: targetTeamId ?? undefined,
+                ign: resolvedIgn,
+                externalSource: 'PUBG_TELEMETRY',
+                externalId: externalPlayerId,
+                externalPlayerId,
+                playerOpenId: externalPlayerId,
+              },
+              select,
+            });
         playerByExternalId.set(externalPlayerId, candidate);
       }
 

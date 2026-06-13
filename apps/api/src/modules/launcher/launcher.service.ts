@@ -7,16 +7,21 @@ import {
 } from '@nestjs/common';
 import { LicenseStatus, Prisma, Role, type License } from '@prisma/client';
 import type { AuthUser } from '../../common/auth/auth.types';
+import { syncLauncherLicenseState } from '../../common/org/launcher-license-state.util';
 import { effectiveOrganizationId } from '../../common/org/org.util';
 import { PrismaService } from '../../db/prisma.service';
 
 const STALE_SESSION_WINDOW_MS = 2 * 60 * 1000;
 const MAX_SESSION_START_RETRIES = 4;
+const DEFAULT_MAX_OBSERVERS = 1;
 
 export type LauncherLicenseReason =
   | 'LICENSE_EXPIRED'
   | 'LICENSE_MISSING'
-  | 'LICENSE_SUSPENDED';
+  | 'LICENSE_REVOKED'
+  | 'LICENSE_SUSPENDED'
+  | 'LAUNCHER_PLAN_REQUIRED'
+  | 'SUBSCRIPTION_EXPIRED';
 
 type LicenseView = {
   id: string;
@@ -31,6 +36,7 @@ type LicenseResolution = {
   reason: LauncherLicenseReason | null;
   license: LicenseView | null;
   record: License | null;
+  maxObservers: number;
 };
 
 @Injectable()
@@ -47,6 +53,7 @@ export class LauncherService {
       return {
         valid: true,
         license: resolution.license,
+        maxObservers: resolution.maxObservers,
       };
     }
 
@@ -54,6 +61,7 @@ export class LauncherService {
       valid: false,
       reason: resolution.reason,
       license: resolution.license,
+      maxObservers: resolution.maxObservers,
     };
   }
 
@@ -61,15 +69,16 @@ export class LauncherService {
     const organizationId = this.requireOrganization(actor);
     const resolution = await this.resolveLicense(organizationId);
 
-    if (!resolution.valid || !resolution.record || !resolution.license) {
+    if (!resolution.valid) {
       throw new ForbiddenException({
         error: resolution.reason ?? 'LICENSE_MISSING',
         license: resolution.license,
+        maxObservers: resolution.maxObservers,
       });
     }
 
-    const activeLicense = resolution.record;
     const licenseView = resolution.license;
+    const maxObservers = resolution.maxObservers;
     const normalizedMachineId = machineId.trim();
 
     for (let attempt = 1; attempt <= MAX_SESSION_START_RETRIES; attempt += 1) {
@@ -102,7 +111,7 @@ export class LauncherService {
               },
               update: {
                 userId: actor.id,
-                licenseId: activeLicense.id,
+                licenseId: resolution.record?.id ?? null,
                 endedAt: null,
                 lastSeenAt: now,
               },
@@ -110,7 +119,7 @@ export class LauncherService {
                 organizationId,
                 userId: actor.id,
                 machineId: normalizedMachineId,
-                licenseId: activeLicense.id,
+                licenseId: resolution.record?.id ?? null,
                 startedAt: now,
                 lastSeenAt: now,
               },
@@ -123,7 +132,7 @@ export class LauncherService {
               },
             });
 
-            if (activeSessions > activeLicense.maxObservers) {
+            if (activeSessions > maxObservers) {
               await tx.observerLauncherSession.update({
                 where: {
                   organizationId_machineId: {
@@ -140,7 +149,7 @@ export class LauncherService {
               throw new ConflictException({
                 error: 'OBSERVER_LIMIT_REACHED',
                 activeSessions,
-                maxObservers: activeLicense.maxObservers,
+                maxObservers,
                 machineId: normalizedMachineId,
                 license: licenseView,
               });
@@ -150,7 +159,7 @@ export class LauncherService {
               ok: true,
               machineId: normalizedMachineId,
               activeSessions,
-              maxObservers: activeLicense.maxObservers,
+              maxObservers,
               license: licenseView,
             };
           },
@@ -229,58 +238,73 @@ export class LauncherService {
   private async resolveLicense(
     organizationId: string,
   ): Promise<LicenseResolution> {
+    const syncState = await syncLauncherLicenseState(
+      this.prisma,
+      organizationId,
+    );
     const licenses = await this.prisma.license.findMany({
       where: { organizationId },
-      orderBy: [{ expiresAt: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
     });
-    const now = new Date();
 
-    const active = licenses.find(
-      (license) =>
-        license.status === LicenseStatus.ACTIVE &&
-        license.expiresAt.getTime() > now.getTime(),
-    );
-    if (active) {
+    if (!syncState.organizationFound || !syncState.hasLauncherPlan) {
       return {
-        valid: true,
-        reason: null,
-        license: this.toLicenseView(active),
-        record: active,
+        valid: false,
+        reason: 'LAUNCHER_PLAN_REQUIRED',
+        license: this.toFallbackLicenseView(licenses),
+        record: null,
+        maxObservers: this.resolveMaxObservers(licenses),
       };
     }
 
-    const suspended = licenses.find(
-      (license) => license.status === LicenseStatus.SUSPENDED,
-    );
-    if (suspended) {
+    if (!syncState.hasActiveSubscription) {
+      return {
+        valid: false,
+        reason: 'SUBSCRIPTION_EXPIRED',
+        license: this.toFallbackLicenseView(licenses),
+        record: null,
+        maxObservers: this.resolveMaxObservers(licenses),
+      };
+    }
+
+    const controlLicense = licenses[0] ?? null;
+    if (controlLicense?.status === LicenseStatus.REVOKED) {
+      return {
+        valid: false,
+        reason: 'LICENSE_REVOKED',
+        license: this.toLicenseView(controlLicense),
+        record: controlLicense,
+        maxObservers: controlLicense.maxObservers,
+      };
+    }
+
+    if (controlLicense?.status === LicenseStatus.SUSPENDED) {
       return {
         valid: false,
         reason: 'LICENSE_SUSPENDED',
-        license: this.toLicenseView(suspended),
-        record: suspended,
+        license: this.toLicenseView(controlLicense),
+        record: controlLicense,
+        maxObservers: controlLicense.maxObservers,
       };
     }
 
-    const expired = licenses.find(
-      (license) =>
-        license.status === LicenseStatus.EXPIRED ||
-        (license.status === LicenseStatus.ACTIVE &&
-          license.expiresAt.getTime() <= now.getTime()),
-    );
-    if (expired) {
+    const configLicense = this.resolveConfigLicense(licenses);
+    if (configLicense) {
       return {
-        valid: false,
-        reason: 'LICENSE_EXPIRED',
-        license: this.toLicenseView(expired),
-        record: expired,
+        valid: true,
+        reason: null,
+        license: this.toLicenseView(configLicense),
+        record: configLicense,
+        maxObservers: configLicense.maxObservers,
       };
     }
 
     return {
-      valid: false,
-      reason: 'LICENSE_MISSING',
+      valid: true,
+      reason: null,
       license: null,
       record: null,
+      maxObservers: DEFAULT_MAX_OBSERVERS,
     };
   }
 
@@ -292,6 +316,33 @@ export class LauncherService {
       expiresAt: license.expiresAt.toISOString(),
       maxObservers: license.maxObservers,
     };
+  }
+
+  private toFallbackLicenseView(licenses: License[]) {
+    const license =
+      licenses.find((item) => item.status === LicenseStatus.EXPIRED) ??
+      licenses.find((item) => item.status === LicenseStatus.REVOKED) ??
+      licenses.find((item) => item.status === LicenseStatus.SUSPENDED) ??
+      licenses[0] ??
+      null;
+
+    return license ? this.toLicenseView(license) : null;
+  }
+
+  private resolveConfigLicense(licenses: License[]) {
+    return (
+      licenses.find((item) => item.status === LicenseStatus.ACTIVE) ??
+      licenses.find((item) => item.status === LicenseStatus.EXPIRED) ??
+      null
+    );
+  }
+
+  private resolveMaxObservers(licenses: License[]) {
+    return (
+      this.resolveConfigLicense(licenses)?.maxObservers ??
+      licenses[0]?.maxObservers ??
+      DEFAULT_MAX_OBSERVERS
+    );
   }
 
   private isRetryableWriteConflict(error: unknown) {

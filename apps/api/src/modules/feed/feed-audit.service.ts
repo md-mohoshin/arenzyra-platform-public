@@ -58,7 +58,10 @@ export class FeedAuditService implements OnModuleInit, OnModuleDestroy {
     const idx = list.findIndex((e) => e.id === id);
     if (idx === -1) return { removed: false, reason: 'not_found' };
     const entry = list[idx];
-    if (entry.authoritySource === 'PCOB_AUTHORITATIVE') {
+    if (
+      entry.authoritySource === 'PCOB_AUTHORITATIVE' ||
+      entry.authoritySource === 'API_AUTHORITATIVE'
+    ) {
       return { removed: false, reason: 'pcob_authoritative' };
     }
     if (entry.source !== 'pcob-simulator' && entry.source !== 'manual') {

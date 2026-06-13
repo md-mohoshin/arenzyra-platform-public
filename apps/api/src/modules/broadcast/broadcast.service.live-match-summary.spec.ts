@@ -22,11 +22,16 @@ describe('BroadcastService live match summary', () => {
 
     jest.spyOn(service, 'findLiveMatchForBroadcastOrg').mockResolvedValue({
       id: 'match-1',
+      tournamentId: 'tournament-1',
+      stageId: 'stage-1',
+      groupId: 'group-1',
       status: MatchStatus.LIVE,
+      liveState: LiveState.LIVE,
       matchNumber: 11,
       name: 'Match 11',
       map: 'ERANGEL',
-      tournament: { name: 'Test 1' },
+      updatedAt: new Date('2026-03-10T18:39:25.217Z'),
+      tournament: { name: 'Test 1', logoUrl: '/logo.png' },
       stage: { name: 'Stage 1' },
       group: null,
       scheduledAt: new Date('2026-03-10T18:39:25.217Z'),
@@ -39,12 +44,19 @@ describe('BroadcastService live match summary', () => {
     ).resolves.toMatchObject({
       id: 'match-1',
       matchId: 'match-1',
+      tournamentId: 'tournament-1',
+      stageId: 'stage-1',
+      groupId: 'group-1',
       status: MatchStatus.LIVE,
+      liveState: LiveState.LIVE,
       matchNumber: 11,
+      matchName: 'Match 11',
       map: 'ERANGEL',
       tournamentName: 'Test 1',
+      tournamentLogo: '/logo.png',
       stageName: 'Stage 1',
       startsAt: '2026-03-10T18:39:25.217Z',
+      endedAt: null,
     });
   });
 
@@ -111,7 +123,7 @@ describe('BroadcastService live match summary', () => {
     );
 
     jest
-      .spyOn(service as never, 'reconcileLiveMatchConflicts' as never)
+      .spyOn(service as never, 'detectLiveMatchConflicts' as never)
       .mockResolvedValue(undefined as never);
     jest
       .spyOn(service as never, 'fetchSponsors' as never)
@@ -174,7 +186,7 @@ describe('BroadcastService live match summary', () => {
     );
 
     jest
-      .spyOn(service as never, 'reconcileLiveMatchConflicts' as never)
+      .spyOn(service as never, 'detectLiveMatchConflicts' as never)
       .mockResolvedValue(undefined as never);
     jest
       .spyOn(service as never, 'fetchSponsors' as never)

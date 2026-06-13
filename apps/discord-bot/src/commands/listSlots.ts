@@ -20,7 +20,10 @@ export const listSlotsCommand = {
   ) {
     await interaction.deferReply();
     const sessionId = interaction.options.getString('session-id', true);
-    const content = await services.sessionService.listSlots(sessionId);
+    const content = await services.sessionService.listSlots(
+      sessionId,
+      interaction.guild,
+    );
     await interaction.editReply(content);
   },
 };

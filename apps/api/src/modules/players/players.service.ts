@@ -4,7 +4,12 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { Prisma, type Player, PlayerSource } from '@prisma/client';
+import {
+  Prisma,
+  type Player,
+  PlayerSource,
+  SessionRegistrationStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../db/prisma.service';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { requireOrgMatch } from '../../common/org/org.util';
@@ -29,6 +34,33 @@ export type PlayerBody = {
   externalId?: string | null;
 };
 
+export type DiscordPlayerPhotoBody = {
+  sessionId?: string | null;
+  registrationMode?: string | null;
+  uid?: string | null;
+  playerUid?: string | null;
+  inGameId?: string | null;
+  playerName?: string | null;
+  name?: string | null;
+  ign?: string | null;
+  teamName?: string | null;
+};
+
+type PlayerTeamSummary = {
+  id: string;
+  name: string;
+  tag: string | null;
+};
+
+export type DiscordPlayerPhotoTarget = {
+  player: Player;
+  created: boolean;
+  uid: string;
+  playerName: string;
+  team: PlayerTeamSummary | null;
+  matchedRoster: boolean;
+};
+
 @Injectable()
 export class PlayersService {
   constructor(private prisma: PrismaService) {}
@@ -47,6 +79,188 @@ export class PlayersService {
         defaultTeamLogoUrl: false,
       },
     }) as Promise<OrgBrandingDefaults | null>;
+  }
+
+  private cleanString(value: unknown) {
+    if (value === null || value === undefined) return null;
+    let trimmed: string;
+    if (typeof value === 'string') {
+      trimmed = value.trim();
+    } else if (typeof value === 'number') {
+      trimmed = Number.isFinite(value) ? value.toString().trim() : '';
+    } else if (typeof value === 'boolean' || typeof value === 'bigint') {
+      trimmed = value.toString().trim();
+    } else {
+      return null;
+    }
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private cleanPlayerUid(value: unknown) {
+    const cleaned = this.cleanString(value)?.replace(/\s+/g, '') ?? null;
+    return cleaned && cleaned.length > 0 ? cleaned : null;
+  }
+
+  private rosterPlayerContext(
+    rosterJson: unknown,
+    uid: string,
+  ): { playerName: string } | null {
+    if (
+      !rosterJson ||
+      typeof rosterJson !== 'object' ||
+      Array.isArray(rosterJson)
+    ) {
+      return null;
+    }
+
+    const roster = rosterJson as Record<string, unknown>;
+    if (roster.type !== 'TOURNAMENT_ROSTER' || !Array.isArray(roster.players)) {
+      return null;
+    }
+
+    const uidKey = uid.toLowerCase();
+    for (const rawPlayer of roster.players) {
+      if (
+        !rawPlayer ||
+        typeof rawPlayer !== 'object' ||
+        Array.isArray(rawPlayer)
+      ) {
+        continue;
+      }
+
+      const player = rawPlayer as Record<string, unknown>;
+      const playerUid = this.cleanPlayerUid(player.uid);
+      if (!playerUid || playerUid.toLowerCase() !== uidKey) {
+        continue;
+      }
+
+      const playerName = this.cleanString(player.name);
+      return playerName ? { playerName } : null;
+    }
+
+    return null;
+  }
+
+  private async sessionRosterPhotoContext(
+    orgId: string,
+    sessionId: string | null,
+    uid: string,
+  ): Promise<{
+    playerName: string;
+    team: PlayerTeamSummary;
+  } | null> {
+    if (!sessionId) {
+      return null;
+    }
+
+    const registrations = await this.prisma.sessionRegistration.findMany({
+      where: {
+        organizationId: orgId,
+        sessionId,
+        deletedAt: null,
+        status: {
+          notIn: [
+            SessionRegistrationStatus.REMOVED,
+            SessionRegistrationStatus.DECLINED,
+          ],
+        },
+      },
+      select: {
+        tournamentRosterJson: true,
+        team: {
+          select: {
+            id: true,
+            name: true,
+            tag: true,
+          },
+        },
+      },
+      orderBy: [{ slotNumber: 'asc' }, { updatedAt: 'desc' }],
+    });
+
+    for (const registration of registrations) {
+      const context = this.rosterPlayerContext(
+        registration.tournamentRosterJson,
+        uid,
+      );
+      if (context) {
+        return {
+          playerName: context.playerName,
+          team: registration.team,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  private async resolveTeamByNameOrTag(
+    orgId: string,
+    teamName: string | null,
+  ): Promise<PlayerTeamSummary | null> {
+    const query = this.cleanString(teamName);
+    if (!query) {
+      return null;
+    }
+
+    return this.prisma.team.findFirst({
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        OR: [
+          { name: { equals: query, mode: 'insensitive' } },
+          { tag: { equals: query, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        name: true,
+        tag: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  private async findPlayerByUid(
+    orgId: string,
+    uid: string,
+  ): Promise<Player | null> {
+    const byExternalPlayerId = await this.prisma.player.findFirst({
+      where: {
+        organizationId: orgId,
+        externalPlayerId: uid,
+        deletedAt: null,
+      },
+    });
+    if (byExternalPlayerId) {
+      return byExternalPlayerId;
+    }
+
+    return this.prisma.player.findFirst({
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        OR: [{ pubgPlayerId: uid }, { inGameId: uid }, { playerOpenId: uid }],
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  private async canAssignExternalPlayerId(
+    orgId: string,
+    playerId: string,
+    uid: string,
+  ) {
+    const existing = await this.prisma.player.findFirst({
+      where: {
+        organizationId: orgId,
+        externalPlayerId: uid,
+        deletedAt: null,
+        NOT: { id: playerId },
+      },
+      select: { id: true },
+    });
+    return !existing;
   }
 
   async list(orgId: string, actor?: AuthUser | null): Promise<Player[]> {
@@ -215,6 +429,104 @@ export class PlayersService {
     });
   }
 
+  async prepareDiscordPlayerPhotoTarget(
+    orgId: string,
+    body: DiscordPlayerPhotoBody,
+    actor?: AuthUser | null,
+  ): Promise<DiscordPlayerPhotoTarget> {
+    requireOrgMatch(actor ?? null, orgId);
+    const uid = this.cleanPlayerUid(
+      body?.uid ?? body?.playerUid ?? body?.inGameId,
+    );
+    if (!uid) {
+      throw new BadRequestException('player uid is required');
+    }
+
+    const rosterContext = await this.sessionRosterPhotoContext(
+      orgId,
+      this.cleanString(body?.sessionId),
+      uid,
+    );
+    const requestedTeamName = this.cleanString(body?.teamName);
+    const requestedPlayerName = this.cleanString(
+      body?.playerName ?? body?.name ?? body?.ign,
+    );
+    const team =
+      requestedTeamName !== null
+        ? await this.resolveTeamByNameOrTag(orgId, requestedTeamName)
+        : (rosterContext?.team ?? null);
+    const playerName = requestedPlayerName ?? rosterContext?.playerName ?? uid;
+    const existing = await this.findPlayerByUid(orgId, uid);
+
+    if (existing) {
+      const data: Prisma.PlayerUncheckedUpdateInput = {
+        ign: playerName,
+        inGameId: uid,
+        pubgPlayerId: uid,
+        isActive: true,
+      };
+      if (!existing.teamId && team) {
+        data.teamId = team.id;
+      }
+      if (await this.canAssignExternalPlayerId(orgId, existing.id, uid)) {
+        data.externalPlayerId = uid;
+      }
+
+      const player = await this.prisma.player.update({
+        where: { id: existing.id },
+        data,
+      });
+      return {
+        player,
+        created: false,
+        uid,
+        playerName,
+        team: team ?? null,
+        matchedRoster: Boolean(rosterContext),
+      };
+    }
+
+    try {
+      const player = await this.prisma.player.create({
+        data: {
+          organizationId: orgId,
+          teamId: team?.id ?? undefined,
+          ign: playerName,
+          inGameId: uid,
+          pubgPlayerId: uid,
+          externalPlayerId: uid,
+          photoUrl: null,
+          source: PlayerSource.MANUAL,
+          isActive: true,
+        },
+      });
+      return {
+        player,
+        created: true,
+        uid,
+        playerName,
+        team: team ?? null,
+        matchedRoster: Boolean(rosterContext),
+      };
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') {
+        throw error;
+      }
+      const player = await this.findPlayerByUid(orgId, uid);
+      if (!player) {
+        throw error;
+      }
+      return {
+        player,
+        created: false,
+        uid,
+        playerName,
+        team: team ?? null,
+        matchedRoster: Boolean(rosterContext),
+      };
+    }
+  }
+
   async update(
     orgId: string,
     playerId: string,
@@ -341,6 +653,34 @@ export class PlayersService {
     const updated = await this.prisma.player.update({
       where: { id: playerId },
       data,
+    });
+    return {
+      ...updated,
+      photoUrl: resolvePlayerPhoto(updated.photoUrl, branding),
+    };
+  }
+
+  async updateDiscordServicePhoto(
+    orgId: string,
+    playerId: string,
+    photoUrl: string,
+    actor?: AuthUser | null,
+  ): Promise<Player> {
+    requireOrgMatch(actor ?? null, orgId);
+    if (!actor?.serviceToken) {
+      throw new ForbiddenException('Bot service token required');
+    }
+
+    const existing = await this.prisma.player.findFirst({
+      where: { id: playerId, organizationId: orgId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException('Player not found');
+
+    const branding = await this.getBrandingDefaults(orgId);
+    const updated = await this.prisma.player.update({
+      where: { id: playerId },
+      data: { photoUrl },
     });
     return {
       ...updated,

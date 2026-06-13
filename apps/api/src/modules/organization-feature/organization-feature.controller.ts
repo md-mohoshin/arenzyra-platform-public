@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Patch, Query, Req } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import {
   IsArray,
   IsBoolean,
@@ -10,6 +10,7 @@ import {
 import { Type } from 'class-transformer';
 import type { Request } from 'express';
 import type { AuthUser } from '../../common/auth/auth.types';
+import { Roles } from '../../common/auth/roles.decorator';
 import { OrganizationFeatureService } from './organization-feature.service';
 import { effectiveOrganizationId } from '../../common/org/org.util';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
@@ -55,6 +56,7 @@ export class OrganizationFeatureController {
   }
 
   @Patch()
+  @Roles(Role.SUPER_ADMIN)
   async update(
     @Body() dto: UpdateFeaturesDto,
     @Req() req: Request,

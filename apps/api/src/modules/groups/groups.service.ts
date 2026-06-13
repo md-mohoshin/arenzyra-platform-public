@@ -8,7 +8,15 @@ import { PrismaService } from '../../db/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
-import { deriveGroupStateFromMatches } from '../../common/live-state.util';
+import {
+  deriveGroupStateFromMatches,
+  isLiveMatchLifecycle,
+} from '../../common/live-state.util';
+import {
+  recalcStageLiveState,
+  recalcTournamentLiveState,
+} from '../../common/live-state-sync.util';
+import { buildQualificationSettingsData } from '../../common/qualification-settings.util';
 
 type StageWithTournament = Prisma.StageGetPayload<{
   select: {
@@ -110,6 +118,9 @@ export class GroupsService {
         endedAt: true,
         maxTeams: true,
         qualificationRule: true,
+        qualifiedTeamsCount: true,
+        qualificationBubbleCount: true,
+        qualificationLabel: true,
         createdAt: true,
         updatedAt: true,
         organizationId: true,
@@ -140,6 +151,9 @@ export class GroupsService {
         endedAt: true,
         maxTeams: true,
         qualificationRule: true,
+        qualifiedTeamsCount: true,
+        qualificationBubbleCount: true,
+        qualificationLabel: true,
         createdAt: true,
         updatedAt: true,
         stage: { select: { id: true, name: true, tournamentId: true } },
@@ -171,6 +185,9 @@ export class GroupsService {
         endedAt: true,
         maxTeams: true,
         qualificationRule: true,
+        qualifiedTeamsCount: true,
+        qualificationBubbleCount: true,
+        qualificationLabel: true,
         createdAt: true,
         updatedAt: true,
         stage: { select: { tournamentId: true } },
@@ -197,6 +214,9 @@ export class GroupsService {
       endedAt: g.endedAt,
       maxTeams: g.maxTeams,
       qualificationRule: g.qualificationRule,
+      qualifiedTeamsCount: g.qualifiedTeamsCount,
+      qualificationBubbleCount: g.qualificationBubbleCount,
+      qualificationLabel: g.qualificationLabel,
       createdAt: g.createdAt,
       updatedAt: g.updatedAt,
       teamCount: g.groupTeams?.length ?? 0,
@@ -212,14 +232,16 @@ export class GroupsService {
   ): Promise<Group> {
     const stage = await this.ensureStage(orgId, stageId);
     if (!body?.name) throw new BadRequestException('name is required');
-    const maxTeams = Math.min(Math.max(body?.maxTeams ?? 25, 1), 100);
+    const maxTeams = body?.maxTeams ?? null;
     const qualificationRule = body?.qualificationRule ?? null;
+    const qualificationSettings = buildQualificationSettingsData(body);
 
     const created = await this.prisma.group.create({
       data: {
         name: body.name,
         maxTeams,
         qualificationRule,
+        ...qualificationSettings,
         stageId,
         organizationId:
           stage.tournament.organizationId ??
@@ -255,29 +277,15 @@ export class GroupsService {
         stageId,
         deletedAt: null,
       },
-      select: {
-        id: true,
-        name: true,
-        stageId: true,
-        liveState: true,
-        liveAt: true,
-        endedAt: true,
-        maxTeams: true,
-        qualificationRule: true,
-        createdAt: true,
-        updatedAt: true,
-        deletedAt: true,
-        organizationId: true,
-      },
     });
     if (!group) throw new NotFoundException('Group not found');
 
     const data: Prisma.GroupUpdateInput = {};
     if (body?.name !== undefined) data.name = body.name;
-    if (body?.maxTeams !== undefined)
-      data.maxTeams = Math.min(Math.max(body.maxTeams, 1), 100);
+    if (body?.maxTeams !== undefined) data.maxTeams = body.maxTeams;
     if (body?.qualificationRule !== undefined)
       data.qualificationRule = body.qualificationRule;
+    Object.assign(data, buildQualificationSettingsData(body));
 
     if (!Object.keys(data).length) return group;
 
@@ -311,22 +319,51 @@ export class GroupsService {
         stageId,
         deletedAt: null,
       },
-      select: { id: true, name: true, stageId: true, maxTeams: true },
+      select: {
+        id: true,
+        name: true,
+        stageId: true,
+        maxTeams: true,
+        matches: {
+          where: { deletedAt: null },
+          select: {
+            id: true,
+            status: true,
+            liveState: true,
+            controlState: { select: { state: true } },
+          },
+        },
+      },
     });
     if (!group) throw new NotFoundException('Group not found');
 
-    const matchCount = await this.prisma.match.count({
-      where: { groupId, deletedAt: null },
-    });
-    if (matchCount > 0) {
-      throw new BadRequestException('Cannot delete group that has matches');
+    const hasLiveMatch = (group.matches ?? []).some((match) =>
+      isLiveMatchLifecycle(match),
+    );
+    if (hasLiveMatch) {
+      throw new BadRequestException(
+        'Cannot delete group while a match is LIVE',
+      );
     }
 
     const deletedAt = new Date();
 
-    await this.prisma.group.update({
-      where: { id: groupId },
-      data: { deletedAt },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.match.updateMany({
+        where: { groupId, deletedAt: null },
+        data: { deletedAt },
+      });
+
+      await tx.group.update({
+        where: { id: groupId },
+        data: { deletedAt },
+      });
+
+      const stageResult = await recalcStageLiveState(tx, stageId);
+      await recalcTournamentLiveState(
+        tx,
+        stageResult?.tournamentId ?? stage.tournament.id,
+      );
     });
 
     await this.audit.log({
@@ -443,14 +480,6 @@ export class GroupsService {
       );
     }
 
-    const limit = group.maxTeams && group.maxTeams > 0 ? group.maxTeams : 25;
-    const currentCount = await this.prisma.groupTeam.count({
-      where: { groupId, deletedAt: null },
-    });
-    if (currentCount + 1 > limit) {
-      throw new BadRequestException(`Group is full (max ${limit} teams)`);
-    }
-
     // If a soft-deleted row exists, restore it instead of creating a duplicate.
     const revived = await this.prisma.groupTeam.updateMany({
       where: { groupId, tournamentTeamId },
@@ -509,11 +538,6 @@ export class GroupsService {
     const tournamentId = group.stage?.tournamentId;
     if (!tournamentId)
       throw new BadRequestException('Invalid tournament for group');
-
-    const limit = group.maxTeams && group.maxTeams > 0 ? group.maxTeams : 25;
-    if (uniqueTeamIds.length > limit) {
-      throw new BadRequestException(`Group is full (max ${limit} teams)`);
-    }
 
     if (uniqueTeamIds.length > 0) {
       const validTeams = await this.prisma.tournamentTeam.findMany({

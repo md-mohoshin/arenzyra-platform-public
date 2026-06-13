@@ -7,24 +7,41 @@ datasource db {
 }
 
 model AdminAdjustment {
-  id           String     @id @default(uuid())
-  tournamentId String
-  matchId      String?
-  teamId       String
-  pointsDelta  Int
-  reason       String?
-  createdById  String?
-  createdAt    DateTime   @default(now())
-  deletedAt    DateTime?
-  team         Team       @relation(fields: [teamId], references: [id])
-  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
-  match        Match?     @relation(fields: [matchId], references: [id], onDelete: Cascade)
-  createdBy    User?      @relation("AdminAdjustmentCreatedBy", fields: [createdById], references: [id])
+  id             String               @id @default(uuid())
+  organizationId String?
+  tournamentId   String?
+  stageId        String?
+  groupId        String?
+  sessionId      String?
+  matchId        String?
+  teamId         String
+  scope          AdminAdjustmentScope @default(MATCH)
+  type           AdminAdjustmentType  @default(POINT_DELTA)
+  pointsDelta    Int                  @default(0)
+  reason         String?
+  note           String?
+  createdById    String?
+  createdAt      DateTime             @default(now())
+  deletedAt      DateTime?
+  revokedAt      DateTime?
+  revokedById    String?
+  revokeReason   String?
+  team           Team                 @relation(fields: [teamId], references: [id])
+  tournament     Tournament?          @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  match          Match?               @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  createdBy      User?                @relation("AdminAdjustmentCreatedBy", fields: [createdById], references: [id])
 
+  @@index([organizationId])
   @@index([tournamentId])
+  @@index([stageId])
+  @@index([groupId])
+  @@index([sessionId])
   @@index([teamId])
   @@index([matchId])
+  @@index([scope])
+  @@index([type])
   @@index([deletedAt])
+  @@index([revokedAt])
 }
 
 model AdminOrganizationLink {
@@ -84,24 +101,27 @@ model FeedLock {
 }
 
 model Group {
-  id                      String                   @id @default(uuid())
-  name                    String
-  stageId                 String
-  organizationId          String
-  liveState               LiveState                @default(UPCOMING)
-  liveAt                  DateTime?
-  endedAt                 DateTime?
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  deletedAt               DateTime?
-  maxTeams                Int?                     @default(25)
-  qualificationRule       String?
-  stage                   Stage                    @relation(fields: [stageId], references: [id], onDelete: Cascade)
-  organization            Organization             @relation(fields: [organizationId], references: [id])
-  groupTeams              GroupTeam[]
-  matches                 Match[]
-  tournamentRegistrations TournamentRegistration[]
-  tournamentInvites       TournamentInvite[]
+  id                       String                   @id @default(uuid())
+  name                     String
+  stageId                  String
+  organizationId           String
+  liveState                LiveState                @default(UPCOMING)
+  liveAt                   DateTime?
+  endedAt                  DateTime?
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+  deletedAt                DateTime?
+  maxTeams                 Int?
+  qualificationRule        String?
+  qualifiedTeamsCount      Int?
+  qualificationBubbleCount Int?
+  qualificationLabel       String?
+  stage                    Stage                    @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  organization             Organization             @relation(fields: [organizationId], references: [id])
+  groupTeams               GroupTeam[]
+  matches                  Match[]
+  tournamentRegistrations  TournamentRegistration[]
+  tournamentInvites        TournamentInvite[]
 
   @@index([deletedAt])
   @@index([stageId])
@@ -125,7 +145,7 @@ model GroupTeam {
 }
 
 model Match {
-  id                      String                @id @default(uuid())
+  id                      String                   @id @default(uuid())
   name                    String?
   tournamentId            String?
   organizationId          String
@@ -135,39 +155,40 @@ model Match {
   sessionId               String?
   gameId                  String?
   rulesetId               String?
-  status                  MatchStatus           @default(DRAFT)
-  liveState               LiveState             @default(UPCOMING)
+  status                  MatchStatus              @default(DRAFT)
+  liveState               LiveState                @default(UPCOMING)
   liveAt                  DateTime?
   endedAt                 DateTime?
   endedReason             String?
-  createdAt               DateTime              @default(now())
-  updatedAt               DateTime              @updatedAt
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
   deletedAt               DateTime?
   lobbyCode               String?
   matchNumber             Int?
-  slotCount               Int                   @default(25)
+  slotCount               Int                      @default(25)
   scheduledAt             DateTime?
   startedAt               DateTime?
-  recallEnabled           Boolean               @default(false)
+  recallEnabled           Boolean                  @default(false)
   map                     MatchMap?
-  dataMode                DataMode              @default(MANUAL)
-  dataSource              MatchDataSource       @default(MANUAL)
-  telemetrySource         TelemetrySource       @default(AUTO)
+  dataMode                DataMode                 @default(MANUAL)
+  dataSource              MatchDataSource          @default(MANUAL)
+  resultSource            MatchResultSource        @default(MANUAL)
+  telemetrySource         TelemetrySource          @default(AUTO)
   telemetrySourceLockedAt DateTime?
   pcobSessionId           String?
-  pcobStatus              PcobStatus            @default(PENDING)
-  pcobMode                Boolean               @default(false)
-  pcobKillSyncEnabled     Boolean               @default(false)
-  pcobLastSeenAt          DateTime?             @db.Timestamp(6)
+  pcobStatus              PcobStatus               @default(PENDING)
+  pcobMode                Boolean                  @default(false)
+  pcobKillSyncEnabled     Boolean                  @default(false)
+  pcobLastSeenAt          DateTime?                @db.Timestamp(6)
   pcobBoundAt             DateTime?
   adapterKey              String?
   notes                   String?
-  game                    Game?                 @relation(fields: [gameId], references: [id])
-  ruleset                 Ruleset?              @relation(fields: [rulesetId], references: [id])
-  group                   Group?                @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  stage                   Stage?                @relation(fields: [stageId], references: [id], onDelete: Cascade)
-  tournament              Tournament?           @relation(fields: [tournamentId], references: [id], onDelete: Restrict)
-  session                 Session?              @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  game                    Game?                    @relation(fields: [gameId], references: [id])
+  ruleset                 Ruleset?                 @relation(fields: [rulesetId], references: [id])
+  group                   Group?                   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  stage                   Stage?                   @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  tournament              Tournament?              @relation(fields: [tournamentId], references: [id], onDelete: Restrict)
+  session                 Session?                 @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   controlState            MatchControlState?
   events                  MatchEvent[]
   matchSlots              MatchSlot[]
@@ -190,9 +211,13 @@ model Match {
   matchScore              MatchScore?
   slotResults             MatchSlotResult[]
   topFragger              MatchTopFragger?
-  organization            Organization          @relation(fields: [organizationId], references: [id])
+  organization            Organization             @relation(fields: [organizationId], references: [id])
   widgetInstances         WidgetInstance[]
   standings               MatchStanding[]
+  teamBans                TeamBan[]
+  managerBans             ManagerBan[]
+  youtubeGiveaways        YoutubeGiveaway[]
+  youtubeLiveChatSessions YoutubeLiveChatSession[]
 
   @@index([deletedAt])
   @@index([groupId])
@@ -378,22 +403,30 @@ model Notification {
 }
 
 model Organization {
-  id                       String                       @id @default(uuid())
-  name                     String                       @unique
-  slug                     String                       @unique
-  broadcastKey             String                       @unique @default(dbgenerated("encode(gen_random_bytes(32), 'hex')")) @db.Char(64)
-  isActive                 Boolean                      @default(true)
-  createdAt                DateTime                     @default(now())
-  updatedAt                DateTime                     @updatedAt
+  id                       String                         @id @default(uuid())
+  name                     String                         @unique
+  slug                     String                         @unique
+  broadcastKey             String                         @unique @default(dbgenerated("encode(gen_random_bytes(32), 'hex')")) @db.Char(64)
+  isActive                 Boolean                        @default(true)
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
   deletedAt                DateTime?
   deletedBy                String?
   ownerUserId              String?
-  owner                    User?                        @relation("OrganizationOwner", fields: [ownerUserId], references: [id])
+  owner                    User?                          @relation("OrganizationOwner", fields: [ownerUserId], references: [id])
   kycNote                  String?
   kycReviewedAt            DateTime?
   kycReviewedBy            String?
-  kycStatus                KycStatus                    @default(PENDING)
-  status                   OrganizationStatus           @default(PENDING)
+  kycStatus                KycStatus                      @default(PENDING)
+  status                   OrganizationStatus             @default(PENDING)
+  accessMode               OrganizerAccessMode            @default(FULL_PRODUCTION)
+  planId                   String                         @default("production")
+  enabledGames             GameKey[]                      @default([PUBG_MOBILE])
+  enabledAddOns            String[]                       @default([])
+  subscriptionStatus       OrganizationSubscriptionStatus @default(ACTIVE)
+  trialStartedAt           DateTime?
+  trialEndsAt              DateTime?
+  paidUntil                DateTime?
   adminLinks               AdminOrganizationLink[]
   auditLogs                AuditLog[]
   organizerFeatures        OrganizerFeature[]
@@ -405,6 +438,9 @@ model Organization {
   tournamentInvites        TournamentInvite[]
   tournaments              Tournament[]
   sessions                 Session[]
+  sessionSponsors          SessionSponsor[]
+  sessionBrandings         SessionBranding[]
+  sessionDiscordConfigs    SessionDiscordConfig[]
   sessionRegistrations     SessionRegistration[]
   groups                   Group[]
   stages                   Stage[]
@@ -417,10 +453,15 @@ model Organization {
   matchTopFraggers         MatchTopFragger[]
   rulesets                 Ruleset[]
   users                    User[]
+  teamBans                 TeamBan[]
+  managerBans              ManagerBan[]
+  noShowBanSnapshots       NoShowBanSnapshot[]
+  resultBackups            ResultBackup[]
   wallet                   Wallet?
   mediaAssets              MediaAsset[]
   branding                 OrganizationBranding?
   discordConfig            OrganizationDiscordConfig?
+  discordGuilds            OrganizationDiscordGuild[]
   widgets                  Widget[]
   widgetPresets            WidgetPreset[]
   obsTemplates             OBSTemplate[]
@@ -430,27 +471,63 @@ model Organization {
   licenses                 License[]
   observerLauncherSessions ObserverLauncherSession[]
   widgetInstances          WidgetInstance[]
-  widgetApprovalEnforced   Boolean                      @default(false)
+  widgetApprovalEnforced   Boolean                        @default(false)
   widgetApprovals          OrganizationWidgetApproval[]
   standings                MatchStanding[]
   roundPlayerResults       RoundPlayerResult[]
+  youtubeChannels          YoutubeChannel[]
+  youtubeComments          YoutubeComment[]
+  youtubeReplies           YoutubeCommentReply[]
+  youtubeAutomationRules   YoutubeAutomationRule[]
+  youtubeGiveaways         YoutubeGiveaway[]
+  youtubeGiveawayEntries   YoutubeGiveawayEntry[]
+  youtubeGiveawayWinners   YoutubeGiveawayWinner[]
+  youtubeLiveSessions      YoutubeLiveChatSession[]
+  youtubeLiveMessages      YoutubeLiveChatMessage[]
+  youtubeLiveChatViewers   YoutubeLiveChatViewer[]
+  youtubeViewerProfiles    YoutubeViewerProfile[]
+  youtubePolls             YoutubePoll[]
+  youtubePollVotes         YoutubePollVote[]
+  youtubeChallenges        YoutubeChallenge[]
+  youtubeChallengeEntries  YoutubeChallengeEntry[]
+  youtubeChannelSnapshots  YoutubeChannelSnapshot[]
+  youtubeChatCommands      YoutubeChatCommand[]
+  youtubeChatTimers        YoutubeChatTimer[]
+  youtubeChatLogs          YoutubeChatLog[]
+  youtubeAuditLogs         YoutubeAuditLog[]
 
   @@index([deletedAt])
   @@index([kycStatus])
   @@index([status])
+  @@index([planId])
+  @@index([subscriptionStatus])
+  @@index([trialEndsAt])
+  @@index([paidUntil])
   @@index([ownerUserId])
 }
 
 model OrganizationApplication {
-  id              String                        @id @default(uuid())
-  name            String
-  email           String
-  passwordHash    String
-  applicantName   String
-  rejectionReason String?
-  status          OrganizationApplicationStatus @default(PENDING)
-  createdAt       DateTime                      @default(now())
-  updatedAt       DateTime                      @updatedAt
+  id                String                        @id @default(uuid())
+  name              String
+  email             String
+  passwordHash      String
+  applicantName     String
+  country           String?
+  whatsappNumber    String?
+  discordUsername   String?
+  websiteUrl        String?
+  contactMessage    String?
+  requestedPlan     String?
+  requestedPlanId   String?
+  requestedGameKey  GameKey?
+  requestedGameKeys GameKey[]                     @default([])
+  requestedAddOns   String?
+  requestedAddOnIds String[]                      @default([])
+  paymentMethod     String?
+  rejectionReason   String?
+  status            OrganizationApplicationStatus @default(PENDING)
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
 
   @@index([email])
   @@index([status])
@@ -496,7 +573,7 @@ model OrganizationDiscordConfig {
   id                          String       @id @default(uuid())
   organizationId              String       @unique
   enabled                     Boolean      @default(false)
-  guildId                     String?      @db.VarChar(32)
+  guildId                     String?      @unique @db.VarChar(32)
   guildName                   String?      @db.VarChar(120)
   hubCategoryId               String?      @db.VarChar(32)
   hubCategoryName             String?      @db.VarChar(120)
@@ -510,12 +587,24 @@ model OrganizationDiscordConfig {
   standingsChannelName        String?      @db.VarChar(120)
   supportChannelId            String?      @db.VarChar(32)
   supportChannelName          String?      @db.VarChar(120)
+  logoChannelIds              String?      @db.VarChar(1000)
   organizerRoleId             String?      @db.VarChar(32)
   organizerRoleName           String?      @db.VarChar(120)
   captainRoleId               String?      @db.VarChar(32)
   captainRoleName             String?      @db.VarChar(120)
   participantRoleId           String?      @db.VarChar(32)
   participantRoleName         String?      @db.VarChar(120)
+  staffRoleIds                Json?
+  earlyAccessRoleId           String?      @db.VarChar(32)
+  earlyAccessRoleName         String?      @db.VarChar(120)
+  vipAccessRoleId             String?      @db.VarChar(32)
+  vipAccessRoleName           String?      @db.VarChar(120)
+  botAvatarDataUri            String?
+  botAvatarSyncedAt           DateTime?
+  maxSessionCount             Int          @default(1)
+  maxGuildCount               Int          @default(1)
+  eventServerAccessMode       String       @default("PRIMARY") @db.VarChar(32)
+  accessExpiresAt             DateTime?
   autoCreateSessionCategories Boolean      @default(false)
   autoCreateSessionChannels   Boolean      @default(false)
   autoSyncRoles               Boolean      @default(false)
@@ -531,6 +620,39 @@ model OrganizationDiscordConfig {
 
   @@index([updatedById])
   @@index([lastValidatedAt])
+}
+
+model OrganizationDiscordGuild {
+  id                String       @id @default(uuid())
+  organizationId    String
+  guildId           String       @unique @db.VarChar(32)
+  guildName         String?      @db.VarChar(120)
+  enabled           Boolean      @default(true)
+  isPrimary         Boolean      @default(false)
+  lastValidatedAt   DateTime?
+  botAvatarSyncedAt DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, isPrimary])
+  @@index([enabled])
+  @@index([lastValidatedAt])
+}
+
+model DiscordGuildChannelPause {
+  id        String   @id @default(uuid())
+  guildId   String   @db.VarChar(32)
+  channelId String   @db.VarChar(32)
+  paused    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, channelId])
+  @@index([guildId])
+  @@index([channelId])
+  @@index([paused])
 }
 
 model OrganizerFeature {
@@ -860,6 +982,7 @@ model MatchSlotPlayerResult {
   playerName       String
   kills            Int      @default(0)
   knocks           Int      @default(0)
+  assists          Int      @default(0)
   isKnocked        Boolean  @default(false)
   isAlive          Boolean  @default(true)
   alive            Boolean? @default(true)
@@ -1176,7 +1299,10 @@ model Stage {
   order                          Int                      @default(1)
   startDate                      DateTime?
   type                           StageType                @default(GROUP)
-  maxTeams                       Int?                     @default(25)
+  maxTeams                       Int?
+  qualifiedTeamsCount            Int?
+  qualificationBubbleCount       Int?
+  qualificationLabel             String?
   groups                         Group[]
   matches                        Match[]
   stageTeams                     StageTeam[]
@@ -1248,7 +1374,7 @@ model Team {
   logoDarkUrl             String?
   accentDark              String?
   textOnDark              String?
-  tag                     String?                  @db.VarChar(12)
+  tag                     String?                  @db.VarChar(15)
   game                    Game?                    @relation(fields: [gameId], references: [id])
   adminAdjustments        AdminAdjustment[]
   matchSlots              MatchSlot[]
@@ -1275,6 +1401,7 @@ model Team {
   matchStandings          MatchStanding[]
   roundPlayerResults      RoundPlayerResult[]
   sessionRegistrations    SessionRegistration[]
+  teamBans                TeamBan[]
 
   @@index([organizationId, tag])
   @@index([deletedAt])
@@ -1350,38 +1477,50 @@ model TeamTag {
 }
 
 model Session {
-  id                  String                @id @default(uuid())
-  organizationId      String
-  name                String
-  slug                String?
-  type                SessionType           @default(SCRIM)
-  status              SessionStatus         @default(DRAFT)
-  description         String?
-  rulesetId           String?
-  gameId              String?
-  adapterKey          String?
-  maxTeams            Int                   @default(25)
-  slotCount           Int                   @default(25)
-  waitlistEnabled     Boolean               @default(true)
-  checkInEnabled      Boolean               @default(false)
-  registrationOpenAt  DateTime?
-  registrationCloseAt DateTime?
-  checkInOpenAt       DateTime?
-  checkInCloseAt      DateTime?
-  startsAt            DateTime?
-  endedAt             DateTime?
-  createdById         String?
-  updatedById         String?
-  createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
-  deletedAt           DateTime?
-  organization        Organization          @relation(fields: [organizationId], references: [id])
-  ruleset             Ruleset?              @relation(fields: [rulesetId], references: [id])
-  game                Game?                 @relation(fields: [gameId], references: [id])
-  createdBy           User?                 @relation("SessionCreatedBy", fields: [createdById], references: [id])
-  updatedBy           User?                 @relation("SessionUpdatedBy", fields: [updatedById], references: [id])
-  registrations       SessionRegistration[]
-  matches             Match[]
+  id                       String                @id @default(uuid())
+  organizationId           String
+  name                     String
+  slug                     String?
+  type                     SessionType           @default(SCRIM)
+  status                   SessionStatus         @default(DRAFT)
+  description              String?
+  logoUrl                  String?
+  bannerUrl                String?
+  rulesetId                String?
+  gameId                   String?
+  adapterKey               String?
+  maxTeams                 Int                   @default(25)
+  slotCount                Int                   @default(25)
+  qualifiedTeamsCount      Int?
+  qualificationBubbleCount Int?
+  qualificationLabel       String?
+  waitlistEnabled          Boolean               @default(true)
+  checkInEnabled           Boolean               @default(false)
+  registrationOpenAt       DateTime?
+  registrationCloseAt      DateTime?
+  checkInOpenAt            DateTime?
+  checkInCloseAt           DateTime?
+  startsAt                 DateTime?
+  endedAt                  DateTime?
+  createdById              String?
+  updatedById              String?
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+  deletedAt                DateTime?
+  organization             Organization          @relation(fields: [organizationId], references: [id])
+  ruleset                  Ruleset?              @relation(fields: [rulesetId], references: [id])
+  game                     Game?                 @relation(fields: [gameId], references: [id])
+  createdBy                User?                 @relation("SessionCreatedBy", fields: [createdById], references: [id])
+  updatedBy                User?                 @relation("SessionUpdatedBy", fields: [updatedById], references: [id])
+  registrations            SessionRegistration[]
+  matches                  Match[]
+  sponsors                 SessionSponsor[]
+  branding                 SessionBranding?
+  discordConfig            SessionDiscordConfig?
+  teamBans                 TeamBan[]
+  managerBans              ManagerBan[]
+  noShowBanSnapshots       NoShowBanSnapshot[]
+  resultBackups            ResultBackup[]
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -1393,27 +1532,314 @@ model Session {
   @@index([gameId])
 }
 
+model SessionSponsor {
+  id                      String      @id @default(uuid())
+  sessionId               String
+  organizationId          String
+  name                    String
+  logoUrl                 String
+  tier                    SponsorTier
+  displayOrder            Int         @default(0)
+  isActive                Boolean     @default(true)
+  rotationIntervalSeconds Int?
+  websiteUrl              String?
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
+  deletedAt               DateTime?
+
+  session      Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([organizationId])
+  @@index([tier])
+  @@index([deletedAt])
+}
+
+model SessionBranding {
+  id                    String       @id @default(uuid())
+  organizationId        String
+  sessionId             String       @unique
+  inheritOrganization   Boolean      @default(false)
+  authoringMode         String       @default("minimal")
+  minimalConfig         Json?
+  advancedConfig        Json?
+  mode                  String       @default("solid") @map("themeMode")
+  backgroundSolid       String?
+  widgetBackground      String?      @default("#0B1220")
+  gradientStart         String?
+  gradientEnd           String?
+  gradientDirection     String       @default("diagonal")
+  primaryColor          String?      @default("#00E5FF")
+  secondaryColor        String?      @default("#0093FF")
+  liveColor             String?      @default("#22C55E")
+  accent                String       @default("#F5A524")
+  backgroundStart       String?      @default("#050B18")
+  backgroundEnd         String?      @default("#0B1220")
+  backgroundCss         String?      @default("linear-gradient(135deg,#050B18,#0B1220)")
+  effectiveBackground   String?      @default("#0B1220")
+  textPrimary           String?      @default("#ffffff")
+  textMuted             String?      @default("#cdd5e1")
+  border                String?      @default("rgba(255,255,255,0.12)")
+  panel                 String?      @default("#0b1220")
+  shadow                String?      @default("0 22px 64px rgba(0,0,0,0.45)")
+  glowAccent            String?      @default("rgba(0,229,255,0.32)")
+  badgeBg               String?      @default("#142032")
+  badgeText             String?      @default("#ffffff")
+  defaultTeamLogoUrl    String?
+  defaultPlayerPhotoUrl String?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  session               Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+model NoShowBanSnapshot {
+  id             String       @id @default(uuid())
+  organizationId String
+  sessionId      String
+  sourceMatchId  String?
+  matchNumber    Int?
+  matchName      String?
+  slotNumber     Int
+  teamId         String
+  teamName       String
+  teamTag        String?
+  source         String?
+  capturedAt     DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  session        Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, matchNumber, teamId])
+  @@index([organizationId, sessionId, matchNumber])
+  @@index([organizationId, sessionId, capturedAt])
+  @@index([sourceMatchId])
+  @@index([teamId])
+}
+
+model ResultBackup {
+  id              String            @id @default(uuid())
+  organizationId  String
+  sessionId       String
+  sourceMatchId   String?
+  kind            String            @db.VarChar(24)
+  source          String?           @db.VarChar(80)
+  dedupeKey       String            @unique
+  matchNumber     Int?
+  matchName       String?
+  sessionName     String?
+  title           String?
+  postedChannelId String?           @db.VarChar(32)
+  postedMessageId String?           @db.VarChar(32)
+  repostedAt      DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  session         Session           @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  rows            ResultBackupRow[]
+
+  @@index([organizationId, sessionId, createdAt])
+  @@index([organizationId, kind, createdAt])
+  @@index([sourceMatchId])
+  @@index([expiresAt])
+}
+
+model ResultBackupRow {
+  id              String       @id @default(uuid())
+  backupId        String
+  rank            Int
+  teamId          String?
+  teamName        String
+  teamTag         String?
+  logoUrl         String?
+  slotNumber      Int?
+  placement       Int?
+  wwcd            Int          @default(0)
+  placementPoints Int          @default(0)
+  kills           Int          @default(0)
+  totalPoints     Int          @default(0)
+  playersJson     Json?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  backup          ResultBackup @relation(fields: [backupId], references: [id], onDelete: Cascade)
+
+  @@unique([backupId, rank])
+  @@index([backupId])
+  @@index([teamId])
+}
+
+model TeamBan {
+  id             String       @id @default(uuid())
+  organizationId String
+  teamId         String
+  scope          TeamBanScope @default(TEAM)
+  sessionId      String?
+  matchId        String?
+  reason         String
+  note           String?
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  revokeReason   String?
+  createdById    String?
+  revokedById    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  team           Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  session        Session?     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  match          Match?       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  createdBy      User?        @relation("TeamBanCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  revokedBy      User?        @relation("TeamBanRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([teamId])
+  @@index([scope])
+  @@index([sessionId])
+  @@index([matchId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+model ManagerBan {
+  id              String       @id @default(uuid())
+  organizationId  String
+  discordUserId   String       @db.VarChar(32)
+  discordUsername String?      @db.VarChar(100)
+  displayName     String?      @db.VarChar(100)
+  scope           TeamBanScope @default(TEAM)
+  sessionId       String?
+  matchId         String?
+  reason          String
+  note            String?
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  revokeReason    String?
+  createdById     String?
+  revokedById     String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  session         Session?     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  match           Match?       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  createdBy       User?        @relation("ManagerBanCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  revokedBy       User?        @relation("ManagerBanRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([discordUserId])
+  @@index([scope])
+  @@index([sessionId])
+  @@index([matchId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+model SessionDiscordConfig {
+  id                              String       @id @default(uuid())
+  organizationId                  String
+  sessionId                       String       @unique
+  enabled                         Boolean      @default(true)
+  registrationMode                String       @default("SCRIM") @db.VarChar(20)
+  guildId                         String?      @db.VarChar(32)
+  categoryId                      String?      @db.VarChar(32)
+  categoryName                    String?      @db.VarChar(120)
+  registrationChannelId           String?      @db.VarChar(32)
+  registrationChannelName         String?      @db.VarChar(120)
+  slotListChannelId               String?      @db.VarChar(32)
+  slotListChannelName             String?      @db.VarChar(120)
+  waitlistChannelId               String?      @db.VarChar(32)
+  waitlistChannelName             String?      @db.VarChar(120)
+  idpChannelId                    String?      @db.VarChar(32)
+  idpChannelName                  String?      @db.VarChar(120)
+  managerChannelId                String?      @db.VarChar(32)
+  managerChannelName              String?      @db.VarChar(120)
+  transferChannelId               String?      @db.VarChar(32)
+  transferChannelName             String?      @db.VarChar(120)
+  manageChannelId                 String?      @db.VarChar(32)
+  manageChannelName               String?      @db.VarChar(120)
+  resultsChannelId                String?      @db.VarChar(32)
+  resultsChannelName              String?      @db.VarChar(120)
+  screenshotsChannelId            String?      @db.VarChar(32)
+  screenshotsChannelName          String?      @db.VarChar(120)
+  bansChannelId                   String?      @db.VarChar(32)
+  bansChannelName                 String?      @db.VarChar(120)
+  logChannelId                    String?      @db.VarChar(32)
+  logChannelName                  String?      @db.VarChar(120)
+  slotRoleId                      String?      @db.VarChar(32)
+  slotRoleName                    String?      @db.VarChar(120)
+  waitlistRoleId                  String?      @db.VarChar(32)
+  waitlistRoleName                String?      @db.VarChar(120)
+  idpRoleId                       String?      @db.VarChar(32)
+  idpRoleName                     String?      @db.VarChar(120)
+  bannedRoleId                    String?      @db.VarChar(32)
+  bannedRoleName                  String?      @db.VarChar(120)
+  registrationRoleIds             Json?
+  specialRegistrationRoleIds      Json?
+  manageRoleIds                   Json?
+  vipRoleIds                      Json?
+  startSlot                       Int          @default(3)
+  normalSlots                     Int          @default(23)
+  vipSlots                        Int          @default(0)
+  maxManagersPerTeam              Int          @default(2)
+  maxTeamsPerManager              Int          @default(1)
+  tournamentMainPlayersRequired   Int          @default(4)
+  tournamentLogoRequired          Boolean      @default(false)
+  registrationCommand             String       @default("%register") @db.VarChar(40)
+  registrationFormat              String?
+  disableSlotAndVipRegistration   Boolean      @default(false)
+  slotTeamEmojiEnabled            Boolean      @default(true)
+  downloadPlayerElims             Boolean      @default(true)
+  spreadsheetId                   String?      @db.VarChar(160)
+  importSourceOrganizationId      String?
+  importSourceGuildId             String?      @db.VarChar(32)
+  importSourceGuildName           String?      @db.VarChar(120)
+  importSourceCategoryId          String?      @db.VarChar(32)
+  importSourceCategoryName        String?      @db.VarChar(120)
+  importSourceSlotListChannelId   String?      @db.VarChar(32)
+  importSourceSlotListChannelName String?      @db.VarChar(120)
+  importSourceSyncEnabled         Boolean      @default(false)
+  importSourceLastSyncedAt        DateTime?
+  importSourceLastError           String?
+  emojis                          Json?
+  notes                           String?
+  createdAt                       DateTime     @default(now())
+  updatedAt                       DateTime     @updatedAt
+  organization                    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  session                         Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([guildId])
+  @@index([categoryId])
+  @@index([importSourceSyncEnabled])
+  @@index([importSourceGuildId])
+}
+
 model SessionRegistration {
-  id               String                    @id @default(uuid())
-  organizationId   String
-  sessionId        String
-  teamId           String
-  status           SessionRegistrationStatus @default(REGISTERED)
-  slotNumber       Int?
-  waitlistPosition Int?
-  checkedInAt      DateTime?
-  confirmedAt      DateTime?
-  removedAt        DateTime?
-  removalReason    String?
-  note             String?
-  registeredById   String?
-  createdAt        DateTime                  @default(now())
-  updatedAt        DateTime                  @updatedAt
-  deletedAt        DateTime?
-  organization     Organization              @relation(fields: [organizationId], references: [id])
-  session          Session                   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  team             Team                      @relation(fields: [teamId], references: [id])
-  registeredBy     User?                     @relation("SessionRegistrationRegisteredBy", fields: [registeredById], references: [id])
+  id                    String                    @id @default(uuid())
+  organizationId        String
+  sessionId             String
+  teamId                String
+  leaderDiscordUserId   String?                   @db.VarChar(32)
+  managerDiscordUserIds String[]                  @default([])
+  status                SessionRegistrationStatus @default(REGISTERED)
+  slotNumber            Int?
+  waitlistPosition      Int?
+  checkedInAt           DateTime?
+  confirmedAt           DateTime?
+  removedAt             DateTime?
+  removalReason         String?
+  note                  String?
+  tournamentRosterJson  Json?
+  registeredById        String?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  deletedAt             DateTime?
+  organization          Organization              @relation(fields: [organizationId], references: [id])
+  session               Session                   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  team                  Team                      @relation(fields: [teamId], references: [id])
+  registeredBy          User?                     @relation("SessionRegistrationRegisteredBy", fields: [registeredById], references: [id])
 
   @@unique([sessionId, teamId])
   @@index([sessionId])
@@ -1422,7 +1848,11 @@ model SessionRegistration {
   @@index([status])
   @@index([slotNumber])
   @@index([waitlistPosition])
+  @@index([leaderDiscordUserId])
   @@index([deletedAt])
+  @@index([sessionId, deletedAt, status])
+  @@index([sessionId, deletedAt, slotNumber])
+  @@index([sessionId, deletedAt, waitlistPosition])
 }
 
 model Tournament {
@@ -1450,6 +1880,9 @@ model Tournament {
   status                     TournamentStatus         @default(DRAFT)
   abuseFlagged               Boolean                  @default(false)
   registrationPaused         Boolean                  @default(false)
+  qualifiedTeamsCount        Int?
+  qualificationBubbleCount   Int?
+  qualificationLabel         String?
   adminAdjustments           AdminAdjustment[]
   matches                    Match[]
   mediaAssets                MediaAsset[]
@@ -1595,6 +2028,7 @@ model User {
   password                        String
   name                            String
   role                            Role
+  organizerAccessMode             OrganizerAccessMode          @default(FULL_PRODUCTION)
   organizationId                  String?
   createdAt                       DateTime                     @default(now())
   updatedAt                       DateTime                     @updatedAt
@@ -1631,6 +2065,15 @@ model User {
   updatedSessions                 Session[]                    @relation("SessionUpdatedBy")
   sessionRegistrations            SessionRegistration[]        @relation("SessionRegistrationRegisteredBy")
   updatedDiscordConfigs           OrganizationDiscordConfig[]  @relation("OrganizationDiscordConfigUpdatedBy")
+  teamBansCreated                 TeamBan[]                    @relation("TeamBanCreatedBy")
+  teamBansRevoked                 TeamBan[]                    @relation("TeamBanRevokedBy")
+  managerBansCreated              ManagerBan[]                 @relation("ManagerBanCreatedBy")
+  managerBansRevoked              ManagerBan[]                 @relation("ManagerBanRevokedBy")
+  youtubeChannelsConnected        YoutubeChannel[]             @relation("YoutubeChannelConnectedBy")
+  youtubeRepliesCreated           YoutubeCommentReply[]        @relation("YoutubeReplyCreatedBy")
+  youtubeGiveawaysCreated         YoutubeGiveaway[]            @relation("YoutubeGiveawayCreatedBy")
+  youtubeGiveawayWinnersPicked    YoutubeGiveawayWinner[]      @relation("YoutubeGiveawayWinnerPickedBy")
+  youtubeLiveChatSessionsCreated  YoutubeLiveChatSession[]     @relation("YoutubeLiveChatSessionCreatedBy")
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -1916,6 +2359,7 @@ enum AuditAction {
   REPORT_ESCALATE
   SESSION_CREATE
   SESSION_TEAM_REGISTER
+  SESSION_DISCORD_CONFIG_UPDATE
   SESSION_REGISTRATION_REMOVE
   SESSION_WAITLIST_PROMOTE
   SESSION_MATCH_CREATE
@@ -1951,6 +2395,30 @@ enum SessionRegistrationStatus {
   DECLINED
 }
 
+enum TeamBanScope {
+  TEAM
+  SESSION
+  MATCH
+}
+
+enum AdminAdjustmentScope {
+  MATCH
+  GROUP
+  STAGE
+  TOURNAMENT
+  SESSION
+}
+
+enum AdminAdjustmentType {
+  POINT_DELTA
+  ZERO_MATCH_POINTS
+  DISQUALIFY_MATCH
+  DISQUALIFY_GROUP
+  DISQUALIFY_STAGE
+  DISQUALIFY_TOURNAMENT
+  DISQUALIFY_SESSION
+}
+
 enum TeamMemberRole {
   LEADER
   PLAYER
@@ -1978,11 +2446,13 @@ enum FeatureKey {
 enum GameKey {
   PUBG_MOBILE
   VALORANT
+  CRICKET
   CS2
   DOTA2
   LOL
   FORTNITE
   FREE_FIRE
+  CALL_OF_DUTY
   MLBB
 }
 
@@ -2020,6 +2490,32 @@ enum MatchMap {
   DESTON
   RONDO
   NUSA
+  BERMUDA
+  PURGATORY
+  KALAHARI
+  ALPINE
+  NEXTERRA
+  SOLARA
+  CODM_ISOLATED
+  CODM_BLACKOUT
+  CODM_CUSTOM
+  CORRODE
+  ABYSS
+  SUNSET
+  LOTUS
+  PEARL
+  FRACTURE
+  BREEZE
+  ICEBOX
+  ASCENT
+  SPLIT
+  HAVEN
+  BIND
+  CRICKET_T10
+  CRICKET_T20
+  CRICKET_ODI
+  CRICKET_TEST
+  CRICKET_CUSTOM
 }
 
 enum MatchStatus {
@@ -2053,6 +2549,7 @@ enum LicenseStatus {
   ACTIVE
   EXPIRED
   SUSPENDED
+  REVOKED
 }
 
 enum LicenseType {
@@ -2066,6 +2563,7 @@ enum ControlState {
   COUNTDOWN
   LIVE
   PAUSED
+  FINISH_PENDING
   ENDED
   CONFIRMED
 }
@@ -2085,6 +2583,12 @@ enum MatchDataSource {
   SHADOW
   PCOB
   API
+}
+
+enum MatchResultSource {
+  MANUAL
+  TELEMETRY
+  OCR
 }
 
 enum TelemetrySource {
@@ -2123,6 +2627,17 @@ enum OrganizationStatus {
   PENDING
   APPROVED
   SUSPENDED
+}
+
+enum OrganizationSubscriptionStatus {
+  ACTIVE
+  TRIALING
+  EXPIRED
+}
+
+enum OrganizerAccessMode {
+  FULL_PRODUCTION
+  DISCORD_ONLY
 }
 
 enum OrganizationApplicationStatus {
@@ -2230,4 +2745,646 @@ enum ObsTemplateKind {
   FULLSCREEN_RESULT
   MATCH_INTRO
   CUSTOM
+}
+
+model YoutubeChannel {
+  id               String                   @id @default(uuid())
+  organizationId   String
+  youtubeChannelId String
+  title            String
+  handle           String?
+  thumbnailUrl     String?
+  scopes           String[]                 @default([])
+  accessTokenEnc   String?
+  refreshTokenEnc  String?
+  tokenExpiresAt   DateTime?
+  status           YoutubeChannelStatus     @default(CONNECTED)
+  connectedById    String?
+  connectedAt      DateTime                 @default(now())
+  lastSyncAt       DateTime?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  deletedAt        DateTime?
+  organization     Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectedBy      User?                    @relation("YoutubeChannelConnectedBy", fields: [connectedById], references: [id], onDelete: SetNull)
+  comments         YoutubeComment[]
+  replies          YoutubeCommentReply[]
+  automationRules  YoutubeAutomationRule[]
+  giveaways        YoutubeGiveaway[]
+  liveSessions     YoutubeLiveChatSession[]
+  liveMessages     YoutubeLiveChatMessage[]
+  liveChatViewers  YoutubeLiveChatViewer[]
+  viewerProfiles   YoutubeViewerProfile[]
+  polls            YoutubePoll[]
+  challenges       YoutubeChallenge[]
+  snapshots        YoutubeChannelSnapshot[]
+  chatCommands     YoutubeChatCommand[]
+  chatTimers       YoutubeChatTimer[]
+  chatLogs         YoutubeChatLog[]
+  auditLogs        YoutubeAuditLog[]
+
+  @@unique([organizationId, youtubeChannelId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model YoutubeChannelSnapshot {
+  id                      String         @id @default(uuid())
+  organizationId          String
+  channelId               String
+  youtubeChannelId        String
+  capturedDate            DateTime
+  capturedAt              DateTime       @default(now())
+  subscriberCount         BigInt?
+  hiddenSubscriberCount   Boolean        @default(false)
+  viewCount               BigInt?
+  videoCount              BigInt?
+  averageRecentViews      BigInt?
+  averageRecentLikes      BigInt?
+  averageRecentComments   BigInt?
+  uploadCadenceDays       Int?
+  estimatedMonthlyLowUsd  Float?
+  estimatedMonthlyHighUsd Float?
+  rankGrade               String?
+  rawJson                 Json?
+  organization            Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel                 YoutubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, capturedDate])
+  @@index([organizationId, capturedDate])
+  @@index([channelId, capturedDate])
+  @@index([youtubeChannelId])
+}
+
+model YoutubeComment {
+  id                     String                     @id @default(uuid())
+  organizationId         String
+  channelId              String
+  videoId                String
+  youtubeCommentId       String
+  parentYoutubeCommentId String?
+  authorName             String?
+  authorChannelId        String?
+  textDisplay            String?
+  textOriginal           String?
+  likeCount              Int                        @default(0)
+  publishedAt            DateTime?
+  updatedAtFromYoutube   DateTime?
+  reviewStatus           YoutubeCommentReviewStatus @default(NEW)
+  moderationStatus       String?
+  rawJson                Json?
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+  organization           Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel                YoutubeChannel             @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  replies                YoutubeCommentReply[]
+  giveawayEntries        YoutubeGiveawayEntry[]
+
+  @@unique([channelId, youtubeCommentId])
+  @@index([organizationId, videoId])
+  @@index([channelId, publishedAt])
+  @@index([reviewStatus])
+}
+
+model YoutubeCommentReply {
+  id               String             @id @default(uuid())
+  organizationId   String
+  channelId        String?
+  commentId        String
+  youtubeCommentId String?
+  body             String
+  status           YoutubeReplyStatus @default(DRAFT)
+  error            String?
+  createdById      String?
+  postedAt         DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel          YoutubeChannel?    @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  comment          YoutubeComment     @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  createdBy        User?              @relation("YoutubeReplyCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([channelId])
+  @@index([commentId])
+  @@index([status])
+}
+
+model YoutubeAutomationRule {
+  id                String                     @id @default(uuid())
+  organizationId    String
+  channelId         String?
+  name              String
+  enabled           Boolean                    @default(false)
+  matchMode         YoutubeAutomationMatchMode @default(KEYWORD)
+  keywords          String[]                   @default([])
+  responseTemplate  String
+  requireApproval   Boolean                    @default(true)
+  cooldownSeconds   Int                        @default(300)
+  maxRepliesPerHour Int                        @default(10)
+  blockedWords      String[]                   @default([])
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  deletedAt         DateTime?
+  organization      Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel           YoutubeChannel?            @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  liveMessages      YoutubeLiveChatMessage[]
+
+  @@index([organizationId])
+  @@index([channelId])
+  @@index([enabled])
+  @@index([deletedAt])
+}
+
+model YoutubeGiveaway {
+  id                        String                  @id @default(uuid())
+  organizationId            String
+  channelId                 String?
+  matchId                   String?
+  title                     String
+  videoId                   String?
+  liveSessionId             String?
+  keyword                   String?
+  mode                      YoutubeGiveawayMode     @default(KEYWORD)
+  predictionQuestion        String?
+  predictionCorrectTeamId   String?
+  predictionBoostMultiplier Int                     @default(3)
+  status                    YoutubeGiveawayStatus   @default(DRAFT)
+  eligibilityJson           Json?
+  startsAt                  DateTime?
+  endsAt                    DateTime?
+  maxWinners                Int                     @default(1)
+  createdById               String?
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
+  deletedAt                 DateTime?
+  organization              Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel                   YoutubeChannel?         @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  match                     Match?                  @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  liveSession               YoutubeLiveChatSession? @relation(fields: [liveSessionId], references: [id], onDelete: SetNull)
+  createdBy                 User?                   @relation("YoutubeGiveawayCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  entries                   YoutubeGiveawayEntry[]
+  winners                   YoutubeGiveawayWinner[]
+
+  @@index([organizationId, status])
+  @@index([channelId])
+  @@index([matchId])
+  @@index([mode])
+  @@index([videoId])
+  @@index([liveSessionId])
+  @@index([deletedAt])
+}
+
+model YoutubeGiveawayEntry {
+  id                   String                  @id @default(uuid())
+  organizationId       String
+  giveawayId           String
+  commentId            String?
+  liveMessageId        String?
+  youtubeCommentId     String?
+  youtubeLiveMessageId String?
+  authorChannelId      String
+  authorName           String?
+  commentText          String?
+  predictionTeamId     String?
+  predictionTeamName   String?
+  predictionCorrect    Boolean?
+  entryWeight          Int                     @default(1)
+  eligible             Boolean                 @default(true)
+  disqualifiedReason   String?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  organization         Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  giveaway             YoutubeGiveaway         @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+  comment              YoutubeComment?         @relation(fields: [commentId], references: [id], onDelete: SetNull)
+  liveMessage          YoutubeLiveChatMessage? @relation(fields: [liveMessageId], references: [id], onDelete: SetNull)
+  winners              YoutubeGiveawayWinner[]
+
+  @@unique([giveawayId, authorChannelId])
+  @@index([organizationId])
+  @@index([giveawayId])
+  @@index([commentId])
+  @@index([liveMessageId])
+  @@index([predictionTeamId])
+  @@index([eligible])
+}
+
+model YoutubeLiveChatSession {
+  id                        String                       @id @default(uuid())
+  organizationId            String
+  channelId                 String
+  matchId                   String?
+  videoId                   String
+  liveChatId                String
+  title                     String?
+  status                    YoutubeLiveChatSessionStatus @default(READY)
+  autoReplyEnabled          Boolean                      @default(false)
+  tournamentCommandsEnabled Boolean                      @default(false)
+  greetingEnabled           Boolean                      @default(false)
+  greetingTemplate          String                       @default("Welcome {name} to the stream.")
+  aiHostEnabled             Boolean                      @default(false)
+  matchUpdatesEnabled       Boolean                      @default(true)
+  nextAiHostAt              DateTime?
+  lastAiHostAt              DateTime?
+  lastMatchUpdateKey        String?
+  nextPageToken             String?
+  pollingIntervalMs         Int?
+  lastPolledAt              DateTime?
+  nextPollAt                DateTime?
+  importedCount             Int                          @default(0)
+  postedReplyCount          Int                          @default(0)
+  error                     String?
+  createdById               String?
+  createdAt                 DateTime                     @default(now())
+  updatedAt                 DateTime                     @updatedAt
+  endedAt                   DateTime?
+  deletedAt                 DateTime?
+  organization              Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel                   YoutubeChannel               @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  match                     Match?                       @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  createdBy                 User?                        @relation("YoutubeLiveChatSessionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  messages                  YoutubeLiveChatMessage[]
+  greetedViewers            YoutubeLiveChatViewer[]
+  polls                     YoutubePoll[]
+  challenges                YoutubeChallenge[]
+  giveaways                 YoutubeGiveaway[]
+  chatTimers                YoutubeChatTimer[]
+  chatLogs                  YoutubeChatLog[]
+
+  @@unique([channelId, videoId])
+  @@index([organizationId, status])
+  @@index([channelId])
+  @@index([matchId])
+  @@index([liveChatId])
+  @@index([nextPollAt])
+  @@index([deletedAt])
+}
+
+model YoutubeLiveChatMessage {
+  id                    String                 @id @default(uuid())
+  organizationId        String
+  channelId             String
+  liveSessionId         String
+  liveChatId            String
+  youtubeMessageId      String
+  authorChannelId       String?
+  authorName            String?
+  authorPhotoUrl        String?
+  messageText           String?
+  messageType           String?
+  publishedAt           DateTime?
+  rawJson               Json?
+  matchedRuleId         String?
+  replyStatus           YoutubeReplyStatus?
+  replyText             String?
+  replyYoutubeMessageId String?
+  replyError            String?
+  repliedAt             DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel               YoutubeChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  liveSession           YoutubeLiveChatSession @relation(fields: [liveSessionId], references: [id], onDelete: Cascade)
+  matchedRule           YoutubeAutomationRule? @relation(fields: [matchedRuleId], references: [id], onDelete: SetNull)
+  giveawayEntries       YoutubeGiveawayEntry[]
+  chatLogs              YoutubeChatLog[]
+
+  @@unique([liveSessionId, youtubeMessageId])
+  @@index([organizationId, publishedAt])
+  @@index([channelId])
+  @@index([liveSessionId])
+  @@index([authorChannelId])
+  @@index([replyStatus])
+  @@index([matchedRuleId])
+}
+
+model YoutubeLiveChatViewer {
+  id                       String                 @id @default(uuid())
+  organizationId           String
+  channelId                String
+  liveSessionId            String
+  authorChannelId          String
+  authorName               String?
+  firstMessageId           String?
+  greetingStatus           YoutubeReplyStatus?
+  greetingText             String?
+  greetingYoutubeMessageId String?
+  greetingError            String?
+  firstSeenAt              DateTime               @default(now())
+  greetedAt                DateTime?
+  updatedAt                DateTime               @updatedAt
+  organization             Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel                  YoutubeChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  liveSession              YoutubeLiveChatSession @relation(fields: [liveSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([liveSessionId, authorChannelId])
+  @@index([organizationId])
+  @@index([channelId])
+  @@index([liveSessionId])
+  @@index([authorChannelId])
+  @@index([greetingStatus])
+}
+
+model YoutubeViewerProfile {
+  id                     String          @id @default(uuid())
+  organizationId         String
+  channelId              String?
+  authorChannelId        String
+  authorName             String?
+  points                 Int             @default(0)
+  messageCount           Int             @default(0)
+  commandCount           Int             @default(0)
+  predictionCount        Int             @default(0)
+  correctPredictionCount Int             @default(0)
+  pollVoteCount          Int             @default(0)
+  challengeWinCount      Int             @default(0)
+  giveawayWinCount       Int             @default(0)
+  badgeIds               String[]        @default([])
+  firstSeenAt            DateTime        @default(now())
+  lastSeenAt             DateTime        @default(now())
+  lastMessageAt          DateTime?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  organization           Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel                YoutubeChannel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, authorChannelId])
+  @@index([organizationId, points])
+  @@index([channelId])
+  @@index([authorChannelId])
+  @@index([lastSeenAt])
+}
+
+model YoutubePoll {
+  id             String                  @id @default(uuid())
+  organizationId String
+  channelId      String?
+  liveSessionId  String?
+  title          String
+  options        String[]                @default([])
+  keyword        String                  @default("!vote")
+  status         String                  @default("OPEN")
+  pointsReward   Int                     @default(3)
+  startsAt       DateTime?
+  endsAt         DateTime?
+  closedAt       DateTime?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  deletedAt      DateTime?
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel        YoutubeChannel?         @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  liveSession    YoutubeLiveChatSession? @relation(fields: [liveSessionId], references: [id], onDelete: SetNull)
+  votes          YoutubePollVote[]
+
+  @@index([organizationId, status])
+  @@index([channelId])
+  @@index([liveSessionId])
+  @@index([deletedAt])
+}
+
+model YoutubePollVote {
+  id              String       @id @default(uuid())
+  organizationId  String
+  pollId          String
+  liveSessionId   String?
+  liveMessageId   String?
+  authorChannelId String
+  authorName      String?
+  option          String
+  pointsAwarded   Int          @default(0)
+  createdAt       DateTime     @default(now())
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  poll            YoutubePoll  @relation(fields: [pollId], references: [id], onDelete: Cascade)
+
+  @@unique([pollId, authorChannelId])
+  @@index([organizationId])
+  @@index([pollId])
+  @@index([liveSessionId])
+  @@index([authorChannelId])
+}
+
+model YoutubeChallenge {
+  id             String                  @id @default(uuid())
+  organizationId String
+  channelId      String?
+  liveSessionId  String?
+  title          String
+  keyword        String
+  pointsReward   Int                     @default(25)
+  maxCompletions Int?
+  status         String                  @default("OPEN")
+  startsAt       DateTime?
+  endsAt         DateTime?
+  closedAt       DateTime?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  deletedAt      DateTime?
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel        YoutubeChannel?         @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  liveSession    YoutubeLiveChatSession? @relation(fields: [liveSessionId], references: [id], onDelete: SetNull)
+  entries        YoutubeChallengeEntry[]
+
+  @@index([organizationId, status])
+  @@index([channelId])
+  @@index([liveSessionId])
+  @@index([deletedAt])
+}
+
+model YoutubeChallengeEntry {
+  id              String           @id @default(uuid())
+  organizationId  String
+  challengeId     String
+  liveSessionId   String?
+  liveMessageId   String?
+  authorChannelId String
+  authorName      String?
+  messageText     String?
+  pointsAwarded   Int              @default(0)
+  createdAt       DateTime         @default(now())
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  challenge       YoutubeChallenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+
+  @@unique([challengeId, authorChannelId])
+  @@index([organizationId])
+  @@index([challengeId])
+  @@index([liveSessionId])
+  @@index([authorChannelId])
+}
+
+model YoutubeChatCommand {
+  id                  String           @id @default(uuid())
+  organizationId      String
+  channelId           String?
+  command             String
+  responseTemplate    String
+  enabled             Boolean          @default(true)
+  cooldownSeconds     Int              @default(30)
+  userCooldownSeconds Int              @default(10)
+  usageCount          Int              @default(0)
+  lastUsedAt          DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  deletedAt           DateTime?
+  organization        Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel             YoutubeChannel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  logs                YoutubeChatLog[]
+
+  @@unique([organizationId, channelId, command])
+  @@index([organizationId])
+  @@index([channelId])
+  @@index([enabled])
+  @@index([deletedAt])
+}
+
+model YoutubeChatTimer {
+  id              String                  @id @default(uuid())
+  organizationId  String
+  channelId       String?
+  liveSessionId   String?
+  name            String
+  message         String
+  enabled         Boolean                 @default(true)
+  intervalMinutes Int                     @default(15)
+  minChatLines    Int                     @default(5)
+  postedCount     Int                     @default(0)
+  lastFiredAt     DateTime?
+  nextFireAt      DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  deletedAt       DateTime?
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel         YoutubeChannel?         @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  liveSession     YoutubeLiveChatSession? @relation(fields: [liveSessionId], references: [id], onDelete: SetNull)
+  logs            YoutubeChatLog[]
+
+  @@index([organizationId])
+  @@index([channelId])
+  @@index([liveSessionId])
+  @@index([enabled])
+  @@index([nextFireAt])
+  @@index([deletedAt])
+}
+
+model YoutubeChatLog {
+  id                String                  @id @default(uuid())
+  organizationId    String
+  channelId         String?
+  liveSessionId     String?
+  liveMessageId     String?
+  commandId         String?
+  timerId           String?
+  action            String
+  status            String
+  command           String?
+  authorChannelId   String?
+  authorName        String?
+  requestText       String?
+  responseText      String?
+  youtubeResponseId String?
+  error             String?
+  createdAt         DateTime                @default(now())
+  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel           YoutubeChannel?         @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  liveSession       YoutubeLiveChatSession? @relation(fields: [liveSessionId], references: [id], onDelete: SetNull)
+  liveMessage       YoutubeLiveChatMessage? @relation(fields: [liveMessageId], references: [id], onDelete: SetNull)
+  chatCommand       YoutubeChatCommand?     @relation(fields: [commandId], references: [id], onDelete: SetNull)
+  chatTimer         YoutubeChatTimer?       @relation(fields: [timerId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([channelId])
+  @@index([liveSessionId])
+  @@index([commandId])
+  @@index([timerId])
+  @@index([action])
+  @@index([status])
+}
+
+model YoutubeGiveawayWinner {
+  id             String               @id @default(uuid())
+  organizationId String
+  giveawayId     String
+  entryId        String
+  position       Int
+  pickedById     String?
+  pickedAt       DateTime             @default(now())
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  giveaway       YoutubeGiveaway      @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+  entry          YoutubeGiveawayEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  pickedBy       User?                @relation("YoutubeGiveawayWinnerPickedBy", fields: [pickedById], references: [id], onDelete: SetNull)
+
+  @@unique([giveawayId, entryId])
+  @@unique([giveawayId, position])
+  @@index([organizationId])
+  @@index([giveawayId])
+}
+
+model YoutubeAuditLog {
+  id             String          @id @default(uuid())
+  organizationId String
+  channelId      String?
+  actorUserId    String?
+  action         String
+  targetType     String
+  targetId       String?
+  before         Json?
+  after          Json?
+  createdAt      DateTime        @default(now())
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel        YoutubeChannel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([channelId])
+  @@index([action])
+  @@index([targetType, targetId])
+}
+
+enum YoutubeChannelStatus {
+  CONNECTED
+  REAUTH_REQUIRED
+  DISABLED
+}
+
+enum YoutubeCommentReviewStatus {
+  NEW
+  REVIEWED
+  NEEDS_REPLY
+  REPLIED
+  IGNORED
+  HELD
+}
+
+enum YoutubeReplyStatus {
+  DRAFT
+  PENDING_APPROVAL
+  POSTED
+  FAILED
+  CANCELLED
+}
+
+enum YoutubeAutomationMatchMode {
+  KEYWORD
+  CONTAINS
+  REGEX
+}
+
+enum YoutubeGiveawayMode {
+  KEYWORD
+  PREDICTION
+}
+
+enum YoutubeGiveawayStatus {
+  DRAFT
+  OPEN
+  CLOSED
+  DRAWN
+  CANCELLED
+}
+
+enum YoutubeLiveChatSessionStatus {
+  READY
+  RUNNING
+  PAUSED
+  ENDED
+  ERROR
 }

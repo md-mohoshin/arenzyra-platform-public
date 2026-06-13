@@ -13,16 +13,20 @@ import { randomUUID } from 'node:crypto';
 import {
   DataMode,
   MatchDataSource,
+  MatchResultSource,
   MatchEventType,
   MatchMap,
   MatchStatus,
+  MatchTeamStatus,
   LiveState,
+  LobbyStatus,
   PcobStatus,
   GameKey,
   Role,
   Prisma,
   AuditAction,
   SessionRegistrationStatus,
+  TeamBanScope,
   TelemetrySource,
   TournamentStatus,
 } from '@prisma/client';
@@ -44,11 +48,14 @@ import {
   deriveGroupStateFromMatches,
   deriveStageStateFromGroups,
 } from '../../common/live-state.util';
-import { MatchControlStateStore } from '../match-control/state.store';
+import {
+  MatchControlStateStore,
+  type LiveMatchState,
+} from '../match-control/state.store';
 import { CanonicalControlReadService } from '../realtime/canonical-control-read.service';
-import { DS_AUTO } from './match-datasource.util';
 import { UpdateTeamResultsDto } from '../results/dto/update-team-results.dto';
-import { resolveOrganizationLiveMatchConflicts } from '../../common/live-match-conflict.util';
+import { detectOrganizationLiveMatchConflicts } from '../../common/live-match-conflict.util';
+import { assertOrganizationGameAccess } from '../../common/org/organization-plan.util';
 import { buildMatchPlayerKey } from '../../common/match-player-key.util';
 import { uniqueSlotPlayerNames } from '../../common/slot-player-name.util';
 import {
@@ -57,6 +64,7 @@ import {
   isCompetitiveResultsTeam,
   isPresentInMatch,
 } from '../../common/results-presence.util';
+import { compareRankingRows } from '../../common/ranking-tiebreakers.util';
 import {
   readLiveSyncContract,
   type LiveSyncAuditEntry,
@@ -69,17 +77,30 @@ import {
   MATCH_FINISHED_STATUSES,
   normalizeMatchLifecycleStatus,
 } from '../../common/match-status.util';
-import {
-  buildPcobConfigurationData,
-  buildPcobUnbindingData,
-  PCOB_ADAPTER_KEY,
-} from '../../common/pcob-binding.util';
+import { PCOB_ADAPTER_KEY } from '../../common/pcob-binding.util';
 import {
   derivePcobBindingFlags,
+  exposeCanonicalTelemetryProvider,
+  exposeSourceMode,
+  exposeTelemetryProvider,
   resolveCanonicalTelemetryProvider,
   resolveTelemetryProviderInput,
   type TelemetryProvider,
 } from '../../common/match-telemetry-provider.util';
+import {
+  defaultSlotCountForGame,
+  defaultTeamSizeForGame,
+  resolvePlacementPointsForGame,
+} from '../../common/game-rules.util';
+import {
+  ADMIN_ADJUSTMENT_SCOPES,
+  ADMIN_ADJUSTMENT_TYPES,
+  applyMatchScoreAdjustments,
+  type AdminAdjustmentScopeValue,
+  type AdminAdjustmentTypeValue,
+  type ScoreAdjustmentMatchContext,
+  type ScoreAdjustmentRecord,
+} from '../../common/admin-adjustments.util';
 
 export type Actor = Pick<
   AuthActor,
@@ -95,6 +116,7 @@ export type MatchCreatePayload = {
   recallEnabled?: boolean;
   dataMode?: string | null;
   dataSource?: string | null;
+  resultSource?: string | null;
   pcobStatus?: string | null;
   pcobSessionId?: string | null;
   matchNumber?: number | null;
@@ -108,11 +130,51 @@ export type MatchCreatePayload = {
   loadTeamsFromGroup?: boolean | null;
 };
 
+export type MatchResultAdjustmentPayload = {
+  teamId?: string | null;
+  scope?: AdminAdjustmentScopeValue | string | null;
+  type?: AdminAdjustmentTypeValue | string | null;
+  pointsDelta?: number | string | null;
+  reason?: string | null;
+};
+
+type ResultAdjustmentMatchContext = {
+  id: string;
+  organizationId: string | null;
+  tournamentId: string | null;
+  stageId: string | null;
+  groupId: string | null;
+  sessionId: string | null;
+  tournament: {
+    ownerUserId: string | null;
+    organizationId: string | null;
+    status: TournamentStatus;
+  } | null;
+};
+
+type OrganizerResultsPlayerRow = {
+  id: string;
+  playerId: string;
+  externalPlayerId: string | null;
+  name: string;
+  avatar: string | null;
+  kills: number;
+  damage: number | null;
+  knocks: number | null;
+  assists: number | null;
+  alive: boolean | null;
+  isAlive: boolean | null;
+  isKnocked: boolean | null;
+  ownership: unknown;
+  audit: unknown;
+};
+
 export type SessionMatchCreatePayload = Omit<
   MatchCreatePayload,
   'groupId' | 'loadTeamsFromGroup'
 > & {
   rulesetId?: string | null;
+  loadTeamsFromEvent?: boolean | null;
 };
 
 export type ManualKillPayload = {
@@ -133,10 +195,25 @@ export type ManualPlacementPayload = {
   teamId?: string;
   placement?: number;
 };
+
+export type ManualMatchResultsPayload = {
+  expectedVersion?: number | null;
+  results?: Array<{
+    teamId?: string;
+    placement?: number;
+    kills?: number;
+  }>;
+};
 export type AssignSlotDto = {
   teamId: string;
   slot: number;
   replace?: boolean;
+};
+
+export type MoveSlotDto = {
+  teamId: string;
+  targetSlotNumber: number;
+  sourceSlotNumber?: number | null;
 };
 
 export type SyncPreviousMatchSlotsDto = {
@@ -144,16 +221,14 @@ export type SyncPreviousMatchSlotsDto = {
   dryRun?: boolean;
 };
 
-const getPlacementPoints = (placement?: number | null): number => {
-  if (!placement || placement < 1) return 0;
-  if (placement === 1) return 10;
-  if (placement === 2) return 6;
-  if (placement === 3) return 5;
-  if (placement === 4) return 4;
-  if (placement === 5) return 3;
-  if (placement === 6) return 2;
-  if (placement === 7 || placement === 8) return 1;
-  return 0;
+const getPlacementPoints = (
+  placement?: number | null,
+  gameKey?: GameKey | null,
+): number => {
+  return resolvePlacementPointsForGame(
+    placement,
+    gameKey ?? GameKey.PUBG_MOBILE,
+  );
 };
 
 type SlotCapability = {
@@ -165,7 +240,10 @@ type SlotCapability = {
 
 type SlotMatch = {
   id: string;
-  tournamentId: string;
+  organizationId: string;
+  ownerUserId: string | null;
+  tournamentId: string | null;
+  sessionId: string | null;
   stageId: string | null;
   groupId: string | null;
   matchNumber?: number | null;
@@ -177,7 +255,11 @@ type SlotMatch = {
   liveState?: string | null;
   controlState?: { state?: string | null } | null;
   game: { key: GameKey } | null;
-  tournament: { ownerUserId: string; organizationId: string | null } | null;
+  tournament: {
+    ownerUserId: string;
+    organizationId: string | null;
+    game?: GameKey | null;
+  } | null;
 };
 
 type SlotContext = {
@@ -225,6 +307,7 @@ const MATCH_BASE_SELECT_TEMPLATE = {
   recallEnabled: true,
   dataMode: true,
   dataSource: true,
+  resultSource: true,
   telemetrySource: true,
   telemetrySourceLockedAt: true,
   pcobSessionId: true,
@@ -281,6 +364,8 @@ const buildWithOwnerSelect = (base: Record<string, unknown>) => ({
 
 const buildListSelect = (base: Record<string, unknown>) => ({
   ...base,
+  game: { select: { key: true, name: true } },
+  tournament: { select: { id: true, name: true, game: true } },
   group: { select: { id: true, name: true } },
   matchTeams: {
     where: { deletedAt: null },
@@ -341,6 +426,7 @@ const sessionMatchListSelect = {
   map: true,
   dataMode: true,
   dataSource: true,
+  resultSource: true,
   pcobSessionId: true,
   pcobMode: true,
   pcobBoundAt: true,
@@ -376,10 +462,9 @@ const PUBGM_MAPS: MatchMap[] = [
 const PUBGM_DATA_SOURCES: MatchDataSource[] = [
   MatchDataSource.MANUAL,
   MatchDataSource.API,
-  MatchDataSource.PCOB,
-  MatchDataSource.SHADOW,
-  DS_AUTO,
 ];
+
+const TELEMETRY_RESULT_SOURCES: MatchDataSource[] = [MatchDataSource.API];
 
 @Injectable()
 export class MatchesService {
@@ -461,6 +546,79 @@ export class MatchesService {
     this.matchWithOwnerSelect = { id: true, ...buildWithOwnerSelect(base) };
     this.matchListSelect = { id: true, ...buildListSelect(base) };
     this.matchContextSelect = { id: true, ...buildContextSelect(base) };
+  }
+
+  private normalizeMirrorPlayerKey(
+    value: string | null | undefined,
+  ): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed.length ? trimmed : null;
+  }
+
+  private buildLiveMirrorPlayerIndex(team: LiveMatchState['teams'][number]) {
+    const byExternalPlayerId = new Map<
+      string,
+      NonNullable<LiveMatchState['teams'][number]['players']>[number]
+    >();
+    const byName = new Map<
+      string,
+      NonNullable<LiveMatchState['teams'][number]['players']>[number]
+    >();
+
+    for (const player of team.players ?? []) {
+      const externalPlayerId =
+        this.normalizeMirrorPlayerKey(
+          player.externalPlayerId ?? player.pubgPlayerId ?? player.playerId,
+        ) ?? null;
+      if (externalPlayerId && !byExternalPlayerId.has(externalPlayerId)) {
+        byExternalPlayerId.set(externalPlayerId, player);
+      }
+
+      const name =
+        this.normalizeMirrorPlayerKey(player.name ?? player.ign) ?? null;
+      if (name && !byName.has(name)) {
+        byName.set(name, player);
+      }
+    }
+
+    return {
+      byExternalPlayerId,
+      byName,
+    };
+  }
+
+  private overlayLiveMirrorPlayerRows(
+    players: OrganizerResultsPlayerRow[],
+    team: LiveMatchState['teams'][number] | null,
+  ): OrganizerResultsPlayerRow[] {
+    if (!team || !Array.isArray(team.players) || team.players.length === 0) {
+      return players;
+    }
+
+    const index = this.buildLiveMirrorPlayerIndex(team);
+    return players.map((player) => {
+      const externalPlayerId =
+        this.normalizeMirrorPlayerKey(player.externalPlayerId) ?? null;
+      const name = this.normalizeMirrorPlayerKey(player.name) ?? null;
+      const mirrorPlayer =
+        (externalPlayerId
+          ? index.byExternalPlayerId.get(externalPlayerId)
+          : undefined) ??
+        (name ? index.byName.get(name) : undefined) ??
+        null;
+      if (!mirrorPlayer) {
+        return player;
+      }
+
+      return {
+        ...player,
+        kills: mirrorPlayer.kills ?? player.kills,
+        alive: mirrorPlayer.alive,
+        isAlive: mirrorPlayer.alive,
+        isKnocked: mirrorPlayer.knocked,
+      };
+    });
   }
 
   private selectOrUndefined<T extends Record<string, unknown>>(
@@ -858,6 +1016,7 @@ export class MatchesService {
         return 5;
       case GameKey.PUBG_MOBILE:
       case GameKey.FREE_FIRE:
+      case GameKey.CALL_OF_DUTY:
       case GameKey.FORTNITE:
       default:
         return 4;
@@ -1142,7 +1301,10 @@ export class MatchesService {
       where: { id: matchId, deletedAt: null },
       select: {
         id: true,
+        organizationId: true,
+        ownerUserId: true,
         tournamentId: true,
+        sessionId: true,
         stageId: true,
         groupId: true,
         matchNumber: true,
@@ -1160,19 +1322,15 @@ export class MatchesService {
       },
     });
     if (!match) throw new NotFoundException('Match not found');
-    if (
-      !match.tournament ||
-      !this.canEdit(
-        actor,
-        match.tournament.ownerUserId,
-        match.tournament.organizationId ?? null,
-      )
-    ) {
+    const ownerUserId = match.tournament?.ownerUserId ?? match.ownerUserId;
+    const organizationId =
+      match.organizationId ?? match.tournament?.organizationId ?? null;
+    if (!this.canEdit(actor, ownerUserId, organizationId)) {
       throw new ForbiddenException('Not allowed to access match');
     }
-    if (!match.tournamentId || !match.tournament) {
+    if (!match.tournamentId && !match.sessionId) {
       throw new BadRequestException(
-        'Session matches are not supported by slot management',
+        'Match must belong to a tournament or event session',
       );
     }
     const gameKey = match.game?.key ?? match.tournament?.game ?? null;
@@ -1188,6 +1346,49 @@ export class MatchesService {
     match: SlotMatch,
     teamId: string,
   ): Promise<void> {
+    if (!match.tournamentId) {
+      if (!match.sessionId) {
+        throw new BadRequestException(
+          'Match must belong to a tournament or event session',
+        );
+      }
+      const sessionMatchTeam = await this.prisma.matchTeam.findFirst({
+        where: { matchId: match.id, teamId, deletedAt: null },
+        select: { id: true },
+      });
+      if (sessionMatchTeam) {
+        return;
+      }
+      const sessionSlotTeam = await this.prisma.matchSlot.findFirst({
+        where: { matchId: match.id, teamId, deletedAt: null },
+        select: { id: true },
+      });
+      if (sessionSlotTeam) {
+        return;
+      }
+      const sessionRegistration =
+        await this.prisma.sessionRegistration.findFirst({
+          where: {
+            sessionId: match.sessionId,
+            organizationId: match.organizationId,
+            teamId,
+            deletedAt: null,
+            status: {
+              in: [
+                SessionRegistrationStatus.CONFIRMED,
+                SessionRegistrationStatus.CHECKED_IN,
+              ],
+            },
+          },
+          select: { id: true },
+        });
+      if (sessionRegistration) {
+        return;
+      }
+      throw new BadRequestException(
+        'Team must be assigned to this event match first',
+      );
+    }
     if (!match.groupId) {
       throw new BadRequestException(
         'Match must belong to a group to assign slots',
@@ -1434,14 +1635,14 @@ export class MatchesService {
    * Resolve any data drift where multiple matches in the same organization are marked LIVE.
    * Keeps the most recently started/live match and forces the rest to ENDED.
    */
-  private async resolveLiveConflicts(organizationId: string) {
-    const resolved = await resolveOrganizationLiveMatchConflicts(
+  private async detectLiveConflicts(organizationId: string) {
+    const resolved = await detectOrganizationLiveMatchConflicts(
       this.prisma,
       organizationId,
     );
-    if (resolved.endedIds.length > 0) {
+    if (resolved.wouldEndIds.length > 0) {
       this.logger.warn(
-        `[Matches] resolved LIVE conflict org=${organizationId} kept=${resolved.keptId ?? 'none'} ended=${resolved.endedIds.join(',')}`,
+        `[Matches] LIVE conflict detected org=${organizationId} preferred=${resolved.keptId ?? 'none'} live=${resolved.liveIds.join(',')} blockedAutoEnd=${resolved.wouldEndIds.join(',')}`,
       );
     }
   }
@@ -1471,7 +1672,7 @@ export class MatchesService {
     }
 
     // Safety net: ensure only one LIVE per organization before returning list.
-    await this.resolveLiveConflicts(orgId);
+    await this.detectLiveConflicts(orgId);
 
     const raw = (status ?? '').toString().toUpperCase();
     const where: Prisma.MatchWhereInput = {
@@ -1500,7 +1701,10 @@ export class MatchesService {
         startedAt: true,
         endedAt: true,
         createdAt: true,
-        tournament: { select: { id: true, name: true, status: true } },
+        game: { select: { key: true, name: true } },
+        tournament: {
+          select: { id: true, name: true, status: true, game: true },
+        },
         stage: { select: { id: true, name: true } },
         group: { select: { id: true, name: true } },
       },
@@ -1523,6 +1727,7 @@ export class MatchesService {
         groupName: m.group?.name ?? null,
         tournamentName: m.tournament?.name ?? null,
         tournamentStatus: m.tournament?.status ?? null,
+        gameKey: m.game?.key ?? m.tournament?.game ?? null,
         startedAt: m.startedAt ?? null,
         endedAt: m.endedAt ?? null,
         createdAt: m.createdAt ?? null,
@@ -1577,6 +1782,7 @@ export class MatchesService {
         status: true,
         liveState: true,
         tournamentId: true,
+        sessionId: true,
         stageId: true,
         groupId: true,
         matchNumber: true,
@@ -1585,6 +1791,7 @@ export class MatchesService {
         liveAt: true,
         startedAt: true,
         updatedAt: true,
+        session: { select: { name: true } },
       },
     });
 
@@ -1598,6 +1805,8 @@ export class MatchesService {
       status: normalizeMatchLifecycleStatus(match.status),
       liveState: match.liveState ?? null,
       tournamentId: match.tournamentId ?? null,
+      sessionId: match.sessionId ?? null,
+      sessionName: match.session?.name ?? null,
       stageId: match.stageId ?? null,
       groupId: match.groupId ?? null,
       matchNumber: match.matchNumber ?? null,
@@ -1630,7 +1839,10 @@ export class MatchesService {
       where: { id: matchId, deletedAt: null },
       select: {
         id: true,
+        organizationId: true,
+        ownerUserId: true,
         tournamentId: true,
+        sessionId: true,
         groupId: true,
         tournament: { select: { ownerUserId: true, organizationId: true } },
         matchSlots: {
@@ -1641,9 +1853,154 @@ export class MatchesService {
     });
     if (!match) throw new NotFoundException('Match not found');
     if (!match.tournament || !match.tournamentId) {
-      throw new BadRequestException(
-        'Session matches are not supported by team listing',
+      if (!match.sessionId) {
+        throw new BadRequestException(
+          'Match must belong to a tournament or event session',
+        );
+      }
+      if (
+        !this.canEdit(actor, match.ownerUserId, match.organizationId ?? null)
+      ) {
+        throw new ForbiddenException('Not allowed to access match teams');
+      }
+
+      const [sessionRegistrations, matchTeams, slots, stats] =
+        await Promise.all([
+          this.prisma.sessionRegistration.findMany({
+            where: {
+              sessionId: match.sessionId,
+              organizationId: match.organizationId,
+              deletedAt: null,
+              status: {
+                in: [
+                  SessionRegistrationStatus.CONFIRMED,
+                  SessionRegistrationStatus.CHECKED_IN,
+                ],
+              },
+            },
+            include: {
+              team: {
+                select: { id: true, name: true, tag: true, logoUrl: true },
+              },
+            },
+            orderBy: [{ slotNumber: 'asc' }, { createdAt: 'asc' }],
+          }),
+          this.prisma.matchTeam.findMany({
+            where: { matchId: match.id, deletedAt: null },
+            include: {
+              team: {
+                select: { id: true, name: true, tag: true, logoUrl: true },
+              },
+            },
+            orderBy: [{ slot: 'asc' }, { createdAt: 'asc' }],
+          }),
+          this.prisma.matchSlot.findMany({
+            where: { matchId: match.id, deletedAt: null },
+            include: {
+              team: {
+                select: { id: true, name: true, tag: true, logoUrl: true },
+              },
+            },
+            orderBy: { slotNumber: 'asc' },
+          }),
+          this.prisma.matchSlotResult.findMany({
+            where: { matchId: match.id },
+            select: {
+              teamId: true,
+              placement: true,
+              totalKills: true,
+              wasPresentInMatch: true,
+            },
+          }),
+        ]);
+
+      const teamsById = new Map<
+        string,
+        {
+          id: string;
+          name: string | null;
+          tag: string | null;
+          logoUrl: string | null;
+        }
+      >();
+      for (const registration of sessionRegistrations) {
+        if (registration.team?.id) {
+          teamsById.set(registration.team.id, registration.team);
+        }
+      }
+      for (const row of matchTeams) {
+        if (row.team?.id) {
+          teamsById.set(row.team.id, row.team);
+        }
+      }
+      for (const slot of slots) {
+        if (slot.team?.id && !teamsById.has(slot.team.id)) {
+          teamsById.set(slot.team.id, slot.team);
+        }
+      }
+
+      const slotByTeam = new Map<string, number>();
+      slots.forEach((slot) => {
+        if (slot.teamId) slotByTeam.set(slot.teamId, slot.slotNumber);
+      });
+      const statByTeam = new Map<
+        string,
+        {
+          placement: number | null;
+          kills: number | null;
+          wasPresentInMatch: boolean | null;
+        }
+      >();
+      stats.forEach(
+        (stat) =>
+          stat.teamId &&
+          statByTeam.set(stat.teamId, {
+            placement: isPresentInMatch(stat.wasPresentInMatch)
+              ? (stat.placement ?? null)
+              : null,
+            kills: isPresentInMatch(stat.wasPresentInMatch)
+              ? (stat.totalKills ?? null)
+              : 0,
+            wasPresentInMatch: stat.wasPresentInMatch ?? null,
+          }),
       );
+
+      const items = Array.from(teamsById.values()).map((team) => {
+        const slot = slotByTeam.get(team.id) ?? null;
+        const stat = statByTeam.get(team.id);
+        return {
+          slot,
+          teamId: team.id,
+          teamName: team.name ?? '',
+          teamTag: team.tag ?? null,
+          logoUrl: team.logoUrl ?? null,
+          placement: stat?.placement ?? null,
+          kills: stat?.kills ?? null,
+          aliveCount: null,
+          wasPresentInMatch: stat?.wasPresentInMatch ?? null,
+          presenceStatus: derivePresenceStatus(stat?.wasPresentInMatch ?? null),
+          status: !isPresentInMatch(stat?.wasPresentInMatch)
+            ? ('NO_SHOW' as const)
+            : stat?.placement && stat.placement > 0
+              ? ('ELIMINATED' as const)
+              : ('UNKNOWN' as const),
+        };
+      });
+
+      items.sort((a, b) => {
+        const presenceOrder = comparePresenceStatus(
+          a.wasPresentInMatch,
+          b.wasPresentInMatch,
+        );
+        if (presenceOrder !== 0) {
+          return presenceOrder;
+        }
+        const slotA = a.slot ?? 9999;
+        const slotB = b.slot ?? 9999;
+        return slotA - slotB;
+      });
+
+      return items;
     }
     if (
       !this.canEdit(
@@ -1775,7 +2132,21 @@ export class MatchesService {
     if (this.resolveAutoSource(match) !== MatchDataSource.MANUAL) {
       await this.syncAutoLobbyStatus(match.id, capability.gameKey);
     }
-    return this.prisma.matchSlot.findMany({
+    type MatchSlotListRow = {
+      id: string | null;
+      matchId: string;
+      slotNumber: number;
+      teamId: string | null;
+      lobbyStatus: LobbyStatus;
+      playersInLobby: number;
+      team: {
+        id: string;
+        name: string;
+        tag: string | null;
+        logoUrl: string | null;
+      } | null;
+    };
+    const slots = (await this.prisma.matchSlot.findMany({
       where: { matchId: match.id, deletedAt: null },
       select: {
         id: true,
@@ -1787,7 +2158,59 @@ export class MatchesService {
         team: { select: { id: true, name: true, tag: true, logoUrl: true } },
       } as any,
       orderBy: { slotNumber: 'asc' },
-    });
+    })) as unknown as MatchSlotListRow[];
+    const slotsByNumber = new Map(
+      slots.map((slot) => [slot.slotNumber, slot] as const),
+    );
+    const slotCount = Math.max(
+      match.slotCount ?? 0,
+      slots.reduce((max, slot) => Math.max(max, slot.slotNumber), 0),
+    );
+    const layoutSlots: MatchSlotListRow[] = [];
+    for (let slotNumber = 1; slotNumber <= slotCount; slotNumber += 1) {
+      const existing = slotsByNumber.get(slotNumber);
+      if (existing) {
+        layoutSlots.push(existing);
+        continue;
+      }
+      layoutSlots.push({
+        id: null,
+        matchId: match.id,
+        slotNumber,
+        teamId: null,
+        lobbyStatus: LobbyStatus.EMPTY,
+        playersInLobby: 0,
+        team: null,
+      });
+    }
+    return layoutSlots;
+  }
+
+  private shouldRefreshLiveSlotContract(match: {
+    status?: MatchStatus | null;
+    controlState?: { state?: string | null } | null;
+  }): boolean {
+    return (
+      match.status === MatchStatus.LIVE || match.controlState?.state === 'LIVE'
+    );
+  }
+
+  private async notifyLobbyContractChanged(
+    matchId: string,
+    options: { refreshLiveState?: boolean } = {},
+  ): Promise<void> {
+    if (options.refreshLiveState) {
+      try {
+        await this.matchControl.refreshLiveContractState?.(matchId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `[Slots] Failed to refresh live contract for match ${matchId}: ${message}`,
+        );
+      }
+    }
+
+    this.resultsEvents.emitControlContractUpdated?.(matchId, 'SLOTS_CHANGED');
   }
 
   async updateSlotLobbyStatus(
@@ -1838,6 +2261,7 @@ export class MatchesService {
         playersInLobby: 0,
       } as any,
     });
+    await this.notifyLobbyContractChanged(match.id);
 
     return this.listSlots(actor, match.id);
   }
@@ -1850,6 +2274,8 @@ export class MatchesService {
 
   async getResults(actor: Actor, matchId: string) {
     const match = await this.ensureMatchOrg(actor, matchId);
+    await this.results.syncLiveTelemetryResultsForRead(matchId);
+    await this.results.ensureResultsFromSlots(matchId);
     const liveMirrorPromise = this.controlStateStore
       ? this.controlStateStore.get(matchId).catch(() => null)
       : Promise.resolve(null);
@@ -1891,15 +2317,14 @@ export class MatchesService {
     const telemetry = derivePcobBindingFlags(match, {
       lifecycleStatus,
     });
-    const sourceMode = telemetry.sourceMode;
-    const effectivePresence = (
-      slot: {
-        teamId?: string | null;
-        wasPresentInMatch?: boolean | null;
-      },
-    ): boolean | null => {
+    const runtimeSourceMode = telemetry.sourceMode;
+    const sourceMode = exposeSourceMode(telemetry.telemetryProvider);
+    const effectivePresence = (slot: {
+      teamId?: string | null;
+      wasPresentInMatch?: boolean | null;
+    }): boolean | null => {
       if (
-        sourceMode === MatchDataSource.MANUAL &&
+        runtimeSourceMode === MatchDataSource.MANUAL &&
         slot.teamId &&
         slot.wasPresentInMatch == null
       ) {
@@ -1922,6 +2347,7 @@ export class MatchesService {
               playerName: true,
               kills: true,
               knocks: true,
+              assists: true,
               isKnocked: true,
               isAlive: true,
               isAutoFilled: true,
@@ -1978,13 +2404,104 @@ export class MatchesService {
     const canonicalByTeamId = new Map(
       canonical.teams.map((team) => [team.teamId, team] as const),
     );
-    const totalTeamsCount = canonical.totalTeams;
-    const aliveTeamsCount = canonical.aliveTeams;
+    const useLiveMirrorAuthority =
+      sourceMode !== MatchDataSource.MANUAL &&
+      lifecycleStatus === 'LIVE' &&
+      Boolean(liveMirrorState) &&
+      Array.isArray(liveMirrorState?.teams) &&
+      liveMirrorState.teams.length > 0;
+    const liveMirrorTeamById = new Map(
+      useLiveMirrorAuthority
+        ? (liveMirrorState?.teams ?? [])
+            .filter(
+              (
+                team,
+              ): team is NonNullable<LiveMatchState['teams']>[number] & {
+                teamId: string;
+              } => typeof team?.teamId === 'string' && team.teamId.length > 0,
+            )
+            .map((team) => [team.teamId, team] as const)
+        : [],
+    );
+    const totalTeamsCount = useLiveMirrorAuthority
+      ? (liveMirrorState?.summary?.totalTeams ?? liveMirrorTeamById.size)
+      : canonical.totalTeams;
+    const aliveTeamsCount = useLiveMirrorAuthority
+      ? (liveMirrorState?.summary?.aliveTeams ??
+        Array.from(liveMirrorTeamById.values()).filter(
+          (team) => (team.alivePlayers ?? 0) > 0,
+        ).length)
+      : canonical.aliveTeams;
+    const assignedTeamIds = new Set(
+      assignedSlotResults
+        .map((slotResult) => slotResult.teamId)
+        .filter((teamId): teamId is string => typeof teamId === 'string'),
+    );
+    const adjustmentFilters: Prisma.AdminAdjustmentWhereInput[] = [{ matchId }];
+    const matchGroupId = (match as { groupId?: string | null }).groupId;
+    const matchStageId = (match as { stageId?: string | null }).stageId;
+    if (matchGroupId) adjustmentFilters.push({ groupId: matchGroupId });
+    if (matchStageId) adjustmentFilters.push({ stageId: matchStageId });
+    if (match.tournamentId) {
+      adjustmentFilters.push({ tournamentId: match.tournamentId });
+    }
+    if (match.sessionId) {
+      adjustmentFilters.push({ sessionId: match.sessionId });
+    }
+    const resultAdjustments: ScoreAdjustmentRecord[] = adjustmentFilters.length
+      ? await this.prisma.adminAdjustment.findMany({
+          where: {
+            deletedAt: null,
+            revokedAt: null,
+            OR: adjustmentFilters,
+          },
+          select: {
+            teamId: true,
+            pointsDelta: true,
+            scope: true,
+            type: true,
+            matchId: true,
+            groupId: true,
+            stageId: true,
+            tournamentId: true,
+            sessionId: true,
+            deletedAt: true,
+            revokedAt: true,
+          },
+        })
+      : [];
+    const adjustmentsByTeam = new Map<string, ScoreAdjustmentRecord[]>();
+    resultAdjustments.forEach((adjustment) => {
+      const list = adjustmentsByTeam.get(adjustment.teamId) ?? [];
+      list.push(adjustment);
+      adjustmentsByTeam.set(adjustment.teamId, list);
+    });
+    const adjustmentMatchContext: ScoreAdjustmentMatchContext = {
+      id: matchId,
+      tournamentId: match.tournamentId ?? null,
+      stageId: (match as { stageId?: string | null }).stageId ?? null,
+      groupId: (match as { groupId?: string | null }).groupId ?? null,
+      sessionId: match.sessionId ?? null,
+    };
 
     const rows = assignedSlotResults.map((sr) => {
-      const wasPresentInMatch = effectivePresence(sr);
-      const presenceStatus = derivePresenceStatus(wasPresentInMatch);
-      const isActiveTeam = isPresentInMatch(wasPresentInMatch);
+      const liveMirrorTeam = useLiveMirrorAuthority
+        ? (liveMirrorTeamById.get(sr.teamId as string) ?? null)
+        : null;
+      const liveMirrorPresenceStatus = liveMirrorTeam?.presenceStatus ?? null;
+      const wasPresentInMatch = liveMirrorTeam
+        ? liveMirrorPresenceStatus === 'NO_SHOW'
+          ? false
+          : liveMirrorPresenceStatus === 'ACTIVE'
+            ? true
+            : effectivePresence(sr)
+        : effectivePresence(sr);
+      const presenceStatus = liveMirrorPresenceStatus
+        ? liveMirrorPresenceStatus
+        : derivePresenceStatus(wasPresentInMatch);
+      const isActiveTeam = liveMirrorTeam
+        ? presenceStatus === 'ACTIVE'
+        : isPresentInMatch(wasPresentInMatch);
       const isCompetitiveTeam = isCompetitiveResultsTeam(wasPresentInMatch);
       const canonicalTeam = canonicalByTeamId.get(sr.teamId as string) ?? null;
       const teamAudit = summarizeAudit(
@@ -2014,10 +2531,11 @@ export class MatchesService {
             kills: p.kills ?? 0,
             damage: (p as { damage?: number | null }).damage ?? null,
             knocks: p.knocks ?? null,
+            assists: p.assists ?? null,
             // alive is deprecated mirror; isAlive is canonical.
-            alive: (p as any)?.isAlive ?? null,
-            isAlive: (p as any)?.isAlive ?? null,
-            isKnocked: (p as any)?.isKnocked ?? null,
+            alive: p?.isAlive ?? null,
+            isAlive: p?.isAlive ?? null,
+            isKnocked: p?.isKnocked ?? null,
             ownership: null as
               | (typeof liveSyncContract.overrides.players)[string]
               | null,
@@ -2045,10 +2563,15 @@ export class MatchesService {
             void playerKey;
             return rest;
           }) ?? [];
+      const livePlayers = this.overlayLiveMirrorPlayerRows(
+        players,
+        liveMirrorTeam,
+      );
 
       const alivePlayers = isCompetitiveTeam
-        ? (canonicalTeam?.aliveCount ??
-          players.filter((p) => (p.isAlive ?? p.alive ?? false) === true)
+        ? (liveMirrorTeam?.alivePlayers ??
+          canonicalTeam?.aliveCount ??
+          livePlayers.filter((p) => (p.isAlive ?? p.alive ?? false) === true)
             .length)
         : null;
       const eliminatedOrder = isCompetitiveTeam
@@ -2057,23 +2580,31 @@ export class MatchesService {
           null)
         : null;
       const teamKills = isCompetitiveTeam
-        ? (canonicalTeam?.teamKills ??
-          players.reduce((sum, p) => sum + (p.kills ?? 0), 0))
+        ? (liveMirrorTeam?.kills ??
+          canonicalTeam?.teamKills ??
+          livePlayers.reduce((sum, p) => sum + (p.kills ?? 0), 0))
         : 0;
       const totalKills = teamKills;
       const placement = isCompetitiveTeam
-        ? (canonicalTeam?.placement ?? sr.placement ?? null)
+        ? (liveMirrorTeam?.placement ??
+          canonicalTeam?.placement ??
+          sr.placement ??
+          null)
         : null;
-      const placementPoints = getPlacementPoints(placement);
-      const totalPoints = isCompetitiveTeam
-        ? (sr.totalPoints ??
-          sr.points ??
-          placementPoints +
-            totalKills +
-            ((sr as { penaltyPoints?: number | null }).penaltyPoints ?? 0))
-        : 0;
+      const placementPoints = getPlacementPoints(placement, match.game?.key);
+      const killPoints =
+        typeof sr.points === 'number' && Number.isFinite(sr.points)
+          ? sr.points
+          : totalKills;
+      const adjustedScore = applyMatchScoreAdjustments(
+        placementPoints + killPoints,
+        adjustmentsByTeam.get(sr.teamId as string) ?? [],
+        adjustmentMatchContext,
+      );
+      const totalPoints = isCompetitiveTeam ? adjustedScore.totalPoints : 0;
       const eliminated = isCompetitiveTeam
-        ? (canonicalTeam?.eliminated ??
+        ? (liveMirrorTeam?.eliminated ??
+          canonicalTeam?.eliminated ??
           (Boolean(sr.eliminatedAt) || eliminatedOrder !== null))
         : false;
 
@@ -2087,7 +2618,8 @@ export class MatchesService {
         kills: totalKills,
         teamKills,
         alivePlayers,
-        hasTelemetryPresence: isActiveTeam,
+        hasTelemetryPresence:
+          liveMirrorTeam?.hasTelemetryPresence ?? isActiveTeam,
         eliminated,
         eliminatedOrder,
         placement,
@@ -2099,6 +2631,10 @@ export class MatchesService {
           : false,
         placementPoints,
         totalPoints,
+        adjustmentPoints: isCompetitiveTeam
+          ? totalPoints - placementPoints - killPoints
+          : 0,
+        disqualified: isCompetitiveTeam ? adjustedScore.disqualified : false,
         manualTotalKills: isCompetitiveTeam
           ? ((sr as { manualTotalKills?: boolean }).manualTotalKills ?? false)
           : false,
@@ -2106,14 +2642,135 @@ export class MatchesService {
           liveSyncContract.overrides.teams[sr.teamId as string] ?? null,
         audit: teamAudit,
         team: sr.team,
-        players,
+        players: livePlayers,
       };
     });
+    const liveOnlyUnassignedRows = useLiveMirrorAuthority
+      ? Array.from(liveMirrorTeamById.values())
+          .filter((team) => !assignedTeamIds.has(team.teamId))
+          .filter((team) => {
+            if (team.presenceStatus === 'NO_SHOW') {
+              return false;
+            }
+            const alivePlayers =
+              typeof team.alivePlayers === 'number' &&
+              Number.isFinite(team.alivePlayers)
+                ? Math.max(0, Math.trunc(team.alivePlayers))
+                : 0;
+            const totalPlayers =
+              typeof team.totalPlayers === 'number' &&
+              Number.isFinite(team.totalPlayers)
+                ? Math.max(0, Math.trunc(team.totalPlayers))
+                : Array.isArray(team.players)
+                  ? team.players.length
+                  : 0;
+            return (
+              team.hasTelemetryPresence === true ||
+              alivePlayers > 0 ||
+              totalPlayers > 0 ||
+              (team.kills ?? 0) > 0 ||
+              (team.placement ?? null) !== null ||
+              (team.points ?? null) !== null
+            );
+          })
+          .map((team) => {
+            const rawAlivePlayers =
+              typeof team.alivePlayers === 'number' &&
+              Number.isFinite(team.alivePlayers)
+                ? Math.max(0, Math.trunc(team.alivePlayers))
+                : null;
+            const rawTotalPlayers =
+              typeof team.totalPlayers === 'number' &&
+              Number.isFinite(team.totalPlayers)
+                ? Math.max(0, Math.trunc(team.totalPlayers))
+                : null;
+            const alivePlayers = rawAlivePlayers;
+            const totalPlayers =
+              rawTotalPlayers ??
+              Math.max(
+                alivePlayers ?? 0,
+                Array.isArray(team.players) ? team.players.length : 0,
+              ) ??
+              null;
+            const placement =
+              typeof team.placement === 'number' &&
+              Number.isFinite(team.placement)
+                ? Math.max(1, Math.trunc(team.placement))
+                : null;
+            const kills =
+              typeof team.kills === 'number' && Number.isFinite(team.kills)
+                ? Math.max(0, Math.trunc(team.kills))
+                : 0;
+            const wasPresentInMatch = true;
+            const placementPoints = getPlacementPoints(
+              placement,
+              match.game?.key,
+            );
+            const totalPoints =
+              typeof team.points === 'number' && Number.isFinite(team.points)
+                ? Math.max(0, Math.trunc(team.points))
+                : placementPoints + kills;
+            const fallbackName =
+              typeof team.name === 'string' && team.name.trim().length > 0
+                ? team.name.trim()
+                : typeof team.slot === 'number' && Number.isFinite(team.slot)
+                  ? `Unassigned Live Team ${Math.trunc(team.slot)}`
+                  : 'Unassigned Live Team';
+
+            return {
+              id: `live-unassigned:${team.teamId}`,
+              matchId,
+              teamId: team.teamId,
+              liveTeamId: team.teamId,
+              isLiveOnlyUnassigned: true,
+              liveOnlyReason:
+                'Detected from live telemetry, but not assigned to a saved match slot yet.',
+              wasPresentInMatch,
+              presenceStatus: 'ACTIVE' as const,
+              slot:
+                typeof team.slot === 'number' && Number.isFinite(team.slot)
+                  ? Math.trunc(team.slot)
+                  : null,
+              kills,
+              teamKills: kills,
+              alivePlayers,
+              hasTelemetryPresence: team.hasTelemetryPresence ?? true,
+              eliminated:
+                team.eliminated ??
+                (alivePlayers !== null
+                  ? alivePlayers <= 0 &&
+                    ((totalPlayers ?? 0) > 0 || placement !== null)
+                  : false),
+              eliminatedOrder: null,
+              placement,
+              eliminatedAt: null,
+              teamLocked: true,
+              placementPoints,
+              totalPoints,
+              manualTotalKills: false,
+              ownership: null,
+              audit: {
+                lastOverride: null,
+                lastRelease: null,
+              },
+              team: {
+                id: team.teamId,
+                name: fallbackName,
+                tag:
+                  typeof team.tag === 'string' && team.tag.trim().length > 0
+                    ? team.tag.trim()
+                    : null,
+                logoUrl: team.logoUrl ?? null,
+              },
+              players: [],
+            };
+          })
+      : [];
 
     if (process.env.NODE_ENV !== 'production') {
       this.logger.debug('results placement snapshot', {
         matchId,
-        teams: rows.map((r) => ({
+        teams: [...rows, ...liveOnlyUnassignedRows].map((r) => ({
           teamId: r.teamId,
           alivePlayers: r.alivePlayers,
           eliminatedOrder: r.eliminatedOrder,
@@ -2122,7 +2779,10 @@ export class MatchesService {
       });
     }
 
-    const sorted = this.sortResults(rows as any);
+    const sorted = this.sortResults([
+      ...rows,
+      ...liveOnlyUnassignedRows,
+    ] as any);
 
     const lockContract = deriveMatchLockContract({
       status: match.status ?? null,
@@ -2140,6 +2800,7 @@ export class MatchesService {
     return {
       results: sorted,
       data: sorted,
+      version: liveSyncContract.version,
       locked,
       lockState,
       lockReason,
@@ -2148,7 +2809,7 @@ export class MatchesService {
       aliveTeamsCount,
       totalTeamsCount,
       matchLocked: locked,
-      telemetryProvider: telemetry.telemetryProvider,
+      telemetryProvider: exposeTelemetryProvider(telemetry.telemetryProvider),
       lifecycleStatus: lockContract.lifecycleStatus,
       slotLocked: lockContract.slotLocked,
       sourceMode,
@@ -2161,6 +2822,117 @@ export class MatchesService {
       overrideReleaseAllowed,
       overrideReleaseReason,
     };
+  }
+
+  async listResultAdjustments(actor: Actor, matchId: string) {
+    const match = await this.ensureResultAdjustmentMatch(actor, matchId);
+    const filters = this.adjustmentContextFilters(match);
+    const adjustments = await this.prisma.adminAdjustment.findMany({
+      where: {
+        deletedAt: null,
+        OR: filters,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        organizationId: true,
+        tournamentId: true,
+        stageId: true,
+        groupId: true,
+        sessionId: true,
+        matchId: true,
+        teamId: true,
+        scope: true,
+        type: true,
+        pointsDelta: true,
+        reason: true,
+        note: true,
+        createdAt: true,
+        createdById: true,
+        revokedAt: true,
+        revokedById: true,
+        revokeReason: true,
+        team: { select: { id: true, name: true, tag: true, logoUrl: true } },
+      },
+    });
+    return { adjustments };
+  }
+
+  async createResultAdjustment(
+    actor: Actor,
+    matchId: string,
+    payload: MatchResultAdjustmentPayload,
+  ) {
+    const match = await this.ensureResultAdjustmentMatch(actor, matchId);
+    const teamId = this.cleanAdjustmentTeamId(payload?.teamId);
+    await this.ensureAdjustmentTeamInMatch(match.id, teamId);
+
+    const type = this.normalizeResultAdjustmentType(payload?.type);
+    const scope = this.normalizeResultAdjustmentScope(
+      payload?.scope,
+      type,
+      match,
+    );
+    const pointsDelta =
+      type === 'POINT_DELTA'
+        ? this.normalizeAdjustmentDelta(payload?.pointsDelta)
+        : 0;
+    const reason =
+      this.toStringValue(payload?.reason) ??
+      this.defaultAdjustmentReason(type, scope, pointsDelta);
+
+    const adjustment = await this.prisma.adminAdjustment.create({
+      data: {
+        organizationId:
+          match.organizationId ?? match.tournament?.organizationId ?? null,
+        tournamentId: match.tournamentId ?? null,
+        stageId: match.stageId ?? null,
+        groupId: match.groupId ?? null,
+        sessionId: match.sessionId ?? null,
+        matchId: scope === 'MATCH' ? match.id : null,
+        teamId,
+        scope,
+        type,
+        pointsDelta,
+        reason,
+        createdById: actor.actorId ?? actor.id ?? null,
+      } as Prisma.AdminAdjustmentUncheckedCreateInput,
+    });
+
+    await this.refreshAdjustmentScope(match, teamId, scope);
+    return { ok: true, adjustment };
+  }
+
+  async revokeResultAdjustment(
+    actor: Actor,
+    matchId: string,
+    adjustmentId: string,
+    body: { reason?: string | null } = {},
+  ) {
+    const match = await this.ensureResultAdjustmentMatch(actor, matchId);
+    const adjustment = await this.prisma.adminAdjustment.findUnique({
+      where: { id: adjustmentId },
+    });
+    if (!adjustment || adjustment.deletedAt) {
+      throw new NotFoundException('Adjustment not found');
+    }
+    if (!this.adjustmentBelongsToMatchContext(adjustment, match)) {
+      throw new ForbiddenException('Adjustment is outside this match context');
+    }
+    const revoked = await this.prisma.adminAdjustment.update({
+      where: { id: adjustmentId },
+      data: {
+        revokedAt: new Date(),
+        revokedById: actor.actorId ?? actor.id ?? null,
+        revokeReason: this.toStringValue(body?.reason) ?? 'Revoked',
+      },
+    });
+    await this.refreshAdjustmentScope(
+      match,
+      adjustment.teamId,
+      (adjustment.scope ?? 'MATCH') as AdminAdjustmentScopeValue,
+    );
+    return { ok: true, adjustment: revoked };
   }
 
   async updateResult(
@@ -2281,8 +3053,31 @@ export class MatchesService {
     actor: Actor,
     matchId: string,
     placements: Array<{ teamId: string; placement: number }>,
+    expectedVersion?: number | null,
   ) {
-    return this.results.setPlacements(actor as any, matchId, placements);
+    return this.results.setPlacements(
+      actor as any,
+      matchId,
+      placements,
+      expectedVersion,
+    );
+  }
+
+  async updateManualMatchResults(
+    actor: Actor,
+    matchId: string,
+    payload: ManualMatchResultsPayload,
+  ) {
+    return this.results.setManualMatchResults(
+      actor as any,
+      matchId,
+      (payload.results ?? []).map((row) => ({
+        teamId: row.teamId ?? '',
+        placement: Number(row.placement),
+        kills: Number(row.kills),
+      })),
+      payload.expectedVersion ?? null,
+    );
   }
 
   async releaseMatchResultOverrides(actor: Actor, matchId: string) {
@@ -2317,9 +3112,9 @@ export class MatchesService {
       throw new ConflictException('Results are locked.');
     }
     const gameKey = (match as any)?.game?.key ?? null;
-    const maxPlayers = gameKey === GameKey.PUBG_MOBILE ? 4 : 6;
+    const maxPlayers = defaultTeamSizeForGame(gameKey);
     const unique = Array.from(new Set(playerIds.filter(Boolean)));
-    // Match-level roster: PUBG MOBILE max 4; others max 6. Zero players allowed.
+    // Match-level roster: game team-size cap. Zero players allowed.
     if (gameKey === GameKey.PUBG_MOBILE && unique.length > maxPlayers) {
       throw new BadRequestException(
         'PUBG MOBILE squads can include up to 4 players',
@@ -2478,6 +3273,10 @@ export class MatchesService {
   }
 
   private async orderedMatchResults(matchId: string) {
+    const match = await this.prisma.match.findUnique({
+      where: { id: matchId },
+      select: { game: { select: { key: true } } },
+    });
     const slotResults = await this.prisma.matchSlotResult.findMany({
       where: { matchId, teamId: { not: null } },
       orderBy: { slotNumber: 'asc' },
@@ -2494,16 +3293,14 @@ export class MatchesService {
       const wasPresentInMatch = sr.wasPresentInMatch ?? null;
       const isCompetitiveTeam = isCompetitiveResultsTeam(wasPresentInMatch);
       const placement = isCompetitiveTeam ? (sr.placement ?? null) : null;
-      const placementPoints = getPlacementPoints(placement);
+      const placementPoints = getPlacementPoints(placement, match?.game?.key);
       const totalKills = isCompetitiveTeam ? (sr.totalKills ?? 0) : 0;
       const totalPoints = isCompetitiveTeam
         ? (sr.totalPoints ?? placementPoints + totalKills)
         : 0;
       const players =
         sr.players?.map((p) => {
-          const alive = isCompetitiveTeam
-            ? ((p as any)?.isAlive ?? null)
-            : null;
+          const alive = isCompetitiveTeam ? (p?.isAlive ?? null) : null;
           return {
             id: p.id,
             playerId: buildMatchPlayerKey({
@@ -2513,11 +3310,10 @@ export class MatchesService {
             name: p.playerName ?? 'Player',
             kills: isCompetitiveTeam ? (p.kills ?? 0) : 0,
             knocks: p.knocks ?? null,
+            assists: p.assists ?? null,
             isAlive: alive,
             alive,
-            isKnocked: isCompetitiveTeam
-              ? ((p as any)?.isKnocked ?? null)
-              : null,
+            isKnocked: isCompetitiveTeam ? (p?.isKnocked ?? null) : null,
           };
         }) ?? [];
       return {
@@ -2553,6 +3349,7 @@ export class MatchesService {
       teamId: string;
       totalPoints: number;
       kills: number;
+      placementPoints?: number | null;
       placement: number | null;
       slot: number;
       wasPresentInMatch?: boolean | null;
@@ -2564,8 +3361,8 @@ export class MatchesService {
         b.wasPresentInMatch,
       );
       if (presenceOrder !== 0) return presenceOrder;
-      if (a.totalPoints !== b.totalPoints) return b.totalPoints - a.totalPoints;
-      if (a.kills !== b.kills) return b.kills - a.kills;
+      const rankingOrder = compareRankingRows(a, b);
+      if (rankingOrder !== 0) return rankingOrder;
       const aPlacement = a.placement ?? Number.POSITIVE_INFINITY;
       const bPlacement = b.placement ?? Number.POSITIVE_INFINITY;
       if (aPlacement !== bPlacement) return aPlacement - bPlacement;
@@ -2597,12 +3394,241 @@ export class MatchesService {
     }).resultLockState;
   }
 
+  private async ensureResultAdjustmentMatch(
+    actor: Actor,
+    matchId: string,
+  ): Promise<ResultAdjustmentMatchContext> {
+    const match = await this.prisma.match.findFirst({
+      where: { id: matchId, deletedAt: null },
+      select: {
+        id: true,
+        organizationId: true,
+        tournamentId: true,
+        stageId: true,
+        groupId: true,
+        sessionId: true,
+        tournament: {
+          select: {
+            ownerUserId: true,
+            organizationId: true,
+            status: true,
+          },
+        },
+      },
+    });
+    if (!match) throw new NotFoundException('Match not found');
+    const orgId = match.tournament?.organizationId ?? match.organizationId;
+    if (!this.canEdit(actor, match.tournament?.ownerUserId ?? null, orgId)) {
+      throw new ForbiddenException('Not allowed to adjust results');
+    }
+    if (match.tournament?.status === TournamentStatus.ARCHIVED) {
+      throw new BadRequestException('Tournament is not active');
+    }
+    return match;
+  }
+
+  private cleanAdjustmentTeamId(value: string | null | undefined): string {
+    const teamId = this.toStringValue(value);
+    if (!teamId) {
+      throw new BadRequestException('teamId is required');
+    }
+    return teamId;
+  }
+
+  private normalizeResultAdjustmentType(
+    value: string | null | undefined,
+  ): AdminAdjustmentTypeValue {
+    const normalized = (value ?? 'POINT_DELTA').toString().trim().toUpperCase();
+    if (
+      ADMIN_ADJUSTMENT_TYPES.includes(normalized as AdminAdjustmentTypeValue)
+    ) {
+      return normalized as AdminAdjustmentTypeValue;
+    }
+    throw new BadRequestException('Invalid adjustment type');
+  }
+
+  private normalizeResultAdjustmentScope(
+    value: string | null | undefined,
+    type: AdminAdjustmentTypeValue,
+    match: ResultAdjustmentMatchContext,
+  ): AdminAdjustmentScopeValue {
+    const forcedScope =
+      type === 'ZERO_MATCH_POINTS' || type === 'DISQUALIFY_MATCH'
+        ? 'MATCH'
+        : type === 'DISQUALIFY_GROUP'
+          ? 'GROUP'
+          : type === 'DISQUALIFY_STAGE'
+            ? 'STAGE'
+            : type === 'DISQUALIFY_TOURNAMENT'
+              ? 'TOURNAMENT'
+              : type === 'DISQUALIFY_SESSION'
+                ? 'SESSION'
+                : null;
+    const normalized = (forcedScope ?? value ?? 'MATCH')
+      .toString()
+      .trim()
+      .toUpperCase();
+    if (
+      !ADMIN_ADJUSTMENT_SCOPES.includes(normalized as AdminAdjustmentScopeValue)
+    ) {
+      throw new BadRequestException('Invalid adjustment scope');
+    }
+    const scope = normalized as AdminAdjustmentScopeValue;
+    if (scope === 'GROUP' && !match.groupId) {
+      throw new BadRequestException('This match has no group scope');
+    }
+    if (scope === 'STAGE' && !match.stageId) {
+      throw new BadRequestException('This match has no stage scope');
+    }
+    if (scope === 'TOURNAMENT' && !match.tournamentId) {
+      throw new BadRequestException('This match has no tournament scope');
+    }
+    if (scope === 'SESSION' && !match.sessionId) {
+      throw new BadRequestException('This match has no event/session scope');
+    }
+    return scope;
+  }
+
+  private normalizeAdjustmentDelta(value: number | string | null | undefined) {
+    const parsed =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : NaN;
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+      throw new BadRequestException('pointsDelta must be an integer');
+    }
+    if (parsed === 0) {
+      throw new BadRequestException('pointsDelta cannot be zero');
+    }
+    return parsed;
+  }
+
+  private defaultAdjustmentReason(
+    type: AdminAdjustmentTypeValue,
+    scope: AdminAdjustmentScopeValue,
+    pointsDelta: number,
+  ) {
+    if (type === 'POINT_DELTA') {
+      return `${scope.toLowerCase()} point adjustment ${pointsDelta > 0 ? '+' : ''}${pointsDelta}`;
+    }
+    if (type === 'ZERO_MATCH_POINTS') return 'Zero match points';
+    return `${scope.toLowerCase()} disqualification`;
+  }
+
+  private async ensureAdjustmentTeamInMatch(matchId: string, teamId: string) {
+    const exists =
+      (await this.prisma.matchSlot.findFirst({
+        where: { matchId, teamId, deletedAt: null },
+        select: { id: true },
+      })) ??
+      (await this.prisma.matchTeam.findFirst({
+        where: { matchId, teamId, deletedAt: null },
+        select: { id: true },
+      })) ??
+      (await this.prisma.matchSlotResult.findFirst({
+        where: { matchId, teamId },
+        select: { id: true },
+      }));
+    if (!exists) {
+      throw new BadRequestException('Team is not assigned to this match');
+    }
+  }
+
+  private adjustmentContextFilters(match: ResultAdjustmentMatchContext) {
+    return [
+      { matchId: match.id },
+      match.groupId ? { groupId: match.groupId } : null,
+      match.stageId ? { stageId: match.stageId } : null,
+      match.tournamentId ? { tournamentId: match.tournamentId } : null,
+      match.sessionId ? { sessionId: match.sessionId } : null,
+    ].filter(Boolean) as Prisma.AdminAdjustmentWhereInput[];
+  }
+
+  private adjustmentBelongsToMatchContext(
+    adjustment: {
+      matchId?: string | null;
+      groupId?: string | null;
+      stageId?: string | null;
+      tournamentId?: string | null;
+      sessionId?: string | null;
+    },
+    match: ResultAdjustmentMatchContext,
+  ) {
+    return (
+      adjustment.matchId === match.id ||
+      Boolean(adjustment.groupId && adjustment.groupId === match.groupId) ||
+      Boolean(adjustment.stageId && adjustment.stageId === match.stageId) ||
+      Boolean(
+        adjustment.tournamentId &&
+        adjustment.tournamentId === match.tournamentId,
+      ) ||
+      Boolean(adjustment.sessionId && adjustment.sessionId === match.sessionId)
+    );
+  }
+
+  private adjustmentMatchWhere(
+    match: ResultAdjustmentMatchContext,
+    scope: AdminAdjustmentScopeValue,
+  ): Prisma.MatchWhereInput {
+    if (scope === 'MATCH') return { id: match.id };
+    if (scope === 'GROUP') return { groupId: match.groupId ?? undefined };
+    if (scope === 'STAGE') return { stageId: match.stageId ?? undefined };
+    if (scope === 'TOURNAMENT') {
+      return { tournamentId: match.tournamentId ?? undefined };
+    }
+    return { sessionId: match.sessionId ?? undefined };
+  }
+
+  private async refreshAdjustmentScope(
+    match: ResultAdjustmentMatchContext,
+    teamId: string,
+    scope: AdminAdjustmentScopeValue,
+  ) {
+    const matchWhere = this.adjustmentMatchWhere(match, scope);
+    const matches = await this.prisma.match.findMany({
+      where: { ...matchWhere, deletedAt: null },
+      select: { id: true, tournamentId: true },
+    });
+    for (const affected of matches) {
+      try {
+        await this.results.recomputeSlotAfterAdjustment(
+          affected.id,
+          teamId,
+          null,
+          { enforceEditable: false },
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Adjustment slot refresh skipped match=${affected.id} team=${teamId}: ${message}`,
+        );
+      }
+      if (affected.tournamentId) {
+        try {
+          await this.scoring.recomputeMatchAndTournament(affected.id);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            `Adjustment scoring refresh skipped match=${affected.id}: ${message}`,
+          );
+        }
+      }
+    }
+  }
+
   private async ensureMatchOrg(actor: Actor, matchId: string) {
     const match = await this.prisma.match.findFirst({
       where: { id: matchId, deletedAt: null },
       select: {
         id: true,
+        organizationId: true,
         tournamentId: true,
+        stageId: true,
+        groupId: true,
+        sessionId: true,
         liveState: true,
         status: true,
         dataSource: true,
@@ -2634,7 +3660,7 @@ export class MatchesService {
       !this.canEdit(
         actor,
         match.tournament?.ownerUserId ?? null,
-        match.tournament?.organizationId ?? null,
+        match.tournament?.organizationId ?? match.organizationId ?? null,
       )
     ) {
       throw new ForbiddenException('Not allowed to edit slots for this match');
@@ -2646,64 +3672,10 @@ export class MatchesService {
   }
 
   async assignMatchTeamSlot(actor: Actor, matchId: string, dto: AssignSlotDto) {
-    const match = await this.ensureMatchOrg(actor, matchId);
-    this.ensureSlotsEditable(match);
-    const slot = this.validateSlotNumber(Number(dto.slot), {
-      usesSlots: true,
-      maxSlots: match.slotCount ?? 25,
-      adapterKey: match.adapterKey ?? null,
-      gameKey: match.game?.key ?? null,
-    });
     const teamId = dto.teamId;
     if (!teamId) throw new BadRequestException('teamId is required');
-
-    const matchTeam = await this.prisma.matchTeam.findFirst({
-      where: { matchId, teamId, deletedAt: null },
-      select: { id: true, slot: true },
-    });
-    if (!matchTeam) throw new NotFoundException('Match team not found');
-
-    // Check slot conflicts
-    const existingSlot = await this.prisma.matchTeam.findFirst({
-      where: { matchId, slot, deletedAt: null },
-      select: { id: true, teamId: true },
-    });
-    if (existingSlot && existingSlot.id !== matchTeam.id) {
-      throw new ConflictException('Slot already taken');
-    }
-
-    if (matchTeam.slot !== null && matchTeam.slot !== undefined) {
-      if (!dto.replace) {
-        throw new ConflictException(
-          'Team already has a slot; pass replace=true to reassign',
-        );
-      }
-    }
-
-    await this.prisma.matchTeam.update({
-      where: { id: matchTeam.id },
-      data: { slot },
-    });
-
-    this.ensurePlayerStatsForTeam();
-
-    // Audit
-    try {
-      await this.auditService.log({
-        action: AuditAction.MATCH_SLOT_ASSIGNED,
-        entityType: 'MATCH',
-        entityId: matchId,
-        userId: actor.actorId ?? actor.id,
-        organizationId: match.tournament?.organizationId ?? null,
-        source: 'MANUAL',
-        after: { teamId, slot },
-      });
-    } catch (err) {
-      this.logger.warn(
-        `Audit log failed for match ${matchId} slot ${slot}: ${String(err)}`,
-      );
-    }
-
+    const slot = Number(dto.slot);
+    await this.setSlot(matchId, slot, teamId, actor);
     return { ok: true, slot, teamId };
   }
 
@@ -2853,14 +3825,23 @@ export class MatchesService {
     requestedAdapterKey?: string | null;
     requestedPcobSessionId?: string | null;
     effectiveGameKey: GameKey;
-    allowPcobBindingMutation?: boolean;
-    allowPcobProviderEnable?: boolean;
   }): MatchTelemetryWriteData {
     const current = params.current ?? null;
-    const currentProvider = current
-      ? this.resolveTelemetryProvider(current)
-      : MatchDataSource.MANUAL;
     const requestedProvider = params.requestedProvider;
+    if (
+      requestedProvider !== MatchDataSource.MANUAL &&
+      requestedProvider !== MatchDataSource.API
+    ) {
+      throw new BadRequestException('dataSource must be one of MANUAL, API');
+    }
+    if (
+      params.effectiveGameKey === GameKey.VALORANT &&
+      requestedProvider === MatchDataSource.API
+    ) {
+      throw new BadRequestException(
+        'VALORANT API source is pending Riot approval; use MANUAL for now',
+      );
+    }
     const requestedAdapterKey =
       params.requestedAdapterKey !== undefined
         ? this.normalizeAdapterKey(params.requestedAdapterKey)
@@ -2869,70 +3850,10 @@ export class MatchesService {
       params.requestedPcobSessionId !== undefined
         ? this.normalizePcobSessionId(params.requestedPcobSessionId)
         : undefined;
-    const allowPcobBindingMutation = params.allowPcobBindingMutation === true;
-    const allowPcobProviderEnable = params.allowPcobProviderEnable === true;
-
-    if (requestedProvider === MatchDataSource.PCOB) {
-      if (
-        !allowPcobProviderEnable &&
-        currentProvider !== MatchDataSource.PCOB
-      ) {
-        throw new BadRequestException(
-          'Use the dedicated PCOB binding flow to enable the PCOB provider',
-        );
-      }
-      if (!allowPcobBindingMutation && requestedPcobSessionId !== undefined) {
-        throw new BadRequestException(
-          'pcobSessionId can only be changed in the dedicated PCOB binding flow',
-        );
-      }
-
-      const nextAdapterKey =
-        requestedAdapterKey !== undefined
-          ? requestedAdapterKey
-          : this.normalizeAdapterKey(current?.adapterKey ?? null);
-      if (
-        !allowPcobBindingMutation &&
-        requestedAdapterKey !== undefined &&
-        nextAdapterKey !== this.normalizeAdapterKey(current?.adapterKey ?? null)
-      ) {
-        throw new BadRequestException(
-          'adapterKey can only be changed in the dedicated PCOB binding flow',
-        );
-      }
-
-      const nextSessionId =
-        requestedPcobSessionId !== undefined
-          ? requestedPcobSessionId
-          : this.normalizePcobSessionId(current?.pcobSessionId ?? null);
-
-      const validatedAdapterKey = this.validateAdapterKeyForGame(
-        nextAdapterKey,
-        params.effectiveGameKey,
-      );
-      if (validatedAdapterKey !== PCOB_ADAPTER_KEY) {
-        throw new BadRequestException(
-          'telemetryProvider PCOB requires adapterKey pubgm-pcob',
-        );
-      }
-      if (!nextSessionId) {
-        throw new BadRequestException(
-          'telemetryProvider PCOB requires pcobSessionId',
-        );
-      }
-
-      return {
-        dataSource: MatchDataSource.PCOB,
-        dataMode: DataMode.PCOB,
-        pcobSessionId: nextSessionId,
-        pcobMode: true,
-        adapterKey: validatedAdapterKey,
-      };
-    }
 
     if (requestedPcobSessionId !== undefined) {
       throw new BadRequestException(
-        'pcobSessionId is only valid when telemetryProvider is PCOB',
+        'pcobSessionId is no longer a supported live source field',
       );
     }
 
@@ -2944,7 +3865,7 @@ export class MatchesService {
     if (nextAdapterKey === PCOB_ADAPTER_KEY) {
       if (requestedAdapterKey !== undefined) {
         throw new BadRequestException(
-          'adapterKey pubgm-pcob requires telemetryProvider PCOB',
+          'adapterKey pubgm-pcob is no longer a supported live source',
         );
       }
       nextAdapterKey = null;
@@ -3007,7 +3928,12 @@ export class MatchesService {
       tournamentGameKey: GameKey | null;
     },
   ): Promise<Prisma.MatchUncheckedCreateInput & Record<string, unknown>> {
-    const pcobStatus = this.parsePcobStatus(body?.pcobStatus);
+    if (body?.pcobStatus !== undefined) {
+      throw new BadRequestException(
+        'pcobStatus is no longer a supported live source field',
+      );
+    }
+    const pcobStatus = PcobStatus.PENDING;
     const requestedGameKey = this.normalizeGameKey(body?.gameKey);
     const game = await this.resolveGameIdentity({
       preferredGameId: body?.gameId ?? null,
@@ -3015,6 +3941,11 @@ export class MatchesService {
       fallbackGameKey: ctx.tournamentGameKey ?? null,
     });
     const effectiveGameKey = game.key;
+    await assertOrganizationGameAccess(
+      this.prisma,
+      ctx.organizationId,
+      effectiveGameKey,
+    );
     const slotCount = this.normalizeSlotCount(
       effectiveGameKey,
       body?.slotCount ?? null,
@@ -3060,9 +3991,11 @@ export class MatchesService {
       requestedAdapterKey,
       requestedPcobSessionId,
       effectiveGameKey,
-      allowPcobBindingMutation: true,
-      allowPcobProviderEnable: true,
     });
+    const resultSource = this.parseMatchResultSource(
+      body?.resultSource,
+      requestedProvider,
+    );
 
     return {
       name: body?.name ?? null,
@@ -3074,6 +4007,7 @@ export class MatchesService {
       map,
       recallEnabled,
       ...providerData,
+      resultSource,
       pcobStatus,
       matchNumber: body?.matchNumber ?? null,
       status: body?.status ?? MatchStatus.DRAFT,
@@ -3096,7 +4030,12 @@ export class MatchesService {
       sessionGameKey: GameKey | null;
     },
   ): Promise<Prisma.MatchUncheckedCreateInput & Record<string, unknown>> {
-    const pcobStatus = this.parsePcobStatus(body?.pcobStatus);
+    if (body?.pcobStatus !== undefined) {
+      throw new BadRequestException(
+        'pcobStatus is no longer a supported live source field',
+      );
+    }
+    const pcobStatus = PcobStatus.PENDING;
     const requestedGameKey = this.normalizeGameKey(body?.gameKey);
     const game = await this.resolveGameIdentity({
       preferredGameId: body?.gameId ?? ctx.gameId,
@@ -3104,6 +4043,11 @@ export class MatchesService {
       fallbackGameKey: ctx.sessionGameKey ?? null,
     });
     const effectiveGameKey = game.key;
+    await assertOrganizationGameAccess(
+      this.prisma,
+      ctx.organizationId,
+      effectiveGameKey,
+    );
     const slotCount = this.normalizeSlotCount(
       effectiveGameKey,
       body?.slotCount ?? ctx.slotCount,
@@ -3151,9 +4095,11 @@ export class MatchesService {
       requestedAdapterKey,
       requestedPcobSessionId,
       effectiveGameKey,
-      allowPcobBindingMutation: true,
-      allowPcobProviderEnable: true,
     });
+    const resultSource = this.parseMatchResultSource(
+      body?.resultSource,
+      requestedProvider,
+    );
 
     return {
       name: body?.name ?? null,
@@ -3168,6 +4114,7 @@ export class MatchesService {
       map,
       recallEnabled,
       ...providerData,
+      resultSource,
       pcobStatus,
       matchNumber: body?.matchNumber ?? null,
       status: body?.status ?? MatchStatus.DRAFT,
@@ -3308,64 +4255,93 @@ export class MatchesService {
       });
       await this.seedControlState(tx, match.id, ctx.organizationId);
 
-      // Seed the match from the currently confirmed session lobby only.
-      // Later registration changes do not backfill or mutate existing matches.
-      const registrations = await tx.sessionRegistration.findMany({
-        where: {
-          sessionId: ctx.sessionId,
-          deletedAt: null,
-          status: {
-            in: [
-              SessionRegistrationStatus.CONFIRMED,
-              SessionRegistrationStatus.CHECKED_IN,
-            ],
-          },
-          slotNumber: { not: null },
-        },
-        select: {
-          teamId: true,
-          slotNumber: true,
-        },
-        orderBy: { slotNumber: 'asc' },
-      });
+      // Seed event teams as match candidates only. Slot placement stays a
+      // per-match decision unless an organizer explicitly syncs from a slot source.
+      const shouldLoadTeamsFromEvent = body?.loadTeamsFromEvent !== false;
+      const registrations = shouldLoadTeamsFromEvent
+        ? await tx.sessionRegistration.findMany({
+            where: {
+              sessionId: ctx.sessionId,
+              deletedAt: null,
+              status: {
+                in: [
+                  SessionRegistrationStatus.CONFIRMED,
+                  SessionRegistrationStatus.CHECKED_IN,
+                ],
+              },
+            },
+            select: {
+              teamId: true,
+              slotNumber: true,
+            },
+            orderBy: { slotNumber: 'asc' },
+          })
+        : [];
 
-      if (registrations.length > 0) {
+      const sessionDiscordConfig = (
+        tx as Prisma.TransactionClient & {
+          sessionDiscordConfig?: Prisma.TransactionClient['sessionDiscordConfig'];
+        }
+      ).sessionDiscordConfig;
+      const discordConfig =
+        registrations.length > 0
+          ? sessionDiscordConfig
+            ? await sessionDiscordConfig.findUnique({
+                where: { sessionId: ctx.sessionId },
+                select: { id: true },
+              })
+            : { id: '__legacy_test_discord_session__' }
+          : null;
+      const bannedTeamIds =
+        registrations.length > 0 && discordConfig
+          ? new Set(
+              (
+                await tx.teamBan.findMany({
+                  where: {
+                    organizationId: ctx.organizationId,
+                    teamId: {
+                      in: registrations.map(
+                        (registration) => registration.teamId,
+                      ),
+                    },
+                    revokedAt: null,
+                    OR: [
+                      { expiresAt: null },
+                      { expiresAt: { gt: new Date() } },
+                    ],
+                    AND: [
+                      {
+                        OR: [
+                          { scope: TeamBanScope.TEAM },
+                          {
+                            scope: TeamBanScope.SESSION,
+                            sessionId: ctx.sessionId,
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                  select: { teamId: true },
+                })
+              ).map((ban) => ban.teamId),
+            )
+          : new Set<string>();
+      const eligibleRegistrations = registrations.filter(
+        (registration) => !bannedTeamIds.has(registration.teamId),
+      );
+
+      if (eligibleRegistrations.length > 0) {
         await tx.matchTeam.createMany({
-          data: registrations.map((registration) => ({
+          data: eligibleRegistrations.map((registration) => ({
             matchId: match.id,
             teamId: registration.teamId,
-            slot: registration.slotNumber ?? null,
+            slot: null,
           })),
-          skipDuplicates: true,
-        });
-
-        const lobbyStatus =
-          (data.dataSource ?? data.dataMode ?? '').toString().toUpperCase() ===
-          MatchDataSource.MANUAL
-            ? LOBBY_STATUS.WAITING
-            : LOBBY_STATUS.OFFLINE;
-
-        await tx.matchSlot.createMany({
-          data: registrations
-            .filter(
-              (
-                registration,
-              ): registration is typeof registration & {
-                slotNumber: number;
-              } => typeof registration.slotNumber === 'number',
-            )
-            .map((registration) => ({
-              matchId: match.id,
-              slotNumber: registration.slotNumber,
-              teamId: registration.teamId,
-              lobbyStatus,
-              playersInLobby: 0,
-            })),
           skipDuplicates: true,
         });
       }
 
-      return this.withMode(match as any);
+      return this.withMode(match);
     });
   }
 
@@ -3462,40 +4438,97 @@ export class MatchesService {
         select: this.selectOrUndefined(this.matchSelect),
       });
 
-      return created.map((m) => this.withMode(m as any)) as any;
+      return created.map((m) => this.withMode(m));
     });
   }
 
   async addTeams(matchId: string, teamIds: string[], actor: Actor) {
     const match = (await this.getMatch(matchId, actor)) as any;
-    await this.prisma.matchTeam.deleteMany({
-      where: { matchId, deletedAt: null },
-    });
-    if (teamIds?.length) {
-      await this.prisma.matchTeam.createMany({
-        data: teamIds.map((teamId) => ({ matchId, teamId })),
-        skipDuplicates: true,
+    this.ensureSlotsEditable(match);
+    const normalizedTeamIds = Array.from(
+      new Set(
+        (teamIds ?? [])
+          .map((teamId) => (typeof teamId === 'string' ? teamId.trim() : ''))
+          .filter((teamId) => teamId.length > 0),
+      ),
+    );
+    await this.prisma.$transaction(async (tx) => {
+      await tx.matchTeam.deleteMany({
+        where: { matchId, deletedAt: null },
       });
-    }
+      if (normalizedTeamIds.length) {
+        await tx.matchTeam.createMany({
+          data: normalizedTeamIds.map((teamId) => ({ matchId, teamId })),
+          skipDuplicates: true,
+        });
+      }
+      await tx.matchSlot.deleteMany({
+        where:
+          normalizedTeamIds.length > 0
+            ? {
+                matchId,
+                OR: [
+                  { teamId: null },
+                  { teamId: { notIn: normalizedTeamIds } },
+                ],
+              }
+            : { matchId },
+      });
+      await this.results.ensureResultsFromSlots(match.id as string, { tx });
+      await this.syncMatchTeamSlotMirrorFromSlotsInTransaction(
+        tx,
+        match.id as string,
+      );
+      await this.updateManualClearedTeamIds(
+        match.id as string,
+        match.organizationId ?? match.tournament?.organizationId ?? null,
+        (current) => {
+          for (const teamId of [...current]) {
+            if (!normalizedTeamIds.includes(teamId)) {
+              current.delete(teamId);
+            }
+          }
+          return current;
+        },
+        tx,
+      );
+    });
+    await this.notifyLobbyContractChanged(match.id as string, {
+      refreshLiveState: this.shouldRefreshLiveSlotContract(match),
+    });
     return this.listTeams(actor, match.id as string);
   }
 
   async removeTeam(matchId: string, teamId: string, actor: Actor) {
     const match = (await this.getMatch(matchId, actor)) as any;
-    await this.prisma.matchTeam.deleteMany({
-      where: { matchId: match.id, teamId },
+    this.ensureSlotsEditable(match);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.matchTeam.deleteMany({
+        where: { matchId: match.id, teamId },
+      });
+      await tx.matchSlot.deleteMany({
+        where: { matchId: match.id, teamId },
+      });
+      await this.results.ensureResultsFromSlots(match.id as string, { tx });
+      await this.clearMatchTeamSlotMirrorInTransaction(tx, match.id as string, {
+        teamId,
+      });
+      await this.updateManualClearedTeamIds(
+        match.id,
+        match.organizationId ?? match.tournament?.organizationId ?? null,
+        (current) => {
+          current.delete(teamId);
+          return current;
+        },
+        tx,
+      );
     });
-    await this.updateManualClearedTeamIds(
-      match.id,
-      match.tournament?.organizationId ?? null,
-      (current) => {
-        current.delete(teamId);
-        return current;
-      },
-    );
     if ((match.status as MatchStatus) === MatchStatus.LIVE) {
       await this.autoEndIfLastTeamAlive(matchId);
     }
+    await this.notifyLobbyContractChanged(match.id as string, {
+      refreshLiveState: this.shouldRefreshLiveSlotContract(match),
+    });
     return this.listTeams(actor, match.id as string);
   }
 
@@ -3513,160 +4546,123 @@ export class MatchesService {
       throw new BadRequestException('teamId is required');
     }
     await this.ensureTeamAllowedForMatch(match, teamId);
-    const isAutoFilled =
-      this.resolveTelemetryProvider(match as MatchTelemetryState) !==
-      MatchDataSource.MANUAL;
-    const initialLobbyStatus = isAutoFilled
-      ? LOBBY_STATUS.OFFLINE
-      : LOBBY_STATUS.WAITING;
-
     await this.prisma.$transaction(async (tx) => {
-      const priorResult = await tx.matchSlotResult.findUnique({
-        where: {
-          matchId_slotNumber: { matchId: match.id, slotNumber: normalizedSlot },
-        },
-        select: { id: true, teamId: true },
-      });
-      const displacedSlot = await tx.matchSlot.findFirst({
-        where: {
-          matchId: match.id,
-          slotNumber: normalizedSlot,
-          deletedAt: null,
-        },
-        select: { teamId: true },
-      });
-
-      await tx.matchSlot.deleteMany({
-        where: { matchId: match.id, slotNumber: normalizedSlot },
-      });
-      await tx.matchSlot.deleteMany({
-        where: { matchId: match.id, teamId },
-      });
-      await tx.matchSlot.create({
-        data: {
-          matchId: match.id,
-          slotNumber: normalizedSlot,
-          teamId,
-          lobbyStatus: initialLobbyStatus,
-          playersInLobby: 0,
-        } as any,
-      } as any);
-
-      const slotResults = await this.results.ensureResultsFromSlots(match.id, {
+      await this.applySlotAssignmentInTransaction(
         tx,
-      });
-      const slotResult =
-        slotResults.find((sr) => sr.slotNumber === normalizedSlot) ?? null;
-
-      const needsReset = !priorResult || priorResult.teamId !== teamId;
-      if (slotResult) {
-        if (needsReset && priorResult?.id) {
-          await tx.matchSlotPlayerResult.deleteMany({
-            where: { slotResultId: priorResult.id },
-          });
-        }
-        await tx.matchSlotResult.update({
-          where: { id: slotResult.id },
-          data: {
-            teamId,
-            isAutoFilled: false,
-            ...(needsReset
-              ? {
-                  wasPresentInMatch: null,
-                  placement: null,
-                  eliminatedOrder: null,
-                  placementPoints: 0,
-                  totalKills: 0,
-                  manualTotalKills: false,
-                  finalPlacement: null,
-                  finalKills: null,
-                  finalizedAt: null,
-                  totalPoints: 0,
-                  points: 0,
-                  isLocked: false,
-                  eliminatedAt: null,
-                  placementAuto: true,
-                }
-              : {}),
-          },
-        });
-      }
-      if (
-        needsReset &&
-        displacedSlot?.teamId &&
-        displacedSlot.teamId !== teamId
-      ) {
-        await tx.matchTeam.updateMany({
-          where: { matchId: match.id, teamId: displacedSlot.teamId },
-          data: { slot: null },
-        });
-        await this.updateManualClearedTeamIds(
-          match.id,
-          match.tournament?.organizationId ?? null,
-          (current) => {
-            current.add(displacedSlot.teamId as string);
-            return current;
-          },
-          tx,
-        );
-      }
-      await tx.matchTeam.updateMany({
-        where: { matchId: match.id, teamId },
-        data: { slot: normalizedSlot },
-      });
-      await this.updateManualClearedTeamIds(
-        match.id,
-        match.tournament?.organizationId ?? null,
-        (current) => {
-          current.delete(teamId);
-          return current;
-        },
-        tx,
+        match,
+        normalizedSlot,
+        teamId,
       );
-
-      // Snapshot players into the slot result with deterministic unique names.
-      const teamPlayers = await tx.player.findMany({
-        where: { teamId, deletedAt: null },
-        select: { id: true, ign: true, realName: true, playerOpenId: true },
-      });
-      if (!isAutoFilled && teamPlayers.length && slotResult) {
-        const teamPlayerNames = uniqueSlotPlayerNames(
-          teamPlayers.map((player) => ({
-            playerName: player.ign ?? player.realName ?? 'Unknown',
-            stableId: player.id,
-          })),
-        );
-        const toCreate = teamPlayers.map((p, index) => ({
-          slotResultId: slotResult.id,
-          playerId: p.id,
-          pubgAccountId: p.playerOpenId ?? null,
-          playerName: teamPlayerNames[index],
-          kills: 0,
-          knocks: 0,
-          isAlive: true,
-          alive: true,
-          isKnocked: false,
-          isAutoFilled,
-          organizationId:
-            match.tournament?.organizationId ??
-            (() => {
-              throw new BadRequestException('organizationId is required');
-            })(),
-        }));
-        await tx.matchSlotPlayerResult.createMany({
-          data: toCreate,
-          skipDuplicates: true,
-        });
-      }
     });
 
     await this.logSlotAudit(
       AuditAction.SLOT_SET,
       match.id,
-      match.tournament?.organizationId ?? null,
+      match.organizationId ?? match.tournament?.organizationId ?? null,
       actor,
       { slotNumber: normalizedSlot, teamId },
     );
+    await this.notifyLobbyContractChanged(match.id, {
+      refreshLiveState: this.shouldRefreshLiveSlotContract(match),
+    });
+
+    return this.listSlots(actor, match.id);
+  }
+
+  async moveSlot(matchId: string, dto: MoveSlotDto, actor: Actor) {
+    const { match, capability } = await this.getSlotContext(actor, matchId);
+    this.ensureSlotsEnabled(capability);
+    this.ensureSlotsEditable(match);
+
+    const teamId = dto.teamId?.trim();
+    if (!teamId) {
+      throw new BadRequestException('teamId is required');
+    }
+
+    const targetSlotNumber = this.validateSlotNumber(
+      Number(dto.targetSlotNumber),
+      capability,
+    );
+    await this.ensureTeamAllowedForMatch(match, teamId);
+    const expectedSourceSlot =
+      dto.sourceSlotNumber === null || dto.sourceSlotNumber === undefined
+        ? null
+        : this.validateSlotNumber(Number(dto.sourceSlotNumber), capability);
+    let sourceSlotNumber: number | null = null;
+    let displacedTeamId: string | null = null;
+
+    await this.prisma.$transaction(async (tx) => {
+      const sourceAssignment = await tx.matchSlot.findFirst({
+        where: { matchId: match.id, teamId, deletedAt: null },
+        select: { slotNumber: true },
+      });
+      sourceSlotNumber =
+        typeof sourceAssignment?.slotNumber === 'number'
+          ? sourceAssignment.slotNumber
+          : null;
+
+      if (
+        expectedSourceSlot !== null &&
+        sourceSlotNumber !== expectedSourceSlot
+      ) {
+        throw new ConflictException(
+          'Slot assignment changed. Reload slots and try again.',
+        );
+      }
+
+      if (sourceSlotNumber === targetSlotNumber) {
+        return;
+      }
+
+      const targetAssignment = await tx.matchSlot.findFirst({
+        where: {
+          matchId: match.id,
+          slotNumber: targetSlotNumber,
+          deletedAt: null,
+        },
+        select: { teamId: true },
+      });
+      displacedTeamId =
+        targetAssignment?.teamId && targetAssignment.teamId !== teamId
+          ? targetAssignment.teamId
+          : null;
+
+      await this.applySlotAssignmentInTransaction(
+        tx,
+        match,
+        targetSlotNumber,
+        teamId,
+      );
+
+      if (sourceSlotNumber !== null && displacedTeamId) {
+        await this.applySlotAssignmentInTransaction(
+          tx,
+          match,
+          sourceSlotNumber,
+          displacedTeamId,
+        );
+      }
+    });
+
+    if (sourceSlotNumber === targetSlotNumber) {
+      return this.listSlots(actor, match.id);
+    }
+
+    await this.logSlotAudit(
+      AuditAction.SLOT_SET,
+      match.id,
+      match.organizationId ?? match.tournament?.organizationId ?? null,
+      actor,
+      {
+        teamId,
+        sourceSlotNumber,
+        targetSlotNumber,
+        displacedTeamId,
+      },
+    );
+    await this.notifyLobbyContractChanged(match.id, {
+      refreshLiveState: this.shouldRefreshLiveSlotContract(match),
+    });
 
     return this.listSlots(actor, match.id);
   }
@@ -3787,12 +4783,16 @@ export class MatchesService {
       });
 
       await this.results.ensureResultsFromSlots(match.id, { tx });
+      await this.syncMatchTeamSlotMirrorFromSlotsInTransaction(tx, match.id);
       await this.updateManualClearedTeamIds(
         match.id,
-        match.tournament?.organizationId ?? null,
+        match.organizationId ?? match.tournament?.organizationId ?? null,
         () => new Set<string>(),
         tx,
       );
+    });
+    await this.notifyLobbyContractChanged(match.id, {
+      refreshLiveState: this.shouldRefreshLiveSlotContract(match),
     });
 
     return {
@@ -3820,16 +4820,25 @@ export class MatchesService {
       );
     }
 
+    const previousMatchScope: Prisma.MatchWhereInput = match.sessionId
+      ? {
+          sessionId: match.sessionId,
+          organizationId: match.organizationId,
+        }
+      : {
+          tournamentId: match.tournamentId,
+          ...(match.groupId
+            ? { groupId: match.groupId }
+            : match.stageId
+              ? { stageId: match.stageId }
+              : {}),
+        };
+
     const previousCandidates = await this.prisma.match.findMany({
       where: {
-        tournamentId: match.tournamentId,
+        ...previousMatchScope,
         deletedAt: null,
         matchNumber: { lt: currentMatchNumber },
-        ...(match.groupId
-          ? { groupId: match.groupId }
-          : match.stageId
-            ? { stageId: match.stageId }
-            : {}),
       },
       select: {
         id: true,
@@ -3979,14 +4988,14 @@ export class MatchesService {
             },
           });
         }
+        await this.clearMatchTeamSlotMirrorInTransaction(tx, match.id, {
+          teamId: existing.teamId ?? null,
+          slotNumber: normalizedSlot,
+        });
         if (existing.teamId) {
-          await tx.matchTeam.updateMany({
-            where: { matchId: match.id, teamId: existing.teamId },
-            data: { slot: null },
-          });
           await this.updateManualClearedTeamIds(
             match.id,
-            match.tournament?.organizationId ?? null,
+            match.organizationId ?? match.tournament?.organizationId ?? null,
             (current) => {
               current.add(existing.teamId as string);
               return current;
@@ -3998,12 +5007,259 @@ export class MatchesService {
       await this.logSlotAudit(
         AuditAction.SLOT_CLEARED,
         match.id,
-        match.tournament?.organizationId ?? null,
+        match.organizationId ?? match.tournament?.organizationId ?? null,
         actor,
         { slotNumber: normalizedSlot, teamId: existing.teamId },
       );
+      await this.notifyLobbyContractChanged(match.id, {
+        refreshLiveState: this.shouldRefreshLiveSlotContract(match),
+      });
     }
     return this.listSlots(actor, match.id);
+  }
+
+  private async applySlotAssignmentInTransaction(
+    tx: Prisma.TransactionClient,
+    match: SlotMatch,
+    slotNumber: number,
+    teamId: string,
+  ) {
+    const isAutoFilled =
+      this.resolveTelemetryProvider(match as MatchTelemetryState) !==
+      MatchDataSource.MANUAL;
+    const initialLobbyStatus = isAutoFilled
+      ? LOBBY_STATUS.OFFLINE
+      : LOBBY_STATUS.WAITING;
+    const priorResult = await tx.matchSlotResult.findUnique({
+      where: {
+        matchId_slotNumber: { matchId: match.id, slotNumber },
+      },
+      select: { id: true, teamId: true },
+    });
+    const displacedSlot = await tx.matchSlot.findFirst({
+      where: {
+        matchId: match.id,
+        slotNumber,
+        deletedAt: null,
+      },
+      select: { teamId: true },
+    });
+
+    await tx.matchSlot.deleteMany({
+      where: { matchId: match.id, slotNumber },
+    });
+    await tx.matchSlot.deleteMany({
+      where: { matchId: match.id, teamId },
+    });
+    await tx.matchSlot.create({
+      data: {
+        matchId: match.id,
+        slotNumber,
+        teamId,
+        lobbyStatus: initialLobbyStatus,
+        playersInLobby: 0,
+      } as any,
+    } as any);
+
+    const slotResults = await this.results.ensureResultsFromSlots(match.id, {
+      tx,
+    });
+    const slotResult =
+      slotResults.find((sr) => sr.slotNumber === slotNumber) ?? null;
+    const needsReset = !priorResult || priorResult.teamId !== teamId;
+
+    if (slotResult) {
+      if (needsReset && priorResult?.id) {
+        await tx.matchSlotPlayerResult.deleteMany({
+          where: { slotResultId: priorResult.id },
+        });
+      }
+      await tx.matchSlotResult.update({
+        where: { id: slotResult.id },
+        data: {
+          teamId,
+          isAutoFilled: false,
+          ...(needsReset
+            ? {
+                wasPresentInMatch: null,
+                placement: null,
+                eliminatedOrder: null,
+                placementPoints: 0,
+                totalKills: 0,
+                manualTotalKills: false,
+                finalPlacement: null,
+                finalKills: null,
+                finalizedAt: null,
+                totalPoints: 0,
+                points: 0,
+                isLocked: false,
+                eliminatedAt: null,
+                placementAuto: true,
+              }
+            : {}),
+        },
+      });
+    }
+
+    if (
+      needsReset &&
+      displacedSlot?.teamId &&
+      displacedSlot.teamId !== teamId
+    ) {
+      await tx.matchTeam.updateMany({
+        where: { matchId: match.id, teamId: displacedSlot.teamId },
+        data: { slot: null },
+      });
+      await this.updateManualClearedTeamIds(
+        match.id,
+        match.organizationId ?? match.tournament?.organizationId ?? null,
+        (current) => {
+          current.add(displacedSlot.teamId as string);
+          return current;
+        },
+        tx,
+      );
+    }
+
+    await this.setMatchTeamSlotMirrorInTransaction(
+      tx,
+      match.id,
+      teamId,
+      slotNumber,
+    );
+    await this.updateManualClearedTeamIds(
+      match.id,
+      match.organizationId ?? match.tournament?.organizationId ?? null,
+      (current) => {
+        current.delete(teamId);
+        return current;
+      },
+      tx,
+    );
+
+    const teamPlayers = await tx.player.findMany({
+      where: { teamId, deletedAt: null },
+      select: { id: true, ign: true, realName: true, playerOpenId: true },
+    });
+    if (!isAutoFilled && teamPlayers.length && slotResult) {
+      const teamPlayerNames = uniqueSlotPlayerNames(
+        teamPlayers.map((player) => ({
+          playerName: player.ign ?? player.realName ?? 'Unknown',
+          stableId: player.id,
+        })),
+      );
+      const toCreate = teamPlayers.map((player, index) => ({
+        slotResultId: slotResult.id,
+        playerId: player.id,
+        pubgAccountId: player.playerOpenId ?? null,
+        playerName: teamPlayerNames[index],
+        kills: 0,
+        knocks: 0,
+        isAlive: true,
+        alive: true,
+        isKnocked: false,
+        isAutoFilled,
+        organizationId:
+          match.organizationId ??
+          match.tournament?.organizationId ??
+          (() => {
+            throw new BadRequestException('organizationId is required');
+          })(),
+      }));
+      await tx.matchSlotPlayerResult.createMany({
+        data: toCreate,
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  private async clearMatchTeamSlotMirrorInTransaction(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+    args: { teamId?: string | null; slotNumber?: number | null },
+  ) {
+    const OR: Prisma.MatchTeamWhereInput[] = [];
+    if (args.teamId) {
+      OR.push({ teamId: args.teamId });
+    }
+    if (typeof args.slotNumber === 'number') {
+      OR.push({ slot: args.slotNumber });
+    }
+    if (!OR.length) return;
+    await tx.matchTeam.updateMany({
+      where: { matchId, OR },
+      data: { slot: null },
+    });
+  }
+
+  private async setMatchTeamSlotMirrorInTransaction(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+    teamId: string,
+    slotNumber: number,
+  ) {
+    await this.clearMatchTeamSlotMirrorInTransaction(tx, matchId, {
+      teamId,
+      slotNumber,
+    });
+    await tx.matchTeam.upsert({
+      where: {
+        matchId_teamId: {
+          matchId,
+          teamId,
+        },
+      },
+      update: {
+        slot: slotNumber,
+        status: MatchTeamStatus.ACTIVE,
+        deletedAt: null,
+      },
+      create: {
+        matchId,
+        teamId,
+        slot: slotNumber,
+        status: MatchTeamStatus.ACTIVE,
+      },
+    });
+  }
+
+  private async syncMatchTeamSlotMirrorFromSlotsInTransaction(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+  ) {
+    const slots = await tx.matchSlot.findMany({
+      where: { matchId, deletedAt: null, teamId: { not: null } },
+      select: { teamId: true, slotNumber: true },
+      orderBy: { slotNumber: 'asc' },
+    });
+
+    await tx.matchTeam.updateMany({
+      where: { matchId, slot: { not: null } },
+      data: { slot: null },
+    });
+
+    for (const slot of slots) {
+      if (!slot.teamId) continue;
+      await tx.matchTeam.upsert({
+        where: {
+          matchId_teamId: {
+            matchId,
+            teamId: slot.teamId,
+          },
+        },
+        update: {
+          slot: slot.slotNumber,
+          status: MatchTeamStatus.ACTIVE,
+          deletedAt: null,
+        },
+        create: {
+          matchId,
+          teamId: slot.teamId,
+          slot: slot.slotNumber,
+          status: MatchTeamStatus.ACTIVE,
+        },
+      });
+    }
   }
 
   private async findFirstAvailableSlot(matchId: string) {
@@ -4052,26 +5308,31 @@ export class MatchesService {
   private parseDataMode(input?: string | null) {
     if (!input) return DataMode.MANUAL;
     const normalized = input.toUpperCase();
-    const allowed = Object.values(DataMode);
-    if (!allowed.includes(normalized as DataMode)) {
-      throw new BadRequestException(
-        `dataMode must be one of ${allowed.join(', ')}`,
-      );
+    if (normalized !== DataMode.MANUAL) {
+      throw new BadRequestException('dataMode must be MANUAL');
     }
-    return normalized as DataMode;
+    return DataMode.MANUAL;
   }
 
   private parseDataSource(input?: string | null) {
     if (input === undefined || input === null) return null;
     const normalized = input.toUpperCase();
-    const allowed = Object.values(MatchDataSource);
-    if (!allowed.includes(DS_AUTO)) allowed.push(DS_AUTO);
-    if (!allowed.includes(normalized as MatchDataSource)) {
-      throw new BadRequestException(
-        `dataSource must be one of ${allowed.join(', ')}`,
-      );
+    if (normalized === MatchDataSource.MANUAL) {
+      return MatchDataSource.MANUAL;
     }
-    return normalized as MatchDataSource;
+    if (normalized === MatchDataSource.API) {
+      return MatchDataSource.API;
+    }
+    if (normalized === 'AUTO') {
+      return MatchDataSource.API;
+    }
+    const allowed: MatchDataSource[] = [
+      MatchDataSource.MANUAL,
+      MatchDataSource.API,
+    ];
+    throw new BadRequestException(
+      `dataSource must be one of ${allowed.join(', ')}`,
+    );
   }
 
   private parsePubgDataSource(input?: string | null) {
@@ -4084,6 +5345,68 @@ export class MatchesService {
     return parsed;
   }
 
+  private parseMatchResultSource(
+    input: string | null | undefined,
+    telemetryProvider: TelemetryProvider,
+  ): MatchResultSource {
+    const inferred = TELEMETRY_RESULT_SOURCES.includes(
+      telemetryProvider as MatchDataSource,
+    )
+      ? MatchResultSource.TELEMETRY
+      : MatchResultSource.MANUAL;
+
+    if (input === undefined || input === null || input === '') {
+      return inferred;
+    }
+
+    const normalized = input.toString().trim().toUpperCase();
+    const resultSource =
+      normalized === 'API'
+        ? MatchResultSource.TELEMETRY
+        : normalized === 'TELEMETRY'
+          ? MatchResultSource.TELEMETRY
+          : normalized === MatchResultSource.OCR
+            ? MatchResultSource.OCR
+            : normalized === MatchResultSource.MANUAL
+              ? MatchResultSource.MANUAL
+              : null;
+
+    if (!resultSource) {
+      throw new BadRequestException(
+        `resultSource must be one of ${Object.values(MatchResultSource).join(', ')}`,
+      );
+    }
+
+    if (
+      resultSource === MatchResultSource.OCR &&
+      telemetryProvider !== MatchDataSource.MANUAL
+    ) {
+      throw new BadRequestException(
+        'OCR result source requires a MANUAL dataSource',
+      );
+    }
+
+    if (
+      resultSource === MatchResultSource.TELEMETRY &&
+      telemetryProvider === MatchDataSource.MANUAL
+    ) {
+      throw new BadRequestException(
+        'TELEMETRY result source requires an API dataSource',
+      );
+    }
+
+    if (
+      resultSource === MatchResultSource.MANUAL &&
+      telemetryProvider !== MatchDataSource.MANUAL
+    ) {
+      throw new BadRequestException(
+        'MANUAL result source requires a MANUAL dataSource',
+      );
+    }
+
+    return resultSource;
+  }
+
   private resolveAutoSource(match: {
     dataSource?: MatchDataSource | string | null;
     pcobStatus?: PcobStatus | null;
@@ -4093,9 +5416,8 @@ export class MatchesService {
     adapterKey?: string | null;
   }): MatchDataSource {
     return resolveCanonicalTelemetryProvider({
-      dataSource:
-        (match.dataSource as MatchDataSource | null | undefined) ?? null,
-      dataMode: (match.dataMode as DataMode | null | undefined) ?? null,
+      dataSource: match.dataSource ?? null,
+      dataMode: match.dataMode ?? null,
       pcobSessionId: match.pcobSessionId ?? null,
       pcobMode: match.pcobMode ?? null,
       adapterKey: match.adapterKey ?? null,
@@ -4107,7 +5429,7 @@ export class MatchesService {
     input?: number | null,
   ): number {
     if (gameKey === GameKey.PUBG_MOBILE) return 25;
-    const fallback = input ?? 2;
+    const fallback = input ?? defaultSlotCountForGame(gameKey);
     const val = Number(fallback);
     if (!Number.isFinite(val)) {
       throw new BadRequestException('slotCount must be a number');
@@ -4146,7 +5468,7 @@ export class MatchesService {
     const dataMode = match?.dataMode as DataMode | undefined;
     if (dataMode === DataMode.PCOB) {
       throw new BadRequestException(
-        'Manual updates are disabled while Data Source is PCOB',
+        'Manual updates are disabled while legacy PCOB dataMode is present',
       );
     }
   }
@@ -4162,6 +5484,19 @@ export class MatchesService {
       adapterKey?: string | null;
     },
   >(match: T): T {
+    const {
+      pcobSessionId: _pcobSessionId,
+      pcobMode: _pcobMode,
+      pcobBoundAt: _pcobBoundAt,
+      pcobLastSeenAt: _pcobLastSeenAt,
+      adapterKey: _adapterKey,
+      ...publicMatch
+    } = (match as Record<string, unknown>) ?? {};
+    void _pcobSessionId;
+    void _pcobMode;
+    void _pcobBoundAt;
+    void _pcobLastSeenAt;
+    void _adapterKey;
     const controlState = ((match as any)?.controlState?.state ?? null) as
       | string
       | null;
@@ -4188,15 +5523,13 @@ export class MatchesService {
     });
     const telemetry = derivePcobBindingFlags(match, { lifecycleStatus });
     return {
-      ...match,
+      ...publicMatch,
       status,
       liveState,
-      telemetryProvider: telemetry.telemetryProvider,
-      sourceMode: telemetry.sourceMode,
-      pcobConfigured: telemetry.pcobConfigured,
-      pcobBound: telemetry.pcobBound,
-      pcobReady: telemetry.pcobReady,
-    } as T;
+      dataSource: exposeCanonicalTelemetryProvider(match),
+      telemetryProvider: exposeTelemetryProvider(telemetry.telemetryProvider),
+      sourceMode: exposeSourceMode(telemetry.telemetryProvider),
+    } as unknown as T;
   }
 
   async update(
@@ -4265,6 +5598,18 @@ export class MatchesService {
       fallbackGameKey: tournamentGameKey,
     });
     const effectiveGameKey = resolvedGame.key;
+    if (
+      body?.gameId !== undefined ||
+      body?.gameKey !== undefined ||
+      targetGroupContext
+    ) {
+      await assertOrganizationGameAccess(
+        this.prisma,
+        targetGroupContext?.organizationId ??
+          ((match as any)?.organizationId as string),
+        effectiveGameKey,
+      );
+    }
     if (body?.slotCount !== undefined) {
       const nextSlotCount = this.normalizeSlotCount(
         effectiveGameKey,
@@ -4302,6 +5647,16 @@ export class MatchesService {
             : undefined,
         currentProvider: currentTelemetryProvider,
       }) ?? currentTelemetryProvider;
+    if (
+      body?.resultSource !== undefined ||
+      body?.dataSource !== undefined ||
+      body?.dataMode !== undefined
+    ) {
+      data.resultSource = this.parseMatchResultSource(
+        body?.resultSource,
+        requestedTelemetryProvider,
+      );
+    }
     Object.assign(
       data,
       this.resolveTelemetryWriteData({
@@ -4340,23 +5695,29 @@ export class MatchesService {
             ? (body.pcobSessionId ?? null)
             : undefined,
         effectiveGameKey,
-        allowPcobBindingMutation: false,
-        allowPcobProviderEnable: false,
       }),
     );
-    if (body?.pcobStatus !== undefined)
-      data.pcobStatus = this.parsePcobStatus(body.pcobStatus);
+    if (body?.pcobStatus !== undefined) {
+      throw new BadRequestException(
+        'pcobStatus is no longer a supported live source field',
+      );
+    }
 
-    let goLive = false;
     let statusChanged = false;
+    let requestedStatus: MatchStatus | null = null;
     if (body?.status !== undefined) {
       statusChanged = true;
       const next = body.status as MatchStatus;
+      requestedStatus = next;
       const current = (match as any).status as MatchStatus;
       if (next !== current) {
         const allowed =
           (current === MatchStatus.DRAFT && next === MatchStatus.LIVE) ||
           (current === MatchStatus.LIVE && next === MatchStatus.ENDED) ||
+          (current === MatchStatus.LIVE &&
+            next === MatchStatus.FINISH_PENDING) ||
+          (current === MatchStatus.FINISH_PENDING &&
+            next === MatchStatus.ENDED) ||
           (current === MatchStatus.ENDED && next === MatchStatus.DRAFT);
         if (!allowed) {
           throw new BadRequestException(
@@ -4364,24 +5725,9 @@ export class MatchesService {
           );
         }
       }
-      if (next === MatchStatus.LIVE) {
-        goLive = true;
-      } else {
-        data.status = next;
-        if (next === MatchStatus.ENDED) {
-          data.endedAt = new Date();
-          data.liveState = 'ENDED';
-          data.liveAt =
-            (match as any).liveAt ?? (match as any).startedAt ?? new Date();
-        } else if (next === MatchStatus.DRAFT) {
-          data.liveState = 'UPCOMING';
-          data.liveAt = null;
-          data.endedAt = null;
-        }
-      }
     }
 
-    if (Object.keys(data).length > 0 || goLive) {
+    if (Object.keys(data).length > 0) {
       if (Object.keys(data).length > 0) {
         await this.prisma.match.update({
           where: { id: matchId },
@@ -4389,7 +5735,7 @@ export class MatchesService {
           select: { id: true },
         });
       }
-      if (!goLive && data.liveState) {
+      if (data.liveState) {
         const refreshed = (await this.getMatch(matchId, actor, false)) as any;
         await this.syncLiveHierarchy({
           matchId,
@@ -4400,9 +5746,8 @@ export class MatchesService {
       }
     }
 
-    if (goLive) {
-      await this.matchControl.startMatch(actor, matchId);
-      await this.generateMatchResults(matchId);
+    if (requestedStatus) {
+      await this.setStatus(matchId, requestedStatus, actor);
     }
 
     const updated = await this.getMatch(matchId, actor, false);
@@ -4414,6 +5759,23 @@ export class MatchesService {
 
   async softDelete(actor: Actor, matchId: string) {
     const match = await this.getMatch(matchId, actor, false);
+    const controlState = ((match as any)?.controlState?.state ?? null) as
+      | string
+      | null;
+    const derivedLiveState = controlState
+      ? deriveControlLiveState(controlState as any)
+      : null;
+    const liveState = derivedLiveState ?? (match as any)?.liveState ?? null;
+    const isLiveMatch =
+      (match.status as MatchStatus | null) === MatchStatus.LIVE ||
+      liveState === LiveState.LIVE ||
+      controlState === 'LIVE' ||
+      controlState === 'PAUSED';
+
+    if (isLiveMatch) {
+      throw new BadRequestException('Cannot delete match while LIVE');
+    }
+
     const deletedAt = new Date();
     await this.prisma.match.update({
       where: { id: matchId },
@@ -4446,20 +5808,12 @@ export class MatchesService {
     const current = match.status as MatchStatus;
     if (current === target) return this.withMode(match);
 
-    const allowed =
-      (current === MatchStatus.DRAFT && target === MatchStatus.LIVE) ||
-      (current === MatchStatus.LIVE && target === MatchStatus.ENDED) ||
-      (current === MatchStatus.ENDED && target === MatchStatus.DRAFT);
-
-    if (!allowed) {
-      throw new BadRequestException(
-        `Invalid status transition from ${current} to ${target}`,
-      );
-    }
-
     if (target === MatchStatus.LIVE) {
       await this.validatePubgSlots(matchId);
-      await this.matchControl.startMatch(actor, matchId);
+      await this.matchControl.startMatch(actor, matchId, null, {
+        source: 'matches-service-set-status',
+        requestedMatchId: matchId,
+      });
       await this.generateMatchResults(matchId);
       const refreshed = await this.getMatch(matchId, actor);
       void this.resultsEvents.emitResultsLockState(matchId);
@@ -4482,43 +5836,31 @@ export class MatchesService {
       const refreshed = await this.getMatch(matchId, actor);
       return this.withMode(refreshed);
     }
-
-    const now = new Date();
-    const data: Prisma.MatchUpdateInput & Record<string, unknown> = {
-      status: target,
-    };
-    if (target === MatchStatus.ENDED) {
-      data.endedAt = now;
-      (data as any).liveState = 'ENDED';
-      (data as any).liveAt = match.liveAt ?? match.startedAt ?? now;
-    }
-
-    const updated = await this.prisma.match.update({
-      where: { id: matchId },
-      data,
-      select: this.matchSelect,
-    });
-
-    if (target === MatchStatus.ENDED) {
-      await this.finalizePlacementsOnEnd(matchId, null);
-    }
-
-    if ((data as any).liveState) {
-      await this.syncLiveHierarchy({
-        matchId,
-        groupId: (updated as any).groupId ?? null,
-        stageId: (updated as any).stageId ?? null,
-        tournamentId: (updated as any).tournamentId,
+    if (target === MatchStatus.FINISH_PENDING) {
+      await this.matchControl.setStatus(actor, matchId, {
+        status: 'FINISH_PENDING',
+        reason: 'matches-service-set-status',
       });
+      const refreshed = await this.getMatch(matchId, actor);
+      return this.withMode(refreshed);
     }
-    void this.resultsEvents.emitResultsLockState(matchId);
-    void this.broadcast.emitForMatch(matchId, 'match-status');
     if (target === MatchStatus.ENDED) {
-      await this.results.recalculateMatchResults(matchId);
-      await this.results.assertMatchStateConsistency(matchId);
-      await this.scoring.recomputeMatchAndTournament(matchId);
+      await this.matchControl.endMatch(actor, matchId, 'matches-service-end');
+      const refreshed = await this.getMatch(matchId, actor);
+      return this.withMode(refreshed);
     }
-    return this.withMode(updated);
+    if (target === MatchStatus.FINISHED) {
+      await this.matchControl.setStatus(actor, matchId, {
+        status: 'FINISHED',
+        reason: 'matches-service-confirm',
+      });
+      const refreshed = await this.getMatch(matchId, actor);
+      return this.withMode(refreshed);
+    }
+
+    throw new BadRequestException(
+      `Invalid status transition from ${current} to ${target}`,
+    );
   }
 
   private async requireManualLiveMatch(actor: Actor, matchId: string) {
@@ -4829,6 +6171,20 @@ export class MatchesService {
       delta,
       playerId: body?.playerId ?? null,
     });
+    this.resultsEvents.emitResultsUpdated?.(matchId, 0, {
+      source: 'MANUAL',
+      mode: 'MANUAL_SCORING',
+      type: 'KILL',
+      teamId,
+      delta,
+      playerId: body?.playerId ?? null,
+    });
+    this.resultsEvents.emitLeaderboardUpdated?.(matchId, {
+      source: 'MANUAL',
+      mode: 'MANUAL_SCORING',
+      type: 'KILL',
+      teamId,
+    });
     void this.broadcastScoreboardSafe(matchId);
     return { ok: true, kills: nextKills };
   }
@@ -4912,6 +6268,19 @@ export class MatchesService {
 
     await this.scoring.recomputeMatchAndTournament(matchId);
     this.pcobGateway.emitPlacement(matchId, { teamId, placement });
+    this.resultsEvents.emitResultsUpdated?.(matchId, 0, {
+      source: 'MANUAL',
+      mode: 'MANUAL_SCORING',
+      type: 'PLACEMENT',
+      teamId,
+      placement,
+    });
+    this.resultsEvents.emitLeaderboardUpdated?.(matchId, {
+      source: 'MANUAL',
+      mode: 'MANUAL_SCORING',
+      type: 'PLACEMENT',
+      teamId,
+    });
     void this.broadcastScoreboardSafe(matchId);
     return { ok: true, placement };
   }
@@ -4928,7 +6297,6 @@ export class MatchesService {
     ) {
       throw new ForbiddenException('Not allowed for this organization');
     }
-    await this.validatePubgSlots(matchId);
     if (
       match.status !== MatchStatus.DRAFT &&
       match.status !== MatchStatus.LIVE
@@ -4937,12 +6305,9 @@ export class MatchesService {
         'Link allowed only when match is DRAFT or LIVE',
       );
     }
-    const updated = await this.prisma.match.update({
-      where: { id: matchId },
-      data: buildPcobConfigurationData(sessionId),
-      select: this.matchSelect,
-    });
-    return this.withMode(updated as any);
+    throw new BadRequestException(
+      'Legacy PCOB session linking is disabled; use API or MANUAL',
+    );
   }
 
   async unlinkPcobSession(actor: Actor, matchId: string) {
@@ -4954,56 +6319,18 @@ export class MatchesService {
     ) {
       throw new ForbiddenException('Not allowed for this organization');
     }
-    const updated = await this.prisma.match.update({
-      where: { id: matchId },
-      data: buildPcobUnbindingData(),
-      select: this.matchSelect,
-    });
-    return this.withMode(updated as any);
+    throw new BadRequestException(
+      'Legacy PCOB session linking is disabled; use API or MANUAL',
+    );
   }
 
-  async setPcobKillSync(actor: Actor, matchId: string, enabled: boolean) {
-    const match = await this.prisma.match.findFirst({
-      where: {
-        id: matchId,
-        deletedAt: null,
-        ...this.maybeOrg('Match', actor.organizationId),
-      },
-      select: {
-        status: true,
-        pcobMode: true,
-        tournamentId: true,
-        tournament: { select: { ownerUserId: true, organizationId: true } },
-      },
-    });
-    if (!match) throw new NotFoundException('Match not found');
-    const matchOrg =
-      match.tournament?.organizationId ?? actor.organizationId ?? null;
-    if (actor.organizationId && matchOrg && actor.organizationId !== matchOrg) {
-      throw new ForbiddenException('Not allowed to update kill sync');
-    }
-    if (
-      !this.canEdit(
-        actor,
-        match.tournament?.ownerUserId ?? null,
-        match.tournament?.organizationId ?? null,
-      )
-    ) {
-      throw new ForbiddenException('Not allowed to update kill sync');
-    }
-    if (match.status !== MatchStatus.LIVE) {
-      throw new BadRequestException(
-        'Kill sync can only be changed while match is LIVE',
-      );
-    }
-    if (!match.pcobMode) {
-      throw new BadRequestException('Enable PCOB mode before syncing kills');
-    }
-    return this.prisma.match.update({
-      where: { id: matchId },
-      data: { pcobKillSyncEnabled: !!enabled },
-      select: this.matchSelect,
-    });
+  setPcobKillSync(actor: Actor, matchId: string, enabled: boolean) {
+    void actor;
+    void matchId;
+    void enabled;
+    throw new BadRequestException(
+      'Legacy PCOB kill sync is disabled; use API or MANUAL',
+    );
   }
 
   async setDataSource(
@@ -5063,13 +6390,14 @@ export class MatchesService {
       }) ?? currentProvider;
     const updated = await this.prisma.match.update({
       where: { id: matchId },
-      data: this.resolveTelemetryWriteData({
-        current: match as MatchTelemetryState,
-        requestedProvider,
-        effectiveGameKey,
-        allowPcobBindingMutation: false,
-        allowPcobProviderEnable: false,
-      }),
+      data: {
+        ...this.resolveTelemetryWriteData({
+          current: match as MatchTelemetryState,
+          requestedProvider,
+          effectiveGameKey,
+        }),
+        resultSource: this.parseMatchResultSource(undefined, requestedProvider),
+      },
       select: this.matchSelect,
     });
     void this.resultsEvents.emitResultsLockState(matchId, {
@@ -5177,9 +6505,8 @@ export class MatchesService {
           create: {
             matchId,
             organizationId,
-            state:
-              match.controlState?.state ??
-              deriveControlStateFromMatchStatus(match.status),
+            state: (match.controlState?.state ??
+              deriveControlStateFromMatchStatus(match.status)) as never,
             reason: 'TELEMETRY_SOURCE_RESET',
             metaJson: nextMeta as Prisma.InputJsonObject,
           },

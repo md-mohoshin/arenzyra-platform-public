@@ -6,6 +6,7 @@ export type LiveRankingTeam = {
   logoUrl?: string | null;
   kills: number;
   placement: number | null;
+  wwcd: number;
   placementPoints: number;
   killPoints: number;
   totalPoints: number;
@@ -26,6 +27,7 @@ export type OverallRankingTeam = {
   tag?: string | null;
   logoUrl?: string | null;
   matchesPlayed: number;
+  wwcd: number;
   kills: number;
   placementPoints: number;
   killPoints: number;

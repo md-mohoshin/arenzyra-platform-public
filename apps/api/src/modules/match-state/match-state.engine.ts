@@ -6,15 +6,16 @@ import {
   Optional,
 } from '@nestjs/common';
 import type { ControlStatus } from '../match-control/dto/control.dto';
-import type {
-  MatchStateCircle,
-  MatchStateEvent,
-  MatchStateKillFeedItem,
-  MatchStateObservedPlayer,
-  MatchStatePlayer,
-  MatchStateSourceMode,
-  MatchStateSummary,
-  TeamScoreState,
+import {
+  isAutomaticMatchStateSourceMode,
+  type MatchStateCircle,
+  type MatchStateEvent,
+  type MatchStateKillFeedItem,
+  type MatchStateObservedPlayer,
+  type MatchStatePlayer,
+  type MatchStateSourceMode,
+  type MatchStateSummary,
+  type TeamScoreState,
 } from '../match-control/state.store';
 import { EventBusService } from '../event-bus/event-bus.service';
 import {
@@ -175,7 +176,7 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
         const payload = envelope.payload as MatchTelemetrySnapshotEventPayload;
         const projection = this.syncAutoMatch({
           matchId: payload.matchId,
-          sourceMode: 'AUTO',
+          sourceMode: 'API',
           status: payload.status ?? 'LIVE',
           startedAt: payload.startedAt ?? payload.updatedAt ?? Date.now(),
           teams: payload.teams,
@@ -216,7 +217,7 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   syncAutoMatch(input: MatchStateSyncInput): MatchStateSyncResult | null {
-    if (input.sourceMode !== 'AUTO') {
+    if (!isAutomaticMatchStateSourceMode(input.sourceMode)) {
       this.states.delete(input.matchId);
       return null;
     }
@@ -291,9 +292,12 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
     }
 
     state.updatedAt = now;
+    const incomingStatus = input.status ?? state.status ?? 'LIVE';
     state.status = state.finished
-      ? 'ENDED'
-      : (input.status ?? state.status ?? 'LIVE');
+      ? incomingStatus === 'FINISHED' || state.status === 'FINISHED'
+        ? 'FINISHED'
+        : 'FINISH_PENDING'
+      : incomingStatus;
     const nextCircle = this.normalizeCircle(input.circle ?? state.circle);
     if (
       this.circleSignature(state.circle) !== this.circleSignature(nextCircle)
@@ -306,6 +310,7 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
       });
     }
     state.circle = nextCircle;
+    const eliminationBlocked = this.shouldBlockEliminationForPhase(state);
 
     const observedPlayer = this.normalizeObservedPlayer(
       input.observedPlayer ?? state.observedPlayer,
@@ -333,6 +338,7 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
       input.totalPlayerList,
       now,
       createEvent,
+      eliminationBlocked,
     );
     this.applyKillEvents(
       state,
@@ -341,24 +347,29 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
       ),
       createEvent,
       createKillFeedItem,
+      eliminationBlocked,
     );
-    this.refreshTeamMetrics(state, now, createEvent);
+    this.refreshTeamMetrics(state, now, createEvent, eliminationBlocked);
     this.assignPlacements(state);
 
     if (
+      !eliminationBlocked &&
       !state.finished &&
-      (state.status === 'LIVE' || state.status === 'PAUSED') &&
+      state.status === 'LIVE' &&
       state.teams.size > 0 &&
       this.hasTelemetryPresence(state) &&
       state.aliveTeams <= 1
     ) {
       state.finished = true;
-      state.status = 'ENDED';
+      state.status = 'FINISH_PENDING';
       state.endedAt = state.endedAt ?? now;
       createEvent('MATCH_ENDED', state.endedAt);
-    } else if (input.status === 'ENDED' && !state.finished) {
+    } else if (
+      (input.status === 'FINISH_PENDING' || input.status === 'FINISHED') &&
+      !state.finished
+    ) {
       state.finished = true;
-      state.status = 'ENDED';
+      state.status = input.status;
       state.endedAt = state.endedAt ?? now;
       createEvent('MATCH_ENDED', state.endedAt);
     }
@@ -413,12 +424,12 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
       updatedAt: startedAt,
       endedAt: null,
       status,
-      sourceMode: 'AUTO',
+      sourceMode: 'API',
       teams: new Map<string, TeamState>(),
       players: new Map<string, PlayerState>(),
       processedEventKeys: new Set<string>(),
       aliveTeams: 0,
-      finished: status === 'ENDED',
+      finished: status === 'FINISH_PENDING' || status === 'FINISHED',
       circle: null,
       observedPlayer: null,
       events: [],
@@ -505,6 +516,7 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
         payload?: Record<string, unknown> | null;
       },
     ) => MatchStateEvent,
+    eliminationBlocked: boolean,
   ): void {
     const snapshots = this.extractTelemetryPlayers(payload, state);
     for (const snapshot of snapshots) {
@@ -566,10 +578,40 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
 
       if (player.deathTimestamp === null) {
         if (snapshot.alive !== null) {
-          player.alive = snapshot.alive;
+          if (snapshot.alive === false && eliminationBlocked) {
+            this.logger.warn(
+              JSON.stringify({
+                tag: '[ELIMINATION][BLOCKED]',
+                stage: 'match-state-engine',
+                action: 'player-death-snapshot-blocked-during-air-phase',
+                matchId: state.matchId,
+                phase: state.circle?.phase ?? null,
+                playerId: player.playerExternalId,
+                teamId: player.teamId,
+                reason: 'EARLY_PHASE_MATCH_STATE_PLAYER_DEATH_BLOCKED',
+              }),
+            );
+          } else {
+            player.alive = snapshot.alive;
+          }
         }
         if (snapshot.knocked !== null) {
-          player.knocked = snapshot.knocked;
+          if (eliminationBlocked && snapshot.knocked !== player.knocked) {
+            this.logger.warn(
+              JSON.stringify({
+                tag: '[ELIMINATION][BLOCKED]',
+                stage: 'match-state-engine',
+                action: 'player-knock-snapshot-blocked-during-air-phase',
+                matchId: state.matchId,
+                phase: state.circle?.phase ?? null,
+                playerId: player.playerExternalId,
+                teamId: player.teamId,
+                reason: 'EARLY_PHASE_MATCH_STATE_KNOCK_BLOCKED',
+              }),
+            );
+          } else {
+            player.knocked = snapshot.knocked;
+          }
         }
       } else {
         player.alive = false;
@@ -617,8 +659,24 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
       event: TelemetryPlayerKillEvent,
       totalKills: number,
     ) => void,
+    eliminationBlocked: boolean,
   ): void {
     for (const event of killEvents) {
+      if (eliminationBlocked) {
+        this.logger.warn(
+          JSON.stringify({
+            tag: '[ELIMINATION][BLOCKED]',
+            stage: 'match-state-engine',
+            action: 'kill-event-blocked-during-air-phase',
+            matchId: state.matchId,
+            phase: state.circle?.phase ?? null,
+            killerId: event.killerPlayerExternalId,
+            victimId: event.victimPlayerExternalId,
+            reason: 'EARLY_PHASE_MATCH_STATE_KILL_BLOCKED',
+          }),
+        );
+        continue;
+      }
       const eventKey = [
         'PLAYER_KILL',
         event.matchId,
@@ -785,13 +843,15 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
         payload?: Record<string, unknown> | null;
       },
     ) => MatchStateEvent,
+    eliminationBlocked: boolean,
   ): void {
     let aliveTeams = 0;
     for (const team of state.teams.values()) {
       const wasEliminated = team.eliminated;
       const previousEliminationTimestamp = team.eliminationTimestamp;
       const waitingForTelemetry =
-        state.sourceMode === 'AUTO' && !team.hasTelemetryPresence;
+        isAutomaticMatchStateSourceMode(state.sourceMode) &&
+        !team.hasTelemetryPresence;
 
       if (waitingForTelemetry) {
         team.kills = 0;
@@ -824,6 +884,31 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
           team.alivePlayers !== null ? team.alivePlayers > 0 : team.alive;
       }
       team.updatedAt = now;
+
+      if (
+        eliminationBlocked &&
+        team.hasTelemetryPresence &&
+        !team.alive &&
+        players.length > 0
+      ) {
+        team.alive = true;
+        team.eliminated = false;
+        team.eliminationTimestamp = null;
+        team.placement = null;
+        team.alivePlayers = Math.max(1, team.totalPlayers ?? players.length);
+        this.logger.warn(
+          JSON.stringify({
+            tag: '[ELIMINATION][BLOCKED]',
+            stage: 'match-state-engine',
+            action: 'team-elimination-blocked-during-air-phase',
+            matchId: state.matchId,
+            teamId: team.teamId,
+            phase: state.circle?.phase ?? null,
+            inferredTeamElimination: true,
+            reason: 'EARLY_PHASE_MATCH_STATE_TEAM_ELIMINATION_BLOCKED',
+          }),
+        );
+      }
 
       if (team.hasTelemetryPresence && !team.alive && players.length > 0) {
         const lastDeath = Math.max(
@@ -858,6 +943,15 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
       }
     }
     state.aliveTeams = aliveTeams;
+  }
+
+  private shouldBlockEliminationForPhase(state: MatchState): boolean {
+    const phase =
+      typeof state.circle?.phase === 'number' &&
+      Number.isFinite(state.circle.phase)
+        ? Math.trunc(state.circle.phase)
+        : null;
+    return phase !== null && phase < 2 && state.status === 'LIVE';
   }
 
   private hasTelemetryPresence(state: MatchState): boolean {
@@ -961,7 +1055,7 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
         alive: team.alive,
         eliminated: team.eliminated,
         updatedAt: new Date(team.updatedAt).toISOString(),
-        sourceMode: 'AUTO' as const,
+        sourceMode: 'API' as const,
         players: [...team.playerKeys]
           .map((key) => state.players.get(key))
           .filter((player): player is PlayerState => Boolean(player))
@@ -1007,7 +1101,7 @@ export class MatchStateEngine implements OnModuleInit, OnModuleDestroy {
     return teams.map((team) => ({
       ...team,
       updatedAt: team.updatedAt ?? new Date(now).toISOString(),
-      sourceMode: 'AUTO',
+      sourceMode: 'API',
       players: Array.isArray(team.players)
         ? team.players.map((player) => ({
             ...player,

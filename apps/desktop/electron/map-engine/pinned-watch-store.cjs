@@ -132,7 +132,13 @@ function createPinnedWatchStore() {
     };
   }
 
+  function clear() {
+    pinnedTeams.clear();
+    pinnedTargetsById.clear();
+  }
+
   return {
+    clear,
     getState,
     isTargetPinned,
     isTeamPinned,

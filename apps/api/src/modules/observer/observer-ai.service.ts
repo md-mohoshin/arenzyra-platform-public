@@ -1,10 +1,25 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import type {
   MatchStateEvent,
   MatchStatePlayer,
   MatchStateSourceMode,
   TeamScoreState,
 } from '../match-control/state.store';
+import { isAutomaticMatchStateSourceMode } from '../match-control/state.store';
+import { MatchStateBroadcaster } from '../../realtime/match-state-broadcaster.service';
+import { EventBusService } from '../event-bus/event-bus.service';
+import {
+  EVENT_BUS_TOPICS,
+  type FightDetectedEventPayload,
+  type MatchStateUpdatedEventPayload,
+  type ObserverSuggestionEventPayload,
+} from '../event-bus/event-bus.types';
 import type { FightEvent } from '../telemetry/fight-detection.engine';
 
 export type ObserverCameraSuggestion = {
@@ -50,6 +65,14 @@ type ObserverAiMatchState = {
   suggestions: ObserverCameraSuggestionRecord[];
 };
 
+type LatestProjection = {
+  organizationId: string | null;
+  sourceMode: MatchStateSourceMode | null;
+  updatedAt: string | number | null;
+  teams: TeamScoreState[];
+  killEvents: MatchStateEvent[];
+};
+
 type SuggestionCandidate = {
   key: string;
   timestamp: number;
@@ -61,7 +84,7 @@ type SuggestionCandidate = {
 };
 
 @Injectable()
-export class ObserverAiService {
+export class ObserverAiService implements OnModuleInit, OnModuleDestroy {
   private static readonly stateByMatch = new Map<
     string,
     ObserverAiMatchState
@@ -72,9 +95,54 @@ export class ObserverAiService {
   private readonly suggestionCooldownMs = 8_000;
   private readonly suggestionHistoryLimit = 8;
   private readonly suggestionStateLimit = 128;
+  private readonly latestProjectionByMatch = new Map<
+    string,
+    LatestProjection
+  >();
+  private readonly fightEventsByMatch = new Map<string, FightEvent[]>();
+  private unsubscribeFromStateBus: (() => void) | null = null;
+  private unsubscribeFromFightBus: (() => void) | null = null;
+
+  constructor(
+    @Optional() private readonly eventBus?: EventBusService,
+    @Optional() private readonly broadcaster?: MatchStateBroadcaster,
+  ) {}
+
+  onModuleInit(): void {
+    if (!this.eventBus) {
+      return;
+    }
+
+    this.unsubscribeFromStateBus = this.eventBus.subscribe(
+      EVENT_BUS_TOPICS.MATCH,
+      'observer-ai-match-state',
+      async (envelope) => {
+        const payload = envelope.payload as MatchStateUpdatedEventPayload;
+        await this.handleMatchStateUpdated(payload);
+      },
+      { types: ['state.updated'] },
+    );
+
+    this.unsubscribeFromFightBus = this.eventBus.subscribe(
+      EVENT_BUS_TOPICS.FIGHT,
+      'observer-ai-fight',
+      async (envelope) => {
+        const payload = envelope.payload as FightDetectedEventPayload;
+        await this.handleFightDetected(payload);
+      },
+      { types: ['fight.detected'] },
+    );
+  }
+
+  onModuleDestroy(): void {
+    this.unsubscribeFromStateBus?.();
+    this.unsubscribeFromStateBus = null;
+    this.unsubscribeFromFightBus?.();
+    this.unsubscribeFromFightBus = null;
+  }
 
   processMatch(input: ObserverAiInput): ObserverCameraSuggestionRecord[] {
-    if (input.sourceMode !== 'AUTO') {
+    if (!isAutomaticMatchStateSourceMode(input.sourceMode)) {
       ObserverAiService.stateByMatch.delete(input.matchId);
       return [];
     }
@@ -176,11 +244,135 @@ export class ObserverAiService {
     };
   }
 
+  private async handleMatchStateUpdated(
+    payload: MatchStateUpdatedEventPayload,
+  ): Promise<void> {
+    const projection = payload.projection;
+    if (!isAutomaticMatchStateSourceMode(projection.sourceMode)) {
+      this.latestProjectionByMatch.delete(payload.matchId);
+      this.fightEventsByMatch.delete(payload.matchId);
+      this.processMatch({
+        matchId: payload.matchId,
+        sourceMode: projection.sourceMode,
+        updatedAt: projection.updatedAt,
+        teams: projection.teams,
+        fightEvents: [],
+        killEvents: [],
+      });
+      return;
+    }
+
+    this.latestProjectionByMatch.set(payload.matchId, {
+      organizationId: payload.organizationId ?? null,
+      sourceMode: projection.sourceMode,
+      updatedAt: projection.updatedAt,
+      teams: projection.teams,
+      killEvents: projection.events.filter(
+        (event) => event.type === 'PLAYER_KILL',
+      ),
+    });
+
+    const emitted = this.processMatch({
+      matchId: payload.matchId,
+      sourceMode: projection.sourceMode,
+      updatedAt: projection.updatedAt,
+      teams: projection.teams,
+      fightEvents: this.getRecentFightEvents(
+        payload.matchId,
+        projection.updatedAt,
+      ),
+      killEvents: projection.events.filter(
+        (event) => event.type === 'PLAYER_KILL',
+      ),
+    });
+    await this.publishSuggestions(emitted, payload.organizationId ?? null);
+  }
+
+  private async handleFightDetected(
+    payload: FightDetectedEventPayload,
+  ): Promise<void> {
+    const queue = this.fightEventsByMatch.get(payload.matchId) ?? [];
+    queue.push(payload.fightEvent);
+    const now = payload.fightEvent.timestamp;
+    this.fightEventsByMatch.set(
+      payload.matchId,
+      queue.filter((event) => now - event.timestamp <= this.combatWindowMs),
+    );
+
+    const latest = this.latestProjectionByMatch.get(payload.matchId);
+    if (!latest || !isAutomaticMatchStateSourceMode(latest.sourceMode)) {
+      return;
+    }
+
+    const emitted = this.processMatch({
+      matchId: payload.matchId,
+      sourceMode: latest.sourceMode,
+      updatedAt: payload.fightEvent.timestamp,
+      teams: latest.teams,
+      fightEvents: this.getRecentFightEvents(
+        payload.matchId,
+        payload.fightEvent.timestamp,
+      ),
+      killEvents: latest.killEvents,
+    });
+    await this.publishSuggestions(
+      emitted,
+      payload.organizationId ?? latest.organizationId ?? null,
+    );
+  }
+
+  private getRecentFightEvents(
+    matchId: string,
+    updatedAt: string | number | null | undefined,
+  ): FightEvent[] {
+    const now = this.toTimestamp(updatedAt) ?? Date.now();
+    const recent = (this.fightEventsByMatch.get(matchId) ?? []).filter(
+      (event) => now - event.timestamp <= this.combatWindowMs,
+    );
+    this.fightEventsByMatch.set(matchId, recent);
+    return recent;
+  }
+
+  private async publishSuggestions(
+    suggestions: ObserverCameraSuggestionRecord[],
+    organizationId: string | null,
+  ): Promise<void> {
+    for (const suggestion of suggestions) {
+      const publicSuggestion = this.toPublicSuggestion(suggestion);
+      await this.broadcaster?.broadcastObserverSuggestion(
+        publicSuggestion,
+        organizationId,
+      );
+      await this.eventBus?.publish<ObserverSuggestionEventPayload>(
+        EVENT_BUS_TOPICS.OBSERVER,
+        'camera.suggested',
+        {
+          matchId: publicSuggestion.matchId,
+          organizationId,
+          suggestion: publicSuggestion,
+        },
+        {
+          timestamp: suggestion.timestamp,
+        },
+      );
+    }
+  }
+
   pruneMatches(activeMatchIds: string[]): void {
     const active = new Set(activeMatchIds);
     for (const matchId of ObserverAiService.stateByMatch.keys()) {
       if (!active.has(matchId)) {
         ObserverAiService.stateByMatch.delete(matchId);
+      }
+    }
+    for (const matchId of this.latestProjectionByMatch.keys()) {
+      if (!active.has(matchId)) {
+        this.latestProjectionByMatch.delete(matchId);
+      }
+    }
+    for (const matchId of this.fightEventsByMatch.keys()) {
+      if (!active.has(matchId)) {
+        this.fightEventsByMatch.delete(matchId);
       }
     }
   }

@@ -11,6 +11,7 @@ type AuthSessionResponse = {
 
 export class BotApiAuthService {
   private readonly authClient: AxiosInstance;
+  private readonly serviceToken = botConfig.apiServiceToken;
   private accessToken = botConfig.apiToken;
   private refreshToken = botConfig.apiRefreshToken;
   private refreshPromise: Promise<string> | null = null;
@@ -28,8 +29,8 @@ export class BotApiAuthService {
     return Boolean(botConfig.apiEmail && botConfig.apiPassword);
   }
 
-  private get shouldPreferOrgScopedLogin(): boolean {
-    return Boolean(botConfig.apiOrganizationId && this.hasLoginCredentials);
+  usesServiceToken(): boolean {
+    return Boolean(this.serviceToken);
   }
 
   private extractMessage(error: unknown): string {
@@ -136,7 +137,6 @@ export class BotApiAuthService {
       const response = await this.authClient.post<AuthSessionResponse>('/auth/login', {
         email: botConfig.apiEmail,
         password: botConfig.apiPassword,
-        organizationId: botConfig.apiOrganizationId ?? undefined,
       });
       return this.consumeSession(response.data);
     } catch (error) {
@@ -165,18 +165,6 @@ export class BotApiAuthService {
   }
 
   private async refreshOrLoginInternal(): Promise<string> {
-    // When the bot is configured with an explicit organizationId, login is the
-    // only flow that reliably restores org-scoped access for dev organizer accounts.
-    if (this.shouldPreferOrgScopedLogin) {
-      try {
-        return await this.loginWithCredentials();
-      } catch (loginError) {
-        if (!this.refreshToken) {
-          throw loginError;
-        }
-      }
-    }
-
     if (this.refreshToken) {
       try {
         return await this.refreshWithToken();
@@ -198,7 +186,18 @@ export class BotApiAuthService {
     return this.refreshAccessTokenOrLogin();
   }
 
+  async getAuthorizationHeader(): Promise<string> {
+    if (this.serviceToken) {
+      return `Bot ${this.serviceToken}`;
+    }
+
+    return `Bearer ${await this.getAccessToken()}`;
+  }
+
   invalidateAccessToken() {
+    if (this.serviceToken) {
+      return;
+    }
     this.accessToken = null;
     process.env.ARENZYRA_API_TOKEN = '';
   }
@@ -213,6 +212,10 @@ export class BotApiAuthService {
   }
 
   async refreshAccessTokenOrLogin(): Promise<string> {
+    if (this.serviceToken) {
+      return this.serviceToken;
+    }
+
     if (this.refreshPromise) {
       return this.refreshPromise;
     }

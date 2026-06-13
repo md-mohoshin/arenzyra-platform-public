@@ -132,6 +132,7 @@ type MatchSlot = {
 
 type ScoreboardMatch = {
   id: string;
+  organizationId: string | null;
   tournamentId: string | null;
   game: { key: string } | null;
   dataSource: string | null;
@@ -198,6 +199,7 @@ const selectBrandPreset = (params: {
   backgroundMode?: BrandMode | null;
   light?: BrandPreset | null;
   dark?: BrandPreset | null;
+  defaultLogoUrl?: string | null;
   updatedAt?: Date | string | number | null;
 }): BrandSelection => {
   const mode = params.backgroundMode ?? DEFAULT_BRAND_MODE;
@@ -221,6 +223,7 @@ const selectBrandPreset = (params: {
   const rawLogo =
     normalizeWidgetAssetUrl(chosen.logoUrl) ??
     normalizeWidgetAssetUrl(fallback.logoUrl) ??
+    normalizeWidgetAssetUrl(params.defaultLogoUrl) ??
     TEAM_LOGO_PLACEHOLDER;
   const logoUrl = withVersion(rawLogo, params.updatedAt) ?? rawLogo;
 
@@ -310,6 +313,7 @@ export async function buildWidgetScoreboardSnapshot(
     where: { id: matchId, deletedAt: null },
     select: {
       id: true,
+      organizationId: true,
       tournamentId: true,
       game: { select: { key: true } },
       dataSource: true,
@@ -391,6 +395,18 @@ export async function buildWidgetScoreboardSnapshot(
     reasons.push('SLOT_RESULTS_MISSING');
   }
 
+  const defaultTeamLogoUrl =
+    logosUsed && match.organizationId
+      ? (normalizeWidgetAssetUrl(
+          (
+            await prisma.organizationBranding.findUnique({
+              where: { organizationId: match.organizationId },
+              select: { defaultTeamLogoUrl: true },
+            })
+          )?.defaultTeamLogoUrl,
+        ) ?? TEAM_LOGO_PLACEHOLDER)
+      : TEAM_LOGO_PLACEHOLDER;
+
   const rows: WidgetTeamSlotRow[] = (match.slotResults ?? []).map((sr, idx) => {
     const brandLight: BrandPreset | null = logosUsed
       ? {
@@ -423,6 +439,7 @@ export async function buildWidgetScoreboardSnapshot(
           backgroundMode: brandMode,
           light: brandLight,
           dark: brandDark,
+          defaultLogoUrl: defaultTeamLogoUrl,
           updatedAt: sr.team?.updatedAt ?? match.updatedAt,
         })
       : {

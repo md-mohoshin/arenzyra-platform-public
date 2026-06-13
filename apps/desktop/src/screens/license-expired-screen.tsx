@@ -10,20 +10,36 @@ type LicenseExpiredScreenProps = {
 };
 
 export function LicenseExpiredScreen(props: LicenseExpiredScreenProps) {
-  const isMissing = props.access?.reason === "LICENSE_MISSING";
+  const reason = props.access?.reason;
+  const copy =
+    reason === "LAUNCHER_PLAN_REQUIRED"
+      ? {
+          title: "Launcher plan required.",
+          detail:
+            "This organization is not on the launcher plan. Contact Arenzyra support before starting production.",
+        }
+      : reason === "SUBSCRIPTION_EXPIRED"
+        ? {
+            title: "Subscription expired.",
+            detail:
+              "Launcher access is blocked until this organization's subscription or trial is active again.",
+          }
+        : reason === "LICENSE_MISSING"
+          ? {
+              title: "Launcher access blocked.",
+              detail:
+                "Launcher access is not available for this organization. Please contact Arenzyra support.",
+            }
+          : {
+              title: "Launcher access blocked.",
+              detail:
+                "Please contact Arenzyra support before starting production.",
+            };
 
   return (
     <LauncherAccessScreen
-      title={
-        isMissing
-          ? "No production license assigned."
-          : "Your Arenzyra production license has expired."
-      }
-      detail={
-        isMissing
-          ? "This organizer account does not have an active Arenzyra production license. Please contact Arenzyra support."
-          : "Please contact Arenzyra support to renew the license before starting production."
-      }
+      title={copy.title}
+      detail={copy.detail}
       session={props.session}
       access={props.access}
       busy={props.busy}

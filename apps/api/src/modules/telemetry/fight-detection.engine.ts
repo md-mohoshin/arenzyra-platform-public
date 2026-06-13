@@ -10,6 +10,7 @@ import type {
   MatchStateEvent,
   MatchStateSourceMode,
 } from '../match-control/state.store';
+import { isAutomaticMatchStateSourceMode } from '../match-control/state.store';
 import { EventBusService } from '../event-bus/event-bus.service';
 import {
   EVENT_BUS_TOPICS,
@@ -181,7 +182,7 @@ export class FightDetectionEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   processMatchEvents(input: FightDetectionInput): FightEvent[] {
-    if (input.sourceMode !== 'AUTO') {
+    if (!isAutomaticMatchStateSourceMode(input.sourceMode)) {
       this.activeFightsByMatch.delete(input.matchId);
       return [];
     }

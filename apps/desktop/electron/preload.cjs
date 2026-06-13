@@ -17,20 +17,42 @@ const allowedInvokeChannels = new Set([
   "launcher:openExternal",
   "launcher:getTelemetryStatus",
   "launcher:getObserverFeedStatus",
+  "launcher:listVisualSources",
+  "launcher:getVisualModeStatus",
+  "launcher:getVisualModeConfig",
+  "launcher:setVisualModeConfig",
+  "launcher:getVisualReviewQueue",
+  "launcher:clearVisualReviewQueue",
+  "launcher:captureVisualReviewCandidate",
+  "launcher:runVisualReviewOcr",
+  "launcher:ignoreVisualReviewItem",
+  "launcher:markVisualReviewItemReviewed",
   "launcher:getConnectorStatus",
   "launcher:repairConnector",
   "launcher:getWidgetServerStatus",
+  "launcher:getPinnedCommentatorDeskWindow",
+  "launcher:openPinnedCommentatorDeskWindow",
+  "launcher:closePinnedCommentatorDeskWindow",
+  "launcher:setPinnedCommentatorDeskClickThrough",
   "launcher:getAssetStatus",
   "launcher:getHealthStatus",
   "launcher:getBootstrapStatus",
   "launcher:getRecentLogs",
   "launcher:getWidgetCatalogState",
+  "launcher:getWidgetHotkeyControl",
+  "launcher:updateWidgetHotkeyControl",
+  "launcher:triggerWidgetHotkeyControl",
+  "launcher:getAiCasterAccess",
+  "launcher:updateAiCasterSettings",
+  "launcher:previewAiCasterVoice",
   "launcher:getObserverCommandCenterSnapshot",
   "launcher:runObserverCommandAction",
   "launcher:launchShadowTracker",
   "launcher:enterProductionMode",
   "launcher:startTelemetryBridge",
   "launcher:stopTelemetryBridge",
+  "launcher:startVisualMode",
+  "launcher:stopVisualMode",
   "launcher:startObserverFeed",
   "launcher:stopObserverFeed",
   "launcher:resetTelemetryForMatchSwitch",
@@ -149,7 +171,9 @@ contextBridge.exposeInMainWorld("arenzyra", {
       }
 
       try {
-        return sendSync("launcher:pathExists", { targetPath: trimmed }) === true;
+        return (
+          sendSync("launcher:pathExists", { targetPath: trimmed }) === true
+        );
       } catch {
         return false;
       }

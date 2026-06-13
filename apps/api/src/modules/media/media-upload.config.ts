@@ -15,6 +15,8 @@ export const MEDIA_UPLOAD_TYPES = [
   'team',
   'player',
   'org',
+  'widget-template',
+  'widget-overlay',
 ] as const;
 
 export type MediaUploadType = (typeof MEDIA_UPLOAD_TYPES)[number];
@@ -24,6 +26,8 @@ export const MAX_MEDIA_UPLOAD_SIZE = 5 * 1024 * 1024; // 5MB
 const OPTIMIZED_EXTENSION = '.webp';
 const OPTIMIZED_QUALITY = 80;
 const OPTIMIZED_MAX_WIDTH = 512;
+const WIDGET_TEMPLATE_WIDTH = 1200;
+const WIDGET_TEMPLATE_HEIGHT = 630;
 const TEMP_UPLOAD_DIR = '_tmp';
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -51,6 +55,8 @@ const logger = new Logger('MediaUpload');
 let mediaAiWarned = false;
 
 function typeDir(type: MediaUploadType) {
+  if (type === 'widget-template') return 'widget-templates';
+  if (type === 'widget-overlay') return 'widget-overlays';
   return type === 'sponsor' ? 'sponsors' : type;
 }
 
@@ -201,15 +207,38 @@ export async function optimizeUploadedImage(
       }
     }
 
-    await sharp(sourceBuffer)
-      .rotate() // respect EXIF orientation
-      .resize({
-        width: OPTIMIZED_MAX_WIDTH,
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .webp({ quality: OPTIMIZED_QUALITY })
-      .toFile(optimizedPath);
+    const pipeline = sharp(sourceBuffer).rotate(); // respect EXIF orientation
+
+    if (type === 'widget-template') {
+      await pipeline
+        .resize({
+          width: WIDGET_TEMPLATE_WIDTH,
+          height: WIDGET_TEMPLATE_HEIGHT,
+          fit: 'cover',
+          position: 'center',
+        })
+        .webp({ quality: OPTIMIZED_QUALITY })
+        .toFile(optimizedPath);
+    } else if (type === 'widget-overlay') {
+      await pipeline
+        .resize({
+          width: WIDGET_TEMPLATE_WIDTH,
+          height: WIDGET_TEMPLATE_HEIGHT,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .webp({ quality: OPTIMIZED_QUALITY })
+        .toFile(optimizedPath);
+    } else {
+      await pipeline
+        .resize({
+          width: OPTIMIZED_MAX_WIDTH,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .webp({ quality: OPTIMIZED_QUALITY })
+        .toFile(optimizedPath);
+    }
   } catch {
     await fs.rm(optimizedPath, { force: true }).catch(() => undefined);
     throw new BadRequestException('Failed to optimize image upload');

@@ -164,7 +164,13 @@ function createMapWidgetEngine({ registry, broadcast, log = () => {} }) {
 
   function applyTeamBrandingUpdate(update) {
     const normalized = teamBrandingStore.set(update);
+    productionSupportEngine.setTeamBranding(normalized);
     broadcast.broadcast("team_branding", normalized, normalized.timestamp);
+    const definition = getResolvedDefinition(currentMapKey);
+    const productionSupportSnapshot = definition
+      ? productionSupportEngine.refresh(definition, definition.key)
+      : null;
+    broadcastProductionSupport(productionSupportSnapshot);
     return normalized;
   }
 
@@ -477,6 +483,15 @@ function createMapWidgetEngine({ registry, broadcast, log = () => {} }) {
     activeFeed = null;
   }
 
+  function clearRuntimeState() {
+    currentMapKey = null;
+    currentSourceMapName = null;
+    zoneStateStore.clear();
+    playerPositionStore.clear();
+    observerAssistEngine.clear();
+    productionSupportEngine.clear();
+  }
+
   function getReplayMarkers(preferredMapKey = null, limit = 20) {
     if (!preferredMapKey) {
       return productionSupportEngine.getReplayMarkers(null, limit);
@@ -506,6 +521,7 @@ function createMapWidgetEngine({ registry, broadcast, log = () => {} }) {
     applyPlayerPositionUpdate,
     applyTeamBrandingUpdate,
     applyZoneUpdate,
+    clearRuntimeState,
     getReplayMarkers,
     getSnapshot,
     getStatus,

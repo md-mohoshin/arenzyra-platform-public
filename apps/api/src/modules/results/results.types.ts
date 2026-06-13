@@ -21,6 +21,8 @@ export type MatchSummary = {
   } | null;
   resultLockState: ResultLockState;
   tournamentId?: string | null;
+  stageId?: string | null;
+  groupId?: string | null;
   tournament?: {
     ownerUserId: string | null;
     organizationId: string | null;

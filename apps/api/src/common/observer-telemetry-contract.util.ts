@@ -41,6 +41,8 @@ const NESTED_RESULT_FIELDS = new Set([
   'finalplacement',
   'placements',
   'placement',
+  'placementindex',
+  'position',
   'matchendedat',
   'isfinished',
   'finished',
@@ -57,8 +59,22 @@ const PLAYER_COLLECTION_KEYS = new Set([
   'playerlist',
 ]);
 
+const LIVE_TEAM_PLACEMENT_FIELDS = new Set([
+  'rank',
+  'placement',
+  'placementindex',
+  'position',
+]);
+
 const buildPath = (base: string, key: string): string =>
   base.length > 0 ? `${base}.${key}` : key;
+
+const isLiveTeamPlacementField = (
+  segments: string[],
+  normalizedField: string,
+) =>
+  LIVE_TEAM_PLACEMENT_FIELDS.has(normalizedField) &&
+  TEAM_COLLECTION_KEYS.has(normalizeFieldName(segments[0] ?? ''));
 
 const isSanitizableField = (segments: string[], normalizedField: string) => {
   if (segments.length === 0) {
@@ -66,6 +82,13 @@ const isSanitizableField = (segments: string[], normalizedField: string) => {
   }
 
   const root = normalizeFieldName(segments[0] ?? '');
+  if (TEAM_COLLECTION_KEYS.has(root)) {
+    return (
+      NESTED_SANITIZABLE_FIELDS.has(normalizedField) &&
+      !isLiveTeamPlacementField(segments, normalizedField)
+    );
+  }
+
   if (TEAM_COLLECTION_KEYS.has(root) || PLAYER_COLLECTION_KEYS.has(root)) {
     return NESTED_SANITIZABLE_FIELDS.has(normalizedField);
   }
@@ -79,7 +102,14 @@ const isForbiddenField = (segments: string[], normalizedField: string) => {
   }
 
   const root = normalizeFieldName(segments[0] ?? '');
-  if (TEAM_COLLECTION_KEYS.has(root) || PLAYER_COLLECTION_KEYS.has(root)) {
+  if (TEAM_COLLECTION_KEYS.has(root)) {
+    return (
+      NESTED_RESULT_FIELDS.has(normalizedField) &&
+      !isLiveTeamPlacementField(segments, normalizedField)
+    );
+  }
+
+  if (PLAYER_COLLECTION_KEYS.has(root)) {
     return NESTED_RESULT_FIELDS.has(normalizedField);
   }
 

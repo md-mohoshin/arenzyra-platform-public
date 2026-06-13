@@ -42,8 +42,6 @@ import { Role } from '@prisma/client';
 import { FeedBusService } from '../feed/feed-bus.service';
 import { ScaleService } from './scale.service';
 import { effectiveOrganizationId } from '../../common/org/org.util';
-import { resolveMatchDataSource } from '../matches/match-datasource.util';
-import { DataMode } from '@prisma/client';
 import { PcobSecretGuard } from './pcob-secret.guard';
 import { GameAdapterTelemetryService } from '../game-adapters/game-adapter-telemetry.service';
 import { PCOB_ADAPTER_KEY } from '../../common/pcob-binding.util';
@@ -51,6 +49,10 @@ import { deriveControlStateFromMatchStatus } from '../../common/match-status.uti
 import { writeTelemetryRuntimeMeta } from '../../common/telemetry-runtime-contract.util';
 import { CanonicalControlReadService } from '../realtime/canonical-control-read.service';
 import { enforceTelemetrySourceAllowed } from '../../common/telemetry-source.util';
+import {
+  isPcobCompatibilityMatch,
+  resolvePcobCompatibilityMode,
+} from '../../common/match-telemetry-provider.util';
 
 type SyncPayload = { matchId?: string };
 type PcobBindPayload = { matchId?: string; pcobSessionId?: string };
@@ -78,7 +80,9 @@ const stringFromUnknown = (value: unknown): string | undefined =>
     : typeof value === 'number'
       ? String(value)
       : undefined;
-const firstHeaderValue = (value: string | string[] | undefined): string | null =>
+const firstHeaderValue = (
+  value: string | string[] | undefined,
+): string | null =>
   Array.isArray(value)
     ? (value.find((entry) => Boolean(entry?.trim()))?.trim() ?? null)
     : typeof value === 'string' && value.trim().length > 0
@@ -449,7 +453,7 @@ export class PcobTelemetryIngestController {
       create: {
         matchId: match.id,
         organizationId: currentMeta?.organizationId ?? organizationId,
-        state: currentMeta?.state ?? currentState,
+        state: (currentMeta?.state ?? currentState) as never,
         reason: 'TELEMETRY_RUNTIME_TRANSPORT',
         metaJson: nextMeta as Prisma.JsonObject,
       },
@@ -593,8 +597,10 @@ export class PcobTelemetryIngestController {
       void payload;
       return;
     }
-    const payloadObj = isRecord(payload) ? payload : {};
-    if ((payloadObj as Record<string, unknown>)?.eventType !== 'KILL') return;
+    const payloadObj: Prisma.InputJsonObject = isRecord(payload)
+      ? (payload as Prisma.InputJsonObject)
+      : {};
+    if (payloadObj?.eventType !== 'KILL') return;
     if (
       !match.pcobMode ||
       !match.pcobKillSyncEnabled ||
@@ -790,15 +796,17 @@ export class PcobTelemetryIngestController {
     this.logMatchComparison(
       this.buildMatchComparison(match, matchIdFromWrapper, sessionId),
     );
-    if (
-      resolveMatchDataSource(match) !== MatchDataSource.PCOB &&
-      match.dataMode !== DataMode.PCOB
-    ) {
+    const compatibilityMode = resolvePcobCompatibilityMode(match);
+    const isPcobModeCandidate =
+      isPcobCompatibilityMatch(match) ||
+      match.dataSource === MatchDataSource.API;
+    if (!isPcobModeCandidate) {
       this.logReject('MATCH_NOT_PCOB_MODE', {
         ...this.buildMatchComparison(match, matchIdFromWrapper, sessionId),
         eventType,
-        dataMode: match.dataMode ?? null,
         dataSource: match.dataSource ?? null,
+        dataMode: match.dataMode ?? null,
+        compatibilityMode,
       });
       throw new ConflictException('Match is not in PCOB mode');
     }
@@ -817,13 +825,22 @@ export class PcobTelemetryIngestController {
     }
     if (useAdapterIngest) {
       const now = new Date();
+      const incomingSource = compatibilityMode === 'API' ? 'API' : 'PCOB';
+      const authoritySource =
+        compatibilityMode === 'API'
+          ? 'API_AUTHORITATIVE'
+          : 'PCOB_AUTHORITATIVE';
       const { match: sourceLockedMatch } = await enforceTelemetrySourceAllowed({
         prisma: this.prisma,
         logger: this.logger,
         match,
-        incomingSource: 'PCOB',
+        incomingSource,
       });
-      await this.touchTelemetryTransport(sourceLockedMatch, 'PCOB', now);
+      await this.touchTelemetryTransport(
+        sourceLockedMatch,
+        incomingSource,
+        now,
+      );
       this.health.onTelemetryWithContext(match.id, clientId, {
         sentAt:
           typeof sentAt === 'number'
@@ -835,9 +852,10 @@ export class PcobTelemetryIngestController {
                 : null,
         status: match.status,
         dataSource: match.dataSource,
+        adapterKey: match.adapterKey ?? null,
         gameplay: true,
         authoritative: true,
-        authoritySource: 'PCOB_AUTHORITATIVE',
+        authoritySource,
         scoringMode: 'AUTO_LOCKED',
       });
       return this.adapterTelemetry.ingestEnvelope(match.id, body);
@@ -889,21 +907,27 @@ export class PcobTelemetryIngestController {
       prisma: this.prisma,
       logger: this.logger,
       match,
-      incomingSource: 'PCOB',
+      incomingSource: compatibilityMode === 'API' ? 'API' : 'PCOB',
     });
 
     const now = new Date();
     const [evt] = this.normalizeEvents(telemetryPayload);
     const normalizedType = (eventType ?? 'UNKNOWN').toUpperCase();
-    const gameplay =
-      normalizedType !== 'UNKNOWN' ||
-      this.isZoneEvent(telemetryPayload) ||
-      evt?.eventType === 'KILL';
     const authoritative = [
       'PLAYER_ELIMINATED',
       'TEAM_ELIMINATED',
       'MATCH_STATE_UPDATE',
     ].includes(normalizedType);
+    const authoritySource =
+      authoritative && compatibilityMode === 'API'
+        ? 'API_AUTHORITATIVE'
+        : authoritative
+          ? 'PCOB_AUTHORITATIVE'
+          : undefined;
+    const gameplay =
+      normalizedType !== 'UNKNOWN' ||
+      this.isZoneEvent(telemetryPayload) ||
+      evt?.eventType === 'KILL';
     this.health.onTelemetryWithContext(match.id, lock?.clientId ?? null, {
       sentAt:
         typeof sentAt === 'number'
@@ -915,9 +939,10 @@ export class PcobTelemetryIngestController {
               : null,
       status: match.status,
       dataSource: match.dataSource,
+      adapterKey: match.adapterKey ?? null,
       gameplay,
       authoritative,
-      authoritySource: authoritative ? 'PCOB_AUTHORITATIVE' : undefined,
+      authoritySource,
       scoringMode: authoritative ? 'AUTO_LOCKED' : undefined,
     });
     const eventId = this.dedupe.computeEventId(match.id, sessionId, evt);

@@ -1,10 +1,7 @@
 import { LiveState, MatchStatus } from '@prisma/client';
 import type { PrismaService } from '../db/prisma.service';
 
-type LiveMatchConflictPrisma = Pick<
-  PrismaService,
-  'match' | 'matchControlState' | '$transaction'
->;
+type LiveMatchConflictPrisma = Pick<PrismaService, 'match'>;
 
 type LiveMatchConflictCandidate = {
   id: string;
@@ -17,6 +14,8 @@ type LiveMatchConflictCandidate = {
 export type LiveMatchConflictResolution = {
   keptId: string | null;
   endedIds: string[];
+  liveIds: string[];
+  wouldEndIds: string[];
 };
 
 const toResolutionTimestamp = (match: LiveMatchConflictCandidate): number =>
@@ -26,7 +25,7 @@ const toResolutionTimestamp = (match: LiveMatchConflictCandidate): number =>
   match.createdAt?.valueOf() ??
   0;
 
-export async function resolveOrganizationLiveMatchConflicts(
+export async function detectOrganizationLiveMatchConflicts(
   prisma: LiveMatchConflictPrisma,
   organizationId: string,
 ): Promise<LiveMatchConflictResolution> {
@@ -37,7 +36,7 @@ export async function resolveOrganizationLiveMatchConflicts(
       OR: [
         { status: MatchStatus.LIVE },
         { liveState: LiveState.LIVE },
-        { controlState: { state: { in: ['LIVE', 'PAUSED'] } } },
+        { controlState: { state: 'LIVE' } },
       ],
     },
     select: {
@@ -53,6 +52,8 @@ export async function resolveOrganizationLiveMatchConflicts(
     return {
       keptId: liveMatches[0]?.id ?? null,
       endedIds: [],
+      liveIds: liveMatches.map((match) => match.id),
+      wouldEndIds: [],
     };
   }
 
@@ -63,39 +64,24 @@ export async function resolveOrganizationLiveMatchConflicts(
         toResolutionTimestamp(right) - toResolutionTimestamp(left),
     );
   const keptId = sorted[0]?.id ?? null;
-  const endedIds = sorted.slice(1).map((match) => match.id);
+  const wouldEndIds = sorted.slice(1).map((match) => match.id);
 
-  if (!keptId || endedIds.length === 0) {
+  if (!keptId || wouldEndIds.length === 0) {
     return {
       keptId,
       endedIds: [],
+      liveIds: sorted.map((match) => match.id),
+      wouldEndIds: [],
     };
   }
 
-  const now = new Date();
-  await prisma.$transaction([
-    prisma.match.updateMany({
-      where: { id: { in: endedIds } },
-      data: {
-        status: MatchStatus.ENDED,
-        liveState: LiveState.ENDED,
-        endedAt: now,
-        endedReason: 'LIVE_CONFLICT_RESOLUTION',
-      },
-    }),
-    prisma.matchControlState.updateMany({
-      where: { matchId: { in: endedIds } },
-      data: {
-        state: 'ENDED',
-        reason: 'LIVE_CONFLICT_RESOLUTION',
-        updatedAt: now,
-        version: { increment: 1 },
-      },
-    }),
-  ]);
-
   return {
     keptId,
-    endedIds,
+    endedIds: [],
+    liveIds: sorted.map((match) => match.id),
+    wouldEndIds,
   };
 }
+
+export const resolveOrganizationLiveMatchConflicts =
+  detectOrganizationLiveMatchConflicts;

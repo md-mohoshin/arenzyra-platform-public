@@ -34,6 +34,42 @@ export class RenderController {
     });
   }
 
+  @Get('match/:matchId/discord/:kind')
+  async renderDiscordMatch(
+    @Param('matchId') matchId: string,
+    @Param('kind') kind: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const buffer = await this.renderService.renderDiscordMatchImage(
+      req.user,
+      matchId,
+      kind,
+    );
+
+    return new StreamableFile(buffer, {
+      type: 'image/png',
+      disposition: `inline; filename="match-${matchId}-${kind}.png"`,
+    });
+  }
+
+  @Get('result-backups/:backupId/discord/:kind')
+  async renderResultBackup(
+    @Param('backupId') backupId: string,
+    @Param('kind') kind: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const buffer = await this.renderService.renderResultBackupImage(
+      req.user,
+      backupId,
+      kind,
+    );
+
+    return new StreamableFile(buffer, {
+      type: 'image/png',
+      disposition: `inline; filename="result-backup-${backupId}-${kind}.png"`,
+    });
+  }
+
   @Get('session/:sessionId/standings')
   async renderSessionStandings(
     @Param('sessionId') sessionId: string,

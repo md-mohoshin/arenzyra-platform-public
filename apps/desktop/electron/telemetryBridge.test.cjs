@@ -1,0 +1,717 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const http = require("node:http");
+
+const { createTelemetryBridge } = require("./telemetryBridge.cjs");
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve(server.address());
+    });
+  });
+}
+
+function close(server) {
+  return new Promise((resolve) => {
+    try {
+      server.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitFor(predicate, timeoutMs = 10_000, intervalMs = 50) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await predicate();
+    if (result) {
+      return result;
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error("Timed out waiting for condition.");
+}
+
+function createShadowServer({
+  players = [
+    {
+      playerId: "player-1",
+      teamId: "team-1",
+      x: 200000,
+      y: 300000,
+      isAlive: true,
+    },
+  ],
+  teams = [
+    {
+      teamId: "team-1",
+      slot: 1,
+      liveMemberNum: 1,
+      memberNum: 1,
+    },
+  ],
+} = {}) {
+  return http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    switch (req.url) {
+      case "/getallinfo":
+        res.end(JSON.stringify({ allInfo: { mapName: "ERANGEL" } }));
+        return;
+      case "/gettotalplayerlist":
+        res.end(JSON.stringify({ playerInfoList: players }));
+        return;
+      case "/getteaminfolist":
+        res.end(JSON.stringify({ teamInfoList: teams }));
+        return;
+      case "/getkillinfo":
+        res.end(JSON.stringify({ killInfo: [] }));
+        return;
+      case "/getcircleinfo":
+        res.end(
+          JSON.stringify({
+            circleInfo: {
+              mapName: "ERANGEL",
+              GameTime: 120,
+              CircleIndex: 2,
+              CircleStatus: "WAITING",
+            },
+          }),
+        );
+        return;
+      case "/getgameglobalinfo":
+        res.end(JSON.stringify({ gameGlobalInfo: {} }));
+        return;
+      case "/getobservingplayer":
+        res.end(JSON.stringify({ observingPlayer: null }));
+        return;
+      default:
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: "not-found" }));
+    }
+  });
+}
+
+test("finalizing transport response stops the bridge and purges queued telemetry", async () => {
+  const backendState = {
+    postCount: 0,
+  };
+
+  const shadowServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    switch (req.url) {
+      case "/getallinfo":
+        res.end(JSON.stringify({ allInfo: { mapName: "ERANGEL" } }));
+        return;
+      case "/gettotalplayerlist":
+        res.end(
+          JSON.stringify({
+            playerInfoList: [
+              {
+                playerId: "player-1",
+                teamId: "team-1",
+                x: 200000,
+                y: 300000,
+                isAlive: true,
+              },
+            ],
+          }),
+        );
+        return;
+      case "/getteaminfolist":
+        res.end(
+          JSON.stringify({
+            teamInfoList: [
+              {
+                teamId: "team-1",
+                slot: 1,
+                liveMemberNum: 1,
+                memberNum: 1,
+              },
+            ],
+          }),
+        );
+        return;
+      case "/getkillinfo":
+        res.end(JSON.stringify({ killInfo: [] }));
+        return;
+      case "/getcircleinfo":
+        res.end(
+          JSON.stringify({
+            circleInfo: {
+              mapName: "ERANGEL",
+              GameTime: 120,
+              CircleIndex: 2,
+              CircleStatus: "WAITING",
+            },
+          }),
+        );
+        return;
+      case "/getgameglobalinfo":
+        res.end(JSON.stringify({ gameGlobalInfo: {} }));
+        return;
+      case "/getobservingplayer":
+        res.end(JSON.stringify({ observingPlayer: null }));
+        return;
+      default:
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: "not-found" }));
+    }
+  });
+
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      backendState.postCount += 1;
+      if (backendState.postCount === 1) {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: "temporary-outage" }));
+        return;
+      }
+
+      res.end(
+        JSON.stringify({
+          ignored: true,
+          reason: "MATCH_FINALIZING",
+          matchStatus: "FINISH_PENDING",
+          isFinalizing: true,
+        }),
+      );
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const shadowBaseUrl = `http://127.0.0.1:${shadowAddress.port}`;
+  const backendBaseUrl = `http://127.0.0.1:${backendAddress.port}`;
+
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: backendBaseUrl,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-1",
+      sessionId: "session-1",
+    });
+
+    await waitFor(() => {
+      const status = bridge.getStatus();
+      return backendState.postCount >= 2 && status.running === false ? status : null;
+    });
+
+    const stopped = bridge.getStatus();
+    assert.equal(stopped.connectionStatus, "finalizing");
+    assert.equal(stopped.isFinalizing, true);
+    assert.equal(stopped.queueSize, 0);
+
+    const stabilizedPostCount = backendState.postCount;
+    await sleep(1500);
+    assert.equal(backendState.postCount, stabilizedPostCount);
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
+
+test("transport payload preserves runtime-safe identity fields", async () => {
+  let capturedPayload = null;
+
+  const shadowServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    switch (req.url) {
+      case "/getallinfo":
+        res.end(JSON.stringify({ allInfo: { mapName: "ERANGEL" } }));
+        return;
+      case "/gettotalplayerlist":
+        res.end(
+          JSON.stringify({
+            playerInfoList: [
+              {
+                playerId: "runtime-player-1",
+                playerOpenId: "open-player-1",
+                externalPlayerId: "external-player-1",
+                playerName: "Stable Player",
+                teamNo: 7,
+                x: 200000,
+                y: 300000,
+                isAlive: true,
+              },
+            ],
+          }),
+        );
+        return;
+      case "/getteaminfolist":
+        res.end(
+          JSON.stringify({
+            teamInfoList: [
+              {
+                teamNo: 7,
+                teamName: "Stable Team",
+                teamTag: "STB",
+                liveMemberNum: 1,
+                memberNum: 1,
+              },
+            ],
+          }),
+        );
+        return;
+      case "/getkillinfo":
+        res.end(JSON.stringify({ killInfo: [] }));
+        return;
+      case "/getcircleinfo":
+        res.end(
+          JSON.stringify({
+            circleInfo: {
+              mapName: "ERANGEL",
+              GameTime: 120,
+              CircleIndex: 2,
+              CircleStatus: "WAITING",
+            },
+          }),
+        );
+        return;
+      case "/getgameglobalinfo":
+        res.end(JSON.stringify({ gameGlobalInfo: {} }));
+        return;
+      case "/getobservingplayer":
+        res.end(JSON.stringify({ observingPlayer: null }));
+        return;
+      default:
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: "not-found" }));
+    }
+  });
+
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk.toString("utf8");
+      });
+      req.on("end", () => {
+        capturedPayload = JSON.parse(body);
+        res.end(JSON.stringify({ ok: true }));
+      });
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: `http://127.0.0.1:${backendAddress.port}`,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-identity",
+      sessionId: "session-identity",
+    });
+
+    await waitFor(() => capturedPayload);
+
+    assert.equal(capturedPayload.players.length, 1);
+    assert.equal(capturedPayload.players[0].id, "runtime-player-1");
+    assert.equal(capturedPayload.players[0].playerOpenId, "open-player-1");
+    assert.equal(capturedPayload.players[0].externalPlayerId, "external-player-1");
+    assert.equal(capturedPayload.players[0].playerName, "Stable Player");
+    assert.equal(capturedPayload.players[0].teamId, "7");
+    assert.equal(capturedPayload.players[0].teamNo, 7);
+    assert.equal(capturedPayload.players[0].teamSlot, 7);
+    assert.equal(capturedPayload.teams.length, 1);
+    assert.equal(capturedPayload.teams[0].teamId, "7");
+    assert.equal(capturedPayload.teams[0].slot, 7);
+    assert.equal(capturedPayload.teams[0].teamNo, 7);
+    assert.equal(capturedPayload.teams[0].teamName, "Stable Team");
+    assert.equal(capturedPayload.teams[0].teamTag, "STB");
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
+
+test("transport payload keeps identity-bearing players even when position is unavailable", async () => {
+  let capturedPayload = null;
+
+  const shadowServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    switch (req.url) {
+      case "/getallinfo":
+        res.end(JSON.stringify({ allInfo: { mapName: "ERANGEL" } }));
+        return;
+      case "/gettotalplayerlist":
+        res.end(
+          JSON.stringify({
+            playerInfoList: [
+              {
+                playerId: "runtime-player-2",
+                playerOpenId: "open-player-2",
+                externalPlayerId: "external-player-2",
+                playerName: "No Position Player",
+                teamNo: 4,
+                isAlive: true,
+                kills: 2,
+              },
+            ],
+          }),
+        );
+        return;
+      case "/getteaminfolist":
+        res.end(
+          JSON.stringify({
+            teamInfoList: [
+              {
+                teamId: 4,
+                teamName: "No Position Team",
+                teamTag: "NPT",
+                liveMemberNum: 1,
+                memberNum: 1,
+              },
+            ],
+          }),
+        );
+        return;
+      case "/getkillinfo":
+        res.end(JSON.stringify({ killInfo: [] }));
+        return;
+      case "/getcircleinfo":
+        res.end(
+          JSON.stringify({
+            circleInfo: {
+              mapName: "ERANGEL",
+              GameTime: 120,
+              CircleIndex: 2,
+              CircleStatus: "WAITING",
+            },
+          }),
+        );
+        return;
+      case "/getgameglobalinfo":
+        res.end(JSON.stringify({ gameGlobalInfo: {} }));
+        return;
+      case "/getobservingplayer":
+        res.end(JSON.stringify({ observingPlayer: null }));
+        return;
+      default:
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: "not-found" }));
+    }
+  });
+
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk.toString("utf8");
+      });
+      req.on("end", () => {
+        capturedPayload = JSON.parse(body);
+        res.end(JSON.stringify({ ok: true }));
+      });
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: `http://127.0.0.1:${backendAddress.port}`,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-positionless",
+      sessionId: "session-positionless",
+    });
+
+    await waitFor(() => capturedPayload);
+
+    assert.equal(capturedPayload.players.length, 1);
+    assert.equal(capturedPayload.players[0].id, "runtime-player-2");
+    assert.equal(capturedPayload.players[0].playerOpenId, "open-player-2");
+    assert.equal(capturedPayload.players[0].externalPlayerId, "external-player-2");
+    assert.equal(capturedPayload.players[0].playerName, "No Position Player");
+    assert.equal(capturedPayload.players[0].teamId, "4");
+    assert.equal(capturedPayload.players[0].kills, 2);
+    assert.equal(capturedPayload.players[0].position, null);
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
+
+test("operator stop purges retry queue and disables telemetry runtime", async () => {
+  const backendState = { postCount: 0 };
+  const shadowServer = createShadowServer();
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      backendState.postCount += 1;
+      res.statusCode = 503;
+      res.end(JSON.stringify({ error: "temporary-outage" }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: `http://127.0.0.1:${backendAddress.port}`,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-stop",
+      sessionId: "session-stop",
+    });
+
+    await waitFor(() => {
+      const status = bridge.getStatus();
+      return status.queueSize > 0 ? status : null;
+    });
+
+    const stopped = bridge.stop("operator-stop");
+    assert.equal(stopped.running, false);
+    assert.equal(stopped.connectionStatus, "operator-stop");
+    assert.equal(stopped.queueSize, 0);
+    assert.equal(stopped.sessionId, null);
+    assert.equal(stopped.connectedToBackend, false);
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
+
+test("match switch reset clears queued telemetry, match identity, and runtime counters", async () => {
+  const shadowServer = createShadowServer();
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      res.statusCode = 503;
+      res.end(JSON.stringify({ error: "temporary-outage" }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: `http://127.0.0.1:${backendAddress.port}`,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-a",
+      sessionId: "session-a",
+    });
+
+    await waitFor(() => {
+      const status = bridge.getStatus();
+      return status.queueSize > 0 && status.matchId === "match-a" ? status : null;
+    });
+
+    const reset = bridge.resetForMatchSwitch();
+    assert.equal(reset.running, false);
+    assert.equal(reset.matchId, null);
+    assert.equal(reset.sessionId, null);
+    assert.equal(reset.queueSize, 0);
+    assert.equal(reset.totalPackets, 0);
+    assert.equal(reset.telemetryAccepted, false);
+    assert.equal(reset.matchStatus, null);
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
+
+test("finished control status blocks bridge start", async () => {
+  const shadowServer = createShadowServer();
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(
+        JSON.stringify({
+          matchStatus: "FINISHED",
+          isLocked: true,
+          resultFinalized: true,
+        }),
+      );
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        bridge.start({
+          apiBase: `http://127.0.0.1:${backendAddress.port}`,
+          token: "token",
+          refreshToken: "refresh",
+          matchId: "match-finished",
+          sessionId: "session-finished",
+        }),
+      /FINISHED/,
+    );
+
+    const status = bridge.getStatus();
+    assert.equal(status.running, false);
+    assert.equal(status.connectionStatus, "finished");
+    assert.equal(status.isLocked, true);
+    assert.equal(status.resultFinalized, true);
+    assert.equal(status.queueSize, 0);
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
+
+test("finished transport response stops bridge and clears queued telemetry", async () => {
+  const backendState = { postCount: 0 };
+  const shadowServer = createShadowServer();
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      backendState.postCount += 1;
+      if (backendState.postCount === 1) {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: "temporary-outage" }));
+        return;
+      }
+
+      res.end(
+        JSON.stringify({
+          ignored: true,
+          reason: "MATCH_ENDED",
+          matchStatus: "FINISHED",
+          isLocked: true,
+          resultFinalized: true,
+        }),
+      );
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: `http://127.0.0.1:${backendAddress.port}`,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-finish-response",
+      sessionId: "session-finish-response",
+    });
+
+    const finished = await waitFor(() => {
+      const status = bridge.getStatus();
+      return backendState.postCount >= 2 && status.connectionStatus === "finished"
+        ? status
+        : null;
+    });
+
+    assert.equal(finished.running, false);
+    assert.equal(finished.isLocked, true);
+    assert.equal(finished.resultFinalized, true);
+    assert.equal(finished.queueSize, 0);
+    assert.equal(finished.telemetryAccepted, false);
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});

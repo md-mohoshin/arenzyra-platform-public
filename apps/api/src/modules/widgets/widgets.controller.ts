@@ -11,7 +11,7 @@ import {
 import type { Response } from 'express';
 import { PrismaService } from '../../db/prisma.service';
 import { Public } from '../../common/auth/public.decorator';
-import { MatchEventType } from '@prisma/client';
+import { MatchEventType, MatchStatus, type Prisma } from '@prisma/client';
 import {
   buildWidgetScoreboardSnapshot,
   type BrandMode,
@@ -46,14 +46,48 @@ import {
 } from '../organization-branding/theme-colors.util';
 import { MatchControlStateStore } from '../match-control/state.store';
 import { WidgetsService } from './widgets.service';
+import { TopFraggerService } from './top-fragger/top-fragger.service';
 import {
   extractMatchResultSummaryTelemetryStats,
   normalizeFallbackSummaryMetric,
 } from './match-result-summary.util';
 import { normalizePublicAssetUrl } from '../../common/public-asset-url.util';
+import { requireMatchOrganization } from '../../common/org/org.util';
+import {
+  MATCH_ACTIVE_OR_FINISHED_STATUSES,
+  MATCH_FINISHED_STATUSES,
+} from '../../common/match-status.util';
+import { compareRankingRows } from '../../common/ranking-tiebreakers.util';
 
 const DEFAULT_WIDGET_TEAM_NAME = 'Arenzyra';
 const DEFAULT_WIDGET_TEAM_TAG = 'AZ';
+const MATCH_SCHEDULE_STATUSES: MatchStatus[] = [
+  MatchStatus.DRAFT,
+  MatchStatus.LIVE,
+  MatchStatus.FINISH_PENDING,
+  MatchStatus.FINISHED,
+  MatchStatus.ENDED,
+];
+const MATCH_SCHEDULE_ACTIVE_STATUSES: MatchStatus[] = [
+  MatchStatus.LIVE,
+  MatchStatus.FINISH_PENDING,
+];
+const DEFAULT_MATCH_SCHEDULE_CUTOFF_HOUR_UTC = 5;
+const MATCH_SCHEDULE_RECENT_FINISHED_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+function isUsableTeamLogoUrl(value?: string | null): value is string {
+  const normalized = value?.trim();
+  return Boolean(normalized && normalized !== TEAM_LOGO_PLACEHOLDER);
+}
+
+function pickTeamLogoSource(
+  ...candidates: Array<string | null | undefined>
+): string {
+  return (
+    candidates.find((candidate) => isUsableTeamLogoUrl(candidate)) ??
+    TEAM_LOGO_PLACEHOLDER
+  );
+}
 
 function validateMatchId(matchId?: string): string {
   if (!matchId) throw new BadRequestException({ error: 'INVALID_MATCH_ID' });
@@ -151,6 +185,7 @@ type PostMatchOverallRow = {
   totalPoints: number;
   totalKills: number;
   matchesPlayed: number;
+  wwcd: number;
 };
 
 type PostMatchOverallPayload = {
@@ -173,8 +208,19 @@ type PostMatchOverallPayload = {
     matchLabel?: string | null;
     map?: string | null;
   };
+  qualification?: {
+    source: Scope;
+    sourceId: string;
+    qualifiedTeamsCount: number;
+    qualificationBubbleCount: number | null;
+    qualificationLabel: string | null;
+  } | null;
   rows: PostMatchOverallRow[];
 };
+
+type PostMatchQualificationPayload = NonNullable<
+  PostMatchOverallPayload['qualification']
+>;
 
 type PostMatchPointsBreakdownRow = {
   rank: number;
@@ -219,6 +265,45 @@ type PostMatchPointsBreakdownPayload = {
     totalPointsTotal: number;
   };
   rows: PostMatchPointsBreakdownRow[];
+};
+
+type MatchScheduleResultRow = {
+  matchId: string;
+  matchLabel: string | null;
+  matchNumber: number | null;
+  map: string | null;
+  scheduledAt: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  status: string | null;
+  winnerTeamId: string | null;
+  winnerTeamName: string | null;
+  winnerTeamTag: string | null;
+  winnerTeamLogoUrl: string | null;
+  winnerKills: number;
+  winnerTotalPoints: number;
+};
+
+type MatchScheduleResultsPayload = {
+  version: 'v1';
+  state: {
+    organizationSlug: string | null;
+    organizationId: string | null;
+    anchorMatchId: string | null;
+    tournamentId?: string | null;
+    scope: Scope | 'MATCH';
+    scopeId: string;
+    status: string | null;
+    lastUpdateIso: string;
+    reasons: string[];
+  };
+  header: {
+    tournament?: string | null;
+    stage?: string | null;
+    group?: string | null;
+    matchLabel?: string | null;
+  };
+  rows: MatchScheduleResultRow[];
 };
 
 type BrandingContext = {
@@ -295,6 +380,110 @@ const normalizeMatchLabel = (match?: {
   return name;
 };
 
+const pickMatchScheduleDate = (match?: {
+  scheduledAt?: Date | null;
+  startedAt?: Date | null;
+  endedAt?: Date | null;
+  createdAt?: Date | null;
+}): Date | null =>
+  match?.scheduledAt ??
+  match?.startedAt ??
+  match?.endedAt ??
+  match?.createdAt ??
+  null;
+
+const buildUtcDayRange = (
+  value?: Date | null,
+): { start: Date; end: Date } | null => {
+  if (!value || Number.isNaN(value.getTime())) return null;
+  const start = new Date(value);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  return { start, end };
+};
+
+const parseMatchScheduleDateRange = (
+  value?: string | null,
+): { start: Date; end: Date } | null => {
+  const normalized = value?.trim();
+  if (!normalized || !/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return null;
+  }
+
+  const [year, month, day] = normalized.split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day));
+  if (
+    start.getUTCFullYear() !== year ||
+    start.getUTCMonth() !== month - 1 ||
+    start.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return buildUtcDayRange(start);
+};
+
+const parseMatchScheduleCutoffHour = (value?: string | null): number => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 23
+    ? parsed
+    : DEFAULT_MATCH_SCHEDULE_CUTOFF_HOUR_UTC;
+};
+
+const buildCurrentMatchScheduleRange = (
+  now: Date,
+  cutoffHourUtc: number,
+): { start: Date; end: Date } | null => {
+  const anchor = new Date(now);
+  if (anchor.getUTCHours() < cutoffHourUtc) {
+    anchor.setUTCDate(anchor.getUTCDate() - 1);
+  }
+  return buildUtcDayRange(anchor);
+};
+
+type MatchScheduleMode = 'auto' | 'today' | 'upcoming' | 'finished';
+
+const normalizeMatchScheduleMode = (
+  value?: string | null,
+): MatchScheduleMode => {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === 'today' ||
+    normalized === 'upcoming' ||
+    normalized === 'finished'
+  ) {
+    return normalized;
+  }
+  return 'auto';
+};
+
+const buildMatchScheduleDayWhere = (
+  range: { start: Date; end: Date } | null,
+): Prisma.MatchWhereInput => {
+  if (!range) return {};
+  return {
+    OR: [
+      { scheduledAt: { gte: range.start, lt: range.end } },
+      {
+        scheduledAt: null,
+        startedAt: { gte: range.start, lt: range.end },
+      },
+      {
+        scheduledAt: null,
+        startedAt: null,
+        endedAt: { gte: range.start, lt: range.end },
+      },
+      {
+        scheduledAt: null,
+        startedAt: null,
+        endedAt: null,
+        createdAt: { gte: range.start, lt: range.end },
+      },
+    ],
+  };
+};
+
 const POST_MATCH_STATES = new Set([
   'ENDED',
   'FINISHED',
@@ -369,6 +558,7 @@ export class WidgetsController {
     private readonly branding: OrganizationBrandingService,
     private readonly matchStateStore: MatchControlStateStore,
     private readonly widgetInstances: WidgetsService,
+    private readonly topFraggers: TopFraggerService,
   ) {}
 
   private setNoCache(res: Response) {
@@ -433,6 +623,45 @@ export class WidgetsController {
     if (!exists) {
       throw new NotFoundException({ error: 'MATCH_NOT_FOUND' });
     }
+  }
+
+  private async resolveMatchOrganizationId(matchId: string): Promise<string> {
+    const match = await this.prisma.match.findFirst({
+      where: { id: matchId, deletedAt: null },
+      select: {
+        organizationId: true,
+        tournament: { select: { organizationId: true } },
+      },
+    });
+    const organizationId =
+      match?.organizationId ?? match?.tournament?.organizationId ?? null;
+    if (!organizationId) {
+      throw new NotFoundException({ error: 'MATCH_NOT_FOUND' });
+    }
+    return organizationId;
+  }
+
+  private scoreMvpPerformance(opts: {
+    kills: number;
+    assists: number;
+    placement?: number | null;
+    isAlive?: boolean | null;
+    survivalTime?: number | null;
+  }) {
+    const placementBonus = opts.placement
+      ? Math.max(0, 21 - opts.placement)
+      : 0;
+    const survivalScore = opts.survivalTime
+      ? Math.min(10, Math.round(opts.survivalTime / 180))
+      : 0;
+    const aliveBonus = opts.isAlive === true ? 2 : 0;
+    return (
+      opts.kills * 6 +
+      opts.assists * 4 +
+      placementBonus +
+      survivalScore +
+      aliveBonus
+    );
   }
 
   private async resolveBrandingForMatch(
@@ -507,6 +736,7 @@ export class WidgetsController {
     const id = validateMatchId(matchId);
     await this.ensureMatchFresh(id);
     const branding = await this.resolveBrandingForMatch(id);
+    const organizationId = await this.resolveMatchOrganizationId(id);
     const brandMode = branding.mode;
     const snapshot = await buildWidgetScoreboardSnapshot(this.prisma, id, {
       includeLogos: true,
@@ -530,9 +760,9 @@ export class WidgetsController {
       },
       {},
     );
-    const slotResults = (await this.resultsService.listSlotResultsPublic(
-      id,
-    )) as any[];
+    const slotResults = (await this.resultsService.listSlotResultsPublic(id, {
+      organizationId,
+    })) as any[];
     const brandLookup = new Map<string, WidgetTeamSlotRow>();
     (snapshot.rows ?? []).forEach((r) => {
       const key = r.teamId ?? `slot-${r.slot}`;
@@ -574,6 +804,7 @@ export class WidgetsController {
               playerPhotoUrl: playerPhoto,
               alive: p.isAlive ?? null,
               knocks: p.knocks ?? null,
+              assists: (p as { assists?: number | null }).assists ?? null,
               knocked:
                 (p.playerId ? playerKnockedMap[p.playerId] : undefined) ??
                 (p.knocks ?? 0) > 0,
@@ -738,6 +969,7 @@ export class WidgetsController {
     const id = validateMatchId(matchId);
     await this.ensureMatchExists(id);
     await this.ensureMatchFresh(id);
+    const organizationId = await this.resolveMatchOrganizationId(id);
 
     const branding = await this.resolveBrandingForMatch(id);
     const brandMode = branding.mode;
@@ -757,7 +989,7 @@ export class WidgetsController {
         includeLogos: true,
         brandMode,
       }),
-      this.resultsService.listSlotResultsPublic(id),
+      this.resultsService.listSlotResultsPublic(id, { organizationId }),
       this.matchStateStore.get(id),
     ]);
 
@@ -945,6 +1177,7 @@ export class WidgetsController {
     const id = validateMatchId(matchId);
     await this.ensureMatchExists(id);
     await this.ensureMatchFresh(id);
+    const organizationId = await this.resolveMatchOrganizationId(id);
 
     const branding = await this.resolveBrandingForMatch(id);
     const brandMode = branding.mode;
@@ -969,7 +1202,7 @@ export class WidgetsController {
           includeLogos: true,
           brandMode,
         }),
-        this.resultsService.listSlotResultsPublic(id),
+        this.resultsService.listSlotResultsPublic(id, { organizationId }),
         this.matchStateStore.get(id),
         this.prisma.matchTelemetry.findUnique({
           where: { matchId: id },
@@ -1126,6 +1359,8 @@ export class WidgetsController {
         id: true,
         status: true,
         tournamentId: true,
+        sessionId: true,
+        organizationId: true,
         stageId: true,
         groupId: true,
         name: true,
@@ -1136,10 +1371,44 @@ export class WidgetsController {
         updatedAt: true,
         controlState: { select: { state: true, metaJson: true } },
         tournament: {
-          select: { name: true, shortName: true, organizationId: true },
+          select: {
+            id: true,
+            name: true,
+            shortName: true,
+            organizationId: true,
+            qualifiedTeamsCount: true,
+            qualificationBubbleCount: true,
+            qualificationLabel: true,
+          },
         },
-        stage: { select: { name: true } },
-        group: { select: { name: true } },
+        session: {
+          select: {
+            id: true,
+            name: true,
+            organizationId: true,
+            qualifiedTeamsCount: true,
+            qualificationBubbleCount: true,
+            qualificationLabel: true,
+          },
+        },
+        stage: {
+          select: {
+            id: true,
+            name: true,
+            qualifiedTeamsCount: true,
+            qualificationBubbleCount: true,
+            qualificationLabel: true,
+          },
+        },
+        group: {
+          select: {
+            id: true,
+            name: true,
+            qualifiedTeamsCount: true,
+            qualificationBubbleCount: true,
+            qualificationLabel: true,
+          },
+        },
         matchSlots: { select: { slotNumber: true, teamId: true } },
       },
     });
@@ -1164,6 +1433,7 @@ export class WidgetsController {
           matchLabel: 'Post Match Overall Ranking � Waiting for data',
           map: null,
         },
+        qualification: null,
         rows: [],
       };
       return this.wrapWidgetResponse(res!, placeholder, {
@@ -1190,11 +1460,61 @@ export class WidgetsController {
       ? 'GROUP'
       : match.stageId
         ? 'STAGE'
-        : 'TOURNAMENT';
+        : match.tournamentId
+          ? 'TOURNAMENT'
+          : match.sessionId
+            ? 'SESSION'
+            : 'MATCH';
     const scopeId =
-      match.groupId ?? match.stageId ?? match.tournamentId ?? match.id;
+      match.groupId ??
+      match.stageId ??
+      match.tournamentId ??
+      match.sessionId ??
+      match.id;
+    const qualificationSources: Array<PostMatchQualificationPayload | null> = [
+      match.groupId && typeof match.group?.qualifiedTeamsCount === 'number'
+        ? {
+            source: 'GROUP' as const,
+            sourceId: match.groupId,
+            qualifiedTeamsCount: match.group.qualifiedTeamsCount,
+            qualificationBubbleCount: match.group.qualificationBubbleCount,
+            qualificationLabel: match.group.qualificationLabel,
+          }
+        : null,
+      match.stageId && typeof match.stage?.qualifiedTeamsCount === 'number'
+        ? {
+            source: 'STAGE' as const,
+            sourceId: match.stageId,
+            qualifiedTeamsCount: match.stage.qualifiedTeamsCount,
+            qualificationBubbleCount: match.stage.qualificationBubbleCount,
+            qualificationLabel: match.stage.qualificationLabel,
+          }
+        : null,
+      match.tournamentId &&
+      typeof match.tournament?.qualifiedTeamsCount === 'number'
+        ? {
+            source: 'TOURNAMENT' as const,
+            sourceId: match.tournamentId,
+            qualifiedTeamsCount: match.tournament.qualifiedTeamsCount,
+            qualificationBubbleCount: match.tournament.qualificationBubbleCount,
+            qualificationLabel: match.tournament.qualificationLabel,
+          }
+        : null,
+      match.sessionId && typeof match.session?.qualifiedTeamsCount === 'number'
+        ? {
+            source: 'SESSION' as const,
+            sourceId: match.sessionId,
+            qualifiedTeamsCount: match.session.qualifiedTeamsCount,
+            qualificationBubbleCount: match.session.qualificationBubbleCount,
+            qualificationLabel: match.session.qualificationLabel,
+          }
+        : null,
+    ];
+    const qualificationSource = qualificationSources.find(
+      (setting): setting is PostMatchQualificationPayload => setting !== null,
+    );
     const hasStandingsScope = Boolean(
-      match.groupId ?? match.stageId ?? match.tournamentId,
+      match.groupId ?? match.stageId ?? match.tournamentId ?? match.sessionId,
     );
 
     const brandMode = branding.mode;
@@ -1308,6 +1628,14 @@ export class WidgetsController {
           0,
         );
         const totalKills = others.reduce((sum, pm) => sum + (pm.kills ?? 0), 0);
+        const totalPlacementPoints = others.reduce(
+          (sum, pm) => sum + (pm.placementPoints ?? 0),
+          0,
+        );
+        const wwcd = others.reduce(
+          (sum, pm) => sum + (pm.placement === 1 ? 1 : 0),
+          0,
+        );
         const bestPlacementRaw = others.reduce((best, pm) => {
           if (pm.placement && pm.placement > 0) {
             return Math.min(best, pm.placement);
@@ -1337,6 +1665,8 @@ export class WidgetsController {
           teamName: row.teamName ?? DEFAULT_WIDGET_TEAM_NAME,
           totalPoints,
           totalKills,
+          totalPlacementPoints,
+          wwcd,
           bestPlacement,
           lastMatchPlacement,
         };
@@ -1344,9 +1674,8 @@ export class WidgetsController {
 
       prevRows
         .sort((a, b) => {
-          if (b.totalPoints !== a.totalPoints)
-            return b.totalPoints - a.totalPoints;
-          if (b.totalKills !== a.totalKills) return b.totalKills - a.totalKills;
+          const rankingOrder = compareRankingRows(a, b);
+          if (rankingOrder !== 0) return rankingOrder;
           const aBest = a.bestPlacement ?? Infinity;
           const bBest = b.bestPlacement ?? Infinity;
           if (aBest !== bBest) return aBest - bBest;
@@ -1367,12 +1696,8 @@ export class WidgetsController {
       ? (standings?.rows ?? [])
           .slice()
           .sort((a, b) => {
-            const aPoints = this.toNumber(a.totalPoints, 0) ?? 0;
-            const bPoints = this.toNumber(b.totalPoints, 0) ?? 0;
-            if (aPoints !== bPoints) return bPoints - aPoints;
-            const aKills = this.toNumber(a.totalKills, 0) ?? 0;
-            const bKills = this.toNumber(b.totalKills, 0) ?? 0;
-            if (aKills !== bKills) return bKills - aKills;
+            const rankingOrder = compareRankingRows(a, b);
+            if (rankingOrder !== 0) return rankingOrder;
             const aRank = a.rank ?? Number.MAX_SAFE_INTEGER;
             const bRank = b.rank ?? Number.MAX_SAFE_INTEGER;
             if (aRank !== bRank) return aRank - bRank;
@@ -1390,8 +1715,10 @@ export class WidgetsController {
                 ? slotStatMap.get(`slot-${matchSlotMap.get(row.teamId)}`)
                 : null);
 
-            const logoSource =
-              row.teamLogo ?? slotEntry?.teamLogoUrl ?? TEAM_LOGO_PLACEHOLDER;
+            const logoSource = pickTeamLogoSource(
+              row.teamLogo,
+              slotEntry?.teamLogoUrl,
+            );
             const logoUrl = resolveTeamLogoUrl({
               logoUrl: logoSource,
               logoUpdatedAt:
@@ -1444,6 +1771,14 @@ export class WidgetsController {
                 matchEntry?.totalPoints ?? slotEntry?.matchPoints ?? null,
                 matchPlacementPoints + matchKills,
               ) ?? matchPlacementPoints + matchKills;
+            const hasCurrentMatchEntry = (row.perMatch ?? []).some(
+              (pm) => pm.matchId === id,
+            );
+            const wwcd =
+              (row.perMatch ?? []).reduce(
+                (sum, pm) => sum + (pm.placement === 1 ? 1 : 0),
+                0,
+              ) + (!hasCurrentMatchEntry && slotEntry?.placement === 1 ? 1 : 0);
 
             return {
               rank,
@@ -1473,6 +1808,7 @@ export class WidgetsController {
               matchesPlayed:
                 this.toNumber(row.matchesPlayed, row.perMatch?.length ?? 0) ??
                 0,
+              wwcd,
             };
           })
           .slice(0, 25)
@@ -1501,12 +1837,16 @@ export class WidgetsController {
       },
       header: {
         tournament:
-          match.tournament?.name ?? match.tournament?.shortName ?? null,
+          match.tournament?.name ??
+          match.tournament?.shortName ??
+          match.session?.name ??
+          null,
         stage: match.stage?.name ?? null,
         group: match.group?.name ?? null,
         matchLabel: normalizeMatchLabel(match),
         map: formatMapLabel(match.map),
       },
+      qualification: qualificationSource ?? null,
       rows,
     };
 
@@ -1518,6 +1858,471 @@ export class WidgetsController {
       dataSource: match.dataSource ?? match.dataMode ?? null,
       controlState: match.controlState?.state ?? match.status ?? null,
       aliveTeams: aliveTeams ?? null,
+      resultFinalized: controlMeta?.resultFinalized ?? null,
+      finalizedAt: controlMeta?.finalizedAt ?? null,
+      winnerTeamId: controlMeta?.winnerTeamId ?? null,
+      branding,
+    });
+  }
+
+  @Get('match-schedule-results')
+  async matchScheduleResults(
+    @Query('organizationSlug') organizationSlug?: string,
+    @Query('matchId') matchId?: string,
+    @Query('organizationId') organizationId?: string,
+    @Query('scheduleDate') scheduleDate?: string,
+    @Query('eventDate') eventDate?: string,
+    @Query('scheduleMode') scheduleMode?: string,
+    @Query('eventDayCutoffHour') eventDayCutoffHour?: string,
+    @Res({ passthrough: true }) res?: Response,
+  ) {
+    const requestedMatchId = matchId?.trim() ? validateMatchId(matchId) : null;
+    const requestedOrganizationSlug = organizationSlug?.trim() || null;
+    const requestedOrganizationId = organizationId?.trim() || null;
+    const requestedScheduleDate =
+      scheduleDate?.trim() || eventDate?.trim() || null;
+    const requestedScheduleRange = parseMatchScheduleDateRange(
+      requestedScheduleDate,
+    );
+    const resolvedScheduleMode = normalizeMatchScheduleMode(scheduleMode);
+    const cutoffHourUtc = parseMatchScheduleCutoffHour(eventDayCutoffHour);
+    const reasons: string[] = [];
+
+    if (
+      !requestedMatchId &&
+      !requestedOrganizationSlug &&
+      !requestedOrganizationId
+    ) {
+      throw new BadRequestException({
+        error: 'MATCH_OR_ORGANIZATION_REQUIRED',
+      });
+    }
+
+    const organization = requestedOrganizationSlug
+      ? await this.prisma.organization.findFirst({
+          where: { slug: requestedOrganizationSlug, deletedAt: null },
+          select: { id: true, slug: true, name: true },
+        })
+      : null;
+    const resolvedOrganizationId =
+      requestedOrganizationId ?? organization?.id ?? null;
+
+    if (requestedOrganizationSlug && !organization) {
+      reasons.push('ORGANIZATION_NOT_FOUND');
+    }
+    if (requestedScheduleDate && !requestedScheduleRange) {
+      reasons.push('INVALID_SCHEDULE_DATE');
+    }
+
+    const anchorMatchSelect = {
+      id: true,
+      status: true,
+      tournamentId: true,
+      sessionId: true,
+      organizationId: true,
+      stageId: true,
+      groupId: true,
+      name: true,
+      matchNumber: true,
+      map: true,
+      scheduledAt: true,
+      startedAt: true,
+      endedAt: true,
+      createdAt: true,
+      updatedAt: true,
+      dataSource: true,
+      dataMode: true,
+      controlState: { select: { state: true, metaJson: true } },
+      tournament: {
+        select: { name: true, shortName: true, organizationId: true },
+      },
+      session: { select: { name: true, organizationId: true } },
+      stage: { select: { name: true } },
+      group: { select: { name: true } },
+      organization: { select: { slug: true, name: true } },
+    } satisfies Prisma.MatchSelect;
+    type MatchScheduleAnchorMatch = Prisma.MatchGetPayload<{
+      select: typeof anchorMatchSelect;
+    }>;
+    const now = new Date();
+    const todayRange = buildCurrentMatchScheduleRange(now, cutoffHourUtc);
+    const anchorOrderBy: Prisma.MatchOrderByWithRelationInput[] = [
+      { matchNumber: 'asc' },
+      { scheduledAt: 'asc' },
+      { startedAt: 'asc' },
+      { createdAt: 'asc' },
+    ];
+    const latestMatchOrderBy: Prisma.MatchOrderByWithRelationInput[] = [
+      { scheduledAt: 'desc' },
+      { startedAt: 'desc' },
+      { endedAt: 'desc' },
+      { updatedAt: 'desc' },
+      { matchNumber: 'desc' },
+    ];
+    const latestFinishedOrderBy: Prisma.MatchOrderByWithRelationInput[] = [
+      { endedAt: 'desc' },
+      { updatedAt: 'desc' },
+      { scheduledAt: 'desc' },
+      { startedAt: 'desc' },
+      { matchNumber: 'desc' },
+    ];
+    let anchorMatch: MatchScheduleAnchorMatch | null = null;
+
+    if (requestedMatchId) {
+      anchorMatch = await this.prisma.match.findFirst({
+        where: {
+          id: requestedMatchId,
+          deletedAt: null,
+          ...(resolvedOrganizationId
+            ? { organizationId: resolvedOrganizationId }
+            : {}),
+        },
+        select: anchorMatchSelect,
+      });
+    } else if (resolvedOrganizationId) {
+      const organizationScheduleWhere: Prisma.MatchWhereInput = {
+        organizationId: resolvedOrganizationId,
+        deletedAt: null,
+        status: { in: MATCH_SCHEDULE_STATUSES },
+      };
+      const findScheduleAnchor = (
+        where: Prisma.MatchWhereInput,
+        orderBy: Prisma.MatchOrderByWithRelationInput[] = anchorOrderBy,
+      ) =>
+        this.prisma.match.findFirst({
+          where: { ...organizationScheduleWhere, ...where },
+          orderBy,
+          select: anchorMatchSelect,
+        });
+      const effectiveScheduleRange = requestedScheduleRange ?? todayRange;
+      const upcomingWhere: Prisma.MatchWhereInput = {
+        OR: [
+          { scheduledAt: { gte: effectiveScheduleRange?.end ?? now } },
+          {
+            scheduledAt: null,
+            startedAt: { gte: effectiveScheduleRange?.end ?? now },
+          },
+        ],
+      };
+      const recentFinishedCutoff = new Date(
+        now.getTime() - MATCH_SCHEDULE_RECENT_FINISHED_WINDOW_MS,
+      );
+      const recentFinishedWhere: Prisma.MatchWhereInput = {
+        status: { in: MATCH_FINISHED_STATUSES },
+        OR: [
+          { endedAt: { gte: recentFinishedCutoff } },
+          { updatedAt: { gte: recentFinishedCutoff } },
+        ],
+      };
+
+      if (requestedScheduleRange) {
+        anchorMatch = await findScheduleAnchor(
+          buildMatchScheduleDayWhere(requestedScheduleRange),
+        );
+      } else if (resolvedScheduleMode === 'finished') {
+        anchorMatch = await findScheduleAnchor(
+          { status: { in: MATCH_FINISHED_STATUSES } },
+          latestFinishedOrderBy,
+        );
+      } else if (resolvedScheduleMode === 'upcoming') {
+        anchorMatch =
+          (await findScheduleAnchor(upcomingWhere)) ??
+          (await findScheduleAnchor(buildMatchScheduleDayWhere(todayRange))) ??
+          (await findScheduleAnchor(
+            { status: { in: MATCH_FINISHED_STATUSES } },
+            latestFinishedOrderBy,
+          ));
+      } else if (resolvedScheduleMode === 'today') {
+        anchorMatch =
+          (await findScheduleAnchor(buildMatchScheduleDayWhere(todayRange))) ??
+          (await findScheduleAnchor(upcomingWhere)) ??
+          (await findScheduleAnchor(
+            { status: { in: MATCH_FINISHED_STATUSES } },
+            latestFinishedOrderBy,
+          ));
+      } else {
+        anchorMatch =
+          (await findScheduleAnchor({
+            ...buildMatchScheduleDayWhere(todayRange),
+            status: { in: MATCH_SCHEDULE_ACTIVE_STATUSES },
+          })) ??
+          (await findScheduleAnchor(
+            recentFinishedWhere,
+            latestFinishedOrderBy,
+          )) ??
+          (await findScheduleAnchor(buildMatchScheduleDayWhere(todayRange))) ??
+          (await findScheduleAnchor(upcomingWhere)) ??
+          (await findScheduleAnchor(
+            { status: { in: MATCH_FINISHED_STATUSES } },
+            latestFinishedOrderBy,
+          )) ??
+          (await findScheduleAnchor({}, latestMatchOrderBy));
+      }
+    }
+
+    if (!anchorMatch) {
+      const now = new Date().toISOString();
+      const placeholder: MatchScheduleResultsPayload = {
+        version: 'v1',
+        state: {
+          organizationSlug: requestedOrganizationSlug,
+          organizationId: resolvedOrganizationId,
+          anchorMatchId: requestedMatchId,
+          tournamentId: null,
+          scope: 'MATCH',
+          scopeId: requestedMatchId ?? 'PLACEHOLDER',
+          status: null,
+          lastUpdateIso: now,
+          reasons: Array.from(
+            new Set([
+              ...reasons,
+              requestedMatchId ? 'MATCH_NOT_FOUND' : 'SCHEDULE_MATCH_NOT_FOUND',
+            ]),
+          ),
+        },
+        header: {
+          tournament: null,
+          stage: null,
+          group: null,
+          matchLabel: 'Match Schedule - Waiting for data',
+        },
+        rows: [],
+      };
+
+      return this.wrapWidgetResponse(res!, placeholder, {
+        updatedAt: now,
+        matchId: requestedMatchId,
+        tournamentId: null,
+        organizationId: resolvedOrganizationId,
+        dataSource: null,
+        controlState: null,
+        aliveTeams: null,
+        branding: null,
+      });
+    }
+
+    const scope: Scope | 'MATCH' = anchorMatch.groupId
+      ? 'GROUP'
+      : anchorMatch.stageId
+        ? 'STAGE'
+        : anchorMatch.tournamentId
+          ? 'TOURNAMENT'
+          : anchorMatch.sessionId
+            ? 'SESSION'
+            : 'MATCH';
+    const scopeId =
+      anchorMatch.groupId ??
+      anchorMatch.stageId ??
+      anchorMatch.tournamentId ??
+      anchorMatch.sessionId ??
+      anchorMatch.id;
+    const scopeWhere: Prisma.MatchWhereInput =
+      scope === 'GROUP'
+        ? { groupId: scopeId }
+        : scope === 'STAGE'
+          ? { stageId: scopeId }
+          : scope === 'TOURNAMENT'
+            ? { tournamentId: scopeId }
+            : scope === 'SESSION'
+              ? { sessionId: scopeId }
+              : { id: scopeId };
+    const scheduleDayWhere = buildMatchScheduleDayWhere(
+      requestedScheduleRange ??
+        buildUtcDayRange(pickMatchScheduleDate(anchorMatch)),
+    );
+
+    const matches = await this.prisma.match.findMany({
+      where: {
+        ...scopeWhere,
+        ...scheduleDayWhere,
+        organizationId: anchorMatch.organizationId,
+        deletedAt: null,
+        status: { in: MATCH_SCHEDULE_STATUSES },
+      },
+      orderBy: [
+        { matchNumber: 'asc' },
+        { scheduledAt: 'asc' },
+        { startedAt: 'asc' },
+        { createdAt: 'asc' },
+      ],
+      select: {
+        id: true,
+        status: true,
+        name: true,
+        matchNumber: true,
+        map: true,
+        scheduledAt: true,
+        startedAt: true,
+        endedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        controlState: { select: { state: true, metaJson: true } },
+        slotResults: {
+          where: { teamId: { not: null }, wasPresentInMatch: true },
+          orderBy: [
+            { placement: 'asc' },
+            { finalPlacement: 'asc' },
+            { totalPoints: 'desc' },
+            { totalKills: 'desc' },
+            { slotNumber: 'asc' },
+          ],
+          select: {
+            slotNumber: true,
+            teamId: true,
+            placement: true,
+            finalPlacement: true,
+            totalKills: true,
+            totalPoints: true,
+            placementPoints: true,
+            team: {
+              select: {
+                id: true,
+                name: true,
+                tag: true,
+                logoUrl: true,
+                logoLightUrl: true,
+                logoDarkUrl: true,
+                updatedAt: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!matches.length) {
+      reasons.push('MATCH_SCHEDULE_EMPTY');
+    }
+
+    const rows: MatchScheduleResultRow[] = matches.map((match) => {
+      const matchHasResult = MATCH_FINISHED_STATUSES.includes(match.status);
+      const controlMeta =
+        (match.controlState?.metaJson as {
+          winnerTeamId?: string | null;
+        } | null) ?? null;
+      const winner = matchHasResult
+        ? ((controlMeta?.winnerTeamId
+            ? match.slotResults.find(
+                (slotResult) => slotResult.teamId === controlMeta.winnerTeamId,
+              )
+            : null) ??
+          match.slotResults.find(
+            (slotResult) =>
+              slotResult.placement === 1 || slotResult.finalPlacement === 1,
+          ) ??
+          match.slotResults[0] ??
+          null)
+        : null;
+      const winnerLogoUrl = winner?.team
+        ? resolveTeamLogoUrl({
+            logoUrl: pickTeamLogoSource(
+              winner.team.logoUrl,
+              winner.team.logoLightUrl,
+              winner.team.logoDarkUrl,
+            ),
+            logoUpdatedAt: winner.team.updatedAt,
+            updatedAt: winner.team.updatedAt,
+          })
+        : null;
+      const winnerTotalPoints =
+        winner !== null
+          ? (this.toNumber(
+              winner.totalPoints,
+              (winner.placementPoints ?? 0) + (winner.totalKills ?? 0),
+            ) ?? 0)
+          : 0;
+
+      return {
+        matchId: match.id,
+        matchLabel: normalizeMatchLabel(match),
+        matchNumber:
+          typeof match.matchNumber === 'number' &&
+          Number.isFinite(match.matchNumber)
+            ? match.matchNumber
+            : null,
+        map: formatMapLabel(match.map),
+        scheduledAt: match.scheduledAt?.toISOString?.() ?? null,
+        startedAt: match.startedAt?.toISOString?.() ?? null,
+        endedAt: match.endedAt?.toISOString?.() ?? null,
+        status: match.status ?? null,
+        winnerTeamId: winner?.teamId ?? null,
+        winnerTeamName: winner?.team?.name ?? null,
+        winnerTeamTag: winner?.team?.tag ?? null,
+        winnerTeamLogoUrl: winnerLogoUrl,
+        winnerKills: winner?.totalKills ?? 0,
+        winnerTotalPoints,
+      };
+    });
+
+    if (
+      rows.some(
+        (row) =>
+          MATCH_FINISHED_STATUSES.includes(row.status as MatchStatus) &&
+          !row.winnerTeamId,
+      )
+    ) {
+      reasons.push('SOME_WINNERS_MISSING');
+    }
+
+    const lastUpdateMs = matches.reduce(
+      (latest, match) =>
+        Math.max(
+          latest,
+          match.updatedAt?.getTime?.() ?? 0,
+          match.endedAt?.getTime?.() ?? 0,
+          match.startedAt?.getTime?.() ?? 0,
+          match.scheduledAt?.getTime?.() ?? 0,
+          match.createdAt?.getTime?.() ?? 0,
+        ),
+      anchorMatch.updatedAt?.getTime?.() ?? Date.now(),
+    );
+    const lastUpdateIso = new Date(lastUpdateMs).toISOString();
+    const controlMeta =
+      (anchorMatch.controlState?.metaJson as {
+        resultFinalized?: boolean;
+        finalizedAt?: string;
+        winnerTeamId?: string | null;
+      } | null) ?? null;
+    const branding = await this.resolveBrandingForMatch(anchorMatch.id);
+    const payload: MatchScheduleResultsPayload = {
+      version: 'v1',
+      state: {
+        organizationSlug:
+          requestedOrganizationSlug ?? anchorMatch.organization?.slug ?? null,
+        organizationId: anchorMatch.organizationId,
+        anchorMatchId: anchorMatch.id,
+        tournamentId: anchorMatch.tournamentId,
+        scope,
+        scopeId,
+        status: anchorMatch.status ?? null,
+        lastUpdateIso,
+        reasons: Array.from(new Set(reasons)),
+      },
+      header: {
+        tournament:
+          anchorMatch.tournament?.name ??
+          anchorMatch.tournament?.shortName ??
+          anchorMatch.session?.name ??
+          null,
+        stage: anchorMatch.stage?.name ?? null,
+        group: anchorMatch.group?.name ?? null,
+        matchLabel: normalizeMatchLabel(anchorMatch),
+      },
+      rows,
+    };
+
+    return this.wrapWidgetResponse(res!, payload, {
+      updatedAt: lastUpdateIso,
+      matchId: anchorMatch.id,
+      tournamentId: anchorMatch.tournamentId,
+      organizationId:
+        anchorMatch.tournament?.organizationId ??
+        anchorMatch.session?.organizationId ??
+        anchorMatch.organizationId,
+      dataSource: anchorMatch.dataSource ?? anchorMatch.dataMode ?? null,
+      controlState:
+        anchorMatch.controlState?.state ?? anchorMatch.status ?? null,
+      aliveTeams: null,
       resultFinalized: controlMeta?.resultFinalized ?? null,
       finalizedAt: controlMeta?.finalizedAt ?? null,
       winnerTeamId: controlMeta?.winnerTeamId ?? null,
@@ -1731,10 +2536,8 @@ export class WidgetsController {
     const rows = isPostMatch
       ? rowsBase
           .sort((a, b) => {
-            if (b.totalPoints !== a.totalPoints)
-              return b.totalPoints - a.totalPoints;
-            if (b.killPoints !== a.killPoints)
-              return b.killPoints - a.killPoints;
+            const rankingOrder = compareRankingRows(a, b);
+            if (rankingOrder !== 0) return rankingOrder;
             const aPlacement = a.placement ?? Number.MAX_SAFE_INTEGER;
             const bPlacement = b.placement ?? Number.MAX_SAFE_INTEGER;
             if (aPlacement !== bPlacement) return aPlacement - bPlacement;
@@ -1811,9 +2614,126 @@ export class WidgetsController {
 
   @Get('overall-ranking')
   async overallRanking(
+    @Query('matchId') matchId?: string,
     @Query('tournamentId') tournamentId?: string,
+    @Query('organizationId') organizationId?: string,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const safeMatchId = matchId?.trim() ? validateMatchId(matchId) : null;
+
+    if (safeMatchId) {
+      const match = await this.prisma.match.findFirst({
+        where: {
+          id: safeMatchId,
+          deletedAt: null,
+          ...(organizationId ? { organizationId } : {}),
+        },
+        select: {
+          id: true,
+          tournamentId: true,
+          sessionId: true,
+          stageId: true,
+          groupId: true,
+          organizationId: true,
+          tournament: {
+            select: {
+              name: true,
+              shortName: true,
+              organizationId: true,
+            },
+          },
+          session: {
+            select: {
+              name: true,
+              organizationId: true,
+            },
+          },
+          stage: { select: { name: true } },
+          group: { select: { name: true } },
+        },
+      });
+
+      if (!match) {
+        throw new NotFoundException('Match not found for overall ranking');
+      }
+
+      const scope: Scope = match.groupId
+        ? 'GROUP'
+        : match.stageId
+          ? 'STAGE'
+          : match.tournamentId
+            ? 'TOURNAMENT'
+            : match.sessionId
+              ? 'SESSION'
+              : 'MATCH';
+      const scopeId =
+        match.groupId ??
+        match.stageId ??
+        match.tournamentId ??
+        match.sessionId ??
+        match.id;
+      const standings = await this.standings.computeStandings({
+        scope,
+        scopeId,
+      });
+      const versionHash = computeWidgetVersion(standings);
+      const versionRaw = Number.parseInt(versionHash.slice(0, 12), 16);
+      const versionNumber = Number.isFinite(versionRaw)
+        ? versionRaw
+        : Date.now();
+
+      const rows =
+        standings.rows?.slice(0, 16).map((row, idx) => {
+          const teamLogoUrl = resolveTeamLogoUrl({
+            logoUrl: pickTeamLogoSource(row.teamLogo),
+            logoUpdatedAt: (row as { teamLogoUpdatedAt?: unknown })
+              ?.teamLogoUpdatedAt as Date | string | number | undefined,
+            updatedAt: (row as { teamUpdatedAt?: unknown })?.teamUpdatedAt as
+              | Date
+              | string
+              | number
+              | undefined,
+          });
+          return {
+            rank: row.rank ?? idx + 1,
+            teamId: row.teamId,
+            teamTag: row.teamTag ?? row.teamName ?? DEFAULT_WIDGET_TEAM_TAG,
+            teamName: row.teamName ?? row.teamTag ?? DEFAULT_WIDGET_TEAM_NAME,
+            teamLogo: teamLogoUrl,
+            teamLogoUrl,
+            logoUrl: teamLogoUrl,
+            totalPoints: row.totalPoints ?? 0,
+            totalKills: row.totalKills ?? 0,
+            placementPoints: row.totalPlacementPoints ?? 0,
+            totalPlacementPoints: row.totalPlacementPoints ?? 0,
+            adjustmentPoints:
+              (row as { adjustmentPoints?: number | null }).adjustmentPoints ??
+              0,
+            wwcd: row.wwcd ?? 0,
+            matchesPlayed: row.matchesPlayed ?? 0,
+            isLeader: (row.rank ?? idx + 1) === 1,
+          };
+        }) ?? [];
+
+      this.setNoCache(res!);
+      return {
+        meta: {
+          tournamentName:
+            match.session?.name ??
+            match.tournament?.name ??
+            match.tournament?.shortName ??
+            'OVERALL',
+          stageName: match.group?.name ?? match.stage?.name ?? undefined,
+          ruleset: 'PUBG_MOBILE',
+          scope,
+          scopeId,
+          updatedAt: standings.computedAt ?? new Date().toISOString(),
+          version: versionNumber,
+        },
+        rows,
+      };
+    }
+
     const tid = validateTournamentId(tournamentId);
 
     const [tournament, stage, latestSlotResult] = await Promise.all([
@@ -1874,12 +2794,17 @@ export class WidgetsController {
           rank: row.rank ?? idx + 1,
           teamId: row.teamId,
           teamTag: row.teamTag ?? row.teamName ?? DEFAULT_WIDGET_TEAM_TAG,
-          teamName:
-            row.teamName ?? row.teamTag ?? DEFAULT_WIDGET_TEAM_NAME,
+          teamName: row.teamName ?? row.teamTag ?? DEFAULT_WIDGET_TEAM_NAME,
+          teamLogo: teamLogoUrl,
           teamLogoUrl,
           logoUrl: teamLogoUrl,
           totalPoints: row.totalPoints ?? 0,
           totalKills: row.totalKills ?? 0,
+          placementPoints: row.totalPlacementPoints ?? 0,
+          totalPlacementPoints: row.totalPlacementPoints ?? 0,
+          adjustmentPoints:
+            (row as { adjustmentPoints?: number | null }).adjustmentPoints ?? 0,
+          wwcd: row.wwcd ?? 0,
           matchesPlayed: row.matchesPlayed ?? 0,
           isLeader: (row.rank ?? idx + 1) === 1,
         };
@@ -1901,43 +2826,166 @@ export class WidgetsController {
 
   @Get('top-fragger-overall')
   async topFraggerOverall(
+    @Query('matchId') matchId?: string,
     @Query('tournamentId') tournamentId?: string,
     @Query('organizationId') organizationId?: string,
     @Res({ passthrough: true }) res?: Response,
   ) {
-    const tid = validateTournamentId(tournamentId);
+    const safeMatchId = matchId?.trim() ? validateMatchId(matchId) : null;
+    const scopedMatch = safeMatchId
+      ? await this.prisma.match.findFirst({
+          where: {
+            id: safeMatchId,
+            deletedAt: null,
+            ...(organizationId ? { organizationId } : {}),
+          },
+          select: {
+            id: true,
+            tournamentId: true,
+            sessionId: true,
+            stageId: true,
+            groupId: true,
+            organizationId: true,
+            tournament: {
+              select: {
+                id: true,
+                name: true,
+                shortName: true,
+                organizationId: true,
+              },
+            },
+            session: {
+              select: {
+                id: true,
+                name: true,
+                organizationId: true,
+              },
+            },
+            stage: { select: { name: true } },
+            group: { select: { name: true } },
+          },
+        })
+      : null;
 
-    const [tournament, stage, finishedMatches] = await Promise.all([
-      this.prisma.tournament.findFirst({
-        where: { id: tid, deletedAt: null },
-        select: { id: true, name: true, shortName: true, organizationId: true },
-      }),
-      this.prisma.stage.findFirst({
-        where: { tournamentId: tid, deletedAt: null },
-        orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
-        select: { name: true },
-      }),
-      this.prisma.match.findMany({
-        where: {
-          tournamentId: tid,
-          deletedAt: null,
-          status: { in: ['LIVE', 'ENDED'] },
+    if (safeMatchId && !scopedMatch) {
+      this.setNoCache(res!);
+      return {
+        data: null,
+        players: [],
+        meta: {
+          matchId: safeMatchId,
+          tournamentId: null,
+          organizationId: organizationId ?? null,
+          tournamentName: null,
+          stageName: null,
+          groupName: null,
+          scope: 'TOURNAMENT' as Scope,
+          scopeId: null,
+          matchesCount: 0,
+          updatedAt: new Date().toISOString(),
+          version: Date.now(),
+          reasons: ['MATCH_NOT_FOUND'],
         },
+      };
+    }
+
+    const tid =
+      scopedMatch?.tournamentId ??
+      (tournamentId?.trim() ? validateTournamentId(tournamentId) : null);
+    if (!tid && !scopedMatch?.sessionId && !scopedMatch?.id) {
+      throw new BadRequestException({ error: 'INVALID_TOURNAMENT_ID' });
+    }
+    const scope: Scope = scopedMatch?.groupId
+      ? 'GROUP'
+      : scopedMatch?.stageId
+        ? 'STAGE'
+        : tid
+          ? 'TOURNAMENT'
+          : scopedMatch?.sessionId
+            ? 'SESSION'
+            : 'MATCH';
+    const scopeId =
+      scopedMatch?.groupId ??
+      scopedMatch?.stageId ??
+      tid ??
+      scopedMatch?.sessionId ??
+      scopedMatch?.id;
+    const matchScopeWhere: Prisma.MatchWhereInput = {
+      ...(scope === 'TOURNAMENT'
+        ? { tournamentId: tid }
+        : scope === 'SESSION'
+          ? {
+              sessionId: scopedMatch?.sessionId ?? null,
+              organizationId: scopedMatch?.organizationId ?? organizationId,
+            }
+          : scope === 'MATCH'
+            ? { id: scopedMatch?.id }
+            : { tournamentId: tid }),
+      deletedAt: null,
+      status: { in: MATCH_ACTIVE_OR_FINISHED_STATUSES },
+      ...(scopedMatch?.groupId
+        ? { groupId: scopedMatch.groupId }
+        : scopedMatch?.stageId
+          ? { stageId: scopedMatch.stageId }
+          : {}),
+    };
+
+    const [tournament, session, stage, finishedMatches] = await Promise.all([
+      tid
+        ? this.prisma.tournament.findFirst({
+            where: { id: tid, deletedAt: null },
+            select: {
+              id: true,
+              name: true,
+              shortName: true,
+              organizationId: true,
+            },
+          })
+        : Promise.resolve(null),
+      scopedMatch?.sessionId
+        ? this.prisma.session.findFirst({
+            where: { id: scopedMatch.sessionId, deletedAt: null },
+            select: { id: true, name: true, organizationId: true },
+          })
+        : Promise.resolve(null),
+      tid
+        ? this.prisma.stage.findFirst({
+            where: { tournamentId: tid, deletedAt: null },
+            orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
+            select: { name: true },
+          })
+        : Promise.resolve(null),
+      this.prisma.match.findMany({
+        where: matchScopeWhere,
         select: { id: true },
       }),
     ]);
 
     const baseMeta = {
+      matchId: safeMatchId,
       tournamentId: tid,
-      organizationId: tournament?.organizationId ?? organizationId ?? null,
-      tournamentName: tournament?.name ?? tournament?.shortName ?? null,
-      stageName: stage?.name ?? null,
+      organizationId:
+        tournament?.organizationId ??
+        session?.organizationId ??
+        scopedMatch?.organizationId ??
+        organizationId ??
+        null,
+      tournamentName:
+        tournament?.name ??
+        tournament?.shortName ??
+        session?.name ??
+        scopedMatch?.session?.name ??
+        null,
+      stageName: scopedMatch?.stage?.name ?? stage?.name ?? null,
+      groupName: scopedMatch?.group?.name ?? null,
+      scope,
+      scopeId,
       matchesCount: finishedMatches.length,
       updatedAt: new Date().toISOString(),
       version: Date.now(),
     };
 
-    if (!tournament) {
+    if (tid && !tournament) {
       this.setNoCache(res!);
       return {
         data: null,
@@ -1945,10 +2993,18 @@ export class WidgetsController {
       };
     }
 
+    if (!tid && scopedMatch?.sessionId && !session) {
+      this.setNoCache(res!);
+      return {
+        data: null,
+        meta: { ...baseMeta, reasons: ['SESSION_NOT_FOUND'] },
+      };
+    }
+
     if (
       organizationId &&
-      tournament.organizationId &&
-      tournament.organizationId !== organizationId
+      baseMeta.organizationId &&
+      baseMeta.organizationId !== organizationId
     ) {
       throw new BadRequestException({ error: 'ORGANIZATION_MISMATCH' });
     }
@@ -1963,13 +3019,7 @@ export class WidgetsController {
 
     const playerRows = await this.prisma.matchSlotPlayerResult.findMany({
       where: {
-        slotResult: {
-          match: {
-            tournamentId: tid,
-            deletedAt: null,
-            status: { in: ['LIVE', 'ENDED'] },
-          },
-        },
+        slotResult: { match: matchScopeWhere },
       },
       select: {
         playerId: true,
@@ -2015,6 +3065,7 @@ export class WidgetsController {
       teamTag: string | null;
       teamName: string | null;
       teamLogo: string | null;
+      teamColor: string | null;
       kills: number;
       damage: number | null;
       survivalSum: number | null;
@@ -2061,6 +3112,10 @@ export class WidgetsController {
           row.slotResult.team?.tag ??
           DEFAULT_WIDGET_TEAM_NAME,
         teamLogo: resolveTeamLogoUrl(row.slotResult.team ?? null),
+        teamColor:
+          row.slotResult.team?.accentDark ??
+          row.slotResult.team?.accentLight ??
+          null,
         kills: 0,
         damage: null,
         survivalSum: null,
@@ -2090,6 +3145,7 @@ export class WidgetsController {
         teamTag: p.teamTag,
         teamName: p.teamName,
         teamLogo: p.teamLogo,
+        teamColor: p.teamColor,
         totalKills: p.kills,
         totalDamage: p.damage,
         matchesPlayed,
@@ -2117,12 +3173,437 @@ export class WidgetsController {
       return (a.playerIgn ?? '').localeCompare(b.playerIgn ?? '');
     });
 
-    const top = candidates[0] ?? null;
+    const players = candidates.map((player, index) => ({
+      rank: index + 1,
+      ...player,
+    }));
+    const top = players[0] ?? null;
 
     this.setNoCache(res!);
     return {
       data: top,
+      players: players.slice(0, 5),
       meta: { ...baseMeta },
+    };
+  }
+
+  @Get('group-mvp')
+  async groupMvp(
+    @Query('matchId') matchId?: string,
+    @Query('tournamentId') tournamentId?: string,
+    @Query('organizationId') organizationId?: string,
+    @Res({ passthrough: true }) res?: Response,
+  ) {
+    const safeMatchId = matchId?.trim() ? validateMatchId(matchId) : null;
+    const scopedMatch = safeMatchId
+      ? await this.prisma.match.findFirst({
+          where: {
+            id: safeMatchId,
+            deletedAt: null,
+            ...(organizationId ? { organizationId } : {}),
+          },
+          select: {
+            id: true,
+            tournamentId: true,
+            sessionId: true,
+            stageId: true,
+            groupId: true,
+            organizationId: true,
+            status: true,
+            tournament: {
+              select: {
+                id: true,
+                name: true,
+                shortName: true,
+                organizationId: true,
+              },
+            },
+            session: {
+              select: {
+                id: true,
+                name: true,
+                organizationId: true,
+              },
+            },
+            stage: { select: { name: true } },
+            group: { select: { name: true } },
+          },
+        })
+      : null;
+
+    if (safeMatchId && !scopedMatch) {
+      this.setNoCache(res!);
+      return {
+        finalized: false,
+        player: null,
+        players: [],
+        version: Date.now(),
+        show: false,
+        matchStatus: null,
+        meta: {
+          matchId: safeMatchId,
+          tournamentId: null,
+          organizationId: organizationId ?? null,
+          tournamentName: null,
+          stageName: null,
+          groupName: null,
+          scope: 'TOURNAMENT' as Scope,
+          scopeId: null,
+          matchesCount: 0,
+          updatedAt: new Date().toISOString(),
+          reasons: ['MATCH_NOT_FOUND'],
+        },
+      };
+    }
+
+    const tid =
+      scopedMatch?.tournamentId ??
+      (tournamentId?.trim() ? validateTournamentId(tournamentId) : null);
+    if (!tid && !scopedMatch?.sessionId && !scopedMatch?.id) {
+      throw new BadRequestException({ error: 'INVALID_TOURNAMENT_ID' });
+    }
+    const scope: Scope = scopedMatch?.groupId
+      ? 'GROUP'
+      : scopedMatch?.stageId
+        ? 'STAGE'
+        : tid
+          ? 'TOURNAMENT'
+          : scopedMatch?.sessionId
+            ? 'SESSION'
+            : 'MATCH';
+    const scopeId =
+      scopedMatch?.groupId ??
+      scopedMatch?.stageId ??
+      tid ??
+      scopedMatch?.sessionId ??
+      scopedMatch?.id;
+    const matchScopeWhere: Prisma.MatchWhereInput = {
+      ...(scope === 'TOURNAMENT'
+        ? { tournamentId: tid }
+        : scope === 'SESSION'
+          ? {
+              sessionId: scopedMatch?.sessionId ?? null,
+              organizationId: scopedMatch?.organizationId ?? organizationId,
+            }
+          : scope === 'MATCH'
+            ? { id: scopedMatch?.id }
+            : { tournamentId: tid }),
+      deletedAt: null,
+      status: { in: MATCH_ACTIVE_OR_FINISHED_STATUSES },
+      ...(scopedMatch?.groupId
+        ? { groupId: scopedMatch.groupId }
+        : scopedMatch?.stageId
+          ? { stageId: scopedMatch.stageId }
+          : {}),
+    };
+
+    const [tournament, session, stage, scopedMatches] = await Promise.all([
+      tid
+        ? this.prisma.tournament.findFirst({
+            where: { id: tid, deletedAt: null },
+            select: {
+              id: true,
+              name: true,
+              shortName: true,
+              organizationId: true,
+            },
+          })
+        : Promise.resolve(null),
+      scopedMatch?.sessionId
+        ? this.prisma.session.findFirst({
+            where: { id: scopedMatch.sessionId, deletedAt: null },
+            select: { id: true, name: true, organizationId: true },
+          })
+        : Promise.resolve(null),
+      tid
+        ? this.prisma.stage.findFirst({
+            where: { tournamentId: tid, deletedAt: null },
+            orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
+            select: { name: true },
+          })
+        : Promise.resolve(null),
+      this.prisma.match.findMany({
+        where: matchScopeWhere,
+        select: { id: true },
+      }),
+    ]);
+
+    const baseMeta = {
+      matchId: safeMatchId,
+      tournamentId: tid,
+      organizationId:
+        tournament?.organizationId ??
+        session?.organizationId ??
+        scopedMatch?.organizationId ??
+        organizationId ??
+        null,
+      tournamentName:
+        tournament?.name ??
+        tournament?.shortName ??
+        session?.name ??
+        scopedMatch?.session?.name ??
+        null,
+      stageName: scopedMatch?.stage?.name ?? stage?.name ?? null,
+      groupName: scopedMatch?.group?.name ?? null,
+      scope,
+      scopeId,
+      matchesCount: scopedMatches.length,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (tid && !tournament) {
+      this.setNoCache(res!);
+      return {
+        finalized: false,
+        player: null,
+        players: [],
+        version: Date.now(),
+        show: false,
+        matchStatus: scopedMatch?.status ?? null,
+        meta: { ...baseMeta, reasons: ['TOURNAMENT_NOT_FOUND'] },
+      };
+    }
+
+    if (!tid && scopedMatch?.sessionId && !session) {
+      this.setNoCache(res!);
+      return {
+        finalized: false,
+        player: null,
+        players: [],
+        version: Date.now(),
+        show: false,
+        matchStatus: scopedMatch?.status ?? null,
+        meta: { ...baseMeta, reasons: ['SESSION_NOT_FOUND'] },
+      };
+    }
+
+    if (
+      organizationId &&
+      baseMeta.organizationId &&
+      baseMeta.organizationId !== organizationId
+    ) {
+      throw new BadRequestException({ error: 'ORGANIZATION_MISMATCH' });
+    }
+
+    if (!scopedMatches.length) {
+      this.setNoCache(res!);
+      return {
+        finalized: false,
+        player: null,
+        players: [],
+        version: Date.now(),
+        show: false,
+        matchStatus: scopedMatch?.status ?? null,
+        meta: { ...baseMeta, reasons: ['NO_MATCHES_FINISHED'] },
+      };
+    }
+
+    const playerRows = await this.prisma.matchSlotPlayerResult.findMany({
+      where: {
+        slotResult: { match: matchScopeWhere },
+      },
+      select: {
+        playerId: true,
+        pubgAccountId: true,
+        externalPlayerId: true,
+        playerName: true,
+        kills: true,
+        knocks: true,
+        assists: true,
+        isAlive: true,
+        alive: true,
+        slotResult: {
+          select: {
+            matchId: true,
+            placement: true,
+            team: {
+              select: {
+                id: true,
+                tag: true,
+                name: true,
+                logoUrl: true,
+                logoLightUrl: true,
+                logoDarkUrl: true,
+                accentLight: true,
+                accentDark: true,
+                textOnLight: true,
+                textOnDark: true,
+                updatedAt: true,
+              },
+            },
+          },
+        },
+        player: {
+          select: {
+            id: true,
+            ign: true,
+            realName: true,
+            photoUrl: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    type GroupMvpAgg = {
+      playerId: string | null;
+      ign: string;
+      photoUrl: string | null;
+      teamId: string | null;
+      teamName: string | null;
+      teamTag: string | null;
+      teamLogo: string | null;
+      teamColor: string | null;
+      kills: number;
+      assists: number;
+      activityScore: number;
+      bestPlacement: number | null;
+      matches: Set<string>;
+    };
+
+    const agg = new Map<string, GroupMvpAgg>();
+
+    playerRows.forEach((row, idx) => {
+      const key =
+        row.playerId ??
+        row.player?.id ??
+        row.pubgAccountId ??
+        row.externalPlayerId ??
+        row.player?.ign ??
+        row.playerName ??
+        `player-${idx + 1}`;
+      const kills = row.kills ?? 0;
+      const assists = Math.max(0, row.assists ?? 0);
+      const placement = row.slotResult.placement ?? null;
+      const activityScore = this.scoreMvpPerformance({
+        kills,
+        assists,
+        placement,
+        isAlive: row.isAlive ?? row.alive ?? null,
+        survivalTime: null,
+      });
+      const existing = agg.get(key) ?? {
+        playerId: row.playerId ?? row.player?.id ?? null,
+        ign: row.player?.ign ?? row.playerName ?? 'Unknown',
+        photoUrl:
+          resolvePlayerPhotoUrl({
+            photoUrl: row.player?.photoUrl ?? null,
+            photoUpdatedAt: row.player?.updatedAt ?? null,
+            updatedAt: row.player?.updatedAt ?? null,
+          }) ?? null,
+        teamId: row.slotResult.team?.id ?? null,
+        teamName:
+          row.slotResult.team?.name ??
+          row.slotResult.team?.tag ??
+          DEFAULT_WIDGET_TEAM_NAME,
+        teamTag:
+          row.slotResult.team?.tag ??
+          row.slotResult.team?.name ??
+          DEFAULT_WIDGET_TEAM_TAG,
+        teamLogo: resolveTeamLogoUrl(row.slotResult.team ?? null),
+        teamColor:
+          row.slotResult.team?.accentDark ??
+          row.slotResult.team?.accentLight ??
+          null,
+        kills: 0,
+        assists: 0,
+        activityScore: 0,
+        bestPlacement: null,
+        matches: new Set<string>(),
+      };
+
+      existing.kills += kills;
+      existing.assists += assists;
+      existing.activityScore += activityScore;
+      if (
+        placement !== null &&
+        (existing.bestPlacement === null || placement < existing.bestPlacement)
+      ) {
+        existing.bestPlacement = placement;
+      }
+      if (row.slotResult.matchId) existing.matches.add(row.slotResult.matchId);
+      agg.set(key, existing);
+    });
+
+    const candidates = Array.from(agg.values()).map((player) => {
+      const matchesPlayed = player.matches.size;
+      const avgKills = matchesPlayed > 0 ? player.kills / matchesPlayed : 0;
+      const mvpScore = player.activityScore;
+      return {
+        playerId: player.playerId,
+        ign: player.ign,
+        photoUrl: player.photoUrl,
+        teamId: player.teamId,
+        teamName: player.teamName,
+        teamTag: player.teamTag,
+        teamLogo: player.teamLogo,
+        teamColor: player.teamColor,
+        kills: player.kills,
+        assists: player.assists,
+        placement: player.bestPlacement,
+        survivalTime: null,
+        mvpScore,
+        matchesPlayed,
+        avgKills,
+      };
+    });
+
+    if (!candidates.length) {
+      this.setNoCache(res!);
+      return {
+        finalized: false,
+        player: null,
+        players: [],
+        version: Date.now(),
+        show: false,
+        matchStatus: scopedMatch?.status ?? null,
+        meta: { ...baseMeta, reasons: ['NO_PLAYER_RESULTS'] },
+      };
+    }
+
+    candidates.sort((a, b) => {
+      if (b.mvpScore !== a.mvpScore) return b.mvpScore - a.mvpScore;
+      if (b.kills !== a.kills) return b.kills - a.kills;
+      if (b.assists !== a.assists) return b.assists - a.assists;
+      const aPlacement = a.placement ?? Number.MAX_SAFE_INTEGER;
+      const bPlacement = b.placement ?? Number.MAX_SAFE_INTEGER;
+      if (aPlacement !== bPlacement) return aPlacement - bPlacement;
+      return a.ign.localeCompare(b.ign);
+    });
+
+    const players = candidates.map((player, index) => ({
+      rank: index + 1,
+      ...player,
+    }));
+
+    this.setNoCache(res!);
+    return {
+      finalized: true,
+      player: players[0] ?? null,
+      players: players.slice(0, 5),
+      version: Date.now(),
+      show: true,
+      matchStatus: scopedMatch?.status ?? null,
+      meta: { ...baseMeta },
+    };
+  }
+
+  @Get('top-fragger-top-5')
+  async topFraggerTopFive(
+    @Query('matchId') matchId?: string,
+    @Query('organizationId') organizationId?: string,
+  ) {
+    const safeMatchId = validateMatchId(matchId);
+    await requireMatchOrganization(this.prisma, safeMatchId, {
+      organizationId: organizationId ?? null,
+    });
+    const players = await this.topFraggers.topFive(safeMatchId);
+
+    return {
+      version: 'v1',
+      matchId: safeMatchId,
+      players,
+      updatedAt: new Date().toISOString(),
     };
   }
 
@@ -2388,6 +3869,14 @@ export class WidgetsController {
             bannerUrl: true,
           },
         },
+        session: {
+          select: {
+            id: true,
+            name: true,
+            logoUrl: true,
+            bannerUrl: true,
+          },
+        },
       },
     });
 
@@ -2406,20 +3895,42 @@ export class WidgetsController {
       return number ?? map ?? match.name ?? 'MATCH';
     })();
 
-    const sponsors = await this.prisma.tournamentSponsor.findMany({
-      where: {
-        tournamentId: match.tournament?.id,
-        isActive: true,
-        deletedAt: null,
-      },
-      orderBy: [{ tier: 'asc' }, { displayOrder: 'asc' }, { createdAt: 'asc' }],
-      select: { name: true, logoUrl: true, tier: true, displayOrder: true },
-    });
+    const sponsors = match.session?.id
+      ? await this.prisma.sessionSponsor.findMany({
+          where: {
+            sessionId: match.session.id,
+            isActive: true,
+            deletedAt: null,
+          },
+          orderBy: [
+            { tier: 'asc' },
+            { displayOrder: 'asc' },
+            { createdAt: 'asc' },
+          ],
+          select: { name: true, logoUrl: true, tier: true, displayOrder: true },
+        })
+      : await this.prisma.tournamentSponsor.findMany({
+          where: {
+            tournamentId: match.tournament?.id,
+            isActive: true,
+            deletedAt: null,
+          },
+          orderBy: [
+            { tier: 'asc' },
+            { displayOrder: 'asc' },
+            { createdAt: 'asc' },
+          ],
+          select: { name: true, logoUrl: true, tier: true, displayOrder: true },
+        });
 
     const payload = {
       tournament: {
-        name: match.tournament?.name ?? 'TOURNAMENT',
-        logoUrl: match.tournament?.bannerUrl ?? null,
+        name: match.session?.name ?? match.tournament?.name ?? 'TOURNAMENT',
+        logoUrl:
+          match.session?.bannerUrl ??
+          match.session?.logoUrl ??
+          match.tournament?.bannerUrl ??
+          null,
       },
       match: {
         id: match.id,
@@ -2548,36 +4059,74 @@ export class WidgetsController {
     );
   }
 
-  private classifyKillCause(payload: unknown): 'grenade' | 'vehicle' | null {
-    if (!payload || typeof payload !== 'object') return null;
-    const rec = payload as Record<string, unknown>;
-    const raw = [
-      rec.damageCauserName,
-      rec.DamageCauserName,
-      rec.damageCauser,
-      rec.damageTypeCategory,
-      rec.DamageTypeCategory,
-      rec.damageReason,
-      rec.DamageReason,
-      rec.weapon,
-      rec.Weapon,
-      rec.killType,
-      rec.KillType,
-    ]
+  private classifyKillCause(
+    payload: unknown,
+    rawPayload?: unknown,
+  ): 'grenade' | 'vehicle' | null {
+    const records = [payload, rawPayload].filter(
+      (value): value is Record<string, unknown> =>
+        Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+    );
+    if (!records.length) return null;
+
+    const itemIds = records
+      .flatMap((rec) => [
+        rec.itemId,
+        rec.ItemId,
+        rec.itemID,
+        rec.ItemID,
+        rec.weaponId,
+        rec.WeaponId,
+        rec.damageCauserItemId,
+        rec.DamageCauserItemId,
+      ])
+      .map((v) =>
+        typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '',
+      )
+      .filter(Boolean);
+
+    if (itemIds.some((itemId) => /^190\d+$/i.test(itemId))) {
+      return 'vehicle';
+    }
+    if (itemIds.some((itemId) => itemId === '602004' || itemId === '602003')) {
+      return 'grenade';
+    }
+
+    const raw = records
+      .flatMap((rec) => [
+        rec.damageCauserName,
+        rec.DamageCauserName,
+        rec.damageCauser,
+        rec.DamageCauser,
+        rec.damageTypeCategory,
+        rec.DamageTypeCategory,
+        rec.damageReason,
+        rec.DamageReason,
+        rec.weapon,
+        rec.Weapon,
+        rec.cause,
+        rec.Cause,
+        rec.killCause,
+        rec.KillCause,
+        rec.killType,
+        rec.KillType,
+      ])
       .map((v) => (typeof v === 'string' ? v.toLowerCase() : ''))
       .filter(Boolean)
       .join(' ');
     const isGrenadeFlag =
-      rec.isGrenadeKill === true ||
-      rec.grenade === true ||
+      records.some(
+        (rec) => rec.isGrenadeKill === true || rec.grenade === true,
+      ) ||
       raw.includes('grenade') ||
       raw.includes('molotov') ||
       raw.includes('frag') ||
       raw.includes('bomb') ||
       raw.includes('c4');
     const isVehicleFlag =
-      rec.isVehicleKill === true ||
-      rec.vehicle === true ||
+      records.some(
+        (rec) => rec.isVehicleKill === true || rec.vehicle === true,
+      ) ||
       raw.includes('vehicle') ||
       raw.includes('buggy') ||
       raw.includes('bike') ||
@@ -2590,12 +4139,21 @@ export class WidgetsController {
     return null;
   }
 
-  private extractKiller(payload: unknown): {
+  private extractKiller(
+    payload: unknown,
+    rawPayload?: unknown,
+  ): {
     player?: string | null;
     team?: string | null;
   } {
-    if (!payload || typeof payload !== 'object') return {};
-    const rec = payload as Record<string, unknown>;
+    const rec =
+      (payload && typeof payload === 'object'
+        ? (payload as Record<string, unknown>)
+        : null) ??
+      (rawPayload && typeof rawPayload === 'object'
+        ? (rawPayload as Record<string, unknown>)
+        : null);
+    if (!rec) return {};
     const killer = (rec.killer ?? rec.Killer) as Record<string, unknown> | null;
     const player =
       this.asString(
@@ -2619,7 +4177,9 @@ export class WidgetsController {
     return { player, team };
   }
 
-  private tallyKillCauses(events: Array<{ payload: unknown }>): {
+  private tallyKillCauses(
+    events: Array<{ payload: unknown; rawPayload?: unknown }>,
+  ): {
     grenadeTotal: number | null;
     vehicleTotal: number | null;
     grenadeLeaders: Map<string, number>;
@@ -2631,9 +4191,9 @@ export class WidgetsController {
     let vehicleTotal = 0;
 
     events.forEach((evt) => {
-      const cause = this.classifyKillCause(evt.payload);
+      const cause = this.classifyKillCause(evt.payload, evt.rawPayload);
       if (!cause) return;
-      const killer = this.extractKiller(evt.payload);
+      const killer = this.extractKiller(evt.payload, evt.rawPayload);
       const key = killer.player ?? killer.team ?? 'Unknown';
       const target = cause === 'grenade' ? grenadeLeaders : vehicleLeaders;
       target.set(key, (target.get(key) ?? 0) + 1);
@@ -2642,8 +4202,8 @@ export class WidgetsController {
     });
 
     return {
-      grenadeTotal: grenadeTotal || null,
-      vehicleTotal: vehicleTotal || null,
+      grenadeTotal: events.length > 0 ? grenadeTotal : null,
+      vehicleTotal: events.length > 0 ? vehicleTotal : null,
       grenadeLeaders,
       vehicleLeaders,
     };
@@ -2770,7 +4330,7 @@ export class WidgetsController {
 
     const killEvents = await this.prisma.matchEvent.findMany({
       where: { matchId, type: MatchEventType.KILL },
-      select: { payload: true },
+      select: { payload: true, rawPayload: true },
     });
 
     const { grenadeTotal, vehicleTotal, grenadeLeaders, vehicleLeaders } =

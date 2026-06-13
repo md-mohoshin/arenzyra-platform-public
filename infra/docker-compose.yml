@@ -11,7 +11,11 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?REQUIRED ENV VARIABLE MISSING: POSTGRES_USER} -d ${POSTGRES_DB:-pubg_prod}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:?REQUIRED ENV VARIABLE MISSING: POSTGRES_USER} -d ${POSTGRES_DB:-pubg_prod}",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -58,9 +62,29 @@ services:
       FRONTEND_ORIGIN: "${FRONTEND_ORIGIN:-http://localhost:3005}"
       API_BASE_URL: "${API_BASE_URL:-http://localhost:3000}"
       API_PUBLIC_URL: "${API_PUBLIC_URL:-http://localhost:3000}"
+      ARENZYRA_API_SERVICE_TOKEN_SHA256: "${ARENZYRA_API_SERVICE_TOKEN_SHA256:-}"
+      STUDIO_QA_SERVICE_TOKEN_SHA256: "${STUDIO_QA_SERVICE_TOKEN_SHA256:-}"
+      ARENZYRA_API_SERVICE_ORGANIZATION_ID: "${ARENZYRA_API_SERVICE_ORGANIZATION_ID:-}"
+      ARENZYRA_API_SERVICE_USER_ID: "${ARENZYRA_API_SERVICE_USER_ID:-}"
+      ARENZYRA_API_SERVICE_USER_EMAIL: "${ARENZYRA_API_SERVICE_USER_EMAIL:-}"
+      DISCORD_CLIENT_ID: "${DISCORD_CLIENT_ID:-}"
+      DISCORD_REDIRECT_URI: "${DISCORD_REDIRECT_URI:-}"
+      DISCORD_INSTALL_STATE_SECRET: "${DISCORD_INSTALL_STATE_SECRET:-}"
+      DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
+      YOUTUBE_CLIENT_ID: "${YOUTUBE_CLIENT_ID:-}"
+      YOUTUBE_CLIENT_SECRET: "${YOUTUBE_CLIENT_SECRET:-}"
+      YOUTUBE_REDIRECT_URI: "${YOUTUBE_REDIRECT_URI:-}"
+      YOUTUBE_STATE_SECRET: "${YOUTUBE_STATE_SECRET:-}"
+      YOUTUBE_TOKEN_ENCRYPTION_KEY: "${YOUTUBE_TOKEN_ENCRYPTION_KEY:-}"
       PCOB_BASE_URL: "${PCOB_BASE_URL:-${OBSERVER_BASE_URL:-http://host.docker.internal:10086}}"
       SHADOW_API_BASE: "${SHADOW_API_BASE:-${OBSERVER_BASE_URL:-http://host.docker.internal:10086}}"
-      MEDIA_AI_URL: "${MEDIA_AI_URL:-}"
+      MEDIA_AI_URL: "${MEDIA_AI_URL:-http://media-ai:5055}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_VISION_MODEL: "${OPENAI_VISION_MODEL:-gpt-4.1-mini}"
+      OPENAI_VISION_DETAIL: "${OPENAI_VISION_DETAIL:-high}"
+      OPENAI_VISION_PREPROCESS: "${OPENAI_VISION_PREPROCESS:-true}"
+      OPENAI_VISION_MAX_IMAGE_EDGE: "${OPENAI_VISION_MAX_IMAGE_EDGE:-2048}"
+      OPENAI_VISION_IMAGE_QUALITY: "${OPENAI_VISION_IMAGE_QUALITY:-90}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,6 +112,30 @@ services:
       retries: 10
     restart: unless-stopped
 
+  media-ai:
+    build:
+      context: ../apps/media-ai-service
+      dockerfile: Dockerfile
+    container_name: arenzyra_media_ai
+    environment:
+      U2NET_HOME: /models
+    volumes:
+      - media-ai-models:/models
+    ports:
+      - "5055:5055"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5055/health', timeout=3).read()",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   web:
     build:
       context: ..
@@ -100,7 +148,21 @@ services:
       HOSTNAME: 0.0.0.0
       NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:3000}"
       INTERNAL_API_URL: "${INTERNAL_API_URL:-http://api:3000}"
+      DATABASE_URL: "${DATABASE_URL:?REQUIRED ENV VARIABLE MISSING: DATABASE_URL}"
+      STUDIO_DATABASE_URL: "${STUDIO_DATABASE_URL:-}"
+      STUDIO_DATABASE_SSL: "${STUDIO_DATABASE_SSL:-}"
+      STUDIO_DATABASE_POOL_SIZE: "${STUDIO_DATABASE_POOL_SIZE:-}"
+      MEDIA_AI_URL: "${MEDIA_AI_URL:-http://media-ai:5055}"
+      STUDIO_MEDIA_AI_URL: "${STUDIO_MEDIA_AI_URL:-}"
+      STUDIO_MEDIA_AI_TIMEOUT_MS: "${STUDIO_MEDIA_AI_TIMEOUT_MS:-}"
+      STUDIO_REMOVE_BG_API_KEY: "${STUDIO_REMOVE_BG_API_KEY:-}"
+      STUDIO_REMOVE_BG_API_URL: "${STUDIO_REMOVE_BG_API_URL:-}"
+      STUDIO_REMOVE_BG_SIZE: "${STUDIO_REMOVE_BG_SIZE:-}"
+      STUDIO_REMOVE_BG_TYPE: "${STUDIO_REMOVE_BG_TYPE:-}"
+      STUDIO_ALLOW_LOCAL_DEV_WORKSPACE: "${STUDIO_ALLOW_LOCAL_DEV_WORKSPACE:-0}"
       OBSERVER_BASE_URL: "${OBSERVER_BASE_URL:-http://host.docker.internal:10086}"
+      ARENZYRA_WEB_ALLOW_OBSERVER_DIRECT: "${ARENZYRA_WEB_ALLOW_OBSERVER_DIRECT:-1}"
+      ARENZYRA_WEB_OBSERVER_LOCAL_PROBE: "${ARENZYRA_WEB_OBSERVER_LOCAL_PROBE:-1}"
       PORT: 3005
     depends_on:
       api:
@@ -123,5 +185,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  media-ai-models:
   postgres-data:
   redis-data:

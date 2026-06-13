@@ -310,6 +310,36 @@ function countAliveTeams(teams) {
   return observedTeams > 0 ? aliveTeams : null;
 }
 
+function countAlivePlayers(players) {
+  if (!Array.isArray(players) || players.length === 0) {
+    return null;
+  }
+
+  let observedPlayers = 0;
+  let alivePlayers = 0;
+
+  for (const player of players) {
+    const isAlive = normalizeBooleanValue(
+      player?.isAlive ??
+        player?.IsAlive ??
+        player?.alive ??
+        player?.Alive ??
+        player?.bAlive,
+    );
+
+    if (isAlive === null) {
+      continue;
+    }
+
+    observedPlayers += 1;
+    if (isAlive) {
+      alivePlayers += 1;
+    }
+  }
+
+  return observedPlayers > 0 ? alivePlayers : null;
+}
+
 function normalizeTextValue(value) {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -529,7 +559,7 @@ function normalizeTransportPlayers(players, map, timestamp) {
       continue;
     }
 
-    const pubgAccountId = normalizeTextValue(
+    const playerOpenId = normalizeTextValue(
       record.playerOpenId ??
         record.playerOpenID ??
         record.PlayerOpenId ??
@@ -541,6 +571,26 @@ function normalizeTransportPlayers(players, map, timestamp) {
     const externalPlayerId = normalizeTextValue(
       record.externalPlayerId ?? record.externalId,
     );
+    const playerName = normalizeTextValue(
+      record.playerName ??
+        record.PlayerName ??
+        record.ign ??
+        record.IGN ??
+        record.name ??
+        record.Name,
+    );
+    const teamSlot = toNumber(
+      record.teamSlot ??
+        record.slot ??
+        record.Slot ??
+        record.slotNumber ??
+        record.SlotNumber ??
+        record.teamNo ??
+        record.TeamNo ??
+        record.teamNumber ??
+        record.TeamNumber,
+    );
+    const teamNo = teamSlot === null ? null : Math.trunc(teamSlot);
     const playerId =
       normalizeTextValue(
         record.playerId ??
@@ -550,27 +600,43 @@ function normalizeTransportPlayers(players, map, timestamp) {
           record.PlayerID,
       ) ??
       externalPlayerId ??
-      pubgAccountId;
-    const teamId = normalizeTextValue(
-      record.teamId ??
-        record.teamID ??
-        record.TeamId ??
-        record.TeamID ??
-        record.team_id,
-    );
+      playerOpenId ??
+      playerName;
+    const teamId =
+      normalizeTextValue(
+        record.teamId ??
+          record.teamID ??
+          record.TeamId ??
+          record.TeamID ??
+          record.team_id,
+      ) ?? (teamNo === null ? null : String(teamNo));
 
-    const key = pubgAccountId ?? externalPlayerId ?? playerId;
+    const key = playerOpenId ?? externalPlayerId ?? playerId;
     if (!key || seen.has(key)) {
       continue;
     }
 
     seen.add(key);
     const isAlive = isTransportPlayerAlive(record);
+    const health = toNumber(
+      record.health ??
+        record.Health ??
+        record.hp ??
+        record.HP ??
+        record.currentHealth ??
+        record.CurrentHealth,
+    );
     incoming.push({
       id: playerId,
+      playerOpenId,
+      externalPlayerId,
+      playerName,
       teamId,
+      teamNo,
+      teamSlot: teamNo,
       isAlive,
       isKnocked: isAlive ? isTransportPlayerKnocked(record) : false,
+      health,
       kills: Math.max(
         0,
         Math.trunc(
@@ -598,7 +664,20 @@ function normalizeTransportPlayers(players, map, timestamp) {
 
       const normalized = normalizePosition(p.position?.x, p.position?.y, map);
       if (!normalized) {
-        return null;
+        return {
+          id: p.id,
+          playerOpenId: p.playerOpenId,
+          externalPlayerId: p.externalPlayerId,
+          playerName: p.playerName,
+          teamId: p.teamId,
+          teamNo: p.teamNo,
+          teamSlot: p.teamSlot,
+          isAlive: !!p.isAlive,
+          isKnocked: !!p.isKnocked,
+          health: p.health,
+          kills: p.kills ?? 0,
+          position: null,
+        };
       }
 
       const normalizedX = normalized.x;
@@ -612,9 +691,15 @@ function normalizeTransportPlayers(players, map, timestamp) {
 
       return {
         id: p.id,
+        playerOpenId: p.playerOpenId,
+        externalPlayerId: p.externalPlayerId,
+        playerName: p.playerName,
         teamId: p.teamId,
+        teamNo: p.teamNo,
+        teamSlot: p.teamSlot,
         isAlive: !!p.isAlive,
         isKnocked: !!p.isKnocked,
+        health: p.health,
         kills: p.kills ?? 0,
         position: {
           x: normalizedX,
@@ -648,14 +733,33 @@ function normalizeTransportTeams(teams, players) {
       continue;
     }
 
-    const teamId = normalizeTextValue(
-      record.teamId ??
-        record.teamID ??
-        record.TeamId ??
-        record.TeamID ??
-        record.team ??
-        record.id,
+    const slot = toNumber(
+      record.slot ??
+        record.Slot ??
+        record.slotNumber ??
+        record.SlotNumber ??
+        record.teamNumber ??
+        record.TeamNumber ??
+        record.teamNo ??
+        record.TeamNo ??
+        record.order,
     );
+    const teamNo = slot === null ? null : Math.trunc(slot);
+    const teamName = normalizeTextValue(
+      record.teamName ?? record.TeamName ?? record.name ?? record.Name,
+    );
+    const teamTag = normalizeTextValue(
+      record.teamTag ?? record.TeamTag ?? record.tag ?? record.Tag ?? record.shortName,
+    );
+    const teamId =
+      normalizeTextValue(
+        record.teamId ??
+          record.teamID ??
+          record.TeamId ??
+          record.TeamID ??
+          record.team ??
+          record.id,
+      ) ?? (teamNo === null ? null : String(teamNo));
     if (!teamId || seen.has(teamId)) {
       continue;
     }
@@ -679,18 +783,24 @@ function normalizeTransportTeams(teams, players) {
           record.memberNum ??
           record.playerNum,
       ) ?? teamPlayers.length;
-    const eliminatedFlag = normalizeBooleanValue(record.eliminated);
-    const slot = toNumber(
-      record.slot ??
-        record.slotNumber ??
-        record.teamNumber ??
-        record.teamNo ??
-        record.order,
+    const placement = toNumber(
+      record.placement ??
+        record.Placement ??
+        record.placementIndex ??
+        record.PlacementIndex ??
+        record.position ??
+        record.Position ??
+        record.rank ??
+        record.Rank,
     );
-
+    const eliminatedFlag = normalizeBooleanValue(record.eliminated);
     normalizedTeams.push({
       teamId,
-      slot: slot === null ? null : Math.trunc(slot),
+      slot: teamNo,
+      teamNo,
+      teamName,
+      teamTag,
+      placement: placement === null ? null : Math.max(1, Math.trunc(placement)),
       alivePlayers: Math.max(0, Math.trunc(alivePlayers)),
       totalPlayers: Math.max(0, Math.trunc(totalPlayers)),
       eliminated:
@@ -702,9 +812,16 @@ function normalizeTransportTeams(teams, players) {
     if (seen.has(teamId)) {
       continue;
     }
+    const syntheticTeamNo =
+      teamPlayers
+        .map((player) => toNumber(player?.teamNo ?? player?.teamSlot))
+        .find((value) => value !== null) ?? null;
     normalizedTeams.push({
       teamId,
-      slot: null,
+      slot: syntheticTeamNo === null ? null : Math.trunc(syntheticTeamNo),
+      teamNo: syntheticTeamNo === null ? null : Math.trunc(syntheticTeamNo),
+      teamName: null,
+      teamTag: null,
       alivePlayers: teamPlayers.filter((player) => player?.isAlive === true).length,
       totalPlayers: teamPlayers.length,
       eliminated: teamPlayers.every((player) => player?.isAlive !== true),
@@ -896,6 +1013,7 @@ async function getOptional(client, paths, { onError } = {}) {
 function createTelemetryBridge({
   logger = null,
   log = () => {},
+  onStopped = null,
   onSnapshot = null,
   refreshAuth = null,
   onUnauthorized = null,
@@ -992,6 +1110,7 @@ function createTelemetryBridge({
     phase: null,
     gameTime: null,
     aliveTeams: null,
+    alivePlayers: null,
     circleIndex: null,
     circleStatus: null,
     totalPackets: 0,
@@ -1065,6 +1184,30 @@ function createTelemetryBridge({
     currentShadowBaseUrl = normalized;
     shadowClient.defaults.baseURL = normalized;
     return normalized;
+  };
+
+  const notifyStopped = (reason, lifecycle) => {
+    if (typeof onStopped !== "function") {
+      return;
+    }
+
+    try {
+      onStopped({
+        reason,
+        lifecycle: lifecycle
+          ? {
+              matchStatus: lifecycle.matchStatus ?? null,
+              isLocked: lifecycle.isLocked === true,
+              isFinalizing: lifecycle.isFinalizing === true,
+            }
+          : null,
+      });
+    } catch (error) {
+      logWarn("Telemetry stop callback failed", {
+        error: error instanceof Error ? error.message : String(error || "Unknown error"),
+        reason,
+      });
+    }
   };
 
   const clearPollTimer = () => {
@@ -1508,6 +1651,7 @@ function createTelemetryBridge({
       lastIgnoredAt: null,
       lastIgnoredReason: null,
     });
+    notifyStopped(reason, lifecycle);
     return getStatus();
   };
 
@@ -1550,6 +1694,7 @@ function createTelemetryBridge({
       phase: null,
       gameTime: null,
       aliveTeams: null,
+      alivePlayers: null,
       circleIndex: null,
       circleStatus: null,
       totalPackets: 0,
@@ -1605,28 +1750,24 @@ function createTelemetryBridge({
     }
 
     if (normalized.isFinalizing) {
-      telemetryEnabled = false;
-      clearRetryTimer();
       if (!finishTransitionLogged) {
         finishTransitionLogged = true;
-        logInfo("[Telemetry] Queue frozen due to match finalization", {
-          source,
-          matchId,
-          matchStatus: normalized.matchStatus,
-        });
+        if (pendingEvents.length > 0) {
+          logInfo("[Telemetry] Dropping pending telemetry due to match finalization", {
+            source,
+            matchId,
+            matchStatus: normalized.matchStatus,
+            queueSize: pendingEvents.length,
+          });
+        } else {
+          logInfo("[Telemetry] Stopped due to match finalization", {
+            source,
+            matchId,
+            matchStatus: normalized.matchStatus,
+          });
+        }
       }
-      setState({
-        connectedToBackend: true,
-        connectionStatus: "finalizing",
-        lastError: null,
-        matchStatus: normalized.matchStatus,
-        isLocked: false,
-        isFinalizing: true,
-        resultFinalized: false,
-        finalizationStartedAt: normalized.finalizationStartedAt ?? null,
-        finalizationDurationMs: normalized.finalizationDurationMs ?? null,
-      });
-      return normalized;
+      return stop("finalizing", normalized);
     }
 
     if (normalized.matchStatus === "LIVE") {
@@ -1670,17 +1811,23 @@ function createTelemetryBridge({
       playersResponse,
       killsResponse,
       teamsResponse,
+      backpackResponse,
       circleResponse,
       gameGlobalInfoResponse,
       observerResponse,
+      routePayloadsResponse,
+      observerSnapshotResponse,
     ] = await Promise.all([
       getOptional(shadowClient, ["/getallinfo"]),
       requestShadowEndpoint(shadowClient, ["/gettotalplayerlist"]),
       requestShadowEndpoint(shadowClient, ["/getkillinfo"]),
       requestShadowEndpoint(shadowClient, ["/getteaminfolist", "/getteaminfo"]),
+      getOptional(shadowClient, ["/getteambackpackinfo"]),
       getOptional(shadowClient, ["/getcircleinfo"]),
       getOptional(shadowClient, ["/getgameglobalinfo"]),
       getOptional(shadowClient, ["/getobservingplayer"]),
+      getOptional(shadowClient, ["/getroutepayloads"]),
+      getOptional(shadowClient, ["/getobserversnapshot"]),
     ]);
 
     const playersDirect = extractArray(playersResponse?.data, [
@@ -1730,6 +1877,42 @@ function createTelemetryBridge({
     const players =
       playersDirect.length > 0 ? playersDirect : playersFromAllInfo;
     const teams = teamsDirect.length > 0 ? teamsDirect : teamsFromAllInfo;
+    const backpacksDirect = extractArray(backpackResponse?.data, [
+      "backpacks",
+      "TeamBackpackInfo",
+      "teamBackpackInfo",
+      "TeamBackpackList",
+      "teamBackpackList",
+    ]);
+    const backpacksFromAllInfo = extractArray(allInfo, [
+      "TeamBackpackInfo",
+      "teamBackpackInfo",
+      "TeamBackpackList",
+      "teamBackpackList",
+      "backpacks",
+    ]);
+    const backpacks =
+      backpacksDirect.length > 0 ? backpacksDirect : backpacksFromAllInfo;
+    const routePayloads = extractRecord(routePayloadsResponse?.data, [
+      "routePayloads",
+      "data",
+      "Data",
+      "result",
+      "Result",
+    ]);
+    const observerSnapshot =
+      extractRecord(observerSnapshotResponse?.data, [
+        "observerSnapshot",
+        "snapshot",
+        "data",
+        "Data",
+        "result",
+        "Result",
+      ]) ??
+      (observerSnapshotResponse?.data &&
+      typeof observerSnapshotResponse.data === "object"
+        ? observerSnapshotResponse.data
+        : null);
     const gameGlobalInfo = extractRecord(gameGlobalInfoResponse?.data, [
       "gameGlobalInfo",
       "GameGlobalInfo",
@@ -1771,6 +1954,9 @@ function createTelemetryBridge({
       circle,
       circlePayload,
       allInfo,
+      backpacks,
+      routePayloads,
+      observerSnapshot,
       aliveTeams,
       phase,
       observer,
@@ -1790,9 +1976,13 @@ function createTelemetryBridge({
       },
       circlePayload: snapshot.circlePayload ?? null,
       allInfo: snapshot.allInfo ?? null,
+      backpacks: Array.isArray(snapshot?.backpacks) ? snapshot.backpacks : [],
+      routePayloads: snapshot.routePayloads ?? null,
+      observerSnapshot: snapshot.observerSnapshot ?? null,
       aliveTeams: snapshot.aliveTeams ?? null,
       phase: snapshot.phase ?? null,
       observer: snapshot.observer ?? null,
+      source: "telemetry-bridge",
     };
   };
 
@@ -1803,6 +1993,24 @@ function createTelemetryBridge({
     const players = normalizeTransportPlayers(snapshot.players, map, timestamp);
     const teams = normalizeTransportTeams(snapshot.teams, players);
     const kills = Array.isArray(snapshot.kills) ? snapshot.kills : [];
+    const backpacks = Array.isArray(snapshot.backpacks) ? snapshot.backpacks : [];
+    const rawSnapshot =
+      snapshot.observerSnapshot && typeof snapshot.observerSnapshot === "object"
+        ? snapshot.observerSnapshot
+        : {
+            producer: "desktop-telemetry-bridge",
+            matchId,
+            sessionId: currentSessionId,
+            timestamp,
+            allInfo: snapshot.allInfo ?? null,
+            playerInfoList: snapshot.players ?? [],
+            teamInfoList: snapshot.teams ?? [],
+            teamBackpackInfo: backpacks,
+            killInfo: kills,
+            circleInfo: snapshot.circlePayload ?? snapshot.circle ?? null,
+            observingPlayer: snapshot.observer ?? null,
+            routePayloads: snapshot.routePayloads ?? null,
+          };
     const payload = {
       matchId,
       sessionId: currentSessionId,
@@ -1813,7 +2021,14 @@ function createTelemetryBridge({
       circleInfo: snapshot.circlePayload || snapshot.circle,
       players,
       teams,
+      backpacks,
+      teamBackpackInfo: backpacks,
       kills,
+      observer: snapshot.observer ?? null,
+      allInfo: snapshot.allInfo ?? null,
+      routePayloads: snapshot.routePayloads ?? null,
+      observerSnapshot: rawSnapshot,
+      raw: rawSnapshot,
     };
 
     return {
@@ -1826,6 +2041,7 @@ function createTelemetryBridge({
         phase: snapshot.phase,
         gameTime: snapshot.circle.gameTime,
         aliveTeams: countAliveTeams(teams),
+        alivePlayers: countAlivePlayers(players),
         circleIndex: snapshot.circle.circleIndex,
         circleStatus: snapshot.circle.circleStatus,
       },
@@ -1920,6 +2136,10 @@ function createTelemetryBridge({
         event?.meta?.aliveTeams !== undefined
           ? event.meta.aliveTeams
           : state.aliveTeams,
+      alivePlayers:
+        event?.meta?.alivePlayers !== undefined
+          ? event.meta.alivePlayers
+          : state.alivePlayers,
       circleIndex:
         event?.meta?.circleIndex !== undefined
           ? event.meta.circleIndex
@@ -2144,6 +2364,7 @@ function createTelemetryBridge({
           phase: snapshot.phase,
           gameTime: snapshot.circle.gameTime,
           aliveTeams: snapshot.aliveTeams,
+          alivePlayers: countAlivePlayers(snapshot.players),
           circleIndex: snapshot.circle.circleIndex,
           circleStatus: snapshot.circle.circleStatus,
           connectedToBackend: true,
@@ -2195,6 +2416,7 @@ function createTelemetryBridge({
           phase: snapshot.phase,
           gameTime: snapshot.circle.gameTime,
           aliveTeams: snapshot.aliveTeams,
+          alivePlayers: countAlivePlayers(snapshot.players),
           circleIndex: snapshot.circle.circleIndex,
           circleStatus: snapshot.circle.circleStatus,
           lastError: null,
@@ -2303,6 +2525,7 @@ function createTelemetryBridge({
       phase: null,
       gameTime: null,
       aliveTeams: null,
+      alivePlayers: null,
       circleIndex: null,
       circleStatus: null,
       totalPackets: 0,

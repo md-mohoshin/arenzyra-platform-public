@@ -4,12 +4,13 @@
     <meta charset="utf-8" />
     <title>Arenzyra Session Standings</title>
     <style>
+      {{fontCssImport}}
       * { box-sizing: border-box; }
       body {
         margin: 0;
         width: 1200px;
         height: 630px;
-        font-family: "Segoe UI", Arial, sans-serif;
+        font-family: {{fontFamily}};
         background: {{background}};
         color: {{textPrimary}};
       }
@@ -104,23 +105,6 @@
         font-size: 24px;
         font-weight: 800;
       }
-      .footer {
-        position: absolute;
-        left: 60px;
-        right: 60px;
-        bottom: 26px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        color: {{textMuted}};
-        font-size: 13px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-      .footer-mark {
-        color: {{primaryColor}};
-        font-weight: 700;
-      }
     </style>
   </head>
   <body>
@@ -134,10 +118,6 @@
           {{logoHtml}}
         </div>
         <div class="board">{{rowsHtml}}</div>
-      </div>
-      <div class="footer">
-        <span>{{footer}}</span>
-        <span class="footer-mark">Backend Rendered PNG</span>
       </div>
     </div>
   </body>

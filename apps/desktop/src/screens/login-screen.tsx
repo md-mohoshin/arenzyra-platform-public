@@ -1,16 +1,15 @@
 import { useState, type FormEvent } from "react";
+import { DesktopBrandLockup } from "../components/desktop-brand-lockup";
 
 type LoginScreenProps = {
   email: string;
   password: string;
-  keepSignedIn: boolean;
   appVersion: string;
   busy: boolean;
   booting: boolean;
   error: string | null;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
-  onKeepSignedInChange: (value: boolean) => void;
   onSubmit: () => void;
 };
 
@@ -29,11 +28,15 @@ export function LoginScreen(props: LoginScreenProps) {
     <div className="login-shell">
       <section className="login-card">
         <div className="login-copy">
-          <span className="eyebrow">Arenzyra Observer Launcher</span>
-          <h1>Organizer authentication required.</h1>
+          <DesktopBrandLockup
+            size="sm"
+            subtitle="Observer launcher access"
+          />
+          <h1>Sign in to the live desk</h1>
           <p>
-            Sign in with your Arenzyra organizer account to load production
-            tournaments, stages, and matches scoped to your organization.
+            Use your Arenzyra organizer account to unlock match control,
+            observer tools, and branded widget routing from this desktop
+            station.
           </p>
         </div>
 
@@ -72,25 +75,6 @@ export function LoginScreen(props: LoginScreenProps) {
             </div>
           </label>
 
-          <label className="login-check-row">
-            <input
-              type="checkbox"
-              checked={props.keepSignedIn}
-              onChange={(event) =>
-                props.onKeepSignedInChange(event.target.checked)
-              }
-              disabled={props.busy || props.booting}
-            />
-            <span>
-              <strong>Keep me signed in</strong>
-              <small>
-                {props.keepSignedIn
-                  ? "The launcher will restore your encrypted session next time."
-                  : "You will be signed out when the launcher closes."}
-              </small>
-            </span>
-          </label>
-
           <button
             className="primary-button"
             type="submit"
@@ -103,21 +87,14 @@ export function LoginScreen(props: LoginScreenProps) {
                 : "Login"}
           </button>
 
-          <div
-            className={`status-card ${
-              props.error ? "status-card--error" : "status-card--neutral"
-            }`}
-          >
-            <strong>{props.error ? "Authentication failed" : "Organizer access"}</strong>
-            <p>
-              {props.error ||
-                "Only authenticated organizers can access production matches in this launcher."}
-            </p>
-          </div>
+          {props.error ? (
+            <div className="status-card status-card--error">
+              <strong>Authentication failed</strong>
+              <p>{props.error}</p>
+            </div>
+          ) : null}
 
-          <div className="login-version">
-            Arenzyra Observer Launcher v{props.appVersion}
-          </div>
+          <div className="login-version">v{props.appVersion}</div>
         </form>
       </section>
     </div>

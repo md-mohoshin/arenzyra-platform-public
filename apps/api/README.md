@@ -63,14 +63,15 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
-## PCOB telemetry (log-only)
+## Legacy PCOB compatibility
 
-`POST /pcob/telemetry` accepts raw PCOB webhook/ingest JSON, guarded by `x-pcob-secret` (compare to `PCOB_SECRET`). It logs payload metadata only; no scoring or match updates occur in this step.
+Canonical automatic ingest is the launcher `ob.js` -> API observer path. The `/pcob` surface remains only as a legacy compatibility boundary for old explicit `PCOB` matches and adapter-bound ingest.
 
-### PCOB session linking (step 2)
-- `POST /org/:orgId/operator/matches/:matchId/pcob-link` with `pcobSessionId` links a PCOB session to a match and sets `pcobMode=true` (allowed only when match is DRAFT or LIVE).
-- `POST /org/:orgId/operator/matches/:matchId/pcob-unlink` clears the link.
-- Telemetry remains log-only; no kills/placements/status changes are applied yet.
+- `POST /pcob/telemetry` accepts adapter ingest JSON guarded by `x-pcob-secret` (`PCOB_SECRET`).
+- `/pcob/feed/start`, `/pcob/bind`, and producer socket `pcob:bind` are legacy-only controls for old explicit `PCOB` matches.
+- `POST /org/:orgId/operator/matches/:matchId/pcob-link` and `.../pcob-unlink` are also legacy-only; they are disabled for `API` and `MANUAL` matches.
+- legacy producer tooling is disabled by default and now requires explicit opt-in such as `ALLOW_LEGACY_SHADOW_API=1` or `ALLOW_LEGACY_PCOB_INGEST=1`.
+- New automatic matches should use `API` only; no new setup should depend on `PCOB`, `SHADOW`, or simulator-style producer flows.
 
 ## Match slots (PUBG slot-based games)
 

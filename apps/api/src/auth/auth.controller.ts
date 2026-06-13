@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Req } from '@nestjs/common';
-import { IsEmail, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsEmail, IsOptional, IsString } from 'class-validator';
 import type { Request } from 'express';
 import { Public } from '../common/auth/public.decorator';
 import { AuthService } from './auth.service';
@@ -10,10 +10,6 @@ class LoginDto {
 
   @IsString()
   password!: string;
-
-  @IsString()
-  @IsOptional()
-  organizationId?: string;
 }
 
 class RefreshDto {
@@ -40,6 +36,54 @@ class ApplyDto {
 
   @IsString()
   password!: string;
+
+  @IsString()
+  @IsOptional()
+  requestedPlan?: string;
+
+  @IsString()
+  @IsOptional()
+  requestedPlanId?: string;
+
+  @IsString()
+  @IsOptional()
+  requestedGameKey?: string;
+
+  @IsArray()
+  @IsOptional()
+  requestedGameKeys?: string[];
+
+  @IsString()
+  @IsOptional()
+  requestedAddOns?: string;
+
+  @IsArray()
+  @IsOptional()
+  requestedAddOnIds?: string[];
+
+  @IsString()
+  @IsOptional()
+  paymentMethod?: string;
+
+  @IsString()
+  @IsOptional()
+  country?: string;
+
+  @IsString()
+  @IsOptional()
+  whatsappNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  discordUsername?: string;
+
+  @IsString()
+  @IsOptional()
+  websiteUrl?: string;
+
+  @IsString()
+  @IsOptional()
+  contactMessage?: string;
 }
 
 @Controller('auth')
@@ -52,13 +96,18 @@ export class AuthController {
     return authorization.slice(7).trim() || null;
   }
 
+  private getBotToken(req: Request) {
+    const authorization = req.headers?.authorization ?? '';
+    if (!authorization.toLowerCase().startsWith('bot ')) return null;
+    return authorization.slice(4).trim() || null;
+  }
+
   @Post('login')
   @Public()
   async login(@Body() dto: LoginDto, @Req() req: Request) {
     const session = await this.auth.login({
       email: dto.email,
       password: dto.password,
-      organizationId: dto.organizationId,
       userAgent: req.headers['user-agent'] ?? null,
       ip: req.ip ?? req.socket?.remoteAddress ?? null,
     });
@@ -107,6 +156,18 @@ export class AuthController {
       email: dto.email,
       password: dto.password,
       applicantName: dto.applicantName,
+      requestedPlan: dto.requestedPlan,
+      requestedPlanId: dto.requestedPlanId,
+      requestedGameKey: dto.requestedGameKey,
+      requestedGameKeys: dto.requestedGameKeys,
+      requestedAddOns: dto.requestedAddOns,
+      requestedAddOnIds: dto.requestedAddOnIds,
+      paymentMethod: dto.paymentMethod,
+      country: dto.country,
+      whatsappNumber: dto.whatsappNumber,
+      discordUsername: dto.discordUsername,
+      websiteUrl: dto.websiteUrl,
+      contactMessage: dto.contactMessage,
     });
 
     return { data };
@@ -115,6 +176,15 @@ export class AuthController {
   @Get('me')
   @Public()
   async me(@Req() req: Request) {
+    const botToken = this.getBotToken(req);
+    if (botToken) {
+      const organizationId =
+        typeof req.headers?.['x-organization-id'] === 'string'
+          ? req.headers['x-organization-id']
+          : null;
+      return this.auth.serviceSession({ token: botToken, organizationId });
+    }
+
     return this.auth.me(this.getBearer(req));
   }
 }

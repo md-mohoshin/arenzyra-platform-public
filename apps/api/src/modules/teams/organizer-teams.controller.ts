@@ -23,8 +23,10 @@ import type { AuthenticatedRequest } from '../../common/auth/auth.types';
 import { Roles } from '../../common/auth/roles.decorator';
 import { TeamsApiService } from './teams.api.service';
 import type { TeamCreateDto, TeamUpdateDto } from './dto/team.api.dto';
-import { storeTeamLogo } from './asset.util';
+import { storeTeamLogoProcessed } from './asset.util';
 import { RegisterDiscordTeamDto } from './dto/register-discord-team.dto';
+import { ReleaseDiscordTeamMemberDto } from './dto/release-discord-team-member.dto';
+import { ListDiscordManagedTeamsDto } from './dto/list-discord-managed-teams.dto';
 
 type SafeMulterOptions = MulterOptions & { storage: StorageEngine };
 
@@ -51,7 +53,7 @@ const memoryStorageEngine: StorageEngine = {
 
 const uploadOptions: SafeMulterOptions = {
   storage: memoryStorageEngine,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 8 * 1024 * 1024 },
 };
 
 @Controller('organizer')
@@ -99,6 +101,20 @@ export class OrganizerTeamsController {
     return this.teams.registerDiscordTeam(req.user, body, orgId);
   }
 
+  @Post('teams/discord-managed')
+  listDiscordManagedTeams(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: ListDiscordManagedTeamsDto,
+  ) {
+    const orgId = this.requireOrg(req);
+    return this.teams.listDiscordManagedTeams(
+      req.user,
+      orgId,
+      body.discordUserIds ?? [],
+      body.limit,
+    );
+  }
+
   @Patch('teams/:teamId')
   update(
     @Param('teamId') teamId: string,
@@ -124,6 +140,30 @@ export class OrganizerTeamsController {
     return this.teams.softDelete(req.user, teamId);
   }
 
+  @Post('teams/:teamId/discord-cleanup')
+  cleanupDiscordTeam(
+    @Param('teamId') teamId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const orgId = this.requireOrg(req);
+    return this.teams.cleanupDiscordTeam(req.user, teamId, orgId);
+  }
+
+  @Post('teams/:teamId/discord-members/release')
+  releaseDiscordTeamMember(
+    @Param('teamId') teamId: string,
+    @Body() body: ReleaseDiscordTeamMemberDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const orgId = this.requireOrg(req);
+    return this.teams.releaseDiscordTeamMember(
+      req.user,
+      teamId,
+      body.discordUserId,
+      orgId,
+    );
+  }
+
   @Post('teams/:teamId/logo')
   @UseInterceptors(FileInterceptor('file', uploadOptions))
   async uploadLogo(
@@ -140,7 +180,15 @@ export class OrganizerTeamsController {
     if (!mimetype || !allowed.includes(mimetype)) {
       throw new BadRequestException('Invalid file type');
     }
-    const { url, version } = storeTeamLogo(teamId, file);
+    const { url, version } = await (async () => {
+      try {
+        return await storeTeamLogoProcessed(teamId, file);
+      } catch (err) {
+        throw new BadRequestException(
+          err instanceof Error ? err.message : 'Upload failed',
+        );
+      }
+    })();
     await this.teams.update(req.user, teamId, { logoUrl: url });
     return { ok: true, logoUrl: url, version };
   }

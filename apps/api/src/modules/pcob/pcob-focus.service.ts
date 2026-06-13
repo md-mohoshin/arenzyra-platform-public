@@ -10,6 +10,7 @@ import { PrismaService } from '../../db/prisma.service';
 import { MatchStateCache } from './match-state-cache.service';
 import { PcobEventsService } from './pcob-events.service';
 import { CanonicalControlReadService } from '../realtime/canonical-control-read.service';
+import { isPcobCompatibilityMatch } from '../../common/match-telemetry-provider.util';
 
 @Injectable()
 export class PcobFocusService {
@@ -21,16 +22,14 @@ export class PcobFocusService {
     private readonly canonicalRead: CanonicalControlReadService,
   ) {}
 
-  private isPcobMode(match: {
+  private isPcobCompatibleMatch(match: {
     pcobMode?: boolean | null;
     dataMode?: string | null;
     dataSource?: string | null;
+    pcobSessionId?: string | null;
+    adapterKey?: string | null;
   }) {
-    return (
-      match?.pcobMode === true ||
-      match?.dataMode === 'PCOB' ||
-      match?.dataSource === 'PCOB'
-    );
+    return isPcobCompatibilityMatch(match);
   }
 
   private ensureRole(role: Role) {
@@ -56,7 +55,7 @@ export class PcobFocusService {
     if (!match) throw new BadRequestException('Match not found');
     if (match.status !== MatchStatus.LIVE)
       throw new BadRequestException('Match must be LIVE');
-    if (!this.isPcobMode(match))
+    if (!this.isPcobCompatibleMatch(match))
       throw new BadRequestException('Match is not in PCOB mode');
 
     const player = await this.prisma.player.findFirst({

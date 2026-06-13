@@ -25,30 +25,40 @@ export const registerTeamCommand = {
         .setDescription('Team name')
         .setRequired(true),
     )
+    .addStringOption((option) =>
+      option
+        .setName('session-id')
+        .setDescription('Optional scrim session ID to auto-join after registering'),
+    )
+    .addStringOption((option) =>
+      option
+        .setName('team-logo')
+        .setDescription('Optional public team logo URL'),
+    )
     .addUserOption((option) =>
       option
         .setName('member-1')
-        .setDescription('Optional player mention'),
+        .setDescription('Optional manager/player mention'),
     )
     .addUserOption((option) =>
       option
         .setName('member-2')
-        .setDescription('Optional player mention'),
+        .setDescription('Optional manager/player mention'),
     )
     .addUserOption((option) =>
       option
         .setName('member-3')
-        .setDescription('Optional player mention'),
+        .setDescription('Optional manager/player mention'),
     )
     .addUserOption((option) =>
       option
         .setName('member-4')
-        .setDescription('Optional player mention'),
+        .setDescription('Optional manager/player mention'),
     )
     .addUserOption((option) =>
       option
         .setName('member-5')
-        .setDescription('Optional player mention'),
+        .setDescription('Optional manager/player mention'),
     ),
   async execute(
     interaction: ChatInputCommandInteraction,
@@ -58,6 +68,8 @@ export const registerTeamCommand = {
 
     const tag = interaction.options.getString('tag', true);
     const teamName = interaction.options.getString('team-name', true);
+    const sessionId = interaction.options.getString('session-id');
+    const teamLogo = interaction.options.getString('team-logo');
     const members = [
       optionalUser(interaction, 'member-1'),
       optionalUser(interaction, 'member-2'),
@@ -72,15 +84,36 @@ export const registerTeamCommand = {
         displayName: user.globalName ?? null,
       }));
 
-    const content = await services.sessionService.registerTeam(
-      interaction.user.id,
-      interaction.user.username,
-      interaction.user.globalName ?? null,
-      tag,
-      teamName,
-      members,
-      interaction.guild,
-    );
+    const content = sessionId
+      ? await services.sessionService.registerTeamAndJoinScrim(
+          interaction.user.id,
+          interaction.user.username,
+          interaction.user.globalName ?? null,
+          tag,
+          teamName,
+          members,
+          interaction.guild,
+          sessionId,
+          teamLogo,
+          null,
+          {
+            audit: {
+              actorDiscordId: interaction.user.id,
+              actorLabel: interaction.user.tag,
+              sourceChannelId: interaction.channelId ?? null,
+            },
+          },
+        )
+      : await services.sessionService.registerTeam(
+          interaction.user.id,
+          interaction.user.username,
+          interaction.user.globalName ?? null,
+          tag,
+          teamName,
+          members,
+          interaction.guild,
+          teamLogo,
+        );
 
     await interaction.editReply(content);
   },

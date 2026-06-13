@@ -1,14 +1,20 @@
 import { LiveState, MatchStatus } from '@prisma/client';
 import type { PrismaService } from '../../db/prisma.service';
-import { MatchConclusionService } from './match-conclusion.service';
-import type { ResultsService } from './results.service';
-import type { ResultsEventsService } from './results-events.service';
-import type { ScoringService } from '../scoring/scoring.service';
-import type { PcobGateway } from '../pcob/pcob.gateway';
-import type { TopFraggerService } from '../widgets/top-fragger/top-fragger.service';
-import type { MvpService } from '../widgets/mvp/mvp.service';
-import type { RealtimeGateway } from '../../realtime/realtime.gateway';
+import {
+  MatchConclusionService,
+  type MatchConclusionComputeResult,
+  type MatchConclusionPlan,
+} from './match-conclusion.service';
 import type { TelemetryEngineService } from '../telemetry/telemetry-engine.service';
+
+const expectPlan = (
+  result: MatchConclusionComputeResult,
+): MatchConclusionPlan => {
+  if (!result.ok) {
+    throw new Error(`Expected conclusion plan, got ${result.reason}`);
+  }
+  return result.plan;
+};
 
 const createService = (options?: {
   match?: Record<string, unknown> | null;
@@ -19,14 +25,6 @@ const createService = (options?: {
     typeof (options?.match as { id?: unknown } | undefined)?.id === 'string'
       ? ((options?.match as { id: string }).id ?? 'match-1')
       : 'match-1';
-  const tx = {
-    matchControlState: {
-      upsert: jest.fn().mockResolvedValue(undefined),
-    },
-    match: {
-      update: jest.fn().mockResolvedValue(undefined),
-    },
-  };
   const prisma = {
     match: {
       findFirst: jest.fn().mockResolvedValue(
@@ -34,6 +32,7 @@ const createService = (options?: {
           ? {
               id: 'match-1',
               organizationId: 'org-1',
+              tournamentId: 'tournament-1',
               sessionId: null,
               status: MatchStatus.LIVE,
               liveState: LiveState.LIVE,
@@ -51,38 +50,32 @@ const createService = (options?: {
         payload: options?.telemetryPayload ?? null,
       }),
     },
-    $transaction: jest.fn(async (callback: (client: typeof tx) => unknown) =>
-      callback(tx),
-    ),
+    matchSlot: {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          slotNumber: 1,
+          teamId: 'team-1',
+          team: { players: [] },
+        },
+      ]),
+    },
+    matchSlotResult: {
+      findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn(),
+      create: jest.fn(),
+    },
+    matchSlotPlayerResult: {
+      update: jest.fn(),
+      create: jest.fn(),
+    },
+    matchStanding: {
+      update: jest.fn(),
+      create: jest.fn(),
+      upsert: jest.fn(),
+    },
+    $transaction: jest.fn(),
   } as unknown as PrismaService;
 
-  const results = {
-    ensureResultsFromSlots: jest.fn().mockResolvedValue(undefined),
-    applyTelemetryStateToResults: jest.fn().mockResolvedValue(undefined),
-    recalculateMatchResults: jest.fn().mockResolvedValue(undefined),
-    finalizeMatchResults: jest.fn().mockResolvedValue(undefined),
-    assertMatchStateConsistency: jest.fn().mockResolvedValue(undefined),
-  } as unknown as ResultsService;
-  const resultEvents = {
-    emitResultsUpdated: jest.fn(),
-    emitLeaderboardUpdated: jest.fn(),
-  } as unknown as ResultsEventsService;
-  const scoring = {
-    recomputeMatchAndTournament: jest.fn(),
-  } as unknown as ScoringService;
-  const realtime = {
-    emitObserverMatchFinished: jest.fn(),
-  } as unknown as RealtimeGateway;
-  const pcobGateway = {
-    emitLastTeamStanding: jest.fn(),
-    emitMatchConcluded: jest.fn(),
-  } as unknown as PcobGateway;
-  const topFragger = {
-    finalize: jest.fn().mockResolvedValue(undefined),
-  } as unknown as TopFraggerService;
-  const mvp = {
-    finalize: jest.fn().mockResolvedValue(undefined),
-  } as unknown as MvpService;
   const telemetryEngine = {
     getState: jest.fn().mockResolvedValue(
       options?.telemetryState ?? {
@@ -123,22 +116,8 @@ const createService = (options?: {
 
   return {
     prisma,
-    tx,
-    results,
     telemetryEngine,
-    service: new MatchConclusionService(
-      prisma,
-      results,
-      resultEvents,
-      scoring,
-      realtime,
-      pcobGateway,
-      topFragger,
-      mvp,
-      telemetryEngine,
-    ),
-    topFragger,
-    mvp,
+    service: new MatchConclusionService(prisma, telemetryEngine),
   };
 };
 
@@ -194,8 +173,8 @@ describe('MatchConclusionService', () => {
     expect((prisma as any).$transaction).not.toHaveBeenCalled();
   });
 
-  it('uses the direct match organization when concluding a session-linked match', async () => {
-    const { service, tx } = createService({
+  it('uses the direct match organization when computing a session-linked conclusion', async () => {
+    const { prisma, service } = createService({
       match: {
         id: 'match-session-1',
         organizationId: 'org-session',
@@ -210,30 +189,21 @@ describe('MatchConclusionService', () => {
       },
     });
 
-    jest.spyOn(service as any, 'captureSnapshots').mockResolvedValue(undefined);
-    jest
-      .spyOn(service as any, 'buildObserverMatchFinishedPayload')
-      .mockResolvedValue(null);
-
-    await expect(
-      service.conclude('match-session-1', {
+    const plan = expectPlan(
+      await service.computeConclusion('match-session-1', {
         winnerTeamId: 'team-1',
         aliveTeams: 1,
-        source: 'AUTO_MATCH_CONCLUDED',
-      }),
-    ).resolves.toBe(true);
-
-    expect(tx.matchControlState.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          organizationId: 'org-session',
-        }),
+        source: 'API_MATCH_CONCLUDED',
       }),
     );
+
+    expect(plan.organizationId).toBe('org-session');
+    expect(plan.isSessionMatch).toBe(true);
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
   });
 
-  it('concludes a session match without triggering tournament scoring recompute', async () => {
-    const { service, tx, results, topFragger, mvp } = createService({
+  it('computes a session match conclusion without writing results or scoring state', async () => {
+    const { prisma, service } = createService({
       match: {
         id: 'match-session-1',
         organizationId: 'org-session',
@@ -248,57 +218,269 @@ describe('MatchConclusionService', () => {
       },
     });
 
-    jest.spyOn(service as any, 'captureSnapshots').mockResolvedValue(undefined);
-    jest
-      .spyOn(service as any, 'buildObserverMatchFinishedPayload')
-      .mockResolvedValue(null);
-
-    await expect(
-      service.conclude('match-session-1', {
+    const plan = expectPlan(
+      await service.computeConclusion('match-session-1', {
         winnerTeamId: 'team-1',
         aliveTeams: 1,
-        source: 'AUTO_MATCH_CONCLUDED',
+        source: 'API_MATCH_CONCLUDED',
       }),
-    ).resolves.toBe(true);
+    );
 
-    expect(tx.match.update.mock.calls[0][0]).toEqual(
+    expect(plan.isSessionMatch).toBe(true);
+    expect(plan.nextMeta).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          status: MatchStatus.FINISHED,
-          liveState: LiveState.ENDED,
+        resultFinalized: true,
+        winnerTeamId: 'team-1',
+        aliveTeamsAtEnd: 1,
+      }),
+    );
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
+  });
+
+  it('computes final result rows without performing writes', async () => {
+    const { prisma, service } = createService();
+
+    const results = await service.computeFinalResults('match-1', {
+      source: 'API_MATCH_CONCLUDED',
+    });
+
+    expect(results.teamResults).toEqual([
+      expect.objectContaining({
+        matchId: 'match-1',
+        slotNumber: 1,
+        teamId: 'team-1',
+        placement: 1,
+        totalKills: 4,
+        finalPlacement: 1,
+        finalKills: 4,
+      }),
+    ]);
+    expect(results.playerResults).toEqual([
+      expect.objectContaining({
+        slotNumber: 1,
+        teamId: 'team-1',
+        playerName: 'Alpha',
+        kills: 4,
+        isAlive: false,
+      }),
+    ]);
+    expect(results.standings).toEqual([
+      expect.objectContaining({
+        matchId: 'match-1',
+        tournamentId: 'tournament-1',
+        teamId: 'team-1',
+        rank: 1,
+        totalPoints: 14,
+      }),
+    ]);
+    expect((prisma as any).matchSlotResult.update).not.toHaveBeenCalled();
+    expect((prisma as any).matchSlotResult.create).not.toHaveBeenCalled();
+    expect((prisma as any).matchSlotPlayerResult.update).not.toHaveBeenCalled();
+    expect((prisma as any).matchSlotPlayerResult.create).not.toHaveBeenCalled();
+    expect((prisma as any).matchStanding.upsert).not.toHaveBeenCalled();
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
+  });
+
+  it('captures raw-only team diagnostics when compatibility telemetry shows a team missing from canonical results', async () => {
+    const { prisma, telemetryEngine, service } = createService({
+      telemetryPayload: {
+        structuralMirrorDisabled: true,
+        sequence: 444,
+        timestamp: 1_776_985_757_545,
+        raw: {
+          teams: [
+            {
+              teamId: 15,
+              teamName: 'Team8',
+              killNum: 1,
+              liveMemberNum: 0,
+            },
+          ],
+          players: [
+            {
+              teamId: 15,
+              teamName: 'Team8',
+              playerName: 'Raw Alpha',
+              playerOpenId: 'raw-open-1',
+            },
+            {
+              teamId: 15,
+              teamName: 'Team8',
+              playerName: 'Raw Bravo',
+              playerOpenId: 'raw-open-2',
+            },
+            {
+              teamId: 15,
+              teamName: 'Team8',
+              playerName: 'Raw Charlie',
+              playerOpenId: 'raw-open-3',
+            },
+            {
+              teamId: 15,
+              teamName: 'Team8',
+              playerName: 'Raw Delta',
+              playerOpenId: 'raw-open-4',
+            },
+          ],
+        },
+      },
+      telemetryState: {
+        matchId: 'match-1',
+        status: 'ENDED',
+        mode: 'AUTO',
+        version: 11,
+        sequence: 493,
+        updatedAt: 1_776_985_764_278,
+        startedAt: 1_776_983_140_949,
+        endedAt: 1_776_985_764_452,
+        teamsAlive: 1,
+        teams: {
+          'team-1': {
+            teamId: 'team-1',
+            alivePlayers: 1,
+            eliminated: false,
+            placement: 1,
+            totalKills: 7,
+            totalPlayers: 4,
+            eliminatedAt: null,
+            metadata: {
+              slot: 10,
+              teamName: 'Team 6',
+              teamTag: 'T6',
+            },
+          },
+        },
+        players: {},
+      },
+    });
+
+    (prisma as any).matchSlotResult.findMany.mockResolvedValue([
+      {
+        slotNumber: 15,
+        teamId: 'team-8',
+        wasPresentInMatch: false,
+        team: {
+          name: 'Team 8',
+          tag: 'T8',
+        },
+        players: [
+          {
+            playerName: 'Roster Alpha',
+            externalPlayerId: 'roster-ext-1',
+            pubgAccountId: 'roster-open-1',
+            player: {
+              ign: 'Roster Alpha',
+              externalPlayerId: 'roster-ext-1',
+              playerOpenId: 'roster-open-1',
+              inGameId: null,
+              pubgPlayerId: null,
+            },
+          },
+          {
+            playerName: 'Roster Bravo',
+            externalPlayerId: 'roster-ext-2',
+            pubgAccountId: 'roster-open-2',
+            player: {
+              ign: 'Roster Bravo',
+              externalPlayerId: 'roster-ext-2',
+              playerOpenId: 'roster-open-2',
+              inGameId: null,
+              pubgPlayerId: null,
+            },
+          },
+          {
+            playerName: 'Roster Charlie',
+            externalPlayerId: 'roster-ext-3',
+            pubgAccountId: 'roster-open-3',
+            player: {
+              ign: 'Roster Charlie',
+              externalPlayerId: 'roster-ext-3',
+              playerOpenId: 'roster-open-3',
+              inGameId: null,
+              pubgPlayerId: null,
+            },
+          },
+          {
+            playerName: 'Roster Delta',
+            externalPlayerId: 'roster-ext-4',
+            pubgAccountId: 'roster-open-4',
+            player: {
+              ign: 'Roster Delta',
+              externalPlayerId: 'roster-ext-4',
+              playerOpenId: 'roster-open-4',
+              inGameId: null,
+              pubgPlayerId: null,
+            },
+          },
+        ],
+      },
+    ]);
+    (prisma as any).matchSlot.findMany.mockResolvedValue([
+      {
+        slotNumber: 15,
+        teamId: 'team-8',
+        team: {
+          name: 'Team 8',
+          tag: 'T8',
+          players: [],
+        },
+      },
+    ]);
+
+    const diagnostics =
+      await service.buildTelemetryPromotionDiagnostics('match-1');
+
+    expect(telemetryEngine.getState).toHaveBeenCalledWith('match-1');
+    expect(diagnostics).toEqual(
+      expect.objectContaining({
+        source: 'MATCH_TELEMETRY_COMPATIBILITY_RAW',
+        structuralMirrorDisabled: true,
+        rawSnapshot: expect.objectContaining({
+          sequence: 444,
+          teamCount: 1,
+          playerCount: 4,
         }),
+        canonicalSnapshot: expect.objectContaining({
+          sequence: 493,
+          teamCount: 1,
+        }),
+        rawOnlyTeams: [
+          expect.objectContaining({
+            rawSlot: 15,
+            rawTeamName: 'Team8',
+            canonicalTeamId: 'team-8',
+            canonicalTeamName: 'Team 8',
+            finalResultWasPresentInMatch: false,
+            presentInCanonicalAcceptedState: false,
+            rawPlayerCount: 4,
+            rawPlayerNameCount: 4,
+            rawPlayerIdentifierCount: 4,
+            rosterPlayerCount: 4,
+            rosterPlayerNameCount: 4,
+            rosterPlayerIdentifierCount: 8,
+            matchedRosterIdentityCount: 0,
+            matchedRosterNameCount: 0,
+            reasonCodes: expect.arrayContaining([
+              'RAW_TEAM_PRESENT_BUT_ABSENT_FROM_CANONICAL',
+              'FINAL_RESULT_MARKED_ABSENT',
+              'RAW_PLAYER_IDENTITIES_DO_NOT_MATCH_SLOT_ROSTER',
+              'RAW_PLAYER_NAMES_DO_NOT_MATCH_SLOT_ROSTER',
+            ]),
+          }),
+        ],
       }),
     );
-    expect(
-      (service as any).scoring.recomputeMatchAndTournament as jest.Mock,
-    ).not.toHaveBeenCalled();
-    expect(
-      (service as any).results.ensureResultsFromSlots as jest.Mock,
-    ).toHaveBeenCalledWith('match-session-1');
-    expect(
-      (results as any).applyTelemetryStateToResults as jest.Mock,
-    ).toHaveBeenCalledWith(
-      'match-session-1',
-      expect.objectContaining({
-        finalize: true,
-      }),
+    expect(diagnostics?.rawOnlyTeams[0]).not.toHaveProperty('rawPlayerNames');
+    expect(diagnostics?.rawOnlyTeams[0]).not.toHaveProperty(
+      'rawPlayerIdentifiers',
     );
-    expect(
-      (service as any).results.recalculateMatchResults as jest.Mock,
-    ).toHaveBeenCalledWith('match-session-1');
-    expect(
-      (service as any).results.finalizeMatchResults as jest.Mock,
-    ).toHaveBeenCalledWith('match-session-1');
-    expect((topFragger as any).finalize as jest.Mock).toHaveBeenCalledWith(
-      'match-session-1',
-    );
-    expect((mvp as any).finalize as jest.Mock).toHaveBeenCalledWith(
-      'match-session-1',
+    expect(diagnostics?.rawOnlyTeams[0]).not.toHaveProperty(
+      'rosterPlayerNames',
     );
   });
 
-  it('promotes a finalizing match to finalized through the canonical conclusion path', async () => {
-    const { service, tx } = createService({
+  it('computes final metadata for a finalizing match without promoting it directly', async () => {
+    const { prisma, service } = createService({
       match: {
         id: 'match-finalizing-1',
         organizationId: 'org-1',
@@ -317,42 +499,26 @@ describe('MatchConclusionService', () => {
       },
     });
 
-    jest.spyOn(service as any, 'captureSnapshots').mockResolvedValue(undefined);
-    jest
-      .spyOn(service as any, 'buildObserverMatchFinishedPayload')
-      .mockResolvedValue(null);
-
-    await expect(
-      service.conclude('match-finalizing-1', {
-        source: 'AUTO_MATCH_CONCLUDED',
-      }),
-    ).resolves.toBe(true);
-
-    expect(tx.matchControlState.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          state: 'CONFIRMED',
-          metaJson: expect.objectContaining({
-            resultFinalized: true,
-            finalizedAt: '2026-03-18T12:00:00.000Z',
-          }),
-        }),
+    const plan = expectPlan(
+      await service.computeConclusion('match-finalizing-1', {
+        source: 'API_MATCH_CONCLUDED',
       }),
     );
-    expect(tx.match.update).toHaveBeenCalledWith(
+
+    expect(plan.endedAt.toISOString()).toBe('2026-03-18T12:00:00.000Z');
+    expect(plan.endedReason).toBe('OBSERVER_FINISH_DETECTED');
+    expect(plan.nextMeta).toEqual(
       expect.objectContaining({
-        where: { id: 'match-finalizing-1' },
-        data: expect.objectContaining({
-          status: MatchStatus.FINISHED,
-          liveState: LiveState.ENDED,
-          endedReason: 'OBSERVER_FINISH_DETECTED',
-        }),
+        finalizationStartedAt: '2026-03-18T11:59:40.000Z',
+        resultFinalized: true,
+        finalizedAt: '2026-03-18T12:00:00.000Z',
       }),
     );
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
   });
 
   it('flags multiple surviving teams as requiring confirmation when auto-finalized by kills', async () => {
-    const { service, results, tx } = createService({
+    const { prisma, service } = createService({
       telemetryState: {
         matchId: 'match-1',
         status: 'ENDED',
@@ -432,21 +598,13 @@ describe('MatchConclusionService', () => {
       },
     });
 
-    jest.spyOn(service as any, 'captureSnapshots').mockResolvedValue(undefined);
-    jest
-      .spyOn(service as any, 'buildObserverMatchFinishedPayload')
-      .mockResolvedValue(null);
-
-    await expect(
-      service.conclude('match-1', {
-        source: 'AUTO_MATCH_CONCLUDED',
+    const plan = expectPlan(
+      await service.computeConclusion('match-1', {
+        source: 'API_MATCH_CONCLUDED',
       }),
-    ).resolves.toBe(true);
+    );
 
-    const projection = (
-      (results as any).applyTelemetryStateToResults as jest.Mock
-    ).mock.calls[0][1].finalProjection;
-    expect(projection).toMatchObject({
+    expect(plan.finalProjection).toMatchObject({
       totalTeams: 3,
       placementsAssigned: 3,
       winnerTeamId: 'team-2',
@@ -457,7 +615,7 @@ describe('MatchConclusionService', () => {
         'team-3': { placement: 3 },
       },
     });
-    expect(projection.ambiguities).toEqual(
+    expect(plan.finalProjection.ambiguities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           code: 'MULTIPLE_TEAMS_ALIVE_AT_END',
@@ -467,24 +625,21 @@ describe('MatchConclusionService', () => {
         }),
       ]),
     );
-    expect(tx.matchControlState.upsert).toHaveBeenCalledWith(
+    expect(plan.nextMeta).toEqual(
       expect.objectContaining({
-        update: expect.objectContaining({
-          metaJson: expect.objectContaining({
-            resultNeedsConfirmation: true,
-            resultAmbiguities: expect.arrayContaining([
-              expect.objectContaining({
-                code: 'MULTIPLE_TEAMS_ALIVE_AT_END',
-              }),
-            ]),
+        resultNeedsConfirmation: true,
+        resultAmbiguities: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'MULTIPLE_TEAMS_ALIVE_AT_END',
           }),
-        }),
+        ]),
       }),
     );
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
   });
 
   it('flags simultaneous elimination timestamps as requiring confirmation', async () => {
-    const { service, results, tx } = createService({
+    const { prisma, service } = createService({
       telemetryState: {
         matchId: 'match-1',
         status: 'ENDED',
@@ -556,22 +711,14 @@ describe('MatchConclusionService', () => {
       },
     });
 
-    jest.spyOn(service as any, 'captureSnapshots').mockResolvedValue(undefined);
-    jest
-      .spyOn(service as any, 'buildObserverMatchFinishedPayload')
-      .mockResolvedValue(null);
-
-    await expect(
-      service.conclude('match-1', {
-        source: 'AUTO_MATCH_CONCLUDED',
+    const plan = expectPlan(
+      await service.computeConclusion('match-1', {
+        source: 'API_MATCH_CONCLUDED',
       }),
-    ).resolves.toBe(true);
+    );
 
-    const projection = (
-      (results as any).applyTelemetryStateToResults as jest.Mock
-    ).mock.calls[0][1].finalProjection;
-    expect(projection.needsConfirmation).toBe(true);
-    expect(projection.ambiguities).toEqual(
+    expect(plan.finalProjection.needsConfirmation).toBe(true);
+    expect(plan.finalProjection.ambiguities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           code: 'SIMULTANEOUS_ELIMINATION',
@@ -581,19 +728,215 @@ describe('MatchConclusionService', () => {
         }),
       ]),
     );
-    expect(tx.matchControlState.upsert).toHaveBeenCalledWith(
+    expect(plan.nextMeta).toEqual(
       expect.objectContaining({
-        update: expect.objectContaining({
-          metaJson: expect.objectContaining({
-            resultNeedsConfirmation: true,
-          }),
-        }),
+        resultNeedsConfirmation: true,
       }),
     );
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
+  });
+
+  it('uses complete API team placements to resolve simultaneous eliminations automatically', async () => {
+    const { prisma, service } = createService({
+      telemetryState: {
+        matchId: 'match-1',
+        status: 'ENDED',
+        mode: 'AUTO',
+        version: 9,
+        sequence: 23,
+        updatedAt: 10_000,
+        startedAt: 1_000,
+        endedAt: 10_000,
+        teamsAlive: 1,
+        teams: {
+          'team-1': {
+            teamId: 'team-1',
+            alivePlayers: 1,
+            eliminated: false,
+            placement: 1,
+            totalKills: 6,
+            totalPlayers: 1,
+            eliminatedAt: null,
+            metadata: { slot: 1, telemetryPlacement: 1 },
+          },
+          'team-2': {
+            teamId: 'team-2',
+            alivePlayers: 0,
+            eliminated: true,
+            placement: 3,
+            totalKills: 2,
+            totalPlayers: 1,
+            eliminatedAt: 9_000,
+            metadata: { slot: 2, telemetryPlacement: 2 },
+          },
+          'team-3': {
+            teamId: 'team-3',
+            alivePlayers: 0,
+            eliminated: true,
+            placement: 2,
+            totalKills: 1,
+            totalPlayers: 1,
+            eliminatedAt: 9_000,
+            metadata: { slot: 3, telemetryPlacement: 3 },
+          },
+        },
+        players: {
+          'player-1': {
+            playerId: 'player-1',
+            teamId: 'team-1',
+            alive: true,
+            knocked: false,
+            kills: 6,
+            metadata: { playerName: 'Alpha' },
+          },
+          'player-2': {
+            playerId: 'player-2',
+            teamId: 'team-2',
+            alive: false,
+            knocked: false,
+            kills: 2,
+            metadata: { playerName: 'Bravo' },
+          },
+          'player-3': {
+            playerId: 'player-3',
+            teamId: 'team-3',
+            alive: false,
+            knocked: false,
+            kills: 1,
+            metadata: { playerName: 'Charlie' },
+          },
+        },
+      },
+    });
+
+    const plan = expectPlan(
+      await service.computeConclusion('match-1', {
+        source: 'API_MATCH_CONCLUDED',
+      }),
+    );
+
+    expect(plan.finalProjection).toMatchObject({
+      totalTeams: 3,
+      placementsAssigned: 3,
+      winnerTeamId: 'team-1',
+      needsConfirmation: false,
+      ambiguities: [],
+      teams: {
+        'team-1': { placement: 1 },
+        'team-2': { placement: 2 },
+        'team-3': { placement: 3 },
+      },
+    });
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
+  });
+
+  it('uses final projection over stale live placements when computing placement points', async () => {
+    const { prisma, service } = createService({
+      telemetryState: {
+        matchId: 'match-1',
+        status: 'ENDED',
+        mode: 'AUTO',
+        version: 9,
+        sequence: 23,
+        updatedAt: 10_000,
+        startedAt: 1_000,
+        endedAt: 10_000,
+        teamsAlive: 1,
+        teams: {
+          'team-1': {
+            teamId: 'team-1',
+            alivePlayers: 1,
+            eliminated: false,
+            placement: 1,
+            totalKills: 6,
+            totalPlayers: 1,
+            eliminatedAt: null,
+            metadata: { slot: 1, telemetryPlacement: 1 },
+          },
+          'team-2': {
+            teamId: 'team-2',
+            alivePlayers: 0,
+            eliminated: true,
+            placement: 3,
+            totalKills: 2,
+            totalPlayers: 1,
+            eliminatedAt: 9_000,
+            metadata: { slot: 2, telemetryPlacement: 2 },
+          },
+          'team-3': {
+            teamId: 'team-3',
+            alivePlayers: 0,
+            eliminated: true,
+            placement: 2,
+            totalKills: 1,
+            totalPlayers: 1,
+            eliminatedAt: 9_000,
+            metadata: { slot: 3, telemetryPlacement: 3 },
+          },
+        },
+        players: {
+          'player-1': {
+            playerId: 'player-1',
+            teamId: 'team-1',
+            alive: true,
+            knocked: false,
+            kills: 6,
+            metadata: { playerName: 'Alpha' },
+          },
+          'player-2': {
+            playerId: 'player-2',
+            teamId: 'team-2',
+            alive: false,
+            knocked: false,
+            kills: 2,
+            metadata: { playerName: 'Bravo' },
+          },
+          'player-3': {
+            playerId: 'player-3',
+            teamId: 'team-3',
+            alive: false,
+            knocked: false,
+            kills: 1,
+            metadata: { playerName: 'Charlie' },
+          },
+        },
+      },
+    });
+
+    (prisma as any).matchSlot.findMany.mockResolvedValue([
+      { slotNumber: 1, teamId: 'team-1', team: { players: [] } },
+      { slotNumber: 2, teamId: 'team-2', team: { players: [] } },
+      { slotNumber: 3, teamId: 'team-3', team: { players: [] } },
+    ]);
+    (prisma as any).matchSlotResult.findMany.mockResolvedValue([
+      { slotNumber: 1, teamId: 'team-1', placement: 1, players: [] },
+      { slotNumber: 2, teamId: 'team-2', placement: 3, players: [] },
+      { slotNumber: 3, teamId: 'team-3', placement: 2, players: [] },
+    ]);
+
+    const results = await service.computeFinalResults('match-1', {
+      source: 'API_MATCH_CONCLUDED',
+    });
+    const byTeam = new Map(
+      results.teamResults.map((team) => [team.teamId, team] as const),
+    );
+
+    expect(byTeam.get('team-2')).toMatchObject({
+      placement: 2,
+      placementPoints: 6,
+      totalKills: 2,
+      totalPoints: 8,
+    });
+    expect(byTeam.get('team-3')).toMatchObject({
+      placement: 3,
+      placementPoints: 5,
+      totalKills: 1,
+      totalPoints: 6,
+    });
   });
 
   it('excludes no-show teams from the final projection when telemetry presence is explicit', async () => {
-    const { results, service } = createService({
+    const { prisma, service } = createService({
       telemetryState: {
         matchId: 'match-1',
         status: 'ENDED',
@@ -673,21 +1016,13 @@ describe('MatchConclusionService', () => {
       },
     });
 
-    jest.spyOn(service as any, 'captureSnapshots').mockResolvedValue(undefined);
-    jest
-      .spyOn(service as any, 'buildObserverMatchFinishedPayload')
-      .mockResolvedValue(null);
-
-    await expect(
-      service.conclude('match-1', {
-        source: 'AUTO_MATCH_CONCLUDED',
+    const plan = expectPlan(
+      await service.computeConclusion('match-1', {
+        source: 'API_MATCH_CONCLUDED',
       }),
-    ).resolves.toBe(true);
+    );
 
-    const projection = (
-      (results as any).applyTelemetryStateToResults as jest.Mock
-    ).mock.calls[0][1].finalProjection;
-    expect(projection).toMatchObject({
+    expect(plan.finalProjection).toMatchObject({
       totalTeams: 2,
       placementsAssigned: 2,
       winnerTeamId: 'team-2',
@@ -696,6 +1031,7 @@ describe('MatchConclusionService', () => {
         'team-2': { placement: 1 },
       },
     });
-    expect(projection.teams['team-3']).toBeUndefined();
+    expect(plan.finalProjection.teams['team-3']).toBeUndefined();
+    expect((prisma as any).$transaction).not.toHaveBeenCalled();
   });
 });

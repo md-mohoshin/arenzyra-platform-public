@@ -1,8 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { StandingsService } from './standings.service';
-
-type Scope = 'TOURNAMENT' | 'STAGE' | 'GROUP';
+import { StandingsService, type Scope } from './standings.service';
 
 type SnapshotRecord = {
   id: string;

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Inject,
@@ -15,6 +16,7 @@ import { Roles } from '../../common/auth/roles.decorator';
 import type { AuthenticatedRequest } from '../../common/auth/auth.types';
 import type { ControlState } from './dto/control.dto';
 import { MatchStateService } from './match-state.service';
+import { MatchControlService } from './match-control.service';
 import { AuditService } from '../audit/audit.service';
 import { MatchControlGateway } from './match-control.gateway';
 import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
@@ -60,6 +62,7 @@ class PlacementAdjustDto extends TeamTargetDto {
 export class MatchAdminControlController {
   constructor(
     private readonly state: MatchStateService,
+    private readonly matchControl: MatchControlService,
     private readonly audit: AuditService,
     private readonly gateway: MatchControlGateway,
     @Inject(forwardRef(() => ProductionService))
@@ -101,20 +104,26 @@ export class MatchAdminControlController {
 
   @Post('pause')
   pause(
-    @Param('matchId') matchId: string,
-    @Req() req: AuthenticatedRequest,
-    @Body() body?: OptionalReasonDto,
+    @Param('matchId') _matchId: string,
+    @Req() _req: AuthenticatedRequest,
+    @Body() _body?: OptionalReasonDto,
   ) {
-    return this.transition(matchId, 'PAUSED', req, 'pause', body?.reason);
+    void _matchId;
+    void _req;
+    void _body;
+    throw new BadRequestException('PAUSED lifecycle state is disabled');
   }
 
   @Post('resume')
   resume(
-    @Param('matchId') matchId: string,
-    @Req() req: AuthenticatedRequest,
-    @Body() body?: OptionalReasonDto,
+    @Param('matchId') _matchId: string,
+    @Req() _req: AuthenticatedRequest,
+    @Body() _body?: OptionalReasonDto,
   ) {
-    return this.transition(matchId, 'LIVE', req, 'resume', body?.reason);
+    void _matchId;
+    void _req;
+    void _body;
+    throw new BadRequestException('PAUSED lifecycle state is disabled');
   }
 
   @Post('set-pending')
@@ -123,7 +132,13 @@ export class MatchAdminControlController {
     @Req() req: AuthenticatedRequest,
     @Body() body?: OptionalReasonDto,
   ) {
-    return this.transition(matchId, 'PAUSED', req, 'set-pending', body?.reason);
+    return this.transition(
+      matchId,
+      'FINISH_PENDING',
+      req,
+      'set-pending',
+      body?.reason,
+    );
   }
 
   @Post('end')
@@ -132,7 +147,7 @@ export class MatchAdminControlController {
     @Req() req: AuthenticatedRequest,
     @Body() body?: OptionalReasonDto,
   ) {
-    return this.transition(matchId, 'ENDED', req, 'end', body?.reason);
+    return this.matchControl.endMatch(req.user, matchId, body?.reason ?? 'end');
   }
 
   @Post('force-end')
@@ -141,7 +156,7 @@ export class MatchAdminControlController {
     @Req() req: AuthenticatedRequest,
     @Body() body: ReasonDto,
   ) {
-    return this.transition(matchId, 'ENDED', req, 'force-end', body.reason);
+    return this.matchControl.endMatch(req.user, matchId, body.reason);
   }
 
   @Post('reset')
@@ -156,7 +171,13 @@ export class MatchAdminControlController {
     @Req() req: AuthenticatedRequest,
     @Body() body?: OptionalReasonDto,
   ) {
-    return this.transition(matchId, 'ENDED', req, 'lock', body?.reason);
+    return this.transition(
+      matchId,
+      'FINISH_PENDING',
+      req,
+      'lock',
+      body?.reason,
+    );
   }
 
   @Post('confirm')
@@ -165,16 +186,23 @@ export class MatchAdminControlController {
     @Req() req: AuthenticatedRequest,
     @Body() body?: OptionalReasonDto,
   ) {
-    return this.transition(matchId, 'CONFIRMED', req, 'confirm', body?.reason);
+    return this.matchControl.confirmFinished(
+      req.user,
+      matchId,
+      body?.reason ?? 'confirm',
+    );
   }
 
   @Post('reconnect')
   reconnect(
-    @Param('matchId') matchId: string,
-    @Req() req: AuthenticatedRequest,
-    @Body() body?: OptionalReasonDto,
+    @Param('matchId') _matchId: string,
+    @Req() _req: AuthenticatedRequest,
+    @Body() _body?: OptionalReasonDto,
   ) {
-    return this.transition(matchId, 'PAUSED', req, 'reconnect', body?.reason);
+    void _matchId;
+    void _req;
+    void _body;
+    throw new BadRequestException('PAUSED lifecycle state is disabled');
   }
 
   @Post('sync-overlay')

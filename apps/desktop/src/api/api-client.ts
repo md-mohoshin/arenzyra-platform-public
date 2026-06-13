@@ -1,4 +1,8 @@
 import type {
+  AiCasterAccessState,
+  AiCasterSettings,
+  AiCasterVoicePreviewPayload,
+  AiCasterVoicePreviewResponse,
   LauncherAccessReason,
   LauncherAssetStatus,
   FileFilter,
@@ -11,6 +15,7 @@ import type {
   LauncherLogEntry,
   ObserverCommandActionResponse,
   ObserverCommandCenterSnapshot,
+  PinnedCommentatorDeskWindowStatus,
   LauncherLiveMatch,
   MatchControlSnapshot,
   ObserverFeedStatus,
@@ -24,10 +29,18 @@ import type {
   StartObserverFeedResult,
   StageSummary,
   StartTelemetryBridgeResult,
+  StartVisualModeResult,
   SyncTeamsResult,
   TelemetryBridgeStatus,
   TournamentSummary,
+  VisualCaptureSource,
+  VisualModeConfig,
+  VisualModeStatus,
+  VisualReviewCaptureResult,
+  VisualReviewQueueState,
   WidgetCatalogState,
+  WidgetHotkeyControlConfig,
+  WidgetHotkeyControlStatus,
   WidgetServerStatus,
 } from "../types";
 
@@ -41,7 +54,9 @@ type ConfigBridge = {
   getConfig?: () => Promise<LauncherConfig>;
   set?: (key: string, value: unknown) => Promise<LauncherConfig>;
   setConfig?: (key: string, value: unknown) => Promise<LauncherConfig>;
-  subscribe?: (callback: (config: LauncherConfig) => void) => (() => void) | void;
+  subscribe?: (
+    callback: (config: LauncherConfig) => void,
+  ) => (() => void) | void;
   subscribeConfig?: (
     callback: (config: LauncherConfig) => void,
   ) => (() => void) | void;
@@ -117,7 +132,9 @@ const getBridge = (): ArenzyraBridge => {
   ).arenzyra;
 
   if (!bridge?.launcher) {
-    throw new Error("Arenzyra preload bridge is unavailable. Start this UI inside Electron.");
+    throw new Error(
+      "Arenzyra preload bridge is unavailable. Start this UI inside Electron.",
+    );
   }
 
   return bridge;
@@ -184,13 +201,11 @@ export const isAccessDeniedError = (error: unknown) =>
 const parseAccessDeniedReason = (
   message: string,
 ): LauncherAccessReason | null => {
-  const match = message.match(
-    /ARENZYRA_LAUNCHER_ACCESS_DENIED::([A-Z_]+)/,
-  );
+  const match = message.match(/ARENZYRA_LAUNCHER_ACCESS_DENIED::([A-Z_]+)/);
   return match ? (match[1] as LauncherAccessReason) : null;
 };
 
-const invoke = async <T,>(channel: string, payload?: unknown): Promise<T> => {
+const invoke = async <T>(channel: string, payload?: unknown): Promise<T> => {
   try {
     return (await getBridge().launcher!.invoke(channel, payload)) as T;
   } catch (error) {
@@ -210,12 +225,7 @@ export const launcherApi = {
     return invoke<LauncherBootstrap>("launcher:bootstrap", { apiBase });
   },
 
-  login(
-    email: string,
-    password: string,
-    apiBase: string,
-    keepSignedIn = true,
-  ) {
+  login(email: string, password: string, apiBase: string, keepSignedIn = true) {
     return invoke<{
       apiBase: string;
       session: LauncherSession;
@@ -295,6 +305,57 @@ export const launcherApi = {
     return invoke<TelemetryBridgeStatus>("launcher:getTelemetryStatus");
   },
 
+  listVisualSources() {
+    return invoke<VisualCaptureSource[]>("launcher:listVisualSources");
+  },
+
+  getVisualModeStatus() {
+    return invoke<VisualModeStatus>("launcher:getVisualModeStatus");
+  },
+
+  getVisualModeConfig() {
+    return invoke<VisualModeConfig>("launcher:getVisualModeConfig");
+  },
+
+  setVisualModeConfig(config: Partial<VisualModeConfig>) {
+    return invoke<VisualModeConfig>("launcher:setVisualModeConfig", {
+      config,
+    });
+  },
+
+  getVisualReviewQueue() {
+    return invoke<VisualReviewQueueState>("launcher:getVisualReviewQueue");
+  },
+
+  clearVisualReviewQueue() {
+    return invoke<VisualReviewQueueState>("launcher:clearVisualReviewQueue");
+  },
+
+  captureVisualReviewCandidate() {
+    return invoke<VisualReviewCaptureResult>(
+      "launcher:captureVisualReviewCandidate",
+    );
+  },
+
+  runVisualReviewOcr(id: string) {
+    return invoke<VisualReviewQueueState>("launcher:runVisualReviewOcr", {
+      id,
+    });
+  },
+
+  ignoreVisualReviewItem(id: string) {
+    return invoke<VisualReviewQueueState>("launcher:ignoreVisualReviewItem", {
+      id,
+    });
+  },
+
+  markVisualReviewItemReviewed(id: string) {
+    return invoke<VisualReviewQueueState>(
+      "launcher:markVisualReviewItemReviewed",
+      { id },
+    );
+  },
+
   getObserverFeedStatus() {
     const bridge = getObserverFeedBridge();
     if (!bridge.getStatus) {
@@ -317,11 +378,105 @@ export const launcherApi = {
     return invoke<WidgetServerStatus>("launcher:getWidgetServerStatus");
   },
 
-  getWidgetCatalogState(organizationId: string | null, widgetKeys: string[]) {
+  getPinnedCommentatorDeskWindow() {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:getPinnedCommentatorDeskWindow",
+    );
+  },
+
+  openPinnedCommentatorDeskWindow(payload?: {
+    clickThrough?: boolean;
+    mapKey?: string | null;
+  }) {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:openPinnedCommentatorDeskWindow",
+      payload,
+    );
+  },
+
+  closePinnedCommentatorDeskWindow() {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:closePinnedCommentatorDeskWindow",
+    );
+  },
+
+  setPinnedCommentatorDeskClickThrough(clickThrough: boolean) {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:setPinnedCommentatorDeskClickThrough",
+      {
+        clickThrough,
+      },
+    );
+  },
+
+  getWidgetCatalogState(
+    organizationId: string | null,
+    widgetKeys: string[],
+    accessOnlyWidgetKeys: string[] = [],
+  ) {
     return invoke<WidgetCatalogState>("launcher:getWidgetCatalogState", {
       organizationId,
       widgetKeys,
+      accessOnlyWidgetKeys,
     });
+  },
+
+  getWidgetHotkeyControl(organizationId?: string | null) {
+    return invoke<WidgetHotkeyControlStatus>(
+      "launcher:getWidgetHotkeyControl",
+      {
+        organizationId,
+      },
+    );
+  },
+
+  updateWidgetHotkeyControl(
+    config: WidgetHotkeyControlConfig,
+    organizationId?: string | null,
+  ) {
+    return invoke<WidgetHotkeyControlStatus>(
+      "launcher:updateWidgetHotkeyControl",
+      {
+        organizationId,
+        config,
+      },
+    );
+  },
+
+  triggerWidgetHotkeyControl(
+    active: boolean,
+    organizationId?: string | null,
+  ) {
+    return invoke<WidgetHotkeyControlStatus>(
+      "launcher:triggerWidgetHotkeyControl",
+      {
+        organizationId,
+        active,
+      },
+    );
+  },
+
+  getAiCasterAccess(organizationId?: string | null) {
+    return invoke<AiCasterAccessState>("launcher:getAiCasterAccess", {
+      organizationId,
+    });
+  },
+
+  updateAiCasterSettings(
+    settings: Partial<AiCasterSettings>,
+    organizationId?: string | null,
+  ) {
+    return invoke<AiCasterAccessState>("launcher:updateAiCasterSettings", {
+      settings,
+      organizationId,
+    });
+  },
+
+  previewAiCasterVoice(payload: AiCasterVoicePreviewPayload) {
+    return invoke<AiCasterVoicePreviewResponse>(
+      "launcher:previewAiCasterVoice",
+      payload,
+    );
   },
 
   getObserverCommandCenterSnapshot(mapKey?: string | null) {
@@ -332,10 +487,13 @@ export const launcherApi = {
   },
 
   runObserverCommandAction(path: string, mapKey?: string | null) {
-    return invoke<ObserverCommandActionResponse>("launcher:runObserverCommandAction", {
-      path,
-      mapKey,
-    });
+    return invoke<ObserverCommandActionResponse>(
+      "launcher:runObserverCommandAction",
+      {
+        path,
+        mapKey,
+      },
+    );
   },
 
   launchShadowTracker(shadowTrackerPath: string, matchId: string) {
@@ -359,11 +517,25 @@ export const launcherApi = {
       "id" | "name" | "map" | "status" | "liveState" | "matchNumber"
     > | null;
   }) {
-    return invoke<ProductionModeResult>("launcher:enterProductionMode", payload);
+    return invoke<ProductionModeResult>(
+      "launcher:enterProductionMode",
+      payload,
+    );
   },
 
   stopTelemetryBridge() {
     return invoke<TelemetryBridgeStatus>("launcher:stopTelemetryBridge");
+  },
+
+  startVisualMode(payload: {
+    matchId: string;
+    config: Partial<VisualModeConfig>;
+  }) {
+    return invoke<StartVisualModeResult>("launcher:startVisualMode", payload);
+  },
+
+  stopVisualMode() {
+    return invoke<VisualModeStatus>("launcher:stopVisualMode");
   },
 
   startObserverFeed(matchId: string) {
@@ -377,7 +549,9 @@ export const launcherApi = {
   },
 
   resetTelemetryForMatchSwitch() {
-    return invoke<TelemetryBridgeStatus>("launcher:resetTelemetryForMatchSwitch");
+    return invoke<TelemetryBridgeStatus>(
+      "launcher:resetTelemetryForMatchSwitch",
+    );
   },
 
   updateMatchFlowState(payload: {
@@ -391,7 +565,9 @@ export const launcherApi = {
   },
 
   consumePendingSyncCommand() {
-    return invoke<LauncherSyncCommand | null>("launcher:consumePendingSyncCommand");
+    return invoke<LauncherSyncCommand | null>(
+      "launcher:consumePendingSyncCommand",
+    );
   },
 
   onSyncPending(handler: () => void) {

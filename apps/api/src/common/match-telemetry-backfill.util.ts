@@ -25,11 +25,13 @@ export type MatchTelemetryBackfillRow = Prisma.MatchGetPayload<{
 export type MatchTelemetryBackfillFixCategory =
   | 'legacy_auto_to_api'
   | 'legacy_auto_to_pcob'
+  | 'sync_api_binding_fields'
   | 'sync_pcob_compatibility_fields'
   | 'clear_stale_pcob_fields';
 
 export type MatchTelemetryBackfillReviewCategory =
   | 'unsupported_data_source'
+  | 'api_provider_partial_observer_binding'
   | 'legacy_auto_with_partial_pcob_binding'
   | 'pcob_provider_missing_adapter'
   | 'pcob_provider_missing_session'
@@ -214,32 +216,30 @@ export const analyzeMatchTelemetryBackfill = (
   }
 
   if (explicitProvider === MatchDataSource.PCOB) {
-    const reviewCategories: MatchTelemetryBackfillReviewCategory[] = [];
-    const notes: string[] = [];
-    if (!hasPcobAdapter) {
-      reviewCategories.push('pcob_provider_missing_adapter');
-      notes.push('PCOB provider rows require adapterKey pubgm-pcob.');
-    }
-    if (!pcobSessionId) {
-      reviewCategories.push('pcob_provider_missing_session');
-      notes.push('PCOB provider rows require pcobSessionId.');
-    }
-    if (reviewCategories.length) {
-      return manualReview(currentProvider, reviewCategories, notes);
-    }
     return normalize(
       row,
       currentProvider,
-      MatchDataSource.PCOB,
+      MatchDataSource.API,
       {
-        dataSource: MatchDataSource.PCOB,
-        dataMode: DataMode.PCOB,
-        pcobMode: true,
-        pcobSessionId,
-        adapterKey: PCOB_ADAPTER_KEY,
+        dataSource: MatchDataSource.API,
+        dataMode: DataMode.MANUAL,
+        pcobMode: false,
+        pcobSessionId: hasPcobAdapter && pcobSessionId ? pcobSessionId : null,
+        pcobKillSyncEnabled: false,
+        ...(hasPcobAdapter && pcobSessionId
+          ? { adapterKey: PCOB_ADAPTER_KEY }
+          : { adapterKey: null }),
       },
-      ['sync_pcob_compatibility_fields'],
-      ['Valid PCOB rows keep bound state but sync compatibility columns.'],
+      [
+        'legacy_auto_to_api',
+        'sync_pcob_compatibility_fields',
+        ...(hasPcobTransportResidue(row)
+          ? (['clear_stale_pcob_fields'] as const)
+          : []),
+      ],
+      [
+        'Legacy PCOB rows normalize to API while preserving valid ob.js binding.',
+      ],
     );
   }
 
@@ -257,17 +257,18 @@ export const analyzeMatchTelemetryBackfill = (
       return normalize(
         row,
         currentProvider,
-        MatchDataSource.PCOB,
+        MatchDataSource.API,
         {
-          dataSource: MatchDataSource.PCOB,
-          dataMode: DataMode.PCOB,
-          pcobMode: true,
+          dataSource: MatchDataSource.API,
+          dataMode: DataMode.MANUAL,
+          pcobMode: false,
           pcobSessionId,
+          pcobKillSyncEnabled: false,
           adapterKey: PCOB_ADAPTER_KEY,
         },
-        ['legacy_auto_to_pcob', 'sync_pcob_compatibility_fields'],
+        ['legacy_auto_to_api', 'sync_pcob_compatibility_fields'],
         [
-          'Legacy AUTO rows with a valid PCOB binding are rewritten to canonical PCOB.',
+          'Legacy AUTO rows with a valid ob.js binding are rewritten to canonical API.',
         ],
       );
     }
@@ -305,6 +306,37 @@ export const analyzeMatchTelemetryBackfill = (
     );
   }
 
+  if (explicitProvider === MatchDataSource.API) {
+    if (validPcobConfig) {
+      return normalize(
+        row,
+        currentProvider,
+        MatchDataSource.API,
+        {
+          dataSource: MatchDataSource.API,
+          dataMode: DataMode.MANUAL,
+          pcobMode: false,
+          pcobSessionId,
+          adapterKey: PCOB_ADAPTER_KEY,
+        },
+        ['sync_api_binding_fields'],
+        [
+          'Explicit API rows keep valid ob.js adapter bindings while normalizing compatibility fields.',
+        ],
+      );
+    }
+
+    if (hasPcobAdapter || !!pcobSessionId) {
+      return manualReview(
+        currentProvider,
+        ['api_provider_partial_observer_binding'],
+        [
+          'API provider rows with partial observer binding traces are ambiguous and require manual review.',
+        ],
+      );
+    }
+  }
+
   if (pcobModeSignal) {
     return manualReview(
       currentProvider,
@@ -318,9 +350,14 @@ export const analyzeMatchTelemetryBackfill = (
   return normalize(
     row,
     currentProvider,
-    explicitProvider as TelemetryProvider,
+    explicitProvider === MatchDataSource.MANUAL
+      ? MatchDataSource.MANUAL
+      : MatchDataSource.API,
     {
-      dataSource: explicitProvider as TelemetryProvider,
+      dataSource:
+        explicitProvider === MatchDataSource.MANUAL
+          ? MatchDataSource.MANUAL
+          : MatchDataSource.API,
       dataMode: DataMode.MANUAL,
       pcobMode: false,
       pcobSessionId: null,

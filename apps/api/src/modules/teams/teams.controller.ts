@@ -29,9 +29,9 @@ import type {
   TeamPlayerBody,
 } from './teams.service';
 import {
-  storePlayerPhoto,
+  storePlayerPhotoProcessed,
   storeTeamBrandLogo,
-  storeTeamLogo,
+  storeTeamLogoProcessed,
 } from './asset.util';
 import { BroadcastGateway } from '../overlay/broadcast.gateway';
 
@@ -63,7 +63,7 @@ const memoryStorageEngine: StorageEngine = {
 };
 const uploadOptions: SafeMulterOptions = {
   storage: memoryStorageEngine,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 8 * 1024 * 1024 },
 };
 
 @Controller('org/:orgId')
@@ -163,9 +163,9 @@ export class TeamsController {
     if (!mimetype || !allowed.includes(mimetype)) {
       throw new BadRequestException('Invalid file type');
     }
-    const { url, version } = (() => {
+    const { url, version } = await (async () => {
       try {
-        return storeTeamLogo(teamId, file);
+        return await storeTeamLogoProcessed(teamId, file);
       } catch (err) {
         throw new BadRequestException(
           err instanceof Error ? err.message : 'Upload failed',
@@ -242,9 +242,9 @@ export class TeamsController {
     if (!mimetype || !allowed.includes(mimetype)) {
       throw new BadRequestException('Invalid file type');
     }
-    const { url, version } = (() => {
+    const { url, version } = await (async () => {
       try {
-        return storePlayerPhoto(playerId, file);
+        return await storePlayerPhotoProcessed(playerId, file);
       } catch (err) {
         throw new BadRequestException(
           err instanceof Error ? err.message : 'Upload failed',

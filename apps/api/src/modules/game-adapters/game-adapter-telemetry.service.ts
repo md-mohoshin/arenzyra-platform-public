@@ -32,6 +32,17 @@ const DEDUPE_TTL_SECONDS = Math.max(
   ),
 );
 
+const isEnabledFlag = (value: string | undefined): boolean => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  return normalized === '1' || normalized === 'true';
+};
+
+const isLegacyAdapterPollingEnabled = (): boolean =>
+  isEnabledFlag(process.env.GAME_ADAPTER_TELEMETRY_POLL_ENABLED) ||
+  isEnabledFlag(process.env.ALLOW_LEGACY_PCOB_INGEST);
+
 const toJsonInput = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
 
@@ -74,6 +85,13 @@ export class GameAdapterTelemetryService
   ) {}
 
   onModuleInit() {
+    if (!isLegacyAdapterPollingEnabled()) {
+      this.logger.log(
+        'Legacy game-adapter telemetry polling disabled; API push telemetry remains enabled',
+      );
+      return;
+    }
+
     const intervalMs = Math.max(
       500,
       Number(process.env.GAME_ADAPTER_TELEMETRY_POLL_MS ?? 1500),
@@ -246,11 +264,12 @@ export class GameAdapterTelemetryService
     options: IngestEnvelopeOptions = {},
   ): Promise<{ ignored: boolean; reason?: string | null }> {
     const source = options.sourceOverride ?? telemetry.source ?? adapterKey;
-    const ingressResult =
-      await this.telemetryIngress.ingestAdapterTelemetryEnvelope(telemetry, {
-        boundMatchId: matchId,
-        source,
-      });
+    const ingressResult: Awaited<
+      ReturnType<TelemetryIngressService['ingestAdapterTelemetryEnvelope']>
+    > = await this.telemetryIngress.ingestAdapterTelemetryEnvelope(telemetry, {
+      boundMatchId: matchId,
+      source,
+    });
     const shouldPersistAcceptedEnvelope =
       ingressResult.ignored !== true ||
       ingressResult.reason === 'NO_STATE_CHANGE';
@@ -349,23 +368,36 @@ export class GameAdapterTelemetryService
 
     // Compatibility-only mirror for older map/results/scoring readers.
     // Authoritative live telemetry state is adapter -> ingress -> engine.
+    // Keep structural player/team rosters out of this payload so legacy readers
+    // cannot rebuild result rows from telemetry after canonical runtime fields
+    // have already been merged.
+    const safeEvents = this.filterUnsafeCompatibilityEvents(telemetry, {
+      matchId,
+      adapterKey,
+      source: params.source,
+    });
+    const compatibilityPayload = toJsonInput({
+      matchId: telemetry.matchId,
+      sessionId: telemetry.sessionId ?? null,
+      sequence: telemetry.sequence ?? null,
+      timestamp: telemetry.timestamp,
+      players: [],
+      teams: [],
+      zone: telemetry.zone,
+      events: safeEvents,
+      source: params.source,
+      adapterKey,
+      raw: telemetry.raw ?? {
+        players: telemetry.players,
+        teams: telemetry.teams,
+      },
+      structuralMirrorDisabled: true,
+    });
     await this.prisma.matchTelemetry.upsert({
       where: { matchId },
       create: {
         matchId,
-        payload: toJsonInput({
-          matchId: telemetry.matchId,
-          sessionId: telemetry.sessionId ?? null,
-          sequence: telemetry.sequence ?? null,
-          timestamp: telemetry.timestamp,
-          players: telemetry.players,
-          teams: telemetry.teams,
-          zone: telemetry.zone,
-          events: telemetry.events,
-          source: params.source,
-          adapterKey,
-          raw: telemetry.raw ?? null,
-        }),
+        payload: compatibilityPayload,
         zoneCenter: toJsonInput(telemetry.zone?.center ?? null),
         zoneRadius: telemetry.zone?.radius ?? null,
         zonePhaseIndex: telemetry.zone?.phase ?? null,
@@ -374,19 +406,7 @@ export class GameAdapterTelemetryService
           : null,
       },
       update: {
-        payload: toJsonInput({
-          matchId: telemetry.matchId,
-          sessionId: telemetry.sessionId ?? null,
-          sequence: telemetry.sequence ?? null,
-          timestamp: telemetry.timestamp,
-          players: telemetry.players,
-          teams: telemetry.teams,
-          zone: telemetry.zone,
-          events: telemetry.events,
-          source: params.source,
-          adapterKey,
-          raw: telemetry.raw ?? null,
-        }),
+        payload: compatibilityPayload,
         zoneCenter: toJsonInput(telemetry.zone?.center ?? null),
         zoneRadius: telemetry.zone?.radius ?? null,
         zonePhaseIndex: telemetry.zone?.phase ?? null,
@@ -402,7 +422,7 @@ export class GameAdapterTelemetryService
     });
 
     const freshEvents: AdapterTelemetryEvent[] = [];
-    for (const event of telemetry.events) {
+    for (const event of safeEvents) {
       const accepted = await this.rememberEvent(matchId, adapterKey, event);
       if (accepted) {
         freshEvents.push(event);
@@ -474,6 +494,84 @@ export class GameAdapterTelemetryService
         adapterKey: adapter.key,
         reason: 'NO_CANONICAL_PROVIDER_ADAPTER',
       }),
+    );
+  }
+
+  private filterUnsafeCompatibilityEvents(
+    telemetry: AdapterTelemetryEnvelope,
+    context: {
+      matchId: string;
+      adapterKey: string;
+      source: string;
+    },
+  ): AdapterTelemetryEvent[] {
+    if (!this.isEarlyAirTelemetry(telemetry)) {
+      return telemetry.events;
+    }
+
+    const safeEvents = telemetry.events.filter(
+      (event) => event.type !== 'TEAM_ELIMINATED' && event.type !== 'KILL',
+    );
+    const blocked = telemetry.events.length - safeEvents.length;
+    if (blocked > 0) {
+      this.logger.warn(
+        JSON.stringify({
+          tag: '[ELIMINATION][BLOCKED]',
+          stage: 'game-adapter-telemetry',
+          action: 'compatibility-elimination-events-blocked',
+          matchId: context.matchId,
+          adapterKey: context.adapterKey,
+          source: context.source,
+          phase: telemetry.zone?.phase ?? null,
+          blockedEvents: blocked,
+          eventTypes: telemetry.events.map((event) => event.type),
+          reason: 'EARLY_AIR_PHASE_COMPATIBILITY_EVENT_BLOCKED',
+        }),
+      );
+    }
+    return safeEvents;
+  }
+
+  private isEarlyAirTelemetry(telemetry: AdapterTelemetryEnvelope): boolean {
+    const phase =
+      typeof telemetry.zone?.phase === 'number' &&
+      Number.isFinite(telemetry.zone.phase)
+        ? Math.trunc(telemetry.zone.phase)
+        : null;
+    if (phase !== null && phase <= 1) {
+      return true;
+    }
+
+    return this.rawContainsAirPhase(telemetry.raw);
+  }
+
+  private rawContainsAirPhase(value: unknown, depth = 0): boolean {
+    if (value === null || value === undefined || depth > 3) {
+      return false;
+    }
+    if (typeof value === 'string') {
+      return /(plane|parachut|airborne|flight|jump)/i.test(value);
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return false;
+    }
+    if (Array.isArray(value)) {
+      return value
+        .slice(0, 12)
+        .some((item) => this.rawContainsAirPhase(item, depth + 1));
+    }
+    if (typeof value !== 'object') {
+      return false;
+    }
+    return Object.entries(value as Record<string, unknown>).some(
+      ([key, entry]) =>
+        (/(phase|state|status|stage|mode|flight|plane|parachut|jump)/i.test(
+          key,
+        ) ||
+          /^(payload|data|raw|game|match|zone|circle|players?|teams?)$/i.test(
+            key,
+          )) &&
+        this.rawContainsAirPhase(entry, depth + 1),
     );
   }
 

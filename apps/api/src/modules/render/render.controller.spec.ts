@@ -16,6 +16,7 @@ describe('RenderController', () => {
 
   const renderService = {
     renderMatchResultImage: jest.fn().mockResolvedValue(pngBuffer),
+    renderDiscordMatchImage: jest.fn().mockResolvedValue(pngBuffer),
     renderSessionStandingsImage: jest.fn().mockResolvedValue(pngBuffer),
   };
 
@@ -54,6 +55,28 @@ describe('RenderController', () => {
     expect(renderService.renderSessionStandingsImage).toHaveBeenCalledWith(
       req.user,
       'session-1',
+    );
+  });
+
+  it('returns a png streamable file for Discord match card renders', async () => {
+    const controller = new RenderController(renderService as any);
+
+    const result = await controller.renderDiscordMatch(
+      'match-1',
+      'top-fraggers',
+      req,
+    );
+
+    expect(result).toBeInstanceOf(StreamableFile);
+    expect(result.getHeaders()).toEqual(
+      expect.objectContaining({
+        type: 'image/png',
+      }),
+    );
+    expect(renderService.renderDiscordMatchImage).toHaveBeenCalledWith(
+      req.user,
+      'match-1',
+      'top-fraggers',
     );
   });
 });

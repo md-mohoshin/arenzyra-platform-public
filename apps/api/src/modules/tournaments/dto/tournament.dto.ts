@@ -14,6 +14,9 @@ export interface TournamentCreateDto {
   status?: TournamentStatus | null;
   game?: GameKey | null;
   ruleset?: unknown;
+  qualifiedTeamsCount?: number | null;
+  qualificationBubbleCount?: number | null;
+  qualificationLabel?: string | null;
 }
 
 export type TournamentUpdateDto = Partial<TournamentCreateDto> & {

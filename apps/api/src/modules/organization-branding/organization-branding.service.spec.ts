@@ -292,4 +292,154 @@ describe('OrganizationBrandingService', () => {
     expect(branding.organizationId).toBe('orgSession');
     expect(branding.widgetBackground).toBe('#222222');
   });
+
+  it('resolves session branding override before organization branding', async () => {
+    const delegate = new MockBrandingDelegate();
+    await delegate.create({
+      data: {
+        organizationId: 'org-session-brand',
+        mode: 'solid',
+        widgetBackground: '#111111',
+        primaryColor: '#111111',
+      },
+    });
+    const prisma = {
+      organizationBranding: delegate,
+      organization: new MockOrganizationDelegate(),
+      session: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'session-brand',
+          organizationId: 'org-session-brand',
+          branding: {
+            sessionId: 'session-brand',
+            organizationId: 'org-session-brand',
+            inheritOrganization: false,
+            mode: 'solid',
+            widgetBackground: '#223344',
+            primaryColor: '#334455',
+            accent: '#445566',
+          },
+        }),
+      },
+      match: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      tournament: { findFirst: jest.fn().mockResolvedValue(null) },
+    } as unknown as PrismaService;
+
+    const realtime = {
+      emitBrandingUpdated: jest.fn(),
+      emitThemeUpdated: jest.fn(),
+    } as unknown as RealtimeGateway;
+    const svc = new OrganizationBrandingService(prisma, realtime);
+
+    const branding = await svc.getEffectiveBranding({
+      organizationId: 'org-session-brand',
+      sessionId: 'session-brand',
+    });
+    expect(branding.organizationId).toBe('org-session-brand');
+    expect(branding.widgetBackground).toBe('#223344');
+    expect(branding.primaryColor).toBe('#334455');
+  });
+
+  it('falls back to organization branding when session branding is inherited', async () => {
+    const delegate = new MockBrandingDelegate();
+    await delegate.create({
+      data: {
+        organizationId: 'org-session-inherit',
+        mode: 'solid',
+        widgetBackground: '#445566',
+        primaryColor: '#556677',
+      },
+    });
+    const prisma = {
+      organizationBranding: delegate,
+      organization: new MockOrganizationDelegate(),
+      session: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'session-inherit',
+          organizationId: 'org-session-inherit',
+          branding: {
+            sessionId: 'session-inherit',
+            organizationId: 'org-session-inherit',
+            inheritOrganization: true,
+            mode: 'solid',
+            widgetBackground: '#000000',
+            primaryColor: '#000000',
+          },
+        }),
+      },
+      match: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      tournament: { findFirst: jest.fn().mockResolvedValue(null) },
+    } as unknown as PrismaService;
+
+    const realtime = {
+      emitBrandingUpdated: jest.fn(),
+      emitThemeUpdated: jest.fn(),
+    } as unknown as RealtimeGateway;
+    const svc = new OrganizationBrandingService(prisma, realtime);
+
+    const branding = await svc.getEffectiveBranding({
+      organizationId: 'org-session-inherit',
+      sessionId: 'session-inherit',
+    });
+    expect(branding.organizationId).toBe('org-session-inherit');
+    expect(branding.widgetBackground).toBe('#445566');
+    expect(branding.primaryColor).toBe('#556677');
+  });
+
+  it('clears session override when inherit organization is saved', async () => {
+    const delegate = new MockBrandingDelegate();
+    await delegate.create({
+      data: {
+        organizationId: 'org-reset',
+        mode: 'solid',
+        widgetBackground: '#abcdef',
+      },
+    });
+    const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      organizationBranding: delegate,
+      organization: new MockOrganizationDelegate(),
+      session: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'session-reset',
+          organizationId: 'org-reset',
+          branding: {
+            sessionId: 'session-reset',
+            organizationId: 'org-reset',
+            inheritOrganization: false,
+            mode: 'solid',
+            widgetBackground: '#000000',
+          },
+        }),
+      },
+      sessionBranding: {
+        deleteMany,
+      },
+    } as unknown as PrismaService;
+    const realtime = {
+      emitBrandingUpdated: jest.fn(),
+      emitThemeUpdated: jest.fn(),
+    } as unknown as RealtimeGateway;
+    const svc = new OrganizationBrandingService(prisma, realtime);
+
+    const branding = await svc.updateForSessionActor(
+      adminActor('org-reset'),
+      'session-reset',
+      { inheritOrganization: true },
+    );
+
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: {
+        sessionId: 'session-reset',
+        organizationId: 'org-reset',
+      },
+    });
+    expect(branding.inheritOrganization).toBe(true);
+    expect(branding.source).toBe('organization');
+    expect(branding.widgetBackground).toBe('#abcdef');
+  });
 });

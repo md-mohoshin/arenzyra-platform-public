@@ -69,3 +69,21 @@ export type DiscordTeamRegistrationResponse = {
   team: TeamResponse;
   members: TeamMemberResponse[];
 };
+
+export type DiscordTeamCleanupResponse = {
+  ok: true;
+  teamId: string;
+  releasedMembers: number;
+};
+
+export type DiscordTeamMemberReleaseResponse = {
+  ok: true;
+  teamId: string;
+  removedMember: TeamMemberResponse;
+  promotedMember: TeamMemberResponse | null;
+};
+
+export type DiscordManagedTeamResponse = {
+  team: TeamResponse;
+  managers: TeamMemberResponse[];
+};

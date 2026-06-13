@@ -1,8 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import {
   KycStatus,
+  OrganizerAccessMode,
   OrganizationApplicationStatus,
   OrganizationStatus,
+  OrganizationSubscriptionStatus,
   Role,
   UserStatus,
 } from '@prisma/client';
@@ -30,6 +32,7 @@ describe('SuperService', () => {
     const prisma = {
       $transaction: jest.fn(),
       organizationApplication: {
+        count: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
         updateMany: jest.fn(),
@@ -39,10 +42,13 @@ describe('SuperService', () => {
         findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(),
       },
       organization: {
         findFirst: jest.fn(),
+        findUnique: jest.fn(),
         create: jest.fn(),
+        update: jest.fn(),
       },
       organizationBranding: {
         create: jest.fn(),
@@ -114,6 +120,10 @@ describe('SuperService', () => {
       slug: 'acme-events',
       status: OrganizationStatus.APPROVED,
       kycStatus: KycStatus.PENDING,
+      subscriptionStatus: OrganizationSubscriptionStatus.TRIALING,
+      trialStartedAt: new Date('2026-03-24T10:02:00.000Z'),
+      trialEndsAt: new Date('2026-03-31T10:02:00.000Z'),
+      paidUntil: null,
       widgetApprovalEnforced: false,
       ownerUserId: 'user-1',
       createdAt: new Date('2026-03-24T10:02:00.000Z'),
@@ -142,6 +152,10 @@ describe('SuperService', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           name: 'Acme Events',
+          subscriptionStatus: OrganizationSubscriptionStatus.TRIALING,
+          trialStartedAt: expect.any(Date),
+          trialEndsAt: expect.any(Date),
+          paidUntil: null,
         }),
       }),
     );
@@ -167,6 +181,9 @@ describe('SuperService', () => {
       OrganizationApplicationStatus.APPROVED,
     );
     expect(result.organization.ownerUserId).toBe('user-1');
+    expect(result.organization.subscriptionStatus).toBe(
+      OrganizationSubscriptionStatus.TRIALING,
+    );
     expect(result.user.organizationId).toBe('org-1');
   });
 
@@ -243,5 +260,234 @@ describe('SuperService', () => {
     );
     expect(result.status).toBe(OrganizationApplicationStatus.REJECTED);
     expect(result.rejectionReason).toBe('Missing verification details');
+  });
+
+  it('creates an organization with selected status, kyc, and access mode', async () => {
+    const prisma = mockPrisma();
+    const assets = mockAssets();
+    const orgFeatures = mockOrgFeatures();
+
+    prisma.organization.findFirst.mockResolvedValue(null);
+    prisma.organization.create.mockResolvedValue({
+      id: 'org-1',
+      name: 'Discord League',
+      slug: 'discord-league',
+      status: OrganizationStatus.SUSPENDED,
+      kycStatus: KycStatus.REJECTED,
+      accessMode: OrganizerAccessMode.DISCORD_ONLY,
+      widgetApprovalEnforced: false,
+      ownerUserId: null,
+      createdAt: new Date('2026-05-07T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-07T10:00:00.000Z'),
+    });
+    prisma.organization.findUnique.mockResolvedValue({
+      id: 'org-1',
+      name: 'Discord League',
+      slug: 'discord-league',
+      status: OrganizationStatus.SUSPENDED,
+      kycStatus: KycStatus.REJECTED,
+      accessMode: OrganizerAccessMode.DISCORD_ONLY,
+      widgetApprovalEnforced: false,
+      ownerUserId: null,
+      owner: null,
+      createdAt: new Date('2026-05-07T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-07T10:00:00.000Z'),
+    });
+
+    const service = new SuperService(
+      prisma as unknown as PrismaService,
+      assets as unknown as VisualAssetsService,
+      orgFeatures as unknown as OrganizationFeatureService,
+    );
+
+    const result = await service.createOrganization(
+      {
+        name: 'Discord League',
+        accessMode: 'DISCORD_ONLY',
+        status: OrganizationStatus.SUSPENDED,
+        kycStatus: KycStatus.REJECTED,
+      },
+      actor,
+    );
+
+    expect(prisma.organization.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OrganizationStatus.SUSPENDED,
+          kycStatus: KycStatus.REJECTED,
+          accessMode: OrganizerAccessMode.DISCORD_ONLY,
+        }),
+      }),
+    );
+    expect(result.accessMode).toBe(OrganizerAccessMode.DISCORD_ONLY);
+    expect(result.status).toBe(OrganizationStatus.SUSPENDED);
+    expect(result.kycStatus).toBe(KycStatus.REJECTED);
+  });
+
+  it('updates organization access mode and assigned user access mode together', async () => {
+    const prisma = mockPrisma();
+    prisma.organization.findFirst.mockResolvedValue({
+      id: 'org-1',
+      name: 'Fix Esports',
+      accessMode: OrganizerAccessMode.FULL_PRODUCTION,
+      deletedAt: null,
+    });
+    prisma.organization.update.mockResolvedValue({
+      id: 'org-1',
+      name: 'Fix Esports',
+      slug: 'fix-esports',
+      status: OrganizationStatus.APPROVED,
+      kycStatus: KycStatus.APPROVED,
+      accessMode: OrganizerAccessMode.DISCORD_ONLY,
+      widgetApprovalEnforced: false,
+      ownerUserId: null,
+      owner: null,
+      createdAt: new Date('2026-05-07T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-07T10:10:00.000Z'),
+    });
+    prisma.user.updateMany.mockResolvedValue({ count: 2 });
+
+    const service = new SuperService(
+      prisma as unknown as PrismaService,
+      mockAssets() as unknown as VisualAssetsService,
+      mockOrgFeatures() as unknown as OrganizationFeatureService,
+    );
+
+    const result = await service.updateOrganizationAccessMode(
+      'org-1',
+      { accessMode: OrganizerAccessMode.DISCORD_ONLY },
+      actor,
+    );
+
+    expect(prisma.organization.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'org-1' },
+        data: { accessMode: OrganizerAccessMode.DISCORD_ONLY },
+      }),
+    );
+    expect(prisma.user.updateMany).toHaveBeenCalledWith({
+      where: {
+        organizationId: 'org-1',
+        deletedAt: null,
+        role: { in: [Role.ADMIN, Role.ORGANIZER] },
+      },
+      data: { organizerAccessMode: OrganizerAccessMode.DISCORD_ONLY },
+    });
+    expect(result.accessMode).toBe(OrganizerAccessMode.DISCORD_ONLY);
+  });
+
+  it('activates an organization subscription after payment', async () => {
+    const prisma = mockPrisma();
+    const existing = {
+      id: 'org-1',
+      name: 'Fix Esports',
+      slug: 'fix-esports',
+      status: OrganizationStatus.APPROVED,
+      isActive: true,
+      subscriptionStatus: OrganizationSubscriptionStatus.TRIALING,
+      trialStartedAt: new Date('2026-05-01T10:00:00.000Z'),
+      trialEndsAt: new Date('2026-05-08T10:00:00.000Z'),
+      paidUntil: null,
+      deletedAt: null,
+    };
+
+    prisma.organization.findFirst.mockResolvedValue(existing);
+    prisma.organization.update.mockResolvedValue({
+      ...existing,
+      subscriptionStatus: OrganizationSubscriptionStatus.ACTIVE,
+      paidUntil: new Date('2026-06-16T00:00:00.000Z'),
+      owner: null,
+      kycStatus: KycStatus.PENDING,
+      accessMode: OrganizerAccessMode.FULL_PRODUCTION,
+      widgetApprovalEnforced: false,
+      ownerUserId: null,
+      createdAt: new Date('2026-05-01T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-16T00:00:00.000Z'),
+    });
+
+    const service = new SuperService(
+      prisma as unknown as PrismaService,
+      mockAssets() as unknown as VisualAssetsService,
+      mockOrgFeatures() as unknown as OrganizationFeatureService,
+    );
+
+    const result = await service.updateOrganizationSubscription(
+      'org-1',
+      {
+        subscriptionStatus: OrganizationSubscriptionStatus.ACTIVE,
+        paidUntil: '2026-06-16T00:00:00.000Z',
+      },
+      actor,
+    );
+
+    expect(prisma.organization.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'org-1' },
+        data: expect.objectContaining({
+          subscriptionStatus: OrganizationSubscriptionStatus.ACTIVE,
+          status: OrganizationStatus.APPROVED,
+          isActive: true,
+          paidUntil: new Date('2026-06-16T00:00:00.000Z'),
+        }),
+      }),
+    );
+    expect(result.subscriptionStatus).toBe(
+      OrganizationSubscriptionStatus.ACTIVE,
+    );
+  });
+
+  it('marks an organization subscription as expired', async () => {
+    const prisma = mockPrisma();
+    const existing = {
+      id: 'org-1',
+      name: 'Fix Esports',
+      slug: 'fix-esports',
+      status: OrganizationStatus.APPROVED,
+      isActive: true,
+      subscriptionStatus: OrganizationSubscriptionStatus.TRIALING,
+      trialStartedAt: new Date('2026-05-01T10:00:00.000Z'),
+      trialEndsAt: new Date('2026-05-08T10:00:00.000Z'),
+      paidUntil: null,
+      deletedAt: null,
+    };
+
+    prisma.organization.findFirst.mockResolvedValue(existing);
+    prisma.organization.update.mockResolvedValue({
+      ...existing,
+      subscriptionStatus: OrganizationSubscriptionStatus.EXPIRED,
+      paidUntil: null,
+      owner: null,
+      kycStatus: KycStatus.PENDING,
+      accessMode: OrganizerAccessMode.FULL_PRODUCTION,
+      widgetApprovalEnforced: false,
+      ownerUserId: null,
+      createdAt: new Date('2026-05-01T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-16T00:00:00.000Z'),
+    });
+
+    const service = new SuperService(
+      prisma as unknown as PrismaService,
+      mockAssets() as unknown as VisualAssetsService,
+      mockOrgFeatures() as unknown as OrganizationFeatureService,
+    );
+
+    const result = await service.updateOrganizationSubscription(
+      'org-1',
+      { subscriptionStatus: OrganizationSubscriptionStatus.EXPIRED },
+      actor,
+    );
+
+    expect(prisma.organization.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'org-1' },
+        data: expect.objectContaining({
+          subscriptionStatus: OrganizationSubscriptionStatus.EXPIRED,
+          paidUntil: null,
+        }),
+      }),
+    );
+    expect(result.subscriptionStatus).toBe(
+      OrganizationSubscriptionStatus.EXPIRED,
+    );
   });
 });

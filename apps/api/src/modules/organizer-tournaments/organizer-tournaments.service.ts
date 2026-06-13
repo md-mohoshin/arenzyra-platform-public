@@ -22,6 +22,9 @@ import { CreateOrganizerStageDto } from './dto/create-stage.dto';
 import { CreateOrganizerGroupDto } from './dto/create-group.dto';
 import { GenerateMatchesDto } from './dto/generate-matches.dto';
 import { effectiveOrganizationId } from '../../common/org/org.util';
+import { defaultTournamentRulesetForGame } from '../../common/game-rules.util';
+import { assertOrganizationGameAccess } from '../../common/org/organization-plan.util';
+import { buildQualificationSettingsData } from '../../common/qualification-settings.util';
 
 @Injectable()
 export class OrganizerTournamentsService {
@@ -54,7 +57,7 @@ export class OrganizerTournamentsService {
 
   private coerceStageType(raw?: string | null): StageType {
     if (!raw) return StageType.GROUP;
-    const match = (Object.values(StageType) as string[]).find(
+    const match = Object.values(StageType).find(
       (value) => value.toLowerCase() === raw.toLowerCase(),
     );
     return (match as StageType | undefined) ?? StageType.GROUP;
@@ -62,7 +65,7 @@ export class OrganizerTournamentsService {
 
   private coerceGameKey(raw?: string | null): GameKey | undefined {
     if (!raw) return undefined;
-    const match = (Object.values(GameKey) as string[]).find(
+    const match = Object.values(GameKey).find(
       (value) => value.toLowerCase() === raw.toLowerCase(),
     );
     return match as GameKey | undefined;
@@ -70,7 +73,7 @@ export class OrganizerTournamentsService {
 
   private coerceStatus(raw?: string | null): TournamentStatus | undefined {
     if (!raw) return undefined;
-    const match = (Object.values(TournamentStatus) as string[]).find(
+    const match = Object.values(TournamentStatus).find(
       (value) => value.toLowerCase() === raw.toLowerCase(),
     );
     return match as TournamentStatus | undefined;
@@ -95,6 +98,9 @@ export class OrganizerTournamentsService {
         name: true,
         order: true,
         liveState: true,
+        qualifiedTeamsCount: true,
+        qualificationBubbleCount: true,
+        qualificationLabel: true,
         createdAt: true,
         tournamentId: true,
         groups: {
@@ -103,6 +109,9 @@ export class OrganizerTournamentsService {
           select: {
             id: true,
             name: true,
+            qualifiedTeamsCount: true,
+            qualificationBubbleCount: true,
+            qualificationLabel: true,
             createdAt: true,
             _count: {
               select: { matches: { where: { deletedAt: null } } },
@@ -144,13 +153,16 @@ export class OrganizerTournamentsService {
       );
     }
 
+    const game = this.coerceGameKey(dto.game ?? null) ?? GameKey.PUBG_MOBILE;
+    await assertOrganizationGameAccess(this.prisma, orgId, game);
+
     return this.prisma.$transaction(async (tx) => {
       const tournament = await tx.tournament.create({
         data: {
           name: dto.name.trim(),
           shortName: dto.shortName?.trim() || dto.name.trim(),
           timezone: dto.timezone ?? 'UTC',
-          game: this.coerceGameKey(dto.game ?? null),
+          game,
           description: dto.description ?? null,
           region: dto.region ?? null,
           startDate: start,
@@ -162,7 +174,8 @@ export class OrganizerTournamentsService {
           status: TournamentStatus.DRAFT,
           registrationPaused: dto.registrationPaused ?? false,
           liveState: LiveState.UPCOMING,
-          ruleset: {}, // minimal required json blob
+          ...buildQualificationSettingsData(dto),
+          ruleset: defaultTournamentRulesetForGame(game),
         },
       });
 
@@ -178,6 +191,7 @@ export class OrganizerTournamentsService {
             name: 'Stage 1',
             order: 1,
             type: StageType.GROUP,
+            maxTeams: null,
             tournamentId: tournament.id,
             organizationId: orgId,
           },
@@ -201,7 +215,7 @@ export class OrganizerTournamentsService {
             name: 'Group A',
             stageId: stage.id,
             organizationId: orgId,
-            maxTeams: stage.maxTeams ?? 25,
+            maxTeams: null,
           },
         });
       }
@@ -271,6 +285,10 @@ export class OrganizerTournamentsService {
         deletedAt: true,
         logoUrl: true,
         bannerUrl: true,
+        game: true,
+        qualifiedTeamsCount: true,
+        qualificationBubbleCount: true,
+        qualificationLabel: true,
         _count: {
           select: {
             tournamentTeams: { where: { deletedAt: null } },
@@ -458,6 +476,9 @@ export class OrganizerTournamentsService {
       game: string | null;
       startDate: string | number | Date | null;
       endDate: string | number | Date | null;
+      qualifiedTeamsCount: number | string | null;
+      qualificationBubbleCount: number | string | null;
+      qualificationLabel: string | null;
     }>,
     actor: AuthenticatedRequest['user'],
   ) {
@@ -477,6 +498,7 @@ export class OrganizerTournamentsService {
     if (body.registrationPaused !== undefined)
       (data as { registrationPaused?: boolean }).registrationPaused =
         body.registrationPaused;
+    Object.assign(data, buildQualificationSettingsData(body));
     if (body.defaultRegistrationStageId !== undefined) {
       const stageId =
         typeof body.defaultRegistrationStageId === 'string'
@@ -507,7 +529,13 @@ export class OrganizerTournamentsService {
         };
       }
     }
-    if (body.game !== undefined) data.game = this.coerceGameKey(body.game);
+    if (body.game !== undefined) {
+      const nextGame = this.coerceGameKey(body.game);
+      if (nextGame) {
+        await assertOrganizationGameAccess(this.prisma, orgId, nextGame);
+      }
+      data.game = nextGame;
+    }
 
     if (body.startDate !== undefined) {
       const start = body.startDate ? new Date(body.startDate) : null;
@@ -574,6 +602,7 @@ export class OrganizerTournamentsService {
         name: dto.name,
         order: dto.order ?? 1,
         type: this.coerceStageType(dto.type ?? null),
+        ...buildQualificationSettingsData(dto),
         tournamentId: dto.tournamentId,
         organizationId: orgId,
       },
@@ -609,6 +638,7 @@ export class OrganizerTournamentsService {
       data: {
         name: dto.name,
         maxTeams: dto.maxTeams ?? null,
+        ...buildQualificationSettingsData(dto),
         stageId: stage.id,
         organizationId: orgId,
       },

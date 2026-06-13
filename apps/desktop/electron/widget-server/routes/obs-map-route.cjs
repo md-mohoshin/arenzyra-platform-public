@@ -13,6 +13,7 @@ function registerObsMapRoute(app, { engine, registry, wsPath }) {
     const requestedMapDefinition = registry.resolve(req.query?.map);
     const snapshot = engine.getSnapshot(requestedMapDefinition?.key ?? null);
     const bootstrap = {
+      widgetKey: "map",
       debug: normalizeDebugFlag(String(req.query?.debug || "")),
       requestedMapKey:
         requestedMapDefinition?.key ?? snapshot?.mapContext?.mapKey ?? registry.getDefaultKey(),
@@ -27,7 +28,7 @@ function registerObsMapRoute(app, { engine, registry, wsPath }) {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Arenzyra OBS Map</title>
-    <link rel="stylesheet" href="/obs/static/obs-map-widget.css?v=blue-zone-v5" />
+    <link rel="stylesheet" href="/obs/static/obs-map-widget.css?v=hd-map-v2" />
   </head>
   <body>
     <div class="obs-map-root">
@@ -50,6 +51,7 @@ function registerObsMapRoute(app, { engine, registry, wsPath }) {
         </div>
         <div class="map-stage" id="map-stage">
           <img id="map-image" alt="PUBG map image" draggable="false" />
+          <div id="map-tile-layer" aria-hidden="true"></div>
           <canvas id="map-overlay"></canvas>
           <div class="status-pill" id="status-pill">Connecting...</div>
           <div class="timer-panel" id="timer-panel">
@@ -91,7 +93,8 @@ function registerObsMapRoute(app, { engine, registry, wsPath }) {
       </div>
     </div>
     <script>window.__ARENZYRA_MAP_WIDGET_BOOTSTRAP__ = ${safeJson(bootstrap)};</script>
-    <script src="/obs/static/obs-map-widget.js?v=blue-zone-v5"></script>
+    <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
+    <script src="/obs/static/obs-map-widget.js?v=hd-map-v2"></script>
   </body>
 </html>`);
   });

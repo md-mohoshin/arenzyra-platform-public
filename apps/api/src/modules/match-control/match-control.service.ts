@@ -7,6 +7,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  Optional,
   forwardRef,
 } from '@nestjs/common';
 import {
@@ -16,6 +17,7 @@ import {
   LiveState,
   MatchDataSource,
   Role,
+  TelemetrySource,
 } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../db/prisma.service';
@@ -25,12 +27,14 @@ import { MatchControlGateway } from './match-control.gateway';
 import {
   CONTROL_STATES,
   ControlState,
+  PersistedControlState,
   SetStatusDto,
   UpdateScoreDto,
 } from './dto/control.dto';
 import {
   computeAliveTeams,
   computeTotalTeams,
+  isAutomaticMatchStateSourceMode,
   LiveMatchState,
   MatchControlStateStore,
   MatchStatePlayer,
@@ -46,9 +50,21 @@ import { ResultsService } from '../results/results.service';
 import { BroadcastService } from '../broadcast/broadcast.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { RankingEmitterService } from '../../realtime/ranking-emitter.service';
+import { MatchStateBroadcaster } from '../../realtime/match-state-broadcaster.service';
 import type { AuthUser } from '../../common/auth/auth.types';
-import { MatchConclusionService } from '../results/match-conclusion.service';
+import {
+  MatchConclusionService,
+  type ComputedFinalResults,
+  type ComputedFinalPlayerResult,
+  type ComputedFinalStanding,
+  type ComputedFinalTeamResult,
+  type MatchConclusionPlan,
+} from '../results/match-conclusion.service';
 import { LiveStateMirrorService } from './live-state-mirror.service';
+import { buildWidgetScoreboardSnapshot } from '../widgets/widgets.snapshot';
+import { PcobGateway } from '../pcob/pcob.gateway';
+import { TopFraggerService } from '../widgets/top-fragger/top-fragger.service';
+import { MvpService } from '../widgets/mvp/mvp.service';
 import {
   derivePresenceStatus,
   isPresentInMatch,
@@ -69,9 +85,18 @@ import {
   isMatchStartableStatus,
   normalizeMatchLifecycleStatus,
 } from '../../common/match-status.util';
-import { buildPcobBindingData } from '../../common/pcob-binding.util';
+import {
+  buildApiObserverBindingData,
+  buildPcobBindingData,
+  hasPcobAdapterBindingSignal,
+} from '../../common/pcob-binding.util';
 import { buildMatchPlayerKey } from '../../common/match-player-key.util';
-import { derivePcobBindingFlags } from '../../common/match-telemetry-provider.util';
+import {
+  derivePcobBindingFlags,
+  exposeCanonicalTelemetryProvider,
+  exposeSourceMode,
+  exposeTelemetryProvider,
+} from '../../common/match-telemetry-provider.util';
 import {
   deriveTelemetryRuntimeContract,
   readTelemetryRuntimeMeta,
@@ -105,7 +130,8 @@ type MatchSummary = {
   updatedAt: Date;
   tournament: { ownerUserId: string; organizationId: string | null };
   controlState?: {
-    state: ControlState;
+    state: PersistedControlState;
+    version?: number;
     metaJson?: Prisma.JsonValue | null;
   } | null;
 };
@@ -116,6 +142,12 @@ type MatchControlMeta = {
   winnerTeamId?: string | null;
   aliveTeamsAtEnd?: number | null;
   finalizationStartedAt?: string | null;
+  finishEligibilityVerifiedAt?: string | null;
+  finishEligibilitySource?: string | null;
+  finishEligibilityAliveTeams?: number | null;
+  finishEligibilityAlivePlayers?: number | null;
+  finishEligibilityTotalTeams?: number | null;
+  finishEligibilityCirclePhase?: number | null;
   resultNeedsConfirmation?: boolean;
   resultAmbiguities?: Array<{
     code: string;
@@ -125,10 +157,22 @@ type MatchControlMeta = {
     detectedAt: string | null;
     message: string;
   }> | null;
+  postMatchWidgets?: Array<{
+    name: string;
+    obsUrl: string;
+  }> | null;
+  telemetryPromotionDiagnostics?: Record<string, unknown> | null;
 } | null;
 
 type LiveConflictCandidate = {
   id: string;
+};
+
+type MatchStartContext = {
+  source?: string | null;
+  clientId?: string | null;
+  requestedMatchId?: string | null;
+  expectedVersion?: number | null;
 };
 
 type AuthoritativeLifecycleSignal = {
@@ -137,12 +181,38 @@ type AuthoritativeLifecycleSignal = {
   winnerTeamId?: string | null;
 };
 
+type ControlStateMetaInput =
+  | Prisma.InputJsonValue
+  | ((
+      currentMeta: Prisma.JsonValue | null | undefined,
+    ) => Prisma.InputJsonValue);
+
 const FINALIZATION_WARNING_THRESHOLD_MS = 60_000;
 const MAX_INIT_WAIT_MS = 120_000;
 const MIN_LIVE_DURATION_MS = 30_000;
 const MIN_TELEMETRY_FINISH_ELIGIBLE_MS = 6 * 60_000;
 const MIN_SINGLE_ALIVE_STABILITY_MS = 15_000;
 const MIN_FINISH_CIRCLE_PHASE = 2;
+const FINALIZATION_RECOVERY_COOLDOWN_MS = 10_000;
+const FINALIZED_POST_MATCH_WIDGETS = [
+  { key: 'champions', name: 'Champions' },
+  { key: 'first-runner-up', name: '1st Runner Up' },
+  { key: 'second-runner-up', name: '2nd Runner Up' },
+  { key: 'top-3-podium', name: 'Top 3 Podium' },
+  { key: 'match-results', name: 'Match Results' },
+  { key: 'match-summary', name: 'Match Summary' },
+  { key: 'head-to-head-comparison', name: 'Head to Head Comparison' },
+  { key: 'mvp-top-fragger', name: 'MVP / Top Fragger' },
+  { key: 'group-mvp', name: 'Group MVP' },
+  { key: 'top-5-fraggers', name: 'Top 5 Fraggers' },
+  {
+    key: 'top-5-overall-group-fraggers',
+    name: 'Top 5 Overall Group Fraggers',
+  },
+  { key: 'overall-standings', name: 'Overall Standings' },
+  { key: 'qualification-line', name: 'Qualification Line' },
+  { key: 'match-schedule', name: 'Match Schedule' },
+] as const;
 const SYSTEM_ACTOR: Actor = {
   id: 'system',
   actorId: 'system',
@@ -170,9 +240,11 @@ export type ControlHealth = {
 
 export type MatchLifecycleSnapshot = {
   matchId: string;
+  organizationSlug: string | null;
   status: string | null;
   lifecycleStatus: string | null;
   controlStatus: PublicControlStatus;
+  controlVersion: number | null;
   liveState: LiveState | null;
   startedAt: string | null;
   endedAt: string | null;
@@ -189,25 +261,25 @@ export type MatchLifecycleSnapshot = {
     detectedAt: string | null;
     message: string;
   }>;
+  postMatchWidgets: Array<{
+    name: string;
+    obsUrl: string;
+  }>;
   locks: MatchLockContract;
   finalizationStartedAt: string | null;
   finalizationDurationMs: number | null;
   telemetry: TelemetryRuntimeContract;
   binding: {
     sessionId: string | null;
-    adapterKey: string | null;
     dataSource: string | null;
     dataMode: string | null;
     telemetryProvider: string;
-    sourceMode: 'MANUAL' | 'AUTO';
+    sourceMode: 'MANUAL' | 'API';
     boundAt: string | null;
     lastSeenAt: string | null;
     isConfigured: boolean;
     isBound: boolean;
     isReady: boolean;
-    pcobConfigured: boolean;
-    pcobBound: boolean;
-    pcobReady: boolean;
   };
 };
 
@@ -233,6 +305,12 @@ export type NextMatchResolution = {
 export class MatchControlService implements OnModuleInit {
   private readonly logger = new Logger(MatchControlService.name);
   private readonly delayedFinalizationWarnings = new Set<string>();
+  private readonly finalizationRecoveryInFlight = new Set<string>();
+  private readonly finalizationRecoveryCooldownUntil = new Map<
+    string,
+    number
+  >();
+  private finishPendingControlStateSupported: boolean | null = null;
   constructor(
     private readonly prisma: PrismaService,
     private readonly scoring: ScoringService,
@@ -253,6 +331,15 @@ export class MatchControlService implements OnModuleInit {
     @Inject(forwardRef(() => MatchConclusionService))
     private readonly conclusion: MatchConclusionService,
     private readonly liveStateMirror: LiveStateMirrorService,
+    @Optional()
+    @Inject(forwardRef(() => PcobGateway))
+    private readonly pcobGateway?: PcobGateway,
+    @Optional()
+    private readonly topFragger?: TopFraggerService,
+    @Optional()
+    private readonly mvp?: MvpService,
+    @Optional()
+    private readonly matchStateBroadcaster?: MatchStateBroadcaster,
   ) {}
 
   async onModuleInit() {
@@ -273,6 +360,7 @@ export class MatchControlService implements OnModuleInit {
   private requireTournamentMatch<
     T extends {
       organizationId?: string | null;
+      ownerUserId?: string | null;
       tournamentId: string | null;
       tournament: { ownerUserId: string; organizationId: string | null } | null;
     },
@@ -283,9 +371,16 @@ export class MatchControlService implements OnModuleInit {
     tournament: { ownerUserId: string; organizationId: string | null };
   } {
     if (!match.tournamentId || !match.tournament) {
-      throw new BadRequestException(
-        'Session matches are not supported by match control',
-      );
+      return {
+        ...match,
+        tournament: {
+          ownerUserId: match.ownerUserId ?? '',
+          organizationId: match.organizationId ?? null,
+        },
+      } as T & {
+        tournamentId: string;
+        tournament: { ownerUserId: string; organizationId: string | null };
+      };
     }
 
     return match as T & {
@@ -349,8 +444,252 @@ export class MatchControlService implements OnModuleInit {
     }
   }
 
-  private toControlStateFromMatch(status: MatchStatus): ControlState {
-    return deriveControlStateFromMatchStatus(status);
+  private mapControlToBusinessStatus(
+    control: ControlState,
+    current: MatchStatus,
+  ): MatchStatus {
+    if (control === 'LIVE') return MatchStatus.LIVE;
+    if (control === 'FINISH_PENDING') return MatchStatus.FINISH_PENDING;
+    if (control === 'READY' || control === 'COUNTDOWN') {
+      return MatchStatus.DRAFT;
+    }
+    if (control === 'FINISHED') return MatchStatus.FINISHED;
+    return current;
+  }
+
+  private resolveControlMetaInput(
+    metaJson: ControlStateMetaInput | undefined,
+    currentMeta: Prisma.JsonValue | null | undefined,
+  ): Prisma.InputJsonValue | undefined {
+    if (metaJson === undefined) {
+      return undefined;
+    }
+    return typeof metaJson === 'function' ? metaJson(currentMeta) : metaJson;
+  }
+
+  private async writeControlStateCas(
+    tx: Prisma.TransactionClient,
+    params: {
+      matchId: string;
+      organizationId: string;
+      state: PersistedControlState;
+      reason?: string | null;
+      metaJson?: ControlStateMetaInput;
+      expectedVersion?: number | null;
+      updatedAt?: Date;
+      updatedByUserId?: string | null;
+      patch?: Record<string, unknown>;
+    },
+  ): Promise<{
+    previousState: PersistedControlState | null;
+    previousVersion: number | null;
+    version: number;
+    state: PersistedControlState;
+  }> {
+    const now = params.updatedAt ?? new Date();
+    const current = await tx.matchControlState.findUnique({
+      where: { matchId: params.matchId },
+      select: {
+        state: true,
+        version: true,
+        metaJson: true,
+      },
+    });
+    const expectedVersion =
+      params.expectedVersion === undefined
+        ? (current?.version ?? null)
+        : params.expectedVersion;
+    const metaJson = this.resolveControlMetaInput(
+      params.metaJson,
+      current?.metaJson ?? null,
+    );
+    const metaPatch = metaJson === undefined ? {} : { metaJson: metaJson };
+    const reasonPatch =
+      params.reason === undefined ? {} : { reason: params.reason ?? null };
+    const userPatch =
+      params.updatedByUserId === undefined
+        ? {}
+        : { updatedByUserId: params.updatedByUserId };
+
+    if (!current) {
+      if (
+        expectedVersion !== null &&
+        expectedVersion !== undefined &&
+        expectedVersion !== 0
+      ) {
+        throw new ConflictException('Control state version mismatch');
+      }
+      try {
+        await tx.matchControlState.create({
+          data: {
+            matchId: params.matchId,
+            organizationId: params.organizationId,
+            state: params.state as never,
+            version: 1,
+            updatedAt: now,
+            ...(reasonPatch as Record<string, unknown>),
+            ...(metaPatch as Record<string, unknown>),
+            ...(userPatch as Record<string, unknown>),
+            ...(params.patch ?? {}),
+          } as Prisma.MatchControlStateUncheckedCreateInput,
+        });
+      } catch (error) {
+        if (
+          params.state === 'FINISH_PENDING' &&
+          this.isStaleControlStateEnumError(error) &&
+          !params.patch
+        ) {
+          const rawMeta =
+            metaJson === undefined ? null : JSON.stringify(metaJson);
+          await tx.$executeRaw`
+            INSERT INTO "MatchControlState"
+              ("matchId", "organizationId", "state", "version", "updatedAt", "reason", "metaJson", "updatedByUserId")
+            VALUES
+              (${params.matchId}, ${params.organizationId}, ${params.state}::"ControlState", 1, ${now}, ${
+                params.reason ?? null
+              }, ${rawMeta}::jsonb, ${params.updatedByUserId ?? null})
+          `;
+          return {
+            previousState: null,
+            previousVersion: null,
+            state: params.state,
+            version: 1,
+          };
+        }
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException('Control state version mismatch');
+        }
+        throw error;
+      }
+      return {
+        previousState: null,
+        previousVersion: null,
+        state: params.state,
+        version: 1,
+      };
+    }
+
+    if (
+      expectedVersion !== null &&
+      expectedVersion !== undefined &&
+      current.version !== expectedVersion
+    ) {
+      throw new ConflictException('Control state version mismatch');
+    }
+
+    let result: { count: number };
+    try {
+      result = await tx.matchControlState.updateMany({
+        where: {
+          matchId: params.matchId,
+          version: current.version,
+        },
+        data: {
+          state: params.state as never,
+          version: { increment: 1 },
+          updatedAt: now,
+          ...(reasonPatch as Record<string, unknown>),
+          ...(metaPatch as Record<string, unknown>),
+          ...(userPatch as Record<string, unknown>),
+          ...(params.patch ?? {}),
+        } as Prisma.MatchControlStateUncheckedUpdateManyInput,
+      });
+    } catch (error) {
+      if (
+        params.state !== 'FINISH_PENDING' ||
+        !this.isStaleControlStateEnumError(error) ||
+        params.patch
+      ) {
+        throw error;
+      }
+
+      const updates = [
+        Prisma.sql`"state" = ${params.state}::"ControlState"`,
+        Prisma.sql`"version" = "version" + 1`,
+        Prisma.sql`"updatedAt" = ${now}`,
+      ];
+      if (params.reason !== undefined) {
+        updates.push(Prisma.sql`"reason" = ${params.reason ?? null}`);
+      }
+      if (metaJson !== undefined) {
+        updates.push(
+          Prisma.sql`"metaJson" = ${JSON.stringify(metaJson)}::jsonb`,
+        );
+      }
+      if (params.updatedByUserId !== undefined) {
+        updates.push(Prisma.sql`"updatedByUserId" = ${params.updatedByUserId}`);
+      }
+      const rows = await tx.$queryRaw<Array<{ version: number }>>`
+        UPDATE "MatchControlState"
+        SET ${Prisma.join(updates)}
+        WHERE "matchId" = ${params.matchId}
+          AND "version" = ${current.version}
+        RETURNING "version"
+      `;
+      result = { count: rows.length };
+    }
+    if (result.count !== 1) {
+      throw new ConflictException('Control state version mismatch');
+    }
+
+    return {
+      previousState: current.state as PersistedControlState,
+      previousVersion: current.version,
+      state: params.state,
+      version: current.version + 1,
+    };
+  }
+
+  private isStaleControlStateEnumError(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientValidationError &&
+      error.message.includes('Invalid value for argument `state`')
+    );
+  }
+
+  private async supportsFinishPendingControlState(
+    client: Pick<PrismaService, '$queryRaw'> | Prisma.TransactionClient,
+  ): Promise<boolean> {
+    if (this.finishPendingControlStateSupported !== null) {
+      return this.finishPendingControlStateSupported;
+    }
+    if (typeof client.$queryRaw !== 'function') {
+      return true;
+    }
+    try {
+      const rows = await client.$queryRaw<Array<{ enumlabel: string }>>`
+        SELECT e.enumlabel
+        FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+        WHERE t.typname = 'ControlState'
+          AND e.enumlabel = 'FINISH_PENDING'
+        LIMIT 1
+      `;
+      this.finishPendingControlStateSupported = rows.length > 0;
+    } catch {
+      this.finishPendingControlStateSupported = false;
+    }
+    return this.finishPendingControlStateSupported;
+  }
+
+  private async resolvePersistedControlState(
+    state: ControlState,
+    client: Pick<PrismaService, '$queryRaw'> | Prisma.TransactionClient = this
+      .prisma,
+  ): Promise<PersistedControlState> {
+    if (state !== 'FINISH_PENDING') {
+      return state;
+    }
+    return (await this.supportsFinishPendingControlState(client))
+      ? 'FINISH_PENDING'
+      : 'ENDED';
+  }
+
+  private toControlStateFromMatch(status: MatchStatus): PersistedControlState {
+    return deriveControlStateFromMatchStatus(status) as PersistedControlState;
   }
 
   private toLifecycleContext(match: {
@@ -359,7 +698,7 @@ export class MatchControlService implements OnModuleInit {
     dataSource?: string | null;
     dataMode?: string | null;
     controlState?: {
-      state?: ControlState | null;
+      state?: PersistedControlState | null;
       metaJson?: Prisma.JsonValue | null;
       resultsManualLock?: boolean | null;
       resultsForceUnlock?: boolean | null;
@@ -383,7 +722,7 @@ export class MatchControlService implements OnModuleInit {
     dataSource?: string | null;
     dataMode?: string | null;
     controlState?: {
-      state?: ControlState | null;
+      state?: PersistedControlState | null;
       metaJson?: Prisma.JsonValue | null;
     } | null;
   }): PublicControlStatus {
@@ -392,19 +731,18 @@ export class MatchControlService implements OnModuleInit {
 
   private toPublicStatus(
     status: MatchStatus,
-    controlState?: ControlState | null,
+    controlState?: PersistedControlState | null,
     metaJson?: Prisma.JsonValue | null,
-  ): 'UPCOMING' | 'LIVE' | 'ENDED' | 'PAUSED' | 'CANCELLED' {
+  ): 'UPCOMING' | 'LIVE' | 'ENDED' | 'CANCELLED' {
     const publicControlStatus = derivePublicControlStatus({
       status,
       controlState,
       metaJson,
     });
-    if (publicControlStatus === 'PAUSED') return 'PAUSED';
     if (publicControlStatus === 'LIVE') return 'LIVE';
     if (
-      publicControlStatus === 'ENDED' ||
-      publicControlStatus === 'CONFIRMED'
+      publicControlStatus === 'FINISH_PENDING' ||
+      publicControlStatus === 'FINISHED'
     ) {
       return 'ENDED';
     }
@@ -431,6 +769,99 @@ export class MatchControlService implements OnModuleInit {
     return meta as Record<string, unknown>;
   }
 
+  private normalizeSavedPostMatchWidgets(
+    value: unknown,
+  ): Array<{ name: string; obsUrl: string }> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return [];
+      }
+      const candidate = entry as { name?: unknown; obsUrl?: unknown };
+      const name =
+        typeof candidate.name === 'string' ? candidate.name.trim() : '';
+      const obsUrl =
+        typeof candidate.obsUrl === 'string' ? candidate.obsUrl.trim() : '';
+      if (!name || !obsUrl) {
+        return [];
+      }
+      return [{ name, obsUrl }];
+    });
+  }
+
+  private buildSavedPostMatchWidgets(
+    organizationSlug: string | null | undefined,
+    matchId: string,
+  ): Array<{ name: string; obsUrl: string }> {
+    const slug = organizationSlug?.trim();
+    if (!slug) {
+      return [];
+    }
+
+    const encodedSlug = encodeURIComponent(slug);
+    const encodedMatchId = encodeURIComponent(matchId);
+    return FINALIZED_POST_MATCH_WIDGETS.map((widget) => ({
+      name: widget.name,
+      obsUrl: `/widgets/${encodedSlug}/${widget.key}?matchId=${encodedMatchId}`,
+    }));
+  }
+
+  private async backfillSavedPostMatchWidgets(params: {
+    matchId: string;
+    organizationSlug: string | null | undefined;
+    controlVersion: number | null | undefined;
+    controlMeta: MatchControlMeta;
+  }): Promise<Array<{ name: string; obsUrl: string }>> {
+    if (params.controlMeta?.resultFinalized !== true) {
+      return [];
+    }
+
+    const postMatchWidgets = this.buildSavedPostMatchWidgets(
+      params.organizationSlug,
+      params.matchId,
+    );
+    if (postMatchWidgets.length === 0) {
+      return [];
+    }
+
+    const controlVersion = params.controlVersion;
+    if (typeof controlVersion !== 'number') {
+      return postMatchWidgets;
+    }
+
+    const nextMeta = {
+      ...(params.controlMeta ?? {}),
+      postMatchWidgets,
+    };
+    try {
+      await this.prisma.matchControlState.updateMany({
+        where: {
+          matchId: params.matchId,
+          version: controlVersion,
+        },
+        data: {
+          metaJson: nextMeta as Prisma.InputJsonValue,
+          updatedAt: new Date(),
+        } as Prisma.MatchControlStateUncheckedUpdateManyInput,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'unknown backfill failure';
+      this.logger.warn(
+        JSON.stringify({
+          stage: 'match-control',
+          action: 'post-match-widgets-backfill-skipped',
+          matchId: params.matchId,
+          reason: message,
+        }),
+      );
+    }
+    return postMatchWidgets;
+  }
+
   private normalizeTimestamp(value: unknown): string | null {
     const parsed =
       value instanceof Date
@@ -445,6 +876,91 @@ export class MatchControlService implements OnModuleInit {
     }
 
     return new Date(parsed).toISOString();
+  }
+
+  private normalizeOptionalInteger(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+    }
+    return null;
+  }
+
+  private buildFinalizationEligibilityMeta(
+    currentMeta: Prisma.JsonValue | null | undefined,
+    params: {
+      finalizationStartedAt: string;
+      source: string;
+      aliveTeams?: number | null;
+      alivePlayers?: number | null;
+      totalTeams?: number | null;
+      circlePhase?: number | null;
+    },
+  ): Prisma.JsonObject {
+    const nextMeta = this.parseMetaRecord(currentMeta);
+    nextMeta.finalizationStartedAt = params.finalizationStartedAt;
+    nextMeta.finishEligibilityVerifiedAt = params.finalizationStartedAt;
+    nextMeta.finishEligibilitySource = params.source;
+
+    if (params.aliveTeams !== undefined) {
+      nextMeta.finishEligibilityAliveTeams = params.aliveTeams;
+    }
+    if (params.alivePlayers !== undefined) {
+      nextMeta.finishEligibilityAlivePlayers = params.alivePlayers;
+    }
+    if (params.totalTeams !== undefined) {
+      nextMeta.finishEligibilityTotalTeams = params.totalTeams;
+    }
+    if (params.circlePhase !== undefined) {
+      nextMeta.finishEligibilityCirclePhase = params.circlePhase;
+    }
+
+    return nextMeta as Prisma.JsonObject;
+  }
+
+  private hasValidatedFinalizationEligibility(meta: MatchControlMeta): boolean {
+    if (!meta) {
+      return false;
+    }
+    const verifiedAt = this.normalizeTimestamp(
+      meta.finishEligibilityVerifiedAt,
+    );
+    const aliveTeams = this.normalizeOptionalInteger(
+      meta.finishEligibilityAliveTeams,
+    );
+    return verifiedAt !== null && aliveTeams !== null && aliveTeams <= 1;
+  }
+
+  private queuePendingFinalizationRecovery(
+    matchId: string,
+    reason: string = 'FINALIZATION_RECOVERY',
+  ): void {
+    const now = Date.now();
+    const cooldownUntil =
+      this.finalizationRecoveryCooldownUntil.get(matchId) ?? 0;
+    if (this.finalizationRecoveryInFlight.has(matchId) || cooldownUntil > now) {
+      return;
+    }
+
+    this.finalizationRecoveryCooldownUntil.set(
+      matchId,
+      now + FINALIZATION_RECOVERY_COOLDOWN_MS,
+    );
+    this.finalizationRecoveryInFlight.add(matchId);
+
+    void this.confirmFinishedIfEligible(matchId, reason)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `[Match] Finalization recovery deferred matchId=${matchId} reason=${message}`,
+        );
+      })
+      .finally(() => {
+        this.finalizationRecoveryInFlight.delete(matchId);
+      });
   }
 
   private buildTelemetrySnapshot(match: {
@@ -484,7 +1000,7 @@ export class MatchControlService implements OnModuleInit {
     dataMode?: string | null;
     liveState?: string | null;
     controlState?: {
-      state?: ControlState | null;
+      state?: PersistedControlState | null;
       metaJson?: Prisma.JsonValue | null;
     } | null;
   }) {
@@ -499,19 +1015,15 @@ export class MatchControlService implements OnModuleInit {
     const isBound = Boolean(binding.pcobBound && boundAt);
     return {
       sessionId,
-      adapterKey: binding.adapterKey,
-      dataSource: match.dataSource ?? null,
+      dataSource: exposeCanonicalTelemetryProvider(match),
       dataMode: match.dataMode ?? null,
-      telemetryProvider: binding.telemetryProvider,
-      sourceMode: binding.sourceMode,
+      telemetryProvider: exposeTelemetryProvider(binding.telemetryProvider),
+      sourceMode: exposeSourceMode(binding.telemetryProvider),
       boundAt,
       lastSeenAt,
       isConfigured,
       isBound,
       isReady: binding.pcobReady,
-      pcobConfigured: binding.pcobConfigured,
-      pcobBound: binding.pcobBound,
-      pcobReady: binding.pcobReady,
     };
   }
 
@@ -543,6 +1055,36 @@ export class MatchControlService implements OnModuleInit {
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  private normalizeStartContextValue(
+    value: unknown,
+    maxLength = 120,
+  ): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    return trimmed.slice(0, maxLength);
+  }
+
+  private normalizeStartContext(
+    context: MatchStartContext = {},
+  ): MatchStartContext {
+    return {
+      source: this.normalizeStartContextValue(context.source),
+      clientId: this.normalizeStartContextValue(context.clientId, 160),
+      requestedMatchId: this.normalizeStartContextValue(
+        context.requestedMatchId,
+      ),
+      expectedVersion:
+        typeof context.expectedVersion === 'number'
+          ? Math.max(0, Math.trunc(context.expectedVersion))
+          : null,
+    };
+  }
+
   private hasPriorRun(match: {
     startedAt?: Date | null;
     endedAt?: Date | null;
@@ -560,7 +1102,29 @@ export class MatchControlService implements OnModuleInit {
     adapterKey?: string | null;
   }): boolean {
     return (
-      derivePcobBindingFlags(match).telemetryProvider === MatchDataSource.PCOB
+      derivePcobBindingFlags(match).telemetryProvider ===
+        MatchDataSource.PCOB || hasPcobAdapterBindingSignal(match)
+    );
+  }
+
+  private shouldUseApiSessionBinding(
+    match: {
+      dataSource?: string | null;
+      dataMode?: string | null;
+      pcobSessionId?: string | null;
+      pcobMode?: boolean | null;
+      pcobBoundAt?: Date | null;
+      pcobLastSeenAt?: Date | null;
+      adapterKey?: string | null;
+    },
+    forcedTelemetrySource: TelemetrySource | null,
+  ): boolean {
+    if (forcedTelemetrySource === TelemetrySource.API) {
+      return true;
+    }
+    return (
+      exposeCanonicalTelemetryProvider(match) === MatchDataSource.API &&
+      hasPcobAdapterBindingSignal(match)
     );
   }
 
@@ -660,6 +1224,48 @@ export class MatchControlService implements OnModuleInit {
     );
   }
 
+  private shouldPreserveTelemetryOnLiveTransition(
+    match: MatchSummary,
+    context: MatchStartContext,
+    nextSessionId: string | null,
+    previousLifecycleStatus: string | null,
+  ): boolean {
+    if (previousLifecycleStatus === 'LIVE') {
+      return false;
+    }
+
+    const normalizedSource = this.normalizeStartContextValue(context.source)
+      ?.trim()
+      .toLowerCase();
+    const forcedTelemetrySource = this.resolveForcedTelemetrySource(context);
+    const telemetryAuthoritativeStart =
+      normalizedSource === 'telemetry-engine' ||
+      normalizedSource?.includes('pcob') === true ||
+      normalizedSource?.includes('telemetry') === true ||
+      forcedTelemetrySource === TelemetrySource.API;
+    if (!telemetryAuthoritativeStart) {
+      return false;
+    }
+
+    const currentSessionId = this.normalizeSessionId(match.pcobSessionId);
+    if (
+      currentSessionId &&
+      nextSessionId &&
+      currentSessionId !== nextSessionId
+    ) {
+      return false;
+    }
+
+    const meta = this.parseMetaRecord(match.controlState?.metaJson);
+    const runtime = readTelemetryRuntimeMeta(match.controlState?.metaJson);
+    return Boolean(
+      runtime.lastAcceptedAt ||
+      meta.telemetryUpdatedAt ||
+      meta.telemetrySequence ||
+      meta.liveSync,
+    );
+  }
+
   private toTimestampMs(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) {
       return Math.trunc(value);
@@ -733,6 +1339,7 @@ export class MatchControlService implements OnModuleInit {
 
     if (!finalizationStartedAt) {
       this.delayedFinalizationWarnings.delete(match.id);
+      this.finalizationRecoveryCooldownUntil.delete(match.id);
       return {
         finalizationStartedAt: null,
         finalizationDurationMs: null,
@@ -742,6 +1349,7 @@ export class MatchControlService implements OnModuleInit {
     const startedAtMs = Date.parse(finalizationStartedAt);
     if (!Number.isFinite(startedAtMs)) {
       this.delayedFinalizationWarnings.delete(match.id);
+      this.finalizationRecoveryCooldownUntil.delete(match.id);
       return {
         finalizationStartedAt: null,
         finalizationDurationMs: null,
@@ -769,8 +1377,10 @@ export class MatchControlService implements OnModuleInit {
           `[Match] Finalization taking longer than expected matchId=${match.id} durationMs=${finalizationDurationMs} thresholdMs=${FINALIZATION_WARNING_THRESHOLD_MS}`,
         );
       }
+      this.queuePendingFinalizationRecovery(match.id);
     } else {
       this.delayedFinalizationWarnings.delete(match.id);
+      this.finalizationRecoveryCooldownUntil.delete(match.id);
     }
 
     return {
@@ -796,9 +1406,15 @@ export class MatchControlService implements OnModuleInit {
         startedAt: true,
         endedAt: true,
         updatedAt: true,
+        organization: {
+          select: {
+            slug: true,
+          },
+        },
         controlState: {
           select: {
             state: true,
+            version: true,
             metaJson: true,
             resultsManualLock: true,
             resultsForceUnlock: true,
@@ -816,14 +1432,27 @@ export class MatchControlService implements OnModuleInit {
     const lifecycleStatus =
       deriveCanonicalMatchLifecycleStatus(lifecycleContext);
     const controlMeta = this.parseMeta(match.controlState?.metaJson) ?? {};
+    let postMatchWidgets = this.normalizeSavedPostMatchWidgets(
+      controlMeta.postMatchWidgets,
+    );
+    if (controlMeta.resultFinalized === true && postMatchWidgets.length === 0) {
+      postMatchWidgets = await this.backfillSavedPostMatchWidgets({
+        matchId: match.id,
+        organizationSlug: match.organization?.slug ?? null,
+        controlVersion: match.controlState?.version ?? null,
+        controlMeta,
+      });
+    }
     const telemetry = this.buildTelemetrySnapshot(match);
     const binding = this.buildBindingSnapshot(match);
 
     return {
       matchId: match.id,
+      organizationSlug: match.organization?.slug ?? null,
       status: lifecycleStatus,
       lifecycleStatus,
       controlStatus: this.toPublicControlStatus(match),
+      controlVersion: match.controlState?.version ?? null,
       liveState: match.liveState ?? null,
       startedAt: match.startedAt ? match.startedAt.toISOString() : null,
       endedAt: match.endedAt ? match.endedAt.toISOString() : null,
@@ -835,6 +1464,7 @@ export class MatchControlService implements OnModuleInit {
       resultAmbiguities: Array.isArray(controlMeta.resultAmbiguities)
         ? controlMeta.resultAmbiguities
         : [],
+      postMatchWidgets,
       locks,
       finalizationStartedAt: finalization.finalizationStartedAt,
       finalizationDurationMs: finalization.finalizationDurationMs,
@@ -857,7 +1487,9 @@ export class MatchControlService implements OnModuleInit {
         id: true,
         name: true,
         status: true,
+        organizationId: true,
         tournamentId: true,
+        sessionId: true,
         stageId: true,
         groupId: true,
         matchNumber: true,
@@ -870,9 +1502,18 @@ export class MatchControlService implements OnModuleInit {
       throw new NotFoundException('Match not found');
     }
 
+    const matchScope: Prisma.MatchWhereInput = currentMatch.tournamentId
+      ? { tournamentId: currentMatch.tournamentId }
+      : currentMatch.sessionId
+        ? {
+            sessionId: currentMatch.sessionId,
+            organizationId: currentMatch.organizationId,
+          }
+        : { id: currentMatch.id };
+
     const candidates = await this.prisma.match.findMany({
       where: {
-        tournamentId: currentMatch.tournamentId,
+        ...matchScope,
         deletedAt: null,
         id: { not: currentMatch.id },
       },
@@ -881,6 +1522,7 @@ export class MatchControlService implements OnModuleInit {
         name: true,
         status: true,
         tournamentId: true,
+        sessionId: true,
         stageId: true,
         groupId: true,
         matchNumber: true,
@@ -1050,24 +1692,70 @@ export class MatchControlService implements OnModuleInit {
   private clearFinalizationMeta(
     value: Prisma.JsonValue | null | undefined,
   ): Prisma.InputJsonValue {
+    return this.buildControlMetaJson(value, {
+      clearFinalization: true,
+    });
+  }
+
+  private clearTelemetryIngressMeta(
+    value: Prisma.JsonValue | null | undefined,
+  ): Prisma.InputJsonValue {
+    return this.buildControlMetaJson(value, {
+      clearTelemetryIngress: true,
+    });
+  }
+
+  private resolveForcedTelemetrySource(
+    context: MatchStartContext = {},
+  ): TelemetrySource | null {
+    const normalizedSource = this.normalizeStartContextValue(context.source)
+      ?.trim()
+      .toLowerCase();
+    if (
+      normalizedSource === 'desktop-launcher' ||
+      normalizedSource === 'direct-observer-feed'
+    ) {
+      return TelemetrySource.API;
+    }
+    return null;
+  }
+
+  private buildControlMetaJson(
+    value: Prisma.JsonValue | null | undefined,
+    options: {
+      clearFinalization?: boolean;
+      clearTelemetryIngress?: boolean;
+      preserveTelemetryRuntime?: boolean;
+      telemetrySource?: TelemetrySource | null;
+    } = {},
+  ): Prisma.InputJsonValue {
     const jsonNull = Prisma.JsonNull as unknown as Prisma.InputJsonValue;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return jsonNull;
+    const meta = this.parseMetaRecord(value);
+    if (options.clearFinalization) {
+      delete meta.resultFinalized;
+      delete meta.finalizedAt;
+      delete meta.winnerTeamId;
+      delete meta.aliveTeamsAtEnd;
+      delete meta.finalizationStartedAt;
+      delete meta.resultNeedsConfirmation;
+      delete meta.resultAmbiguities;
+      delete meta.postMatchWidgets;
+      delete meta.telemetryPromotionDiagnostics;
+      if (!options.preserveTelemetryRuntime) {
+        delete meta.telemetryRuntime;
+        delete meta.telemetrySequence;
+        delete meta.telemetryUpdatedAt;
+        delete meta.telemetryIngress;
+        delete meta.liveSync;
+      }
+    } else if (options.clearTelemetryIngress) {
+      delete meta.telemetryIngress;
     }
 
-    const meta = { ...(value as Record<string, unknown>) };
-    delete meta.resultFinalized;
-    delete meta.finalizedAt;
-    delete meta.winnerTeamId;
-    delete meta.aliveTeamsAtEnd;
-    delete meta.finalizationStartedAt;
-    delete meta.resultNeedsConfirmation;
-    delete meta.resultAmbiguities;
-    delete meta.telemetryRuntime;
-    delete meta.telemetrySequence;
-    delete meta.telemetryUpdatedAt;
-    delete meta.telemetryIngress;
-    delete meta.liveSync;
+    if (options.telemetrySource) {
+      meta.telemetrySource = options.telemetrySource;
+    }
+
     return Object.keys(meta).length > 0
       ? (meta as Prisma.JsonObject)
       : jsonNull;
@@ -1085,8 +1773,11 @@ export class MatchControlService implements OnModuleInit {
         liveAt: true,
         startedAt: true,
         pcobSessionId: true,
+        organizationId: true,
         tournament: { select: { organizationId: true } },
-        controlState: { select: { state: true, metaJson: true } },
+        controlState: {
+          select: { state: true, version: true, metaJson: true },
+        },
       },
     });
     if (!match) {
@@ -1255,42 +1946,38 @@ export class MatchControlService implements OnModuleInit {
 
     logMatchEndCheck();
     const finalizationStartedAt = new Date().toISOString();
-    const nextMeta: Prisma.JsonObject = {
-      ...(this.parseMeta(match.controlState?.metaJson) ?? {}),
-      finalizationStartedAt,
-    };
     const previousLifecycleStatus = lifecycleStatus;
-    await this.prisma.$transaction([
-      this.prisma.match.update({
+    const persistedPendingControlState =
+      await this.resolvePersistedControlState('FINISH_PENDING');
+    await this.prisma.$transaction(async (tx) => {
+      await tx.match.update({
         where: { id: matchId },
         data: { status: MatchStatus.FINISH_PENDING },
-      }),
-      this.prisma.matchControlState.upsert({
-        where: { matchId },
-        update: {
-          state: 'ENDED',
-          reason: 'OBSERVER_FINISH_DETECTED',
-          metaJson: nextMeta,
-          version: { increment: 1 },
-          updatedAt: new Date(finalizationStartedAt),
-        },
-        create: {
-          matchId,
-          state: 'ENDED',
-          reason: 'OBSERVER_FINISH_DETECTED',
-          organizationId: this.requireMatchOrganizationId(match),
-          metaJson: nextMeta,
-          updatedAt: new Date(finalizationStartedAt),
-        },
-      }),
-    ]);
+      });
+      await this.writeControlStateCas(tx, {
+        matchId,
+        organizationId: this.requireMatchOrganizationId(match),
+        state: persistedPendingControlState,
+        reason: 'OBSERVER_FINISH_DETECTED',
+        metaJson: (currentMeta) =>
+          this.buildFinalizationEligibilityMeta(currentMeta, {
+            finalizationStartedAt,
+            source: 'OBSERVER_FINISH_DETECTED',
+            aliveTeams,
+            alivePlayers,
+            totalTeams,
+            circlePhase,
+          }),
+        updatedAt: new Date(finalizationStartedAt),
+      });
+    });
 
     this.logger.log(`[Match] Finish detected matchId=${matchId}`);
     this.logger.log(`[Match] Entered FINISH_PENDING matchId=${matchId}`);
     this.logLifecycleTransition(
       matchId,
       previousLifecycleStatus,
-      'ENDED',
+      'FINISH_PENDING',
       'OBSERVER_FINISH_DETECTED',
       {
         dbStatus: MatchStatus.FINISH_PENDING,
@@ -1299,11 +1986,24 @@ export class MatchControlService implements OnModuleInit {
     );
 
     try {
-      await this.confirmFinishedIfEligible(matchId, 'OBSERVER_FINISH_DETECTED');
+      const lifecycle = await this.confirmFinishedIfEligible(
+        matchId,
+        'OBSERVER_FINISH_DETECTED',
+      );
+      if (lifecycle.lifecycleStatus !== 'FINISHED') {
+        this.queuePendingFinalizationRecovery(
+          matchId,
+          'OBSERVER_FINISH_DETECTED',
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
         `[Match] Finish confirmation deferred matchId=${matchId} reason=${message}`,
+      );
+      this.queuePendingFinalizationRecovery(
+        matchId,
+        'OBSERVER_FINISH_DETECTED',
       );
     }
 
@@ -1316,12 +2016,20 @@ export class MatchControlService implements OnModuleInit {
   ): Promise<MatchLifecycleSnapshot> {
     const match = await this.prisma.match.findFirst({
       where: { id: matchId, deletedAt: null },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        status: true,
+        controlState: {
+          select: {
+            metaJson: true,
+          },
+        },
+      },
     });
     if (!match) {
       throw new NotFoundException('Match not found');
     }
-    if (isMatchFinishedStatus(match.status)) {
+    if (match.status === MatchStatus.FINISHED) {
       return this.getLifecycleState(matchId);
     }
     if (
@@ -1331,7 +2039,7 @@ export class MatchControlService implements OnModuleInit {
       return this.getLifecycleState(matchId);
     }
 
-    const slotResults = await this.prisma.matchSlotResult.findMany({
+    const slotResultsRaw = await this.prisma.matchSlotResult.findMany({
       where: { matchId, teamId: { not: null } },
       select: {
         teamId: true,
@@ -1344,28 +2052,49 @@ export class MatchControlService implements OnModuleInit {
         },
       },
     });
+    const slotResults = Array.isArray(slotResultsRaw) ? slotResultsRaw : [];
 
     if (!slotResults.length) {
-      return this.getLifecycleState(matchId);
-    }
-
-    const aliveTeams = slotResults.reduce((count, slot) => {
-      if (!isPresentInMatch(slot.wasPresentInMatch)) {
-        return count;
+      if (match.status !== MatchStatus.FINISH_PENDING) {
+        return this.getLifecycleState(matchId);
       }
-      const alive = (slot.players ?? []).some(
-        (player) =>
-          player.isAlive === true ||
-          (player as { alive?: boolean | null }).alive === true,
+    } else {
+      const aliveTeams = slotResults.reduce((count, slot) => {
+        if (!isPresentInMatch(slot.wasPresentInMatch)) {
+          return count;
+        }
+        const alive = (slot.players ?? []).some(
+          (player) =>
+            player.isAlive === true ||
+            (player as { alive?: boolean | null }).alive === true,
+        );
+        return alive ? count + 1 : count;
+      }, 0);
+      if (aliveTeams <= 1) {
+        await this.confirmFinished(SYSTEM_ACTOR, matchId, source);
+        return this.getLifecycleState(matchId);
+      }
+      if (match.status !== MatchStatus.FINISH_PENDING) {
+        return this.getLifecycleState(matchId);
+      }
+    }
+
+    const controlMeta = this.parseMeta(match.controlState?.metaJson);
+    if (this.hasValidatedFinalizationEligibility(controlMeta)) {
+      await this.confirmFinished(
+        SYSTEM_ACTOR,
+        matchId,
+        controlMeta?.finishEligibilitySource ?? source,
       );
-      return alive ? count + 1 : count;
-    }, 0);
-    if (aliveTeams > 1) {
       return this.getLifecycleState(matchId);
     }
 
-    await this.endMatch(SYSTEM_ACTOR, matchId, source);
-    this.logger.log(`[Match] Match confirmed FINISHED matchId=${matchId}`);
+    const liveState = await this.store.get(matchId);
+    if (liveState?.initialized === true && computeAliveTeams(liveState) <= 1) {
+      await this.confirmFinished(SYSTEM_ACTOR, matchId, source);
+      return this.getLifecycleState(matchId);
+    }
+
     return this.getLifecycleState(matchId);
   }
 
@@ -1404,27 +2133,19 @@ export class MatchControlService implements OnModuleInit {
       select: { metaJson: true },
     });
 
-    await this.prisma.match.update({
-      where: { id: matchId },
-      data: this.buildRunResetMatchData(match),
-    });
-    await this.prisma.matchControlState.upsert({
-      where: { matchId },
-      update: {
-        state: 'READY',
-        reason,
-        metaJson: this.clearFinalizationMeta(controlState?.metaJson),
-        version: { increment: 1 },
-        updatedAt: now,
-      },
-      create: {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.match.update({
+        where: { id: matchId },
+        data: this.buildRunResetMatchData(match),
+      });
+      await this.writeControlStateCas(tx, {
         matchId,
+        organizationId: this.requireMatchOrganizationId(match),
         state: 'READY',
         reason,
-        organizationId: this.requireMatchOrganizationId(match),
-        metaJson: this.clearFinalizationMeta(controlState?.metaJson),
+        metaJson: (currentMeta) => this.clearFinalizationMeta(currentMeta),
         updatedAt: now,
-      },
+      });
     });
     await this.store.evictMatches([matchId]);
     this.logRunBoundaryReset(matchId, reason, {
@@ -1463,7 +2184,7 @@ export class MatchControlService implements OnModuleInit {
 
   private emitStatus(
     matchId: string,
-    status: 'UPCOMING' | 'LIVE' | 'ENDED' | 'PAUSED' | 'CANCELLED',
+    status: 'UPCOMING' | 'LIVE' | 'ENDED' | 'CANCELLED',
     organizationId: string | null | undefined,
   ) {
     this.realtime.emitMatchStatusUpdated(organizationId ?? null, {
@@ -1471,6 +2192,10 @@ export class MatchControlService implements OnModuleInit {
       status,
       updatedAt: new Date().toISOString(),
     });
+    this.resultsEvents.emitControlContractUpdated(
+      matchId,
+      'CONTROL_STATE_CHANGED',
+    );
   }
 
   private async loadMatch(matchId: string): Promise<MatchSummary> {
@@ -1479,6 +2204,7 @@ export class MatchControlService implements OnModuleInit {
       select: {
         id: true,
         organizationId: true,
+        ownerUserId: true,
         groupId: true,
         stageId: true,
         tournamentId: true,
@@ -1497,7 +2223,9 @@ export class MatchControlService implements OnModuleInit {
         endedReason: true,
         updatedAt: true,
         tournament: { select: { ownerUserId: true, organizationId: true } },
-        controlState: { select: { state: true, metaJson: true } },
+        controlState: {
+          select: { state: true, version: true, metaJson: true },
+        },
       },
     });
     if (!match) throw new NotFoundException('Match not found');
@@ -1512,12 +2240,12 @@ export class MatchControlService implements OnModuleInit {
           OR: [
             { status: MatchStatus.LIVE },
             { controlState: { state: 'LIVE' } },
-            { controlState: { state: 'PAUSED' } },
           ],
         },
         select: {
           id: true,
           organizationId: true,
+          ownerUserId: true,
           groupId: true,
           stageId: true,
           tournamentId: true,
@@ -1536,7 +2264,9 @@ export class MatchControlService implements OnModuleInit {
           endedReason: true,
           updatedAt: true,
           tournament: { select: { ownerUserId: true, organizationId: true } },
-          controlState: { select: { state: true, metaJson: true } },
+          controlState: {
+            select: { state: true, version: true, metaJson: true },
+          },
         },
       });
 
@@ -1547,7 +2277,34 @@ export class MatchControlService implements OnModuleInit {
             controlState: match.controlState ?? undefined,
           };
           const state = await this.buildState(summary);
-          const saved = await this.liveStateMirror.publish(state);
+          this.liveStateMirror.lockCanonicalRoster(match.id, state);
+          const current = await this.store.get(match.id);
+          const saved =
+            current && this.hasActiveTelemetryMirrorOwnership(current)
+              ? current
+              : await this.liveStateMirror.publish(state, {
+                  writer: 'match-control',
+                });
+          if (current && this.hasActiveTelemetryMirrorOwnership(current)) {
+            this.logger.warn(
+              JSON.stringify({
+                tag: '[TELEMETRY][BLOCKED]',
+                stage: 'match-control',
+                action: 'rehydrate-runtime-overwrite-blocked',
+                matchId: match.id,
+                currentSourceMode: current.sourceMode ?? null,
+                currentVersion: current.version,
+                currentPlayers: current.teams.reduce(
+                  (sum, team) => sum + (team.players?.length ?? 0),
+                  0,
+                ),
+                canonicalPlayers: state.teams.reduce(
+                  (sum, team) => sum + (team.players?.length ?? 0),
+                  0,
+                ),
+              }),
+            );
+          }
           this.gateway.emitMatchState(
             match.id,
             saved,
@@ -1584,12 +2341,15 @@ export class MatchControlService implements OnModuleInit {
         },
       }),
       this.prisma.matchSlot.findMany({
-        where: { matchId },
+        where: { matchId, deletedAt: null },
         select: {
           teamId: true,
           slotNumber: true,
           team: {
             select: {
+              name: true,
+              tag: true,
+              logoUrl: true,
               players: {
                 select: {
                   id: true,
@@ -1643,13 +2403,40 @@ export class MatchControlService implements OnModuleInit {
       }),
     ]);
 
-    const slotMap = new Map(slots.map((s) => [s.teamId, s.slotNumber]));
+    const matchTeamById = new Map(teams.map((team) => [team.teamId, team]));
+    const statByTeamId = new Map(
+      stats
+        .filter((stat) => Boolean(stat.teamId))
+        .map((stat) => [stat.teamId as string, stat] as const),
+    );
+    type LoadedSlot = (typeof slots)[number];
+    type LoadedMatchTeam = (typeof teams)[number];
+    type TeamSource = {
+      teamId: string;
+      matchTeam: LoadedMatchTeam | null;
+      slot: LoadedSlot | null;
+    };
+    const assignedSlots = slots.filter(
+      (slot): slot is LoadedSlot & { teamId: string } =>
+        typeof slot.teamId === 'string' && slot.teamId.length > 0,
+    );
+    const teamSources: TeamSource[] =
+      assignedSlots.length > 0
+        ? assignedSlots.map((slot) => ({
+            teamId: slot.teamId,
+            matchTeam: matchTeamById.get(slot.teamId) ?? null,
+            slot,
+          }))
+        : teams.map((team) => ({
+            teamId: team.teamId,
+            matchTeam: team,
+            slot: slots.find((entry) => entry.teamId === team.teamId) ?? null,
+          }));
 
-    return teams.map((t) => {
-      const stat = stats.find((entry) => entry.teamId === t.teamId) ?? null;
-      const slot = slots.find((entry) => entry.teamId === t.teamId) ?? null;
+    return teamSources.map(({ teamId, matchTeam, slot }) => {
+      const stat = statByTeamId.get(teamId) ?? null;
       const slotPlayers = this.toLivePlayersFromSlotResult(
-        t.teamId,
+        teamId,
         stat?.slotNumber ?? slot?.slotNumber ?? null,
         stat?.players ?? [],
       );
@@ -1657,7 +2444,7 @@ export class MatchControlService implements OnModuleInit {
         slotPlayers.length > 0
           ? slotPlayers
           : this.toLivePlayersFromSlotRoster(
-              t.teamId,
+              teamId,
               slot?.slotNumber ?? stat?.slotNumber ?? null,
               slot?.team?.players ?? [],
             );
@@ -1668,13 +2455,15 @@ export class MatchControlService implements OnModuleInit {
           ? fallbackPlayers.filter((player) => player.alive === true).length
           : undefined;
       return {
-        teamId: t.teamId,
-        name: t.team?.name ?? null,
-        tag: t.team?.tag ?? null,
-        logoUrl: normalizePublicAssetUrl(t.team?.logoUrl),
+        teamId,
+        name: slot?.team?.name ?? matchTeam?.team?.name ?? null,
+        tag: slot?.team?.tag ?? matchTeam?.team?.tag ?? null,
+        logoUrl: normalizePublicAssetUrl(
+          slot?.team?.logoUrl ?? matchTeam?.team?.logoUrl,
+        ),
         wasPresentInMatch: stat?.wasPresentInMatch ?? null,
         presenceStatus: derivePresenceStatus(stat?.wasPresentInMatch ?? null),
-        slot: stat?.slotNumber ?? slotMap.get(t.teamId) ?? null,
+        slot: stat?.slotNumber ?? slot?.slotNumber ?? null,
         kills: stat?.totalKills ?? 0,
         placement: stat?.placement ?? null,
         points: stat?.totalPoints ?? null,
@@ -1841,6 +2630,63 @@ export class MatchControlService implements OnModuleInit {
     };
   }
 
+  private summarizeLiveTeams(
+    teams: TeamScoreState[],
+    fallback?: LiveMatchState['summary'] | null,
+  ): LiveMatchState['summary'] {
+    if (teams.length === 0) {
+      return (
+        fallback ?? {
+          totalTeams: 0,
+          aliveTeams: 0,
+          totalPlayers: 0,
+          alivePlayers: 0,
+          winnerTeamId: null,
+          winnerSlot: null,
+        }
+      );
+    }
+
+    const aliveSignals = teams.map((team) => this.countKnownAlivePlayers(team));
+    const hasAliveSignal = aliveSignals.some((count) => count !== null);
+    const aliveTeams: number = hasAliveSignal
+      ? aliveSignals.reduce<number>(
+          (count, alive) => (alive !== null && alive > 0 ? count + 1 : count),
+          0,
+        )
+      : Math.max(0, fallback?.aliveTeams ?? 0);
+    const totalPlayers = teams.reduce((sum, team) => {
+      if (
+        typeof team.totalPlayers === 'number' &&
+        Number.isFinite(team.totalPlayers)
+      ) {
+        return sum + Math.max(0, Math.floor(team.totalPlayers));
+      }
+      return sum + Math.max(0, team.players?.length ?? 0);
+    }, 0);
+    const alivePlayers: number = hasAliveSignal
+      ? aliveSignals.reduce<number>(
+          (sum, alive) => sum + Math.max(0, alive ?? 0),
+          0,
+        )
+      : Math.max(0, fallback?.alivePlayers ?? 0);
+    const winnerTeam =
+      teams.find((team) => team.placement === 1) ??
+      (aliveTeams === 1
+        ? (teams.find((team) => (this.countKnownAlivePlayers(team) ?? 0) > 0) ??
+          null)
+        : null);
+
+    return {
+      totalTeams: teams.length,
+      aliveTeams,
+      totalPlayers,
+      alivePlayers,
+      winnerTeamId: winnerTeam?.teamId ?? null,
+      winnerSlot: winnerTeam?.slot ?? null,
+    };
+  }
+
   private async buildState(match: MatchSummary): Promise<LiveMatchState> {
     const teams = await this.loadTeams(match.id);
     return {
@@ -1857,13 +2703,9 @@ export class MatchControlService implements OnModuleInit {
 
   private isLiveControlStatus(
     status: MatchStatus,
-    controlState?: ControlState | null,
+    controlState?: PersistedControlState | null,
   ): boolean {
-    return (
-      status === MatchStatus.LIVE ||
-      controlState === 'LIVE' ||
-      controlState === 'PAUSED'
-    );
+    return status === MatchStatus.LIVE || controlState === 'LIVE';
   }
 
   private cachedStateHasTelemetrySignal(state: LiveMatchState | null): boolean {
@@ -1871,18 +2713,7 @@ export class MatchControlService implements OnModuleInit {
       return false;
     }
 
-    const hasRosterSignal =
-      (state.summary?.totalPlayers ?? 0) > 0 ||
-      (state.summary?.alivePlayers ?? 0) > 0 ||
-      state.teams.some((team) => {
-        return (
-          (team.totalPlayers ?? 0) > 0 ||
-          (team.alivePlayers ?? 0) > 0 ||
-          (team.players?.length ?? 0) > 0
-        );
-      });
-
-    if (hasRosterSignal) {
+    if (state.circle || state.observedPlayer) {
       return true;
     }
 
@@ -1890,7 +2721,49 @@ export class MatchControlService implements OnModuleInit {
       return true;
     }
 
-    return false;
+    return state.teams.some((team) => {
+      if (team.hasTelemetryPresence === true) {
+        return true;
+      }
+      return (team.players ?? []).some((player) => {
+        if (player.lifeTelemetryFresh === true) {
+          return true;
+        }
+        return Boolean(player.position);
+      });
+    });
+  }
+
+  private hasActiveTelemetryMirrorOwnership(
+    state: LiveMatchState | null | undefined,
+  ): boolean {
+    return Boolean(
+      state &&
+      state.status === 'LIVE' &&
+      (isAutomaticMatchStateSourceMode(state.sourceMode) ||
+        this.cachedStateHasTelemetrySignal(state)),
+    );
+  }
+
+  private mergeLiveTelemetryTeamMetadata(
+    existing: TeamScoreState,
+    fresh: TeamScoreState | null,
+  ): TeamScoreState {
+    if (!fresh) {
+      return existing;
+    }
+
+    return {
+      ...existing,
+      name: fresh.name ?? existing.name,
+      tag: fresh.tag ?? existing.tag,
+      slot: fresh.slot ?? existing.slot,
+      logoUrl: fresh.logoUrl ?? existing.logoUrl,
+      wasPresentInMatch:
+        existing.wasPresentInMatch ?? fresh.wasPresentInMatch ?? null,
+      presenceStatus: existing.presenceStatus ?? fresh.presenceStatus ?? null,
+      updatedAt: existing.updatedAt ?? fresh.updatedAt ?? null,
+    };
   }
 
   private persistedTelemetryHasSignal(snapshot: TelemetryMatchState): boolean {
@@ -1921,13 +2794,120 @@ export class MatchControlService implements OnModuleInit {
     return false;
   }
 
+  private telemetrySnapshotPlayerAliases(
+    player: TelemetryMatchState['players'][string],
+  ): string[] {
+    const aliases = [
+      player.metadata?.slotPlayerResultId,
+      player.metadata?.externalPlayerId,
+      player.metadata?.inGameId,
+      player.metadata?.playerName,
+    ]
+      .map((value) =>
+        typeof value === 'string' ? value.trim().toLowerCase() : '',
+      )
+      .filter((value) => value.length > 0);
+    return Array.from(new Set(aliases));
+  }
+
+  private dedupeTelemetrySnapshotPlayers(
+    players: Array<TelemetryMatchState['players'][string]>,
+  ): Array<TelemetryMatchState['players'][string]> {
+    const canonical = new Map<string, TelemetryMatchState['players'][string]>();
+    const aliasesToCanonical = new Map<string, string>();
+
+    const sorted = [...players].sort((left, right) => {
+      const leftScore =
+        (typeof left.metadata?.slotPlayerResultId === 'string' &&
+        left.metadata.slotPlayerResultId.trim().length > 0
+          ? 0
+          : 10) +
+        (left.metadata?.observedInTelemetry === true ? 0 : 5) +
+        (left.metadata?.provisional === true ? 5 : 0);
+      const rightScore =
+        (typeof right.metadata?.slotPlayerResultId === 'string' &&
+        right.metadata.slotPlayerResultId.trim().length > 0
+          ? 0
+          : 10) +
+        (right.metadata?.observedInTelemetry === true ? 0 : 5) +
+        (right.metadata?.provisional === true ? 5 : 0);
+      if (leftScore !== rightScore) {
+        return leftScore - rightScore;
+      }
+      return left.playerId.localeCompare(right.playerId);
+    });
+
+    for (const player of sorted) {
+      const aliases = this.telemetrySnapshotPlayerAliases(player);
+      const canonicalKey =
+        aliases.map((alias) => aliasesToCanonical.get(alias)).find(Boolean) ??
+        player.playerId;
+      const existing = canonical.get(canonicalKey);
+      if (!existing) {
+        canonical.set(canonicalKey, player);
+        for (const alias of aliases) {
+          aliasesToCanonical.set(alias, canonicalKey);
+        }
+        continue;
+      }
+
+      const preferredLifeSource =
+        player.metadata?.observedInTelemetry === true &&
+        existing.metadata?.observedInTelemetry !== true
+          ? player
+          : existing;
+      const merged = {
+        ...existing,
+        alive: preferredLifeSource.alive,
+        knocked: preferredLifeSource.knocked,
+        kills: Math.max(existing.kills, player.kills),
+        metadata: {
+          ...(player.metadata ?? {}),
+          ...(existing.metadata ?? {}),
+          playerName:
+            existing.metadata?.playerName ??
+            player.metadata?.playerName ??
+            existing.playerId,
+          slotPlayerResultId:
+            existing.metadata?.slotPlayerResultId ??
+            player.metadata?.slotPlayerResultId ??
+            null,
+          externalPlayerId:
+            existing.metadata?.externalPlayerId ??
+            player.metadata?.externalPlayerId ??
+            null,
+          inGameId:
+            existing.metadata?.inGameId ?? player.metadata?.inGameId ?? null,
+          position:
+            existing.metadata?.position ?? player.metadata?.position ?? null,
+          observedInTelemetry:
+            existing.metadata?.observedInTelemetry === true ||
+            player.metadata?.observedInTelemetry === true,
+          provisional:
+            existing.metadata?.provisional === true &&
+            player.metadata?.provisional === true,
+        },
+      };
+      canonical.set(canonicalKey, merged);
+      for (const alias of aliases) {
+        aliasesToCanonical.set(alias, canonicalKey);
+      }
+    }
+
+    return Array.from(canonical.values()).sort((left, right) =>
+      left.playerId.localeCompare(right.playerId),
+    );
+  }
+
   private playersForTelemetryTeam(
     snapshot: TelemetryMatchState,
     teamId: string,
   ) {
-    return Object.values(snapshot.players ?? {})
-      .filter((player) => player.teamId === teamId)
-      .sort((left, right) => left.playerId.localeCompare(right.playerId));
+    return this.dedupeTelemetrySnapshotPlayers(
+      Object.values(snapshot.players ?? {}).filter(
+        (player) => player.teamId === teamId,
+      ),
+    );
   }
 
   private sortTelemetryTeams(
@@ -1954,8 +2934,8 @@ export class MatchControlService implements OnModuleInit {
     status: TelemetryMatchState['status'],
   ): ControlState {
     if (status === 'LIVE') return 'LIVE';
-    if (status === 'LOCKED') return 'ENDED';
-    if (status === 'ENDED') return 'ENDED';
+    if (status === 'LOCKED') return 'FINISHED';
+    if (status === 'ENDED') return 'FINISH_PENDING';
     return 'READY';
   }
 
@@ -1975,60 +2955,156 @@ export class MatchControlService implements OnModuleInit {
   private toLiveStateFromTelemetrySnapshot(
     snapshot: TelemetryMatchState,
   ): LiveMatchState {
-    const teams = Object.values(snapshot.teams ?? {})
+    const phase =
+      typeof snapshot.circle?.phase === 'number' &&
+      Number.isFinite(snapshot.circle.phase)
+        ? Math.trunc(snapshot.circle.phase)
+        : null;
+    const earlyTelemetryPhase = phase !== null && phase < 2;
+    const computedTeamInputs = Object.values(snapshot.teams ?? {})
       .sort((left, right) => this.sortTelemetryTeams(left, right))
-      .map((team) => {
-        const eliminated = team.alivePlayers === 0;
-        return {
-          teamId: team.teamId,
-          name: team.metadata?.teamName ?? null,
-          tag: team.metadata?.teamTag ?? null,
-          slot: team.metadata?.slot ?? null,
-          wasPresentInMatch: team.metadata?.wasPresentInMatch ?? null,
-          presenceStatus: derivePresenceStatus(
-            team.metadata?.wasPresentInMatch ?? null,
-          ),
-          kills: team.totalKills,
-          placement: team.placement,
-          points: null,
-          logoUrl: normalizePublicAssetUrl(team.metadata?.logoUrl),
-          alivePlayers: team.alivePlayers,
-          totalPlayers: team.totalPlayers,
-          alive: team.alivePlayers > 0,
-          eliminated,
-          sourceMode: snapshot.mode,
-          updatedAt: new Date(snapshot.updatedAt).toISOString(),
-          ownership: team.ownership,
-          players: this.playersForTelemetryTeam(snapshot, team.teamId).map(
-            (player) => ({
-              id: player.playerId,
-              playerId: player.playerId,
-              externalPlayerId: player.metadata?.externalPlayerId ?? null,
-              pubgPlayerId: player.metadata?.inGameId ?? null,
-              name: player.metadata?.playerName ?? player.playerId,
-              ign: player.metadata?.playerName ?? player.playerId,
-              avatarUrl: normalizePublicAssetUrl(player.metadata?.avatarUrl),
-              teamId: player.teamId,
-              slot: team.metadata?.slot ?? null,
-              alive: player.alive,
-              knocked: player.knocked,
-              eliminated: !player.alive,
-              kills: player.kills,
-              position: player.metadata?.position ?? null,
-              updatedAt: new Date(snapshot.updatedAt).toISOString(),
-              ownership: player.ownership,
-            }),
-          ),
-        };
-      });
+      .map((team) => ({
+        team,
+        freshTelemetry: this.readFreshSnapshotTeamTelemetry(
+          team,
+          snapshot.updatedAt,
+        ),
+        teamPlayers: this.playersForTelemetryTeam(snapshot, team.teamId),
+      }));
+    const hasFreshTelemetryTeams = computedTeamInputs.some(
+      (entry) => entry.freshTelemetry !== null,
+    );
 
-    const winnerTeam = teams.find((team) => team.placement === 1) ?? null;
-    const totalPlayers = teams.reduce(
+    const computedTeams = computedTeamInputs.map(
+      ({ team, freshTelemetry, teamPlayers }) => {
+        const suppressStaleCanonicalRoster =
+          earlyTelemetryPhase &&
+          hasFreshTelemetryTeams &&
+          freshTelemetry === null;
+        const observedAlivePlayers = teamPlayers.filter(
+          (player) => player.alive === true,
+        ).length;
+        const canonicalTotalPlayers =
+          typeof team.metadata?.totalPlayers === 'number' &&
+          Number.isFinite(team.metadata.totalPlayers)
+            ? Math.max(0, Math.trunc(team.metadata.totalPlayers))
+            : null;
+        const explicitTelemetryTotalPlayers =
+          typeof team.totalPlayers === 'number' &&
+          Number.isFinite(team.totalPlayers)
+            ? Math.max(0, Math.trunc(team.totalPlayers))
+            : null;
+        const explicitAlivePlayers =
+          typeof team.alivePlayers === 'number' &&
+          Number.isFinite(team.alivePlayers)
+            ? Math.max(0, Math.trunc(team.alivePlayers))
+            : null;
+        const totalPlayers = suppressStaleCanonicalRoster
+          ? 0
+          : (freshTelemetry?.totalPlayers ??
+            (canonicalTotalPlayers !== null
+              ? Math.max(teamPlayers.length, canonicalTotalPlayers)
+              : Math.max(
+                  teamPlayers.length,
+                  explicitTelemetryTotalPlayers ?? 0,
+                )));
+        const alivePlayers = Math.min(
+          totalPlayers,
+          suppressStaleCanonicalRoster
+            ? 0
+            : Math.max(
+                observedAlivePlayers,
+                freshTelemetry?.alivePlayers ?? explicitAlivePlayers ?? 0,
+              ),
+        );
+        const playerKills = teamPlayers.reduce(
+          (sum, player) => sum + Math.max(0, player.kills ?? 0),
+          0,
+        );
+        return {
+          freshTelemetry,
+          team: {
+            teamId: team.teamId,
+            name: team.metadata?.teamName ?? null,
+            tag: team.metadata?.teamTag ?? null,
+            slot: team.metadata?.slot ?? null,
+            wasPresentInMatch: team.metadata?.wasPresentInMatch ?? null,
+            presenceStatus: derivePresenceStatus(
+              team.metadata?.wasPresentInMatch ?? null,
+            ),
+            kills: Math.max(
+              suppressStaleCanonicalRoster ? 0 : (freshTelemetry?.kills ?? 0),
+              suppressStaleCanonicalRoster ? 0 : team.totalKills,
+              suppressStaleCanonicalRoster ? 0 : playerKills,
+            ),
+            placement: suppressStaleCanonicalRoster
+              ? null
+              : (freshTelemetry?.placement ?? team.placement),
+            points: null,
+            logoUrl: normalizePublicAssetUrl(team.metadata?.logoUrl),
+            alivePlayers,
+            totalPlayers,
+            alive: alivePlayers > 0,
+            eliminated: alivePlayers === 0,
+            hasTelemetryPresence:
+              freshTelemetry !== null ||
+              team.metadata?.observedInTelemetry === true ||
+              team.metadata?.wasPresentInMatch === true ||
+              teamPlayers.some(
+                (player) => player.metadata?.observedInTelemetry === true,
+              ),
+            sourceMode: snapshot.mode,
+            updatedAt: new Date(snapshot.updatedAt).toISOString(),
+            ownership: team.ownership,
+            players: suppressStaleCanonicalRoster
+              ? []
+              : teamPlayers.map((player) => ({
+                  id: player.playerId,
+                  playerId: player.playerId,
+                  externalPlayerId: player.metadata?.externalPlayerId ?? null,
+                  pubgPlayerId: player.metadata?.inGameId ?? null,
+                  name: player.metadata?.playerName ?? player.playerId,
+                  ign: player.metadata?.playerName ?? player.playerId,
+                  avatarUrl: normalizePublicAssetUrl(
+                    player.metadata?.avatarUrl,
+                  ),
+                  teamId: player.teamId,
+                  slot: team.metadata?.slot ?? null,
+                  alive: player.alive,
+                  knocked: player.knocked,
+                  eliminated: !player.alive,
+                  health: player.health ?? null,
+                  kills: player.kills,
+                  position: player.metadata?.position ?? null,
+                  updatedAt: new Date(snapshot.updatedAt).toISOString(),
+                  lifeTelemetryFresh:
+                    player.metadata?.observedInTelemetry === true,
+                  ownership: player.ownership,
+                })),
+          },
+        };
+      },
+    );
+
+    const teams = computedTeams.map((entry) => entry.team);
+    const freshTelemetryTeams = computedTeams
+      .filter((entry) => entry.freshTelemetry !== null)
+      .map((entry) => entry.team);
+    const summarySourceTeams =
+      freshTelemetryTeams.length > 0 ? freshTelemetryTeams : teams;
+    const winnerTeam =
+      summarySourceTeams.find((team) => team.placement === 1) ?? null;
+    const totalPlayers = summarySourceTeams.reduce(
       (sum, team) => sum + (team.totalPlayers ?? team.players?.length ?? 0),
       0,
     );
-    const alivePlayers = teams.reduce(
+    const alivePlayers = summarySourceTeams.reduce(
       (sum, team) => sum + (team.alivePlayers ?? 0),
+      0,
+    );
+    const aliveTeams = summarySourceTeams.reduce(
+      (sum, team) =>
+        team.alivePlayers && team.alivePlayers > 0 ? sum + 1 : sum,
       0,
     );
 
@@ -2045,8 +3121,8 @@ export class MatchControlService implements OnModuleInit {
       updatedAt: new Date(snapshot.updatedAt).toISOString(),
       sourceMode: snapshot.mode,
       summary: {
-        totalTeams: teams.length,
-        aliveTeams: snapshot.teamsAlive,
+        totalTeams: summarySourceTeams.length,
+        aliveTeams,
         totalPlayers,
         alivePlayers,
         winnerTeamId: winnerTeam?.teamId ?? null,
@@ -2084,6 +3160,56 @@ export class MatchControlService implements OnModuleInit {
             nextZone: snapshot.circle.nextZone ?? null,
           }
         : null,
+    };
+  }
+
+  private readFreshSnapshotTeamTelemetry(
+    team: TelemetryTeamState,
+    updatedAt: number,
+  ): {
+    alivePlayers: number | null;
+    totalPlayers: number | null;
+    kills: number | null;
+    placement: number | null;
+  } | null {
+    const lastSeenAt =
+      typeof team.metadata?.telemetryLastSeenAt === 'number' &&
+      Number.isFinite(team.metadata.telemetryLastSeenAt)
+        ? Math.trunc(team.metadata.telemetryLastSeenAt)
+        : null;
+    if (lastSeenAt === null || lastSeenAt !== Math.trunc(updatedAt)) {
+      return null;
+    }
+
+    const alivePlayers =
+      typeof team.metadata?.telemetryAlivePlayers === 'number' &&
+      Number.isFinite(team.metadata.telemetryAlivePlayers)
+        ? Math.max(0, Math.trunc(team.metadata.telemetryAlivePlayers))
+        : null;
+    const totalPlayers =
+      typeof team.metadata?.telemetryTotalPlayers === 'number' &&
+      Number.isFinite(team.metadata.telemetryTotalPlayers)
+        ? Math.max(
+            alivePlayers ?? 0,
+            Math.trunc(team.metadata.telemetryTotalPlayers),
+          )
+        : alivePlayers;
+    const kills =
+      typeof team.metadata?.telemetryKills === 'number' &&
+      Number.isFinite(team.metadata.telemetryKills)
+        ? Math.max(0, Math.trunc(team.metadata.telemetryKills))
+        : null;
+    const placement =
+      typeof team.metadata?.telemetryPlacement === 'number' &&
+      Number.isFinite(team.metadata.telemetryPlacement)
+        ? Math.max(1, Math.trunc(team.metadata.telemetryPlacement))
+        : null;
+
+    return {
+      alivePlayers,
+      totalPlayers,
+      kills,
+      placement,
     };
   }
 
@@ -2157,9 +3283,7 @@ export class MatchControlService implements OnModuleInit {
       return null;
     }
 
-    return this.liveStateMirror.publish(
-      this.toLiveStateFromTelemetrySnapshot(snapshot),
-    );
+    return this.toLiveStateFromTelemetrySnapshot(snapshot);
   }
 
   private resolveAliveTeamsFromSnapshot(
@@ -2260,22 +3384,114 @@ export class MatchControlService implements OnModuleInit {
     return this.countAliveTeamsFromSlots(tx, matchId);
   }
 
-  private async assertNoContestedLiveMatches(
+  private async partitionLiveScopeConflicts(
     tx: Prisma.TransactionClient,
-    startingMatchId: string,
     candidates: LiveConflictCandidate[],
-  ): Promise<void> {
+  ): Promise<{
+    blocking: Array<{ id: string; aliveTeams: number | null }>;
+    ignored: Array<{ id: string; aliveTeams: 0 }>;
+  }> {
+    const blocking: Array<{ id: string; aliveTeams: number | null }> = [];
+    const ignored: Array<{ id: string; aliveTeams: 0 }> = [];
+
     for (const candidate of candidates) {
       const aliveTeams = await this.resolveLiveConflictAliveTeams(
         tx,
         candidate.id,
       );
-      if (aliveTeams !== null && aliveTeams > 1) {
-        throw new ConflictException(
-          `Cannot start match ${startingMatchId} while match ${candidate.id} still has ${aliveTeams} teams alive. Resume or finish the existing match first.`,
-        );
+      if (aliveTeams === 0) {
+        ignored.push({ id: candidate.id, aliveTeams: 0 });
+        continue;
       }
+      blocking.push({ id: candidate.id, aliveTeams });
     }
+
+    return { blocking, ignored };
+  }
+
+  private async autoEndOtherLiveMatchesInScope(
+    tx: Prisma.TransactionClient,
+    startingMatch: MatchSummary,
+    candidates: LiveConflictCandidate[],
+    endedAt: Date,
+  ): Promise<Array<{ id: string; aliveTeams: number | null }>> {
+    const { blocking, ignored } = await this.partitionLiveScopeConflicts(
+      tx,
+      candidates,
+    );
+    const conflicts = [...blocking, ...ignored];
+    if (!conflicts.length) {
+      return [];
+    }
+    const endedConflicts: Array<{ id: string; aliveTeams: number | null }> = [];
+
+    this.logger.warn(
+      JSON.stringify({
+        stage: 'match-control',
+        action: 'live-start-conflicts-auto-ended',
+        matchId: startingMatch.id,
+        conflicts,
+        reason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
+      }),
+    );
+
+    for (const conflict of conflicts) {
+      const current = await tx.match.findFirst({
+        where: {
+          id: conflict.id,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          status: true,
+          organizationId: true,
+          tournament: { select: { organizationId: true } },
+          controlState: {
+            select: {
+              version: true,
+            },
+          },
+        },
+      });
+      if (!current) {
+        continue;
+      }
+
+      const ended = await tx.match.updateMany({
+        where: {
+          id: conflict.id,
+          deletedAt: null,
+          OR: [
+            { status: MatchStatus.LIVE },
+            { controlState: { state: 'LIVE' } },
+          ],
+        },
+        data: {
+          status: MatchStatus.ENDED,
+          liveState: LiveState.ENDED,
+          endedAt,
+          endedReason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
+        },
+      });
+      if (ended.count !== 1) {
+        continue;
+      }
+
+      await this.writeControlStateCas(tx, {
+        matchId: conflict.id,
+        organizationId:
+          current.organizationId ??
+          current.tournament?.organizationId ??
+          this.requireMatchOrganizationId(startingMatch),
+        state: 'ENDED',
+        reason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
+        expectedVersion: current.controlState?.version ?? null,
+        updatedAt: endedAt,
+      });
+      endedConflicts.push(conflict);
+    }
+
+    return endedConflicts;
   }
 
   private async persistAndBroadcast(
@@ -2287,7 +3503,9 @@ export class MatchControlService implements OnModuleInit {
       expectedVersion !== undefined
         ? { ...state, version: expectedVersion + 1 }
         : state;
-    const saved = await this.liveStateMirror.publish(publishableState);
+    const saved = await this.liveStateMirror.publish(publishableState, {
+      writer: 'match-control',
+    });
     const orgId =
       ((state as unknown as { tournament?: { organizationId?: string | null } })
         ?.tournament?.organizationId as string | undefined) ?? null;
@@ -2296,27 +3514,816 @@ export class MatchControlService implements OnModuleInit {
     return saved;
   }
 
-  private async finalizeEndedMatch(
+  private async ensureFinishPendingForFinalization(
+    match: MatchSummary,
+    reason: string,
+    expectedVersion?: number | null,
+  ): Promise<number | null> {
+    if (match.status === MatchStatus.FINISH_PENDING) {
+      return null;
+    }
+    if (match.status === MatchStatus.FINISHED) {
+      return null;
+    }
+    if (match.status !== MatchStatus.ENDED) {
+      throw new BadRequestException(
+        'Match must be ENDED or FINISH_PENDING before final confirmation',
+      );
+    }
+
+    const now = new Date();
+    const finalizationStartedAt = now.toISOString();
+    const persistedPendingControlState =
+      await this.resolvePersistedControlState('FINISH_PENDING');
+    let nextVersion: number | null = null;
+    await this.prisma.$transaction(async (tx) => {
+      const promoted = await tx.match.updateMany({
+        where: {
+          id: match.id,
+          deletedAt: null,
+          status: MatchStatus.ENDED,
+        },
+        data: {
+          status: MatchStatus.FINISH_PENDING,
+          liveState: LiveState.ENDED,
+          endedAt: match.endedAt ?? now,
+          endedReason: match.endedReason ?? reason,
+        },
+      });
+
+      if (promoted.count !== 1) {
+        const current = await tx.match.findUnique({
+          where: { id: match.id },
+          select: { status: true },
+        });
+        if (
+          current?.status === MatchStatus.FINISH_PENDING ||
+          current?.status === MatchStatus.FINISHED
+        ) {
+          return;
+        }
+        throw new ConflictException('Match finalization state changed');
+      }
+
+      const writtenControl = await this.writeControlStateCas(tx, {
+        matchId: match.id,
+        organizationId: this.requireMatchOrganizationId(match),
+        state: persistedPendingControlState,
+        reason,
+        metaJson: (currentMeta) => {
+          const existingStartedAt = this.normalizeTimestamp(
+            this.parseMeta(currentMeta)?.finalizationStartedAt ?? null,
+          );
+          return this.buildFinalizationEligibilityMeta(currentMeta, {
+            finalizationStartedAt: existingStartedAt ?? finalizationStartedAt,
+            source: reason,
+          });
+        },
+        updatedAt: now,
+        expectedVersion,
+      });
+      nextVersion = writtenControl.version;
+    });
+    return nextVersion;
+  }
+
+  async confirmFinished(
+    actor: Actor,
+    matchId: string,
+    reason: string = 'CONFIRM_MATCH_FINISHED',
+    opts: { expectedVersion?: number | null } = {},
+  ): Promise<MatchLifecycleSnapshot> {
+    const match = await this.loadMatch(matchId);
+    this.ensurePermission(
+      actor,
+      match.tournament.ownerUserId,
+      match.tournament.organizationId,
+    );
+
+    if (match.status === MatchStatus.FINISHED) {
+      return this.getLifecycleState(matchId);
+    }
+
+    const promotedVersion = await this.ensureFinishPendingForFinalization(
+      match,
+      reason,
+      opts.expectedVersion ?? null,
+    );
+    const expectedVersion =
+      promotedVersion ??
+      opts.expectedVersion ??
+      (await this.resolveFinalizationVersion(matchId));
+    const finalized = await this.finalizeMatch(
+      matchId,
+      expectedVersion,
+      reason,
+    );
+    if (!finalized) {
+      throw new ConflictException('Match finalization could not be completed');
+    }
+    this.logger.log(`[Match] Match confirmed FINISHED matchId=${matchId}`);
+    return this.getLifecycleState(matchId);
+  }
+
+  private async finalizePendingMatch(
     matchId: string,
     reason: string = 'FINAL_RECALC',
+  ): Promise<boolean> {
+    const expectedVersion = await this.resolveFinalizationVersion(matchId);
+    return this.finalizeMatch(matchId, expectedVersion, reason);
+  }
+
+  private async resolveFinalizationVersion(matchId: string): Promise<number> {
+    const control = await this.prisma.matchControlState.findUnique({
+      where: { matchId },
+      select: { version: true },
+    });
+    if (!control) {
+      throw new ConflictException('Control state is required for finalization');
+    }
+    return control.version;
+  }
+
+  async finalizeMatch(
+    matchId: string,
+    expectedVersion: number,
+    reason: string = 'FINAL_RECALC',
+  ): Promise<boolean> {
+    this.logger.log(
+      `[FINALIZATION][START] matchId=${matchId} expectedVersion=${expectedVersion}`,
+    );
+
+    const initial = await this.prisma.match.findFirst({
+      where: { id: matchId, deletedAt: null },
+      select: {
+        id: true,
+        status: true,
+        controlState: { select: { metaJson: true } },
+      },
+    });
+    if (!initial) {
+      throw new NotFoundException('Match not found');
+    }
+    if (initial.status === MatchStatus.FINISHED) {
+      this.logger.log(`[FINALIZATION][SUCCESS] matchId=${matchId} noop=true`);
+      return true;
+    }
+
+    let computedResults: ComputedFinalResults | null = null;
+    const finalizationOutcome: { plan: MatchConclusionPlan | null } = {
+      plan: null,
+    };
+    let wroteResults = false;
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const current = await tx.match.findFirst({
+          where: { id: matchId, deletedAt: null },
+          select: {
+            id: true,
+            status: true,
+            endedAt: true,
+            endedReason: true,
+            organizationId: true,
+            organization: {
+              select: {
+                slug: true,
+              },
+            },
+            tournament: { select: { organizationId: true } },
+            controlState: {
+              select: {
+                state: true,
+                version: true,
+                metaJson: true,
+              },
+            },
+          },
+        });
+        if (!current) {
+          throw new NotFoundException('Match not found');
+        }
+        if (current.status === MatchStatus.FINISHED) {
+          throw new ConflictException('Match finalization state changed');
+        }
+        if (current.status !== MatchStatus.FINISH_PENDING) {
+          throw new Error('Invalid state for finalization');
+        }
+
+        const control = await tx.matchControlState.findUnique({
+          where: { matchId },
+          select: {
+            version: true,
+            metaJson: true,
+          },
+        });
+        if (!control || control.version !== expectedVersion) {
+          throw new ConflictException('Control state version mismatch');
+        }
+
+        const currentMeta = this.parseMeta(current.controlState?.metaJson);
+        const finalResultsAlreadyApplied =
+          currentMeta?.resultFinalized === true ||
+          (await this.hasFinalResultsApplied(tx, matchId));
+
+        let finalizedAt = new Date();
+        let endedAt = current.endedAt ?? finalizedAt;
+        let endedReason = current.endedReason ?? reason;
+        let nextMeta = this.parseMetaRecord(current.controlState?.metaJson);
+        const postMatchWidgets = this.buildSavedPostMatchWidgets(
+          current.organization?.slug ?? null,
+          matchId,
+        );
+
+        if (!finalResultsAlreadyApplied) {
+          const winnerTeamId = await this.resolveFinalizationWinnerTeamId(
+            matchId,
+            tx,
+          );
+          this.logger.log(`[FINALIZATION][COMPUTE] matchId=${matchId}`);
+          computedResults = await this.conclusion.computeFinalResults(
+            matchId,
+            {
+              source: reason,
+              winnerTeamId,
+            },
+            tx,
+          );
+          finalizationOutcome.plan = computedResults.plan;
+          finalizedAt = new Date(computedResults.plan.finalizedAt);
+          endedAt = current.endedAt ?? computedResults.plan.endedAt;
+          endedReason = current.endedReason ?? computedResults.plan.endedReason;
+          this.logger.log(`[FINALIZATION][WRITE] matchId=${matchId}`);
+          const slotResultIds = await this.writeFinalTeamResults(
+            tx,
+            matchId,
+            computedResults.teamResults,
+          );
+          await this.writeFinalPlayerResults(
+            tx,
+            computedResults.playerResults,
+            slotResultIds,
+          );
+          await this.writeFinalStandings(
+            tx,
+            matchId,
+            computedResults.standings,
+          );
+          nextMeta = {
+            ...nextMeta,
+            ...computedResults.plan.nextMeta,
+            postMatchWidgets,
+          };
+          wroteResults = true;
+        } else {
+          const finalizedAtValue =
+            typeof nextMeta.finalizedAt === 'string'
+              ? Date.parse(nextMeta.finalizedAt)
+              : NaN;
+          finalizedAt = Number.isFinite(finalizedAtValue)
+            ? new Date(finalizedAtValue)
+            : finalizedAt;
+          nextMeta = {
+            ...nextMeta,
+            resultFinalized: true,
+            finalizedAt: finalizedAt.toISOString(),
+            postMatchWidgets,
+          };
+        }
+
+        await tx.match.update({
+          where: { id: matchId },
+          data: {
+            status: MatchStatus.FINISHED,
+            liveState: LiveState.ENDED,
+            endedAt,
+            endedReason,
+          },
+        });
+
+        await this.writeControlStateCas(tx, {
+          matchId,
+          organizationId:
+            current.organizationId ??
+            current.tournament?.organizationId ??
+            computedResults?.plan.organizationId ??
+            '',
+          state: 'ENDED',
+          reason,
+          metaJson: nextMeta as Prisma.JsonObject,
+          expectedVersion,
+          updatedAt: finalizedAt,
+        });
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[FINALIZATION][ERROR] matchId=${matchId} error=${msg}`,
+      );
+      throw err;
+    }
+
+    await this.syncLiveHierarchyAfterFinalization(matchId);
+
+    const plan = finalizationOutcome.plan;
+    if (plan) {
+      this.logger.log(
+        JSON.stringify({
+          action: 'match-finalization-applied',
+          matchId,
+          previousLifecycleStatus: 'FINISH_PENDING',
+          nextLifecycleStatus: 'FINISHED',
+          resultFinalized: true,
+          resultNeedsConfirmation: plan.resultNeedsConfirmation,
+          ambiguityCount: plan.resultAmbiguities.length,
+          totalTeams: plan.totalTeams,
+          placementsAssigned: plan.placementsAssigned,
+        }),
+      );
+      if (plan.resultAmbiguities.length > 0) {
+        this.logger.warn(
+          JSON.stringify({
+            action: 'match-conclusion-ambiguity',
+            matchId,
+            ambiguityCount: plan.resultAmbiguities.length,
+            ambiguities: plan.resultAmbiguities,
+          }),
+        );
+      }
+
+      await this.publishFinalizationSideEffects(plan, reason);
+      this.resultsEvents.emitMatchUpdate(matchId, { reason: 'final' });
+    } else if (wroteResults === false) {
+      await this.captureFinalizationSnapshots(matchId).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[MATCH_CONCLUSION] Snapshot refresh skipped for already-finalized match=${matchId}: ${msg}`,
+        );
+      });
+    }
+
+    this.logger.log(`[FINALIZATION][SUCCESS] matchId=${matchId}`);
+    this.resultsEvents.emitControlContractUpdated(
+      matchId,
+      'CONTROL_STATE_CHANGED',
+    );
+    return true;
+  }
+
+  private async syncLiveHierarchyAfterFinalization(
+    matchId: string,
   ): Promise<void> {
     try {
-      const concluded = await this.conclusion.conclude(matchId, {
-        source: reason,
+      const match = await this.prisma.match.findFirst({
+        where: { id: matchId, deletedAt: null },
+        select: {
+          id: true,
+          groupId: true,
+          stageId: true,
+          tournamentId: true,
+        },
       });
-      if (!concluded) {
-        this.logger.warn(
-          `[MATCH_CONCLUSION] Skipped canonical finalization match=${matchId} reason=${reason}`,
-        );
+
+      if (!match?.tournamentId) {
         return;
       }
-      this.resultsEvents.emitMatchUpdate(matchId, { reason: 'final' });
+
+      const updates: LiveStateUpdatePayload[] = [
+        { entity: 'MATCH', id: matchId, liveState: LiveState.ENDED },
+      ];
+      const hierarchy = await this.matchesService.syncLiveHierarchy({
+        matchId,
+        groupId: match.groupId ?? null,
+        stageId: match.stageId ?? null,
+        tournamentId: match.tournamentId,
+      });
+      updates.push(...hierarchy);
+      this.gateway.emitLiveStateUpdates(updates);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `[FINALIZATION] Live hierarchy sync failed for match=${matchId}: ${message}`,
+      );
+    }
+  }
+
+  private async hasFinalResultsApplied(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+  ): Promise<boolean> {
+    const finalizedSlot = await tx.matchSlotResult.findFirst({
+      where: {
+        matchId,
+        finalizedAt: { not: null },
+      },
+      select: { id: true },
+    });
+    return Boolean(finalizedSlot);
+  }
+
+  private async writeFinalTeamResults(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+    teamResults: ComputedFinalTeamResult[],
+  ): Promise<Map<number, string>> {
+    const activeSlotNumbers = teamResults.map((result) => result.slotNumber);
+    const staleSlotResults = await tx.matchSlotResult.findMany({
+      where:
+        activeSlotNumbers.length > 0
+          ? { matchId, slotNumber: { notIn: activeSlotNumbers } }
+          : { matchId },
+      select: { id: true },
+    });
+    const staleIds = staleSlotResults.map((result) => result.id);
+    if (staleIds.length > 0) {
+      await tx.matchSlotPlayerResult.deleteMany({
+        where: { slotResultId: { in: staleIds } },
+      });
+      await tx.matchSlotResult.deleteMany({
+        where: { id: { in: staleIds } },
+      });
+    }
+
+    const slotResultIds = new Map<number, string>();
+    for (const result of teamResults) {
+      const saved = await tx.matchSlotResult.upsert({
+        where: {
+          matchId_slotNumber: {
+            matchId,
+            slotNumber: result.slotNumber,
+          },
+        },
+        create: {
+          matchId,
+          organizationId: result.organizationId,
+          slotNumber: result.slotNumber,
+          teamId: result.teamId,
+          wasPresentInMatch: result.wasPresentInMatch,
+          placement: result.placement,
+          eliminatedOrder: result.eliminatedOrder,
+          eliminatedAt: result.eliminatedAt,
+          placementPoints: result.placementPoints,
+          totalKills: result.totalKills,
+          manualTotalKills: result.manualTotalKills,
+          finalPlacement: result.finalPlacement,
+          finalKills: result.finalKills,
+          finalizedAt: result.finalizedAt,
+          totalPoints: result.totalPoints,
+          points: result.points,
+          isLocked: result.isLocked,
+        },
+        update: {
+          teamId: result.teamId,
+          wasPresentInMatch: result.wasPresentInMatch,
+          placement: result.placement,
+          eliminatedOrder: result.eliminatedOrder,
+          eliminatedAt: result.eliminatedAt,
+          placementPoints: result.placementPoints,
+          totalKills: result.totalKills,
+          manualTotalKills: result.manualTotalKills,
+          finalPlacement: result.finalPlacement,
+          finalKills: result.finalKills,
+          finalizedAt: result.finalizedAt,
+          totalPoints: result.totalPoints,
+          points: result.points,
+          isLocked: result.isLocked,
+        },
+        select: { id: true, slotNumber: true },
+      });
+      slotResultIds.set(saved.slotNumber, saved.id);
+    }
+    return slotResultIds;
+  }
+
+  private async writeFinalPlayerResults(
+    tx: Prisma.TransactionClient,
+    playerResults: ComputedFinalPlayerResult[],
+    slotResultIds: Map<number, string>,
+  ): Promise<void> {
+    const playersBySlot = new Map<number, ComputedFinalPlayerResult[]>();
+    for (const player of playerResults) {
+      const bucket = playersBySlot.get(player.slotNumber) ?? [];
+      bucket.push(player);
+      playersBySlot.set(player.slotNumber, bucket);
+    }
+
+    for (const [slotNumber, slotResultId] of slotResultIds.entries()) {
+      const players = playersBySlot.get(slotNumber) ?? [];
+      if (players.length === 0) {
+        await tx.matchSlotPlayerResult.deleteMany({
+          where: { slotResultId },
+        });
+        continue;
+      }
+
+      await tx.matchSlotPlayerResult.deleteMany({
+        where: {
+          slotResultId,
+          playerName: { notIn: players.map((player) => player.playerName) },
+        },
+      });
+
+      for (const player of players) {
+        await tx.matchSlotPlayerResult.upsert({
+          where: {
+            slotResultId_playerName: {
+              slotResultId,
+              playerName: player.playerName,
+            },
+          },
+          create: {
+            slotResultId,
+            organizationId: player.organizationId,
+            playerId: player.playerId ?? undefined,
+            pubgAccountId: player.pubgAccountId,
+            externalPlayerId: player.externalPlayerId,
+            playerName: player.playerName,
+            kills: player.kills,
+            knocks: player.knocks,
+            assists: player.assists,
+            isKnocked: player.isKnocked,
+            isAlive: player.isAlive,
+            alive: player.alive,
+            isAutoFilled: player.isAutoFilled,
+          },
+          update: {
+            playerId: player.playerId ?? null,
+            pubgAccountId: player.pubgAccountId,
+            externalPlayerId: player.externalPlayerId,
+            kills: player.kills,
+            knocks: player.knocks,
+            assists: player.assists,
+            isKnocked: player.isKnocked,
+            isAlive: player.isAlive,
+            alive: player.alive,
+            isAutoFilled: player.isAutoFilled,
+          },
+        });
+      }
+    }
+  }
+
+  private async writeFinalStandings(
+    tx: Prisma.TransactionClient,
+    matchId: string,
+    standings: ComputedFinalStanding[],
+  ): Promise<void> {
+    if (standings.length === 0) {
+      await tx.matchStanding.deleteMany({ where: { matchId } });
+      return;
+    }
+
+    const teamIds = standings.map((standing) => standing.teamId);
+    await tx.matchStanding.deleteMany({
+      where: {
+        matchId,
+        teamId: { notIn: teamIds },
+      },
+    });
+    for (const standing of standings) {
+      await tx.matchStanding.upsert({
+        where: {
+          matchId_teamId: {
+            matchId,
+            teamId: standing.teamId,
+          },
+        },
+        create: {
+          matchId,
+          organizationId: standing.organizationId,
+          tournamentId: standing.tournamentId,
+          teamId: standing.teamId,
+          rank: standing.rank,
+          totalKills: standing.totalKills,
+          placementPoints: standing.placementPoints,
+          bonusPoints: standing.bonusPoints,
+          penaltyPoints: standing.penaltyPoints,
+          totalPoints: standing.totalPoints,
+          isLocked: standing.isLocked,
+          isFinal: standing.isFinal,
+          computedAt: standing.computedAt,
+        },
+        update: {
+          organizationId: standing.organizationId,
+          tournamentId: standing.tournamentId,
+          rank: standing.rank,
+          totalKills: standing.totalKills,
+          placementPoints: standing.placementPoints,
+          bonusPoints: standing.bonusPoints,
+          penaltyPoints: standing.penaltyPoints,
+          totalPoints: standing.totalPoints,
+          isLocked: standing.isLocked,
+          isFinal: standing.isFinal,
+          computedAt: standing.computedAt,
+        },
+      });
+    }
+  }
+
+  private async resolveFinalizationWinnerTeamId(
+    matchId: string,
+    client: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<string | null> {
+    const cached = await this.store.get(matchId).catch(() => null);
+    const cachedWinner =
+      cached?.summary?.winnerTeamId ??
+      (() => {
+        const aliveTeams =
+          cached?.teams?.filter((team) => {
+            const alivePlayers =
+              typeof team.alivePlayers === 'number'
+                ? team.alivePlayers
+                : (team.players ?? []).filter((player) => player.alive === true)
+                    .length;
+            return alivePlayers > 0;
+          }) ?? [];
+        return aliveTeams.length === 1 ? aliveTeams[0].teamId : null;
+      })();
+    if (cachedWinner) {
+      return cachedWinner;
+    }
+
+    const existingWinner = await client.matchSlotResult.findFirst({
+      where: {
+        matchId,
+        teamId: { not: null },
+        placement: 1,
+        wasPresentInMatch: { not: false },
+      },
+      select: { teamId: true },
+      orderBy: { slotNumber: 'asc' },
+    });
+    return existingWinner?.teamId ?? null;
+  }
+
+  private async publishFinalizationSideEffects(
+    plan: MatchConclusionPlan,
+    reason: string,
+  ): Promise<void> {
+    const { matchId } = plan;
+
+    if (!plan.isSessionMatch) {
+      await this.scoring.recomputeMatchAndTournament(matchId).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[MATCH_CONCLUSION] Scoring recompute skipped for ${matchId}: ${msg}`,
+        );
+      });
+    }
+
+    await this.captureFinalizationSnapshots(matchId, plan.finalState).catch(
+      (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[MATCH_CONCLUSION] Snapshot capture skipped for ${matchId}: ${msg}`,
+        );
+      },
+    );
+
+    this.resultsEvents.emitResultsUpdated(matchId, 0, {
+      source: 'MATCH_CONCLUDED',
+    });
+    this.resultsEvents.emitLeaderboardUpdated(matchId, {
+      source: 'MATCH_CONCLUDED',
+    });
+
+    await this.topFragger?.finalize(matchId).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Top fragger finalize skipped for ${matchId}: ${msg}`);
+    });
+    await this.mvp?.finalize(matchId).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`MVP finalize skipped for ${matchId}: ${msg}`);
+    });
+
+    try {
+      const observerFinishedPayload =
+        await this.conclusion.buildObserverMatchFinishedPayload(
+          matchId,
+          plan.winnerTeamId,
+          plan.finalizedAt,
+        );
+      if (observerFinishedPayload) {
+        this.realtime.emitObserverMatchFinished(observerFinishedPayload);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `[MATCH_CONCLUSION] Failed for match=${matchId} reason=${reason}: ${msg}`,
+        `Observer match finished emit failed for ${matchId}: ${msg}`,
       );
     }
+
+    try {
+      this.pcobGateway?.emitLastTeamStanding(matchId, {
+        matchId,
+        winnerTeamId: plan.winnerTeamId,
+        finalizedAt: plan.finalizedAt,
+      });
+      this.pcobGateway?.emitMatchConcluded(matchId, {
+        matchId,
+        winnerTeamId: plan.winnerTeamId,
+        concludedAt: plan.finalizedAt,
+        reason,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Match concluded broadcast failed for ${matchId}: ${msg}`,
+      );
+    }
+  }
+
+  private async captureFinalizationSnapshots(
+    matchId: string,
+    canonicalState: TelemetryMatchState | null = null,
+  ): Promise<void> {
+    const scoreboard = await buildWidgetScoreboardSnapshot(
+      this.prisma,
+      matchId,
+      {
+        includeLogos: true,
+        brandMode: 'dark',
+      },
+    );
+
+    const players = await this.prisma.matchSlotPlayerResult.findMany({
+      where: { slotResult: { matchId } },
+      select: {
+        playerId: true,
+        playerName: true,
+        slotResult: { select: { teamId: true, slotNumber: true } },
+        kills: true,
+        knocks: true,
+        assists: true,
+        isAlive: true,
+        organizationId: true,
+      },
+    });
+
+    const payload = {
+      matchId,
+      players: players.map((p) => ({
+        playerId: p.playerId ?? null,
+        playerName: p.playerName ?? null,
+        teamId: p.slotResult?.teamId ?? null,
+        slot: p.slotResult?.slotNumber ?? null,
+        kills: p.kills ?? 0,
+        assists: p.assists ?? 0,
+        survivalTime: null,
+        damage: null,
+        alive: p.isAlive ?? null,
+      })),
+    };
+
+    const ctrl = await this.prisma.matchControlState.findUnique({
+      where: { matchId },
+      select: { metaJson: true, organizationId: true, state: true },
+    });
+    const orgLookup = await this.prisma.match.findUnique({
+      where: { id: matchId },
+      select: {
+        organizationId: true,
+        tournament: { select: { organizationId: true } },
+      },
+    });
+    const base =
+      (ctrl?.metaJson as Record<string, unknown> | null | undefined) ?? {};
+    const telemetryPromotionDiagnostics =
+      await this.conclusion.buildTelemetryPromotionDiagnostics(
+        matchId,
+        canonicalState,
+      );
+    const nextMeta: Record<string, unknown> = {
+      ...base,
+      lastScoreboardSnapshot: scoreboard,
+      lastPlayerSnapshot: payload,
+    };
+    if (telemetryPromotionDiagnostics) {
+      nextMeta.telemetryPromotionDiagnostics = telemetryPromotionDiagnostics;
+    } else {
+      delete nextMeta.telemetryPromotionDiagnostics;
+    }
+    const organizationId =
+      ctrl?.organizationId ??
+      orgLookup?.organizationId ??
+      orgLookup?.tournament?.organizationId ??
+      (() => {
+        throw new BadRequestException(
+          'organizationId is required for match snapshots',
+        );
+      })();
+    await this.prisma.matchControlState.upsert({
+      where: { matchId },
+      update: {
+        metaJson: nextMeta as Prisma.JsonObject,
+      },
+      create: {
+        matchId,
+        organizationId,
+        state: ctrl?.state ?? 'ENDED',
+        metaJson: nextMeta as Prisma.JsonObject,
+      },
+    });
   }
 
   async getState(actor: Actor, matchId: string): Promise<LiveMatchState> {
@@ -2326,59 +4333,77 @@ export class MatchControlService implements OnModuleInit {
       match.tournament.ownerUserId,
       match.tournament.organizationId,
     );
+    const liveControlStatus = this.isLiveControlStatus(
+      match.status,
+      match.controlState?.state ?? null,
+    );
     let cached = await this.store.get(matchId);
-    if (
-      this.isLiveControlStatus(
-        match.status,
-        match.controlState?.state ?? null,
-      ) &&
-      !this.cachedStateHasTelemetrySignal(cached)
-    ) {
-      cached =
-        (await this.hydrateMirrorFromPersistedTelemetry(matchId)) ?? cached;
+    if (liveControlStatus) {
+      const hydratedTelemetry =
+        await this.hydrateMirrorFromPersistedTelemetry(matchId);
+      if (
+        hydratedTelemetry &&
+        this.cachedStateHasTelemetrySignal(hydratedTelemetry)
+      ) {
+        cached = hydratedTelemetry;
+      } else if (!this.cachedStateHasTelemetrySignal(cached)) {
+        cached = hydratedTelemetry ?? cached;
+      }
     }
     if (cached) {
       const controlStatus = this.toPublicControlStatus(match);
       if (cached.status !== controlStatus) {
-        // Sync cached state to DB status
-        const base = await this.buildState(match);
-        return this.persistAndBroadcast(matchId, base, cached.version);
+        return this.buildState(match);
       }
       // Keep live stats but refresh slot/team metadata from DB so control reflects slot changes
       const freshTeams = await this.loadTeams(match.id);
-      const mergedTeams: TeamScoreState[] = freshTeams.map((fresh) => {
-        const existing = cached.teams.find((t) => t.teamId === fresh.teamId);
-        const alivePlayers =
-          existing?.alivePlayers ?? fresh.alivePlayers ?? null;
-        const eliminated =
-          alivePlayers === null || alivePlayers === undefined
-            ? undefined
-            : alivePlayers <= 0;
-        return {
-          ...fresh,
-          hasTelemetryPresence:
-            existing?.hasTelemetryPresence ??
-            fresh.hasTelemetryPresence ??
-            false,
-          wasPresentInMatch:
-            existing?.wasPresentInMatch ?? fresh.wasPresentInMatch ?? null,
-          presenceStatus:
-            existing?.presenceStatus ?? fresh.presenceStatus ?? null,
-          kills: existing?.kills ?? fresh.kills ?? 0,
-          placement: existing?.placement ?? fresh.placement ?? null,
-          points: existing?.points ?? fresh.points ?? null,
-          alivePlayers,
-          totalPlayers: existing?.totalPlayers ?? fresh.totalPlayers ?? null,
-          alive:
-            alivePlayers === null || alivePlayers === undefined
-              ? undefined
-              : alivePlayers > 0,
-          eliminated,
-          updatedAt: existing?.updatedAt ?? fresh.updatedAt ?? null,
-          sourceMode: existing?.sourceMode ?? fresh.sourceMode,
-          players: existing?.players ?? fresh.players ?? [],
-        };
-      });
+      const freshTeamsById = new Map(
+        freshTeams.map((team) => [team.teamId, team] as const),
+      );
+      const hasTelemetrySignal = this.cachedStateHasTelemetrySignal(cached);
+      const mergedTeams: TeamScoreState[] = hasTelemetrySignal
+        ? cached.teams.map((existing) =>
+            this.mergeLiveTelemetryTeamMetadata(
+              existing,
+              freshTeamsById.get(existing.teamId) ?? null,
+            ),
+          )
+        : freshTeams.map((fresh) => {
+            const existing = cached.teams.find(
+              (t) => t.teamId === fresh.teamId,
+            );
+            const alivePlayers =
+              existing?.alivePlayers ?? fresh.alivePlayers ?? null;
+            const eliminated =
+              alivePlayers === null || alivePlayers === undefined
+                ? undefined
+                : alivePlayers <= 0;
+            return {
+              ...fresh,
+              hasTelemetryPresence:
+                existing?.hasTelemetryPresence ??
+                fresh.hasTelemetryPresence ??
+                false,
+              wasPresentInMatch:
+                existing?.wasPresentInMatch ?? fresh.wasPresentInMatch ?? null,
+              presenceStatus:
+                existing?.presenceStatus ?? fresh.presenceStatus ?? null,
+              kills: existing?.kills ?? fresh.kills ?? 0,
+              placement: existing?.placement ?? fresh.placement ?? null,
+              points: existing?.points ?? fresh.points ?? null,
+              alivePlayers,
+              totalPlayers:
+                existing?.totalPlayers ?? fresh.totalPlayers ?? null,
+              alive:
+                alivePlayers === null || alivePlayers === undefined
+                  ? undefined
+                  : alivePlayers > 0,
+              eliminated,
+              updatedAt: existing?.updatedAt ?? fresh.updatedAt ?? null,
+              sourceMode: existing?.sourceMode ?? fresh.sourceMode,
+              players: existing?.players ?? fresh.players ?? [],
+            };
+          });
       const changed =
         mergedTeams.length !== cached.teams.length ||
         mergedTeams.some((t) => {
@@ -2394,7 +4419,10 @@ export class MatchControlService implements OnModuleInit {
             existing.logoUrl !== t.logoUrl
           );
         });
-      const summary = this.summarizeAssignedTeams(mergedTeams);
+      const summary = hasTelemetrySignal
+        ? (cached.summary ??
+          this.summarizeLiveTeams(mergedTeams, cached.summary))
+        : this.summarizeAssignedTeams(mergedTeams);
       const summaryChanged =
         (cached.summary?.totalTeams ?? null) !== summary?.totalTeams ||
         (cached.summary?.aliveTeams ?? null) !== summary?.aliveTeams ||
@@ -2408,18 +4436,38 @@ export class MatchControlService implements OnModuleInit {
         teams: mergedTeams,
         summary,
       };
-      return this.persistAndBroadcast(matchId, updated, cached.version);
+      return updated;
     }
     const fresh = await this.buildState(match);
-    return this.persistAndBroadcast(matchId, fresh);
+    return fresh;
+  }
+
+  async refreshLiveContractState(
+    matchId: string,
+  ): Promise<LiveMatchState | null> {
+    const match = await this.loadMatch(matchId);
+    if (
+      !this.isLiveControlStatus(match.status, match.controlState?.state ?? null)
+    ) {
+      return null;
+    }
+
+    const fresh = await this.buildState(match);
+    const saved = await this.persistAndBroadcast(matchId, fresh);
+    await this.matchStateBroadcaster?.broadcastUpdate(
+      saved,
+      match.organizationId ?? match.tournament.organizationId ?? null,
+    );
+    return saved;
   }
 
   async startMatch(
     actor: Actor | null,
     matchId: string,
     sessionId?: string | null,
+    context: MatchStartContext = {},
   ): Promise<LiveMatchState> {
-    return this.setMatchLive(actor, matchId, sessionId);
+    return this.setMatchLive(actor, matchId, sessionId, undefined, context);
   }
 
   private async setMatchLive(
@@ -2427,6 +4475,7 @@ export class MatchControlService implements OnModuleInit {
     matchId: string,
     sessionId?: string | null,
     reason: string = 'NEW_MATCH_WENT_LIVE',
+    context: MatchStartContext = {},
   ): Promise<LiveMatchState> {
     const match = await this.loadMatch(matchId);
     if (actor) {
@@ -2436,14 +4485,144 @@ export class MatchControlService implements OnModuleInit {
         match.tournament.organizationId,
       );
     }
-    const canReopenAutoEndedMatch =
-      isMatchFinishedStatus(match.status) &&
-      match.endedReason === 'AUTO_ENDED_BY_NEW_LIVE_MATCH';
-    if (!canStartMatchForLifecycle(match.status) && !canReopenAutoEndedMatch) {
+    if (isMatchLiveStatus(match.status)) {
+      return this.handleAlreadyLiveStart(matchId, match, sessionId, context);
+    }
+    if (!canStartMatchForLifecycle(match.status)) {
       throw new BadRequestException('Match has already finished');
     }
     await this.matchesService.validatePubgSlots(matchId);
-    return this.setMatchLiveInternal(actor, matchId, match, sessionId, reason);
+    return this.setMatchLiveInternal(
+      actor,
+      matchId,
+      match,
+      sessionId,
+      reason,
+      context,
+    );
+  }
+
+  private async handleAlreadyLiveStart(
+    matchId: string,
+    match: MatchSummary,
+    sessionId?: string | null,
+    context: MatchStartContext = {},
+  ): Promise<LiveMatchState> {
+    const requestedSessionId = this.normalizeSessionId(sessionId);
+    const currentSessionId = this.normalizeSessionId(match.pcobSessionId);
+    const startContext = this.normalizeStartContext(context);
+    const forcedTelemetrySource =
+      this.resolveForcedTelemetrySource(startContext);
+
+    if (requestedSessionId && requestedSessionId !== currentSessionId) {
+      const now = new Date();
+      const organizationId = this.requireMatchOrganizationId(match);
+      const bindingData = this.shouldUseApiSessionBinding(
+        match,
+        forcedTelemetrySource,
+      )
+        ? buildApiObserverBindingData(requestedSessionId, now)
+        : buildPcobBindingData(requestedSessionId, now);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.match.update({
+          where: { id: matchId },
+          data: {
+            ...bindingData,
+            pcobLastSeenAt: null,
+            ...(forcedTelemetrySource
+              ? {
+                  telemetrySource: forcedTelemetrySource,
+                  telemetrySourceLockedAt: now,
+                }
+              : {}),
+          },
+        });
+        await this.writeControlStateCas(tx, {
+          matchId,
+          organizationId,
+          state: 'LIVE',
+          metaJson: (currentMeta) =>
+            this.buildControlMetaJson(currentMeta, {
+              clearTelemetryIngress: true,
+              telemetrySource: forcedTelemetrySource,
+            }),
+          expectedVersion: startContext.expectedVersion ?? null,
+          updatedAt: now,
+        });
+      });
+      await this.store.evictMatches([matchId]);
+      this.logger.log(
+        JSON.stringify({
+          stage: 'match-control',
+          action: 'live-start-idempotent-session-rebound',
+          matchId,
+          previousSessionId: currentSessionId,
+          nextSessionId: requestedSessionId,
+          startSource: startContext.source,
+          clientId: startContext.clientId,
+          requestedMatchId: startContext.requestedMatchId,
+        }),
+      );
+      const refreshed = await this.loadMatch(matchId);
+      return this.buildState({
+        ...refreshed,
+        status: MatchStatus.LIVE,
+        liveState: LiveState.LIVE,
+        endedAt: null,
+        controlState: {
+          state: 'LIVE',
+          metaJson: refreshed.controlState?.metaJson ?? null,
+        },
+      });
+    }
+
+    if (forcedTelemetrySource) {
+      const now = new Date();
+      const organizationId = this.requireMatchOrganizationId(match);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.match.update({
+          where: { id: matchId },
+          data: {
+            telemetrySource: forcedTelemetrySource,
+            telemetrySourceLockedAt: now,
+          },
+        });
+        await this.writeControlStateCas(tx, {
+          matchId,
+          organizationId,
+          state: 'LIVE',
+          reason: 'LIVE_TELEMETRY_SOURCE_LOCK',
+          metaJson: (currentMeta) =>
+            this.buildControlMetaJson(currentMeta, {
+              telemetrySource: forcedTelemetrySource,
+            }),
+          expectedVersion: startContext.expectedVersion ?? null,
+          updatedAt: now,
+        });
+      });
+    }
+
+    this.logger.log(
+      JSON.stringify({
+        stage: 'match-control',
+        action: 'live-start-idempotent',
+        matchId,
+        sessionId: currentSessionId,
+        startSource: startContext.source,
+        clientId: startContext.clientId,
+        requestedMatchId: startContext.requestedMatchId,
+      }),
+    );
+    return this.buildState({
+      ...match,
+      status: MatchStatus.LIVE,
+      liveState: LiveState.LIVE,
+      endedAt: null,
+      controlState: {
+        state: 'LIVE',
+        metaJson: match.controlState?.metaJson ?? null,
+      },
+    });
   }
 
   private async setMatchLiveInternal(
@@ -2452,14 +4631,31 @@ export class MatchControlService implements OnModuleInit {
     preloaded?: MatchSummary,
     sessionId?: string | null,
     reason: string = 'NEW_MATCH_WENT_LIVE',
+    context: MatchStartContext = {},
   ): Promise<LiveMatchState> {
     const match = preloaded ?? (await this.loadMatch(matchId));
+    let autoEndedConflicts: Array<{ id: string; aliveTeams: number | null }> =
+      [];
+    const startContext = this.normalizeStartContext(context);
     const previousLifecycleStatus = deriveCanonicalMatchLifecycleStatus(
       this.toLifecycleContext(match),
     );
     const now = new Date();
     const hasPriorRun = this.hasPriorRun(match);
     const sessionBinding = this.resolveStartSessionBinding(match, sessionId);
+    const forcedTelemetrySource =
+      this.resolveForcedTelemetrySource(startContext);
+    const useApiSessionBinding = this.shouldUseApiSessionBinding(
+      match,
+      forcedTelemetrySource,
+    );
+    const preserveTelemetryTransitionState =
+      this.shouldPreserveTelemetryOnLiveTransition(
+        match,
+        startContext,
+        sessionBinding.sessionId,
+        previousLifecycleStatus,
+      );
     if (
       sessionBinding.action === 'GENERATE' ||
       sessionBinding.action === 'ROTATE'
@@ -2479,22 +4675,22 @@ export class MatchControlService implements OnModuleInit {
       );
     }
 
-    let endedIds: string[] = [];
     try {
-      const txResult = await this.prisma.$transaction(async (tx) => {
-        const liveInTournament =
-          (await tx.match.findMany({
-            where: {
-              tournamentId: match.tournamentId,
-              deletedAt: null,
-              OR: [
-                { status: MatchStatus.LIVE },
-                { controlState: { state: 'LIVE' } },
-              ],
-              id: { not: matchId },
-            },
-            select: { id: true },
-          })) ?? [];
+      await this.prisma.$transaction(async (tx) => {
+        const liveInTournament = match.tournamentId
+          ? ((await tx.match.findMany({
+              where: {
+                tournamentId: match.tournamentId,
+                deletedAt: null,
+                OR: [
+                  { status: MatchStatus.LIVE },
+                  { controlState: { state: 'LIVE' } },
+                ],
+                id: { not: matchId },
+              },
+              select: { id: true },
+            })) ?? [])
+          : [];
 
         const liveInOrg =
           match.tournament.organizationId !== null &&
@@ -2523,34 +4719,12 @@ export class MatchControlService implements OnModuleInit {
             ]),
           ).values(),
         );
-        const ids = conflictCandidates.map((candidate) => candidate.id);
-        if (ids.length) {
-          await this.assertNoContestedLiveMatches(
+        if (conflictCandidates.length) {
+          autoEndedConflicts = await this.autoEndOtherLiveMatchesInScope(
             tx,
-            matchId,
+            match,
             conflictCandidates,
-          );
-          await tx.match.updateMany({
-            where: { id: { in: ids } },
-            data: {
-              status: MatchStatus.ENDED,
-              liveState: LiveState.ENDED,
-              endedAt: now,
-              endedReason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
-            },
-          });
-          await tx.matchControlState.updateMany({
-            where: { matchId: { in: ids } },
-            data: {
-              state: 'ENDED',
-              reason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
-              version: { increment: 1 },
-              updatedAt: now,
-            },
-          });
-          ids.forEach(
-            (lockedId) =>
-              void this.resultsEvents.emitResultsLockState(lockedId),
+            now,
           );
         }
         await tx.match.update({
@@ -2565,35 +4739,33 @@ export class MatchControlService implements OnModuleInit {
             endedAt: null,
             endedReason: null,
             pcobLastSeenAt: null,
+            ...(forcedTelemetrySource
+              ? {
+                  telemetrySource: forcedTelemetrySource,
+                  telemetrySourceLockedAt: now,
+                }
+              : {}),
             ...(sessionBinding.sessionId
-              ? buildPcobBindingData(sessionBinding.sessionId, now)
+              ? useApiSessionBinding
+                ? buildApiObserverBindingData(sessionBinding.sessionId, now)
+                : buildPcobBindingData(sessionBinding.sessionId, now)
               : {}),
           },
         });
         const organizationId = this.requireMatchOrganizationId(match);
-        const orgPatch = this.hasModelField(
-          'MatchControlState',
-          'organizationId',
-        )
-          ? { organizationId }
-          : {};
-        await tx.matchControlState.upsert({
-          where: { matchId },
-          update: {
-            state: 'LIVE',
-            reason,
-            metaJson: this.clearFinalizationMeta(match.controlState?.metaJson),
-            version: { increment: 1 },
-            updatedAt: now,
-            ...(orgPatch as Record<string, unknown>),
-          },
-          create: {
-            matchId,
-            state: 'LIVE',
-            reason,
-            organizationId,
-            metaJson: this.clearFinalizationMeta(match.controlState?.metaJson),
-          },
+        await this.writeControlStateCas(tx, {
+          matchId,
+          organizationId,
+          state: 'LIVE',
+          reason,
+          metaJson: (currentMeta) =>
+            this.buildControlMetaJson(currentMeta, {
+              clearFinalization: true,
+              preserveTelemetryRuntime: preserveTelemetryTransitionState,
+              telemetrySource: forcedTelemetrySource,
+            }),
+          expectedVersion: startContext.expectedVersion ?? null,
+          updatedAt: now,
         });
         const remainingLive =
           (await tx.match.findMany({
@@ -2610,7 +4782,20 @@ export class MatchControlService implements OnModuleInit {
             },
             select: { id: true },
           })) ?? [];
-        if (remainingLive.length) {
+        const { blocking: remainingBlocking, ignored: remainingIgnored } =
+          await this.partitionLiveScopeConflicts(tx, remainingLive);
+        if (remainingIgnored.length) {
+          this.logger.warn(
+            JSON.stringify({
+              stage: 'match-control',
+              action: 'live-start-post-update-stale-conflict-ignored',
+              matchId,
+              ignored: remainingIgnored,
+              reason: 'ZERO_ALIVE_TEAMS_STALE_LIVE_MATCH',
+            }),
+          );
+        }
+        if (remainingBlocking.length) {
           throw new ConflictException(
             'Another match is already LIVE for this organization',
           );
@@ -2618,19 +4803,32 @@ export class MatchControlService implements OnModuleInit {
         void this.resultsEvents.emitResultsLockState(matchId);
         // Starting a match is lifecycle-only. Slot seeding remains an explicit
         // action elsewhere so intentionally empty/unassigned slots stay untouched.
-        await this.resultsService.resetLiveProjection(matchId, { tx });
-        await tx.matchStateSnapshot.deleteMany({
-          where: { matchId },
-        });
-        await tx.matchTelemetry.deleteMany({
-          where: { matchId },
-        });
-        await tx.telemetryEventLog.deleteMany({
-          where: { matchId },
-        });
-        return ids;
+        if (preserveTelemetryTransitionState) {
+          this.logger.warn(
+            JSON.stringify({
+              tag: '[PHASE TRANSITION][RESET]',
+              stage: 'match-control',
+              action: 'live-start-telemetry-reset-blocked',
+              matchId,
+              previousLifecycleStatus,
+              startSource: startContext.source,
+              sessionId: sessionBinding.sessionId,
+              reason: 'ACTIVE_TELEMETRY_TRANSITION',
+            }),
+          );
+        } else {
+          await this.resultsService.resetLiveProjection(matchId, { tx });
+          await tx.matchStateSnapshot.deleteMany({
+            where: { matchId },
+          });
+          await tx.matchTelemetry.deleteMany({
+            where: { matchId },
+          });
+          await tx.telemetryEventLog.deleteMany({
+            where: { matchId },
+          });
+        }
       });
-      endedIds = txResult;
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -2643,33 +4841,36 @@ export class MatchControlService implements OnModuleInit {
       throw err;
     }
 
-    await this.store.evictMatches([matchId]);
+    await this.store.evictMatches([
+      matchId,
+      ...autoEndedConflicts.map((conflict) => conflict.id),
+    ]);
 
-    // Broadcast ended matches
-    for (const endedId of endedIds) {
+    for (const conflict of autoEndedConflicts) {
+      const endedId = conflict.id;
       const endedMatch = await this.loadMatch(endedId);
       const endedState = await this.buildState({
         ...endedMatch,
         status: MatchStatus.ENDED,
-        endedAt: new Date(),
-        controlState: { state: 'ENDED' },
+        liveState: LiveState.ENDED,
+        endedAt: endedMatch.endedAt ?? now,
+        endedReason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
+        controlState: {
+          state: 'ENDED',
+          metaJson: endedMatch.controlState?.metaJson ?? null,
+        },
       });
-      const saved = await this.persistAndBroadcast(endedId, endedState);
-      this.gateway.emitMatchEnd(
-        endedId,
-        saved,
-        endedMatch.tournament.organizationId,
-      );
+      const savedEnded = await this.persistAndBroadcast(endedId, endedState);
       this.gateway.emitMatchAutoEnd(
         endedId,
-        saved,
+        savedEnded,
         endedMatch.tournament.organizationId,
       );
       this.gateway.emitMatchStateChanged(
         endedId,
         'LIVE',
         'ENDED',
-        reason,
+        'AUTO_ENDED_BY_NEW_LIVE_MATCH',
         endedMatch.tournament.organizationId,
       );
       this.emitStatus(
@@ -2677,22 +4878,48 @@ export class MatchControlService implements OnModuleInit {
         'ENDED',
         endedMatch.tournament.organizationId ?? null,
       );
+      this.logLifecycleTransition(
+        endedId,
+        'LIVE',
+        'ENDED',
+        'AUTO_ENDED_BY_NEW_LIVE_MATCH',
+        {
+          dbStatus: MatchStatus.ENDED,
+          triggeredByMatchId: matchId,
+          aliveTeams: conflict.aliveTeams,
+        },
+      );
       await this.audit.log({
-        action: 'AUTO_END' as AuditAction,
+        action: AuditAction.AUTO_END,
         entityType: 'MATCH',
         entityId: endedId,
         userId: actor?.actorId ?? actor?.id ?? 'system',
         organizationId: endedMatch.tournament.organizationId,
-        before: { status: match.status },
+        before: {
+          status: MatchStatus.LIVE,
+          aliveTeams: conflict.aliveTeams,
+        },
         after: {
           status: MatchStatus.ENDED,
-          reason,
+          reason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
           triggeredByMatchId: matchId,
         },
         source: 'SYSTEM',
-        reason,
+        reason: 'AUTO_ENDED_BY_NEW_LIVE_MATCH',
       });
-      await this.finalizeEndedMatch(endedId, 'AUTO_ENDED_BY_NEW_LIVE_MATCH');
+      void this.resultsEvents.emitResultsLockState(endedId);
+      try {
+        await this.confirmFinished(
+          SYSTEM_ACTOR,
+          endedId,
+          'AUTO_ENDED_BY_NEW_LIVE_MATCH',
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[MATCH_CONCLUSION] Auto-end finalization skipped for ${endedId}: ${msg}`,
+        );
+      }
       void this.broadcast.emitForMatch(endedId, 'match-status');
     }
 
@@ -2705,7 +4932,37 @@ export class MatchControlService implements OnModuleInit {
       endedAt: null,
       controlState: { state: 'LIVE' },
     });
-    const savedLive = await this.persistAndBroadcast(matchId, liveState);
+    const existingTelemetryLiveState = preserveTelemetryTransitionState
+      ? await this.store.get(matchId)
+      : null;
+    const savedLive = existingTelemetryLiveState
+      ? ({
+          ...existingTelemetryLiveState,
+          status: 'LIVE',
+        } as LiveMatchState)
+      : await (async () => {
+          this.liveStateMirror.lockCanonicalRoster(matchId, liveState);
+          return this.persistAndBroadcast(matchId, liveState);
+        })();
+    if (existingTelemetryLiveState) {
+      this.logger.warn(
+        JSON.stringify({
+          tag: '[PHASE TRANSITION][RESET]',
+          stage: 'match-control',
+          action: 'control-live-state-republish-blocked',
+          matchId,
+          previousLifecycleStatus,
+          startSource: startContext.source,
+          sessionId: sessionBinding.sessionId,
+          teams: existingTelemetryLiveState.teams.length,
+          players: existingTelemetryLiveState.teams.reduce(
+            (sum, team) => sum + (team.players?.length ?? 0),
+            0,
+          ),
+          reason: 'ACTIVE_TELEMETRY_TRANSITION',
+        }),
+      );
+    }
     this.gateway.emitMatchState(
       matchId,
       savedLive,
@@ -2727,16 +4984,44 @@ export class MatchControlService implements OnModuleInit {
       {
         dbStatus: MatchStatus.LIVE,
         sessionId: sessionBinding.sessionId,
+        startSource: startContext.source,
+        clientId: startContext.clientId,
+        requestedMatchId: startContext.requestedMatchId,
       },
     );
+    await this.audit.log({
+      action: AuditAction.MATCH_STATUS_CHANGE,
+      entityType: 'MATCH',
+      entityId: matchId,
+      userId: actor?.actorId ?? actor?.id ?? 'system',
+      organizationId: match.tournament.organizationId,
+      before: {
+        status: match.status,
+        lifecycleStatus: previousLifecycleStatus,
+        controlState:
+          match.controlState?.state ??
+          this.toControlStateFromMatch(match.status),
+      },
+      after: {
+        status: MatchStatus.LIVE,
+        lifecycleStatus: 'LIVE',
+        reason,
+        sessionId: sessionBinding.sessionId,
+        startSource: startContext.source,
+        clientId: startContext.clientId,
+        requestedMatchId: startContext.requestedMatchId,
+      },
+      source: 'SYSTEM',
+      reason,
+    });
     void this.rankingEmitter.emitLiveRanking(matchId, { force: true });
     void this.rankingEmitter.emitOverallRanking(match.tournamentId, {
       force: true,
     });
     const liveStateUpdates: LiveStateUpdatePayload[] = [
-      ...endedIds.map((id) => ({
+      ...autoEndedConflicts.map((conflict) => ({
         entity: 'MATCH' as const,
-        id,
+        id: conflict.id,
         liveState: LiveState.ENDED,
       })),
       { entity: 'MATCH', id: matchId, liveState: LiveState.LIVE },
@@ -2776,6 +5061,9 @@ export class MatchControlService implements OnModuleInit {
       match,
       signal.sessionId ?? null,
       signal.source?.trim() || 'PCOB_MATCH_STARTED',
+      {
+        source: signal.source?.trim() || 'PCOB_MATCH_STARTED',
+      },
     );
     return this.getLifecycleState(matchId);
   }
@@ -2817,8 +5105,7 @@ export class MatchControlService implements OnModuleInit {
     let version: number | null | undefined;
     if (matchIdSafe) {
       const match = await this.authorize(actor, matchIdSafe);
-      matchStatus =
-        match.controlState?.state ?? this.toControlStateFromMatch(match.status);
+      matchStatus = this.toPublicControlStatus(match);
       const cached = await this.store.get(matchIdSafe);
       version = cached?.version ?? null;
     }
@@ -2836,6 +5123,7 @@ export class MatchControlService implements OnModuleInit {
     actor: Actor,
     matchId: string,
     reason: string = 'MANUAL_END',
+    opts: { expectedVersion?: number | null } = {},
   ): Promise<LiveMatchState> {
     const match = await this.loadMatch(matchId);
     this.ensurePermission(
@@ -2852,43 +5140,49 @@ export class MatchControlService implements OnModuleInit {
     const previousControlState =
       match.controlState?.state ?? this.toControlStateFromMatch(match.status);
     const endedAt = new Date();
-    await this.prisma.match.update({
-      where: { id: matchId },
-      data: {
-        status: MatchStatus.ENDED,
-        liveState: LiveState.ENDED,
-        endedAt,
-        endedReason: match.endedReason ?? reason,
-      },
-    });
-    await this.prisma.matchControlState.upsert({
-      where: { matchId },
-      update: {
-        state: 'ENDED',
-        updatedAt: endedAt,
-        version: { increment: 1 },
-        reason,
-      },
-      create: {
+    const finalizationStartedAt = endedAt.toISOString();
+    const persistedPendingControlState =
+      await this.resolvePersistedControlState('FINISH_PENDING');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.match.update({
+        where: { id: matchId },
+        data: {
+          status: MatchStatus.FINISH_PENDING,
+          liveState: LiveState.ENDED,
+          endedAt,
+          endedReason: match.endedReason ?? reason,
+        },
+      });
+      await this.writeControlStateCas(tx, {
         matchId,
-        state: 'ENDED',
-        reason,
         organizationId: this.requireMatchOrganizationId(match),
+        state: persistedPendingControlState,
+        reason,
+        metaJson: (currentMeta) =>
+          this.buildFinalizationEligibilityMeta(currentMeta, {
+            finalizationStartedAt,
+            source: reason,
+          }),
         updatedAt: endedAt,
-      },
+        expectedVersion: opts.expectedVersion ?? null,
+      });
     });
+
     const baseState = await this.buildState({
       ...match,
-      status: MatchStatus.ENDED,
+      status: MatchStatus.FINISH_PENDING,
+      liveState: LiveState.ENDED,
       endedAt,
-      controlState: { state: 'ENDED' },
+      endedReason: match.endedReason ?? reason,
+      controlState: { state: persistedPendingControlState },
     });
     const saved = await this.persistAndBroadcast(matchId, baseState);
     this.gateway.emitMatchEnd(matchId, saved);
     this.gateway.emitMatchStateChanged(
       matchId,
       previousControlState,
-      'ENDED',
+      persistedPendingControlState,
       reason,
       match.tournament.organizationId,
     );
@@ -2896,10 +5190,11 @@ export class MatchControlService implements OnModuleInit {
     this.logLifecycleTransition(
       matchId,
       previousLifecycleStatus,
-      'ENDED',
+      'FINISH_PENDING',
       reason,
       {
-        dbStatus: MatchStatus.ENDED,
+        dbStatus: MatchStatus.FINISH_PENDING,
+        finalizationStartedAt,
       },
     );
     void this.rankingEmitter.emitLiveRanking(matchId, { force: true });
@@ -2917,9 +5212,12 @@ export class MatchControlService implements OnModuleInit {
     });
     liveStateUpdates.push(...hierarchy);
     this.gateway.emitLiveStateUpdates(liveStateUpdates);
-    await this.finalizeEndedMatch(matchId, reason);
     void this.broadcast.emitForMatch(matchId, 'match-status');
-    return saved;
+
+    const expectedVersion =
+      opts.expectedVersion ?? (await this.resolveFinalizationVersion(matchId));
+    await this.finalizeMatch(matchId, expectedVersion, reason);
+    return this.getState(actor, matchId);
   }
 
   async setStatus(
@@ -2936,66 +5234,67 @@ export class MatchControlService implements OnModuleInit {
     if (!CONTROL_STATES.includes(dto.status)) {
       throw new BadRequestException('Invalid status');
     }
+    if (dto.status === 'FINISHED') {
+      await this.confirmFinished(actor, matchId, dto.reason ?? 'FINISHED', {
+        expectedVersion: dto.version ?? null,
+      });
+      return this.getState(actor, matchId);
+    }
     const previousControlState =
       match.controlState?.state ?? this.toControlStateFromMatch(match.status);
     const newControlState = dto.status;
-    const nextStatus = this.matchStateService.mapControlToBusinessStatus(
+    const nextStatus = this.mapControlToBusinessStatus(
       dto.status,
       match.status,
     );
     if (nextStatus === MatchStatus.LIVE) {
-      return this.setMatchLive(actor, matchId);
+      return this.setMatchLive(actor, matchId, null, dto.status, {
+        source: 'match-control-status',
+        expectedVersion: dto.version ?? null,
+      });
     }
     const data: Prisma.MatchUpdateInput = {};
     let liveStateChange: LiveState | undefined;
+    const now = new Date();
+    const reason = dto.reason ?? dto.status;
+    const persistedControlState =
+      nextStatus === MatchStatus.FINISH_PENDING
+        ? await this.resolvePersistedControlState(newControlState)
+        : newControlState;
     if (nextStatus !== match.status) {
       data.status = nextStatus;
-      if (nextStatus === MatchStatus.ENDED) {
-        data.endedAt = new Date();
+      if (nextStatus === MatchStatus.FINISH_PENDING) {
+        data.endedAt = now;
         liveStateChange = LiveState.ENDED;
         data.liveState = liveStateChange;
-        data.liveAt = match.liveAt ?? match.startedAt ?? new Date();
+        data.liveAt = match.liveAt ?? match.startedAt ?? now;
       }
       if (nextStatus === MatchStatus.DRAFT) {
         Object.assign(data, this.buildRunResetMatchData(match));
         liveStateChange = LiveState.UPCOMING;
       }
     }
-    if (Object.keys(data).length > 0) {
-      await this.prisma.match.update({
-        where: { id: matchId },
-        data,
-      });
-    }
-    await this.prisma.matchControlState.upsert({
-      where: { matchId },
-      update: {
-        state: newControlState,
-        ...(nextStatus === MatchStatus.DRAFT
-          ? {
-              metaJson: this.clearFinalizationMeta(
-                match.controlState?.metaJson,
-              ),
-            }
-          : {}),
-        updatedAt: new Date(),
-        version: { increment: 1 },
-        reason: dto.status,
-      },
-      create: {
+    await this.prisma.$transaction(async (tx) => {
+      if (Object.keys(data).length > 0) {
+        await tx.match.update({
+          where: { id: matchId },
+          data,
+        });
+      }
+      await this.writeControlStateCas(tx, {
         matchId,
-        state: newControlState,
-        reason: dto.status,
         organizationId: this.requireMatchOrganizationId(match),
-        ...(nextStatus === MatchStatus.DRAFT
-          ? {
-              metaJson: this.clearFinalizationMeta(
-                match.controlState?.metaJson,
-              ),
-            }
-          : {}),
-        updatedAt: new Date(),
-      },
+        state: persistedControlState,
+        reason,
+        metaJson:
+          dto.meta !== undefined
+            ? (dto.meta as Prisma.JsonObject)
+            : nextStatus === MatchStatus.DRAFT
+              ? (currentMeta) => this.clearFinalizationMeta(currentMeta)
+              : undefined,
+        expectedVersion: dto.version ?? null,
+        updatedAt: now,
+      });
     });
     if (nextStatus === MatchStatus.DRAFT) {
       await this.store.evictMatches([matchId]);
@@ -3008,17 +5307,17 @@ export class MatchControlService implements OnModuleInit {
       liveAt:
         nextStatus === MatchStatus.DRAFT
           ? null
-          : nextStatus === MatchStatus.ENDED
+          : nextStatus === MatchStatus.FINISH_PENDING
             ? ((data.liveAt as Date | undefined) ??
               match.liveAt ??
               match.startedAt ??
-              new Date())
+              now)
             : match.liveAt,
       startedAt: nextStatus === MatchStatus.DRAFT ? null : match.startedAt,
       endedAt:
         nextStatus === MatchStatus.DRAFT
           ? null
-          : nextStatus === MatchStatus.ENDED
+          : nextStatus === MatchStatus.FINISH_PENDING
             ? ((data.endedAt as Date | undefined) ?? match.endedAt)
             : match.endedAt,
       endedReason: nextStatus === MatchStatus.DRAFT ? null : match.endedReason,
@@ -3029,19 +5328,17 @@ export class MatchControlService implements OnModuleInit {
         nextStatus === MatchStatus.DRAFT ? null : match.pcobLastSeenAt,
       controlState: {
         state: newControlState,
-        metaJson: (nextStatus === MatchStatus.DRAFT
-          ? this.clearFinalizationMeta(match.controlState?.metaJson)
-          : match.controlState?.metaJson) as
+        metaJson: (dto.meta !== undefined
+          ? (dto.meta as unknown as Prisma.JsonValue)
+          : nextStatus === MatchStatus.DRAFT
+            ? this.clearFinalizationMeta(match.controlState?.metaJson)
+            : match.controlState?.metaJson) as
           | Prisma.JsonValue
           | null
           | undefined,
       },
     });
-    const saved = await this.persistAndBroadcast(
-      matchId,
-      baseState,
-      dto.version,
-    );
+    const saved = await this.persistAndBroadcast(matchId, baseState);
     if (newControlState !== previousControlState) {
       this.gateway.emitMatchStateChanged(
         matchId,
@@ -3069,14 +5366,8 @@ export class MatchControlService implements OnModuleInit {
       this.gateway.emitLiveStateUpdates(updates);
     }
 
-    if (
-      liveStateChange === LiveState.ENDED ||
-      data.status === MatchStatus.ENDED
-    ) {
-      await this.finalizeEndedMatch(matchId, dto.status);
-    }
     const publicStatus = this.toPublicStatus(
-      (data.status as MatchStatus | undefined) ?? match.status,
+      nextStatus,
       newControlState,
       match.controlState?.metaJson ?? null,
     );

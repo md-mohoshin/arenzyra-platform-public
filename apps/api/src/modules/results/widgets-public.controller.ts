@@ -1,10 +1,15 @@
 import { Controller, Get, Param, Query, Req } from '@nestjs/common';
 import { ResultsService } from './results.service';
 import { Public } from '../../common/auth/public.decorator';
+import type { AuthUser } from '../../common/auth/auth.types';
 import { PrismaService } from '../../db/prisma.service';
 import type { Request } from 'express';
 import { requireMatchOrganization } from '../../common/org/org.util';
 import { MatchControlService } from '../match-control/match-control.service';
+
+const getRequestActor = (req?: Request): AuthUser | null =>
+  ((req as Request & { user?: AuthUser | null })?.user ??
+    null) as AuthUser | null;
 
 @Controller('public/matches/:matchId')
 @Public()
@@ -23,7 +28,7 @@ export class WidgetsPublicController {
   ) {
     await requireMatchOrganization(this.prisma, matchId, {
       organizationId: organizationId ?? null,
-      actor: (req as Request & { user?: unknown })?.user ?? null,
+      actor: getRequestActor(req),
     });
     const lifecycle = await this.matchControl.getLifecycleState(matchId);
     return {
@@ -57,9 +62,12 @@ export class WidgetsPublicController {
   ) {
     await requireMatchOrganization(this.prisma, matchId, {
       organizationId: organizationId ?? null,
-      actor: (req as Request & { user?: unknown })?.user ?? null,
+      actor: getRequestActor(req),
     });
-    const slots = await this.results.listSlotResultsPublic(matchId);
+    const slots = await this.results.listSlotResultsPublic(matchId, {
+      organizationId: organizationId ?? null,
+      actor: getRequestActor(req),
+    });
     return { slots };
   }
 

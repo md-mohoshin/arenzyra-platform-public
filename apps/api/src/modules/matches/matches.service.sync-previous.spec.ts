@@ -15,6 +15,7 @@ describe('MatchesService.syncSlotsFromPreviousMatch', () => {
   const buildService = (options?: {
     currentAssignedCount?: number;
     currentMatchNumber?: number;
+    sessionId?: string | null;
     previousCandidates?: Array<{ id: string; matchNumber: number }>;
     slotsByMatchId?: Record<
       string,
@@ -23,11 +24,14 @@ describe('MatchesService.syncSlotsFromPreviousMatch', () => {
   }) => {
     const currentAssignedCount = options?.currentAssignedCount ?? 0;
     const currentMatchNumber = options?.currentMatchNumber ?? 2;
+    const sessionId = options?.sessionId ?? null;
     const currentMatch = {
       id: 'm-2',
-      tournamentId: 't-1',
-      stageId: 's-1',
-      groupId: 'g-1',
+      organizationId: 'org-1',
+      tournamentId: sessionId ? null : 't-1',
+      sessionId,
+      stageId: sessionId ? null : 's-1',
+      groupId: sessionId ? null : 'g-1',
       matchNumber: currentMatchNumber,
       adapterKey: null,
       status: MatchStatus.DRAFT,
@@ -59,6 +63,9 @@ describe('MatchesService.syncSlotsFromPreviousMatch', () => {
       return Promise.resolve(null);
     });
     const findManyMatches = jest.fn().mockImplementation(({ where }) => {
+      if (sessionId && where?.sessionId === sessionId) {
+        return Promise.resolve(previousCandidates);
+      }
       if (where?.tournamentId === 't-1' && where?.groupId === 'g-1') {
         return Promise.resolve(previousCandidates);
       }
@@ -75,9 +82,14 @@ describe('MatchesService.syncSlotsFromPreviousMatch', () => {
       },
       matchSlot: {
         deleteMany: jest.fn().mockResolvedValue({ count: 2 }),
+        findMany: jest.fn().mockResolvedValue(previousSlots),
         createMany: jest
           .fn()
           .mockResolvedValue({ count: previousSlots.length }),
+      },
+      matchTeam: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        upsert: jest.fn().mockResolvedValue({}),
       },
     };
 
@@ -130,6 +142,7 @@ describe('MatchesService.syncSlotsFromPreviousMatch', () => {
       results,
       {
         emitResultsLockState: jest.fn(),
+        emitControlContractUpdated: jest.fn(),
       } as any,
       {} as any,
       {
@@ -163,6 +176,31 @@ describe('MatchesService.syncSlotsFromPreviousMatch', () => {
       })),
     });
     expect(results.ensureResultsFromSlots).toHaveBeenCalledWith('m-2', { tx });
+    expect(tx.matchTeam.updateMany).toHaveBeenCalledWith({
+      where: { matchId: 'm-2', slot: { not: null } },
+      data: { slot: null },
+    });
+    previousSlots.forEach((slot) => {
+      expect(tx.matchTeam.upsert).toHaveBeenCalledWith({
+        where: {
+          matchId_teamId: {
+            matchId: 'm-2',
+            teamId: slot.teamId,
+          },
+        },
+        update: {
+          slot: slot.slotNumber,
+          status: 'ACTIVE',
+          deletedAt: null,
+        },
+        create: {
+          matchId: 'm-2',
+          teamId: slot.teamId,
+          slot: slot.slotNumber,
+          status: 'ACTIVE',
+        },
+      });
+    });
     expect(synced).toMatchObject({
       ok: true,
       previousMatchId: 'm-1',
@@ -234,5 +272,36 @@ describe('MatchesService.syncSlotsFromPreviousMatch', () => {
       needsSync: true,
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('scopes event match sync to the same session', async () => {
+    const { service, prisma } = buildService({
+      sessionId: 'session-1',
+      currentMatchNumber: 3,
+      previousCandidates: [
+        { id: 'session-match-2', matchNumber: 2 },
+        { id: 'session-match-1', matchNumber: 1 },
+      ],
+      slotsByMatchId: {
+        'session-match-2': [{ slotNumber: 8, teamId: 'team-session' }],
+      },
+    });
+
+    const synced = await service.syncSlotsFromPreviousMatch('m-2', actor, {});
+
+    expect(prisma.match.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          sessionId: 'session-1',
+          organizationId: 'org-1',
+          matchNumber: { lt: 3 },
+        }),
+      }),
+    );
+    expect(synced).toMatchObject({
+      previousMatchId: 'session-match-2',
+      previousMatchNumber: 2,
+      syncedSlots: 1,
+    });
   });
 });

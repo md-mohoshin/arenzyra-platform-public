@@ -1,4 +1,5 @@
 import { GameKey } from '@prisma/client';
+import type { MatchStateObservedPlayer } from '../match-control/state.store';
 
 export type MatchSummary = {
   matchId: string;
@@ -40,14 +41,34 @@ export type AdapterTelemetryPosition = {
 export type AdapterTelemetryPlayer = {
   playerId?: string | null;
   externalPlayerId?: string | null;
+  pubgPlayerId?: string | null;
   pubgAccountId?: string | null;
   ign?: string | null;
   teamId?: string | null;
   alive?: boolean;
   knocked?: boolean;
   eliminated?: boolean;
+  health?: number | null;
   kills?: number;
+  assists?: number;
   position?: AdapterTelemetryPosition | null;
+  raw?: unknown;
+};
+
+export type AdapterTelemetryBackpackItem = {
+  name: string | null;
+  count: number | null;
+  itemId?: string | null;
+  raw?: unknown;
+};
+
+export type AdapterTelemetryTeamBackpack = {
+  teamId?: string | null;
+  playerId?: string | null;
+  slot?: number | null;
+  items: AdapterTelemetryBackpackItem[];
+  equipment?: AdapterTelemetryBackpackItem[];
+  itemCount: number;
   raw?: unknown;
 };
 
@@ -63,6 +84,8 @@ export type AdapterTelemetryTeam = {
   eliminated?: boolean;
   kills?: number;
   placement?: number | null;
+  backpack?: AdapterTelemetryTeamBackpack | null;
+  equipment?: AdapterTelemetryTeamBackpack | null;
   players?: AdapterTelemetryPlayer[];
   raw?: unknown;
 };
@@ -105,6 +128,8 @@ export type AdapterTelemetryEnvelope = {
   teams: AdapterTelemetryTeam[];
   zone: AdapterTelemetryZone | null;
   events: AdapterTelemetryEvent[];
+  backpacks?: AdapterTelemetryTeamBackpack[];
+  observedPlayer?: MatchStateObservedPlayer | null;
   source?: string | null;
   raw?: unknown;
 };

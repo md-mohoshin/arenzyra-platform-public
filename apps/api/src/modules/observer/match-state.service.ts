@@ -16,14 +16,36 @@ export type MatchStateLeaderboardRow = {
   totalPlayers: number | null;
   placement: number | null;
   isEliminated: boolean;
+  backpack?: MatchStateTeamBackpack | null;
+  equipment?: MatchStateTeamBackpack | null;
   players?: MatchStateLeaderboardPlayer[];
+};
+
+export type MatchStateBackpackItem = {
+  name: string | null;
+  count: number | null;
+  itemId?: string | null;
+  raw?: unknown;
+};
+
+export type MatchStateTeamBackpack = {
+  teamId?: string | null;
+  playerId?: string | null;
+  slot?: number | null;
+  items: MatchStateBackpackItem[];
+  equipment?: MatchStateBackpackItem[];
+  itemCount: number;
+  raw?: unknown;
 };
 
 export type MatchStateLeaderboardPlayer = {
   playerId: string | null;
+  externalPlayerId?: string | null;
+  pubgPlayerId?: string | null;
   playerName: string;
   avatarUrl: string | null;
   kills: number;
+  assists?: number | null;
   alive: boolean;
   knocked: boolean;
   health: number | null;
@@ -215,18 +237,20 @@ export class MatchStateService {
 
   emitMatchUpdate(state: MatchState) {
     const normalizedMatchId = String(state?.matchId || '').trim();
-    if (!normalizedMatchId || !this.realtime?.io) {
+    if (!normalizedMatchId) {
       return;
     }
 
-    this.realtime.io
-      .to(`match:${normalizedMatchId}`)
-      .emit('match:update', state as never);
+    this.realtime.emitMatchScopedEvent(
+      normalizedMatchId,
+      'match:update',
+      state,
+    );
   }
 
   emitObserverStateUpdate(state: MatchState) {
     const normalizedMatchId = String(state?.matchId || '').trim();
-    if (!normalizedMatchId || !this.realtime?.io) {
+    if (!normalizedMatchId) {
       return;
     }
 
@@ -241,14 +265,16 @@ export class MatchStateService {
       timestamp: state?.updatedAt ?? new Date().toISOString(),
     };
 
-    this.realtime.io
-      .to(`match:${normalizedMatchId}`)
-      .emit('observer:state:update', payload as never);
+    this.realtime.emitMatchScopedEvent(
+      normalizedMatchId,
+      'observer:state:update',
+      payload,
+    );
   }
 
   emitObserverKillFeedUpdate(state: MatchState) {
     const normalizedMatchId = String(state?.matchId || '').trim();
-    if (!normalizedMatchId || !this.realtime?.io) {
+    if (!normalizedMatchId) {
       return;
     }
 
@@ -270,9 +296,11 @@ export class MatchStateService {
 
     this.killFeedSignatures.set(normalizedMatchId, signature);
     this.killFeedSequences.set(normalizedMatchId, sequence);
-    this.realtime.io
-      .to(`match:${normalizedMatchId}`)
-      .emit('observer:killfeed:update', payload as never);
+    this.realtime.emitMatchScopedEvent(
+      normalizedMatchId,
+      'observer:killfeed:update',
+      payload,
+    );
   }
 
   private toObserverKillFeedEntry(

@@ -15,7 +15,24 @@ type PlayerRow = {
   teamLogoUrl?: string | null;
   kills?: number | null;
   knocks?: number | null;
+  assists?: number | null;
   isAlive?: boolean | null;
+};
+
+type TopFiveFraggerRow = {
+  playerId: string;
+  ign: string;
+  photoUrl: string | null;
+  teamId: string | null;
+  teamName: string;
+  teamTag: string | null;
+  teamLogo: string | null;
+  teamColor: string | null;
+  kills: number;
+  assists: number;
+  placement: number | null;
+  damage: number | null;
+  survivalTime: number | null;
 };
 
 @Injectable()
@@ -110,10 +127,82 @@ export class TopFraggerService {
       teamLogoUrl: resolveTeamLogoUrl(p.slotResult?.team ?? null),
       kills: p.kills ?? 0,
       knocks: p.knocks ?? 0,
+      assists: p.assists ?? 0,
       isAlive: p.isAlive ?? null,
     }));
 
     return this.pickTop(players);
+  }
+
+  async topFive(matchId: string): Promise<TopFiveFraggerRow[]> {
+    const playerRows = await this.prisma.matchSlotPlayerResult.findMany({
+      where: { slotResult: { matchId } },
+      include: {
+        slotResult: {
+          select: {
+            slotNumber: true,
+            placement: true,
+            team: {
+              select: {
+                id: true,
+                tag: true,
+                name: true,
+                logoUrl: true,
+                logoLightUrl: true,
+                logoDarkUrl: true,
+                accentLight: true,
+                accentDark: true,
+                updatedAt: true,
+              },
+            },
+          },
+        },
+        player: {
+          select: {
+            id: true,
+            ign: true,
+            realName: true,
+            photoUrl: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    return playerRows
+      .map((row): TopFiveFraggerRow => {
+        const team = row.slotResult?.team ?? null;
+        return {
+          playerId: row.playerId ?? row.player?.id ?? row.id,
+          ign:
+            row.player?.ign ??
+            row.playerName ??
+            row.player?.realName ??
+            'Unknown',
+          photoUrl:
+            resolvePlayerPhotoUrl({
+              photoUrl: row.player?.photoUrl ?? null,
+              photoUpdatedAt: row.player?.updatedAt ?? null,
+              updatedAt: row.player?.updatedAt ?? null,
+            }) ?? null,
+          teamId: team?.id ?? null,
+          teamName: team?.name ?? team?.tag ?? 'Team',
+          teamTag: team?.tag ?? null,
+          teamLogo: resolveTeamLogoUrl(team ?? null),
+          teamColor: team?.accentDark ?? team?.accentLight ?? null,
+          kills: Math.max(0, row.kills ?? 0),
+          assists: Math.max(0, row.assists ?? 0),
+          placement: row.slotResult?.placement ?? null,
+          damage: null,
+          survivalTime: null,
+        };
+      })
+      .sort((left, right) => {
+        if (right.kills !== left.kills) return right.kills - left.kills;
+        if (right.assists !== left.assists) return right.assists - left.assists;
+        return left.ign.localeCompare(right.ign);
+      })
+      .slice(0, 5);
   }
 
   async getPlayerMeta(playerId?: string | null) {

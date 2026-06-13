@@ -17,8 +17,12 @@ import {
   type BrandingAuthoringMode,
   type MinimalBrandingConfig,
   type OrganizationBrandingDto,
+  type SessionBrandingDto,
 } from './organization-branding.constants';
-import { OrganizationBrandingInputDto } from './dto/update-branding.dto';
+import {
+  OrganizationBrandingInputDto,
+  SessionBrandingInputDto,
+} from './dto/update-branding.dto';
 import {
   DEFAULT_BRAND_INPUTS,
   generateBorderColor,
@@ -33,6 +37,8 @@ import {
 
 type BrandingRecord = {
   organizationId?: string | null;
+  sessionId?: string | null;
+  inheritOrganization?: boolean | null;
   mode?: string | null;
   widgetBackground?: string | null;
   backgroundSolid?: string | null;
@@ -51,6 +57,8 @@ type BrandingRecord = {
   glowAccent?: string | null;
   badgeBg?: string | null;
   badgeText?: string | null;
+  defaultTeamLogoUrl?: string | null;
+  defaultPlayerPhotoUrl?: string | null;
   authoringMode?: string | null;
   minimalConfig?: unknown;
   advancedConfig?: unknown;
@@ -328,6 +336,8 @@ export class OrganizationBrandingService {
       glowAccent: (input.glowAccent as string | undefined) ?? tokens.glowAccent,
       badgeBg: (input.badgeBg as string | undefined) ?? tokens.badgeBg,
       badgeText: (input.badgeText as string | undefined) ?? tokens.badgeText,
+      defaultTeamLogoUrl: input.defaultTeamLogoUrl ?? null,
+      defaultPlayerPhotoUrl: input.defaultPlayerPhotoUrl ?? null,
       authoringMode,
       minimalConfig: DEFAULT_MINIMAL_BRANDING_CONFIG,
       advancedConfig: DEFAULT_ADVANCED_BRANDING_CONFIG,
@@ -372,6 +382,8 @@ export class OrganizationBrandingService {
       glowAccent: branding.glowAccent,
       badgeBg: branding.badgeBg,
       badgeText: branding.badgeText,
+      defaultTeamLogoUrl: branding.defaultTeamLogoUrl,
+      defaultPlayerPhotoUrl: branding.defaultPlayerPhotoUrl,
       authoringMode: branding.authoringMode,
       minimalConfig: branding.minimalConfig,
       advancedConfig: branding.advancedConfig,
@@ -434,6 +446,182 @@ export class OrganizationBrandingService {
     return this.ensureDefaultForOrg(organizationId);
   }
 
+  private toSessionBrandingDto(
+    branding: OrganizationBrandingDto,
+    sessionId: string,
+    inheritOrganization: boolean,
+    source: SessionBrandingDto['source'],
+  ): SessionBrandingDto {
+    return {
+      ...branding,
+      sessionId,
+      inheritOrganization,
+      source,
+    };
+  }
+
+  private assertCanAccessSessionBranding(
+    actor: Actor | null,
+    organizationId: string,
+  ) {
+    const role = actor?.actorRole ?? actor?.role;
+    const effectiveOrg = actor ? effectiveOrganizationId(actor) : null;
+    if (!effectiveOrg || effectiveOrg !== organizationId) {
+      throw new ForbiddenException(
+        'Not allowed to access this session branding',
+      );
+    }
+    if (
+      role !== Role.SUPER_ADMIN &&
+      role !== Role.ADMIN &&
+      role !== Role.ORGANIZER
+    ) {
+      throw new ForbiddenException('Not allowed to access session branding');
+    }
+  }
+
+  private async getSessionBrandingContext(
+    sessionId: string,
+    actor: Actor | null,
+  ) {
+    const effectiveOrg = actor ? effectiveOrganizationId(actor) : null;
+    const session = await this.prisma.session.findFirst({
+      where: {
+        id: sessionId,
+        deletedAt: null,
+        ...(effectiveOrg ? { organizationId: effectiveOrg } : {}),
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        branding: true,
+      },
+    });
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+    this.assertCanAccessSessionBranding(actor, session.organizationId);
+    return session;
+  }
+
+  private async resolveSessionBranding(session: {
+    id: string;
+    organizationId: string;
+    branding?: BrandingRecord | null;
+  }): Promise<SessionBrandingDto> {
+    const override = session.branding;
+    if (override && override.inheritOrganization !== true) {
+      return this.toSessionBrandingDto(
+        this.normalize({
+          ...override,
+          organizationId: session.organizationId,
+          sessionId: session.id,
+        }),
+        session.id,
+        false,
+        'session',
+      );
+    }
+
+    const inherited = await this.getForOrganization(session.organizationId);
+    return this.toSessionBrandingDto(
+      inherited,
+      session.id,
+      true,
+      'organization',
+    );
+  }
+
+  async getForSessionActor(
+    actor: Actor | null,
+    sessionId: string,
+  ): Promise<SessionBrandingDto> {
+    const session = await this.getSessionBrandingContext(sessionId, actor);
+    return this.resolveSessionBranding(session);
+  }
+
+  async updateForSessionActor(
+    actor: Actor | null,
+    sessionId: string,
+    dto: SessionBrandingInputDto,
+  ): Promise<SessionBrandingDto> {
+    const session = await this.getSessionBrandingContext(sessionId, actor);
+
+    if (dto.inheritOrganization === true) {
+      await this.prisma.sessionBranding.deleteMany({
+        where: {
+          sessionId: session.id,
+          organizationId: session.organizationId,
+        },
+      });
+      const inherited = await this.getForOrganization(session.organizationId);
+      return this.toSessionBrandingDto(
+        inherited,
+        session.id,
+        true,
+        'organization',
+      );
+    }
+
+    const inherited = await this.getForOrganization(session.organizationId);
+    const normalized = this.normalize({
+      ...inherited,
+      ...(session.branding ?? {}),
+      ...dto,
+      organizationId: session.organizationId,
+      sessionId: session.id,
+      inheritOrganization: false,
+    });
+    const persistence = this.toPersistence(normalized);
+    const saved = await this.prisma.sessionBranding.upsert({
+      where: { sessionId: session.id },
+      update: {
+        organizationId: session.organizationId,
+        inheritOrganization: false,
+        ...persistence,
+      },
+      create: {
+        organizationId: session.organizationId,
+        sessionId: session.id,
+        inheritOrganization: false,
+        ...persistence,
+      },
+    });
+
+    return this.toSessionBrandingDto(
+      this.normalize({
+        ...saved,
+        organizationId: session.organizationId,
+        sessionId: session.id,
+      }),
+      session.id,
+      false,
+      'session',
+    );
+  }
+
+  private async getEffectiveSessionBranding(params: {
+    sessionId: string;
+    organizationId?: string | null;
+  }): Promise<SessionBrandingDto | null> {
+    const session = await this.prisma.session.findFirst({
+      where: {
+        id: params.sessionId,
+        deletedAt: null,
+        ...(params.organizationId
+          ? { organizationId: params.organizationId }
+          : {}),
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        branding: true,
+      },
+    });
+    if (!session) return null;
+    return this.resolveSessionBranding(session);
+  }
+
   async updateForActor(
     actor: Actor | null,
     organizationId: string,
@@ -475,12 +663,14 @@ export class OrganizationBrandingService {
   async getEffectiveBranding(params: {
     actor?: Actor | null;
     organizationId?: string | null;
+    sessionId?: string | null;
     matchId?: string | null;
     tournamentId?: string | null;
     cache?: Map<string, OrganizationBrandingDto>;
   }): Promise<OrganizationBrandingDto> {
     const cache = params.cache;
     const cacheKey =
+      (params.sessionId ? `session:${params.sessionId}` : null) ??
       params.organizationId ??
       params.tournamentId ??
       params.matchId ??
@@ -490,18 +680,32 @@ export class OrganizationBrandingService {
     let orgId =
       params.organizationId ??
       (params.actor ? effectiveOrganizationId(params.actor) : null);
+    let sessionId = params.sessionId ?? null;
 
     try {
-      if (!orgId && params.matchId) {
+      if ((!orgId || !sessionId) && params.matchId) {
         const match = await this.prisma.match.findFirst({
           where: { id: params.matchId, deletedAt: null },
           select: {
             organizationId: true,
+            sessionId: true,
             tournament: { select: { organizationId: true } },
           },
         });
         orgId =
           match?.organizationId ?? match?.tournament?.organizationId ?? null;
+        sessionId = sessionId ?? match?.sessionId ?? null;
+      }
+
+      if (sessionId) {
+        const sessionBranding = await this.getEffectiveSessionBranding({
+          sessionId,
+          organizationId: orgId,
+        });
+        if (sessionBranding) {
+          cache?.set(cacheKey, sessionBranding);
+          return sessionBranding;
+        }
       }
 
       if (!orgId && params.tournamentId) {

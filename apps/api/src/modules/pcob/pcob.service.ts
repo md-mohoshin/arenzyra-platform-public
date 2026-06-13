@@ -4,16 +4,15 @@ import {
   Injectable,
   OnModuleInit,
 } from '@nestjs/common';
-import { DataMode, MatchDataSource } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../db/prisma.service';
 import { PcobGateway } from './pcob.gateway';
 import { RedisService } from '../../redis/redis.service';
-import { Prisma } from '@prisma/client';
 import { PcobHealthService } from './pcob-health.service';
 import { PcobTelemetryPayload } from './pcob.types';
 import { requireOrgMatch } from '../../common/org/org.util';
 import { deriveControlLiveState } from '../../common/live-state.util';
-import { resolveMatchDataSource } from '../matches/match-datasource.util';
+import { hasLegacyPcobControlSignal } from '../../common/pcob-binding.util';
 
 const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -115,10 +114,29 @@ export class PcobService implements OnModuleInit {
     return match;
   }
 
-  private isPcobMode(match: MatchWithRelations): boolean {
-    if (match.pcobMode === true) return true;
-    const source = resolveMatchDataSource(match);
-    return source === MatchDataSource.PCOB || match.dataMode === DataMode.PCOB;
+  private isLegacyPcobControlMatch(match: {
+    dataSource?: string | null;
+    dataMode?: string | null;
+    pcobSessionId?: string | null;
+    pcobMode?: boolean | null;
+    adapterKey?: string | null;
+  }): boolean {
+    return hasLegacyPcobControlSignal(match);
+  }
+
+  private assertLegacyPcobControlMatch(match: {
+    dataSource?: string | null;
+    dataMode?: string | null;
+    pcobSessionId?: string | null;
+    pcobMode?: boolean | null;
+    adapterKey?: string | null;
+  }) {
+    if (this.isLegacyPcobControlMatch(match)) {
+      return;
+    }
+    throw new BadRequestException(
+      'Legacy PCOB control is disabled for API and MANUAL matches',
+    );
   }
 
   async bind(
@@ -142,9 +160,7 @@ export class PcobService implements OnModuleInit {
     if (deriveControlLiveState(match.controlState?.state ?? null) !== 'LIVE') {
       throw new BadRequestException('Match must be LIVE to bind PCOB');
     }
-    if (!this.isPcobMode(match)) {
-      throw new BadRequestException('Match is not in PCOB mode');
-    }
+    this.assertLegacyPcobControlMatch(match);
     if (!match.pcobSessionId || match.pcobSessionId !== sessionId) {
       throw new BadRequestException('Session ID mismatch');
     }
@@ -169,7 +185,8 @@ export class PcobService implements OnModuleInit {
     matchId: string,
     clientId: string,
   ): Promise<{ ok: true; expiresAt: Date }> {
-    await this.ensureMatch(orgId, matchId);
+    const match = await this.ensureMatch(orgId, matchId);
+    this.assertLegacyPcobControlMatch(match);
     const existing = await this.prisma.feedLock.findUnique({
       where: { id: 'singleton' },
     });
@@ -228,6 +245,7 @@ export class PcobService implements OnModuleInit {
   ): Promise<{ ok: true; expiresAt: Date }> {
     await this.ensureLock(clientId, matchId);
     const match = await this.ensureMatch(orgId, matchId);
+    this.assertLegacyPcobControlMatch(match);
 
     const slotMap = new Map<number, string>();
     match.matchSlots.forEach((s) => {
@@ -257,6 +275,7 @@ export class PcobService implements OnModuleInit {
   async syncPlayers(orgId: string, matchId: string, _body: unknown) {
     void _body;
     const match = await this.ensureMatch(orgId, matchId);
+    this.assertLegacyPcobControlMatch(match);
     if (deriveControlLiveState(match.controlState?.state ?? null) === 'LIVE') {
       throw new BadRequestException('Cannot sync during live match');
     }
@@ -267,6 +286,7 @@ export class PcobService implements OnModuleInit {
   async syncTeams(orgId: string, matchId: string, _body: unknown) {
     void _body;
     const match = await this.ensureMatch(orgId, matchId);
+    this.assertLegacyPcobControlMatch(match);
     if (deriveControlLiveState(match.controlState?.state ?? null) === 'LIVE') {
       throw new BadRequestException('Cannot sync during live match');
     }

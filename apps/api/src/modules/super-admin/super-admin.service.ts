@@ -10,6 +10,7 @@ import {
   AuditAction,
   Prisma,
   NotificationAudience,
+  OrganizerAccessMode,
   OrganizationStatus,
   KycStatus,
   PayoutStatus,
@@ -67,7 +68,9 @@ type ListedUser = Prisma.UserGetPayload<{
     role: true;
     status: true;
     bannedUntil: true;
+    organizerAccessMode: true;
     organizationId: true;
+    organization: { select: { id: true; name: true; accessMode: true } };
     createdAt: true;
     deletedAt: true;
   };
@@ -346,6 +349,7 @@ export class SuperAdminService implements OnModuleInit {
       slug: string;
       displayName: string | null | undefined;
       status: OrganizationStatus;
+      accessMode: OrganizerAccessMode;
       adminCount: number;
       tournamentsActive: number;
       _count: OrganizerWithCounts['_count'];
@@ -373,6 +377,7 @@ export class SuperAdminService implements OnModuleInit {
       slug: o.slug,
       displayName: this.getOptionalStringField(o, 'displayName'),
       status: o.status,
+      accessMode: o.accessMode,
       adminCount: o._count?.users ?? 0,
       tournamentsActive: o._count?.tournaments ?? 0,
       _count: o._count,
@@ -636,7 +641,11 @@ export class SuperAdminService implements OnModuleInit {
         role: true,
         status: true,
         bannedUntil: true,
+        organizerAccessMode: true,
         organizationId: true,
+        organization: {
+          select: { id: true, name: true, accessMode: true },
+        },
         createdAt: true,
         deletedAt: true,
       },
@@ -664,14 +673,33 @@ export class SuperAdminService implements OnModuleInit {
     throw new BadRequestException('status must be ACTIVE or SUSPENDED');
   }
 
+  private normalizeOrganizerAccessMode(
+    accessMode: string | null | undefined,
+  ): OrganizerAccessMode {
+    if (!accessMode) return OrganizerAccessMode.FULL_PRODUCTION;
+    const normalized = accessMode.toUpperCase();
+    if (normalized === 'FULL_PRODUCTION') {
+      return OrganizerAccessMode.FULL_PRODUCTION;
+    }
+    if (normalized === 'DISCORD_ONLY') {
+      return OrganizerAccessMode.DISCORD_ONLY;
+    }
+    throw new BadRequestException(
+      'organizerAccessMode must be FULL_PRODUCTION or DISCORD_ONLY',
+    );
+  }
+
   async createManagedUser(dto: CreateManagedUserDto, actor: Actor) {
     this.requireSuper(actor);
     if (!dto?.email || !dto?.password) {
       throw new BadRequestException('email and password are required');
     }
-    // Default all managed users to ORGANIZER role until explicitly changed.
-    const role = Role.ORGANIZER;
+    const role = this.normalizeManagedRole(dto.role ?? Role.ORGANIZER);
     const email = dto.email.toLowerCase();
+    const name = dto.name?.trim() || email;
+    const organizerAccessMode = this.normalizeOrganizerAccessMode(
+      dto.organizerAccessMode,
+    );
     const hashed = await bcrypt.hash(dto.password, 12);
 
     const existing = await this.prisma.user.findUnique({
@@ -697,13 +725,25 @@ export class SuperAdminService implements OnModuleInit {
     }
 
     const organizationId =
-      actor?.organizationId ?? actor?.actingOrgId ?? actor?.orgId ?? null;
+      dto.organizationId ??
+      actor?.organizationId ??
+      actor?.actingOrgId ??
+      actor?.orgId ??
+      null;
+    if (organizationId) {
+      const organization = await this.prisma.organization.findFirst({
+        where: { id: organizationId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!organization) throw new NotFoundException('Organization not found');
+    }
     const created = await this.prisma.user.create({
       data: {
         email,
         password: hashed,
-        name: email,
+        name,
         role,
+        organizerAccessMode,
         status: UserStatus.ACTIVE,
         organizationId: organizationId ?? null,
       },
@@ -713,7 +753,11 @@ export class SuperAdminService implements OnModuleInit {
         name: true,
         role: true,
         status: true,
+        organizerAccessMode: true,
         organizationId: true,
+        organization: {
+          select: { id: true, name: true, accessMode: true },
+        },
         createdAt: true,
         updatedAt: true,
       },
@@ -731,7 +775,12 @@ export class SuperAdminService implements OnModuleInit {
             entityType: 'User',
             entityId: created.id,
             before: undefined,
-            after: { role, status: created.status },
+            after: {
+              role,
+              status: created.status,
+              organizerAccessMode,
+              organizationId,
+            },
             source: 'SYSTEM',
             reason: 'SUPER_ADMIN create user',
           },
@@ -766,7 +815,11 @@ export class SuperAdminService implements OnModuleInit {
         name: true,
         role: true,
         status: true,
+        organizerAccessMode: true,
         organizationId: true,
+        organization: {
+          select: { id: true, name: true, accessMode: true },
+        },
         createdAt: true,
         deletedAt: true,
         bannedUntil: true,
@@ -786,6 +839,7 @@ export class SuperAdminService implements OnModuleInit {
         id: true,
         role: true,
         status: true,
+        organizerAccessMode: true,
         organizationId: true,
       },
     });
@@ -796,6 +850,11 @@ export class SuperAdminService implements OnModuleInit {
     const data: Prisma.UserUpdateInput = {};
     if (dto.role) data.role = this.normalizeManagedRole(dto.role);
     if (dto.status) data.status = this.normalizeManagedStatus(dto.status);
+    if (dto.organizerAccessMode) {
+      data.organizerAccessMode = this.normalizeOrganizerAccessMode(
+        dto.organizerAccessMode,
+      );
+    }
     if (!Object.keys(data).length) return user;
 
     const updated = await this.prisma.user.update({
@@ -807,7 +866,11 @@ export class SuperAdminService implements OnModuleInit {
         name: true,
         role: true,
         status: true,
+        organizerAccessMode: true,
         organizationId: true,
+        organization: {
+          select: { id: true, name: true, accessMode: true },
+        },
         createdAt: true,
         updatedAt: true,
       },
@@ -824,8 +887,16 @@ export class SuperAdminService implements OnModuleInit {
             action: AuditAction.USER_ROLE_CHANGE,
             entityType: 'User',
             entityId: updated.id,
-            before: { role: user.role, status: user.status },
-            after: { role: updated.role, status: updated.status },
+            before: {
+              role: user.role,
+              status: user.status,
+              organizerAccessMode: user.organizerAccessMode,
+            },
+            after: {
+              role: updated.role,
+              status: updated.status,
+              organizerAccessMode: updated.organizerAccessMode,
+            },
             source: 'SYSTEM',
             reason: 'SUPER_ADMIN update user',
           },
@@ -1213,6 +1284,7 @@ export class SuperAdminService implements OnModuleInit {
       select: {
         id: true,
         role: true,
+        organizerAccessMode: true,
         organizationId: true,
         email: true,
         name: true,
@@ -1227,11 +1299,27 @@ export class SuperAdminService implements OnModuleInit {
         'Target user is not assigned to an organization; assign an org before impersonating',
       );
     }
+    const targetOrganization = await this.prisma.organization.findFirst({
+      where: { id: actingOrgId, deletedAt: null },
+      select: { id: true, name: true, accessMode: true },
+    });
+    if (!targetOrganization) {
+      throw new NotFoundException('Target organization not found');
+    }
+    const accessMode =
+      target.organizerAccessMode === OrganizerAccessMode.DISCORD_ONLY ||
+      targetOrganization.accessMode === OrganizerAccessMode.DISCORD_ONLY
+        ? OrganizerAccessMode.DISCORD_ONLY
+        : OrganizerAccessMode.FULL_PRODUCTION;
     const impersonationToken = await this.jwt.signAsync(
       {
         sub: target.id,
         role: target.role,
         organizationId: target.organizationId,
+        organizationName: targetOrganization.name,
+        organizerAccessMode: target.organizerAccessMode,
+        organizationAccessMode: targetOrganization.accessMode,
+        accessMode,
         actorId: realActorId,
         actorRole: realActorRole,
         actingOrgId,

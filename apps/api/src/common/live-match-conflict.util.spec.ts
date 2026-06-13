@@ -1,7 +1,7 @@
-import { resolveOrganizationLiveMatchConflicts } from './live-match-conflict.util';
+import { detectOrganizationLiveMatchConflicts } from './live-match-conflict.util';
 
-describe('resolveOrganizationLiveMatchConflicts', () => {
-  it('keeps the most recent live match and ends older live matches in the same organization', async () => {
+describe('detectOrganizationLiveMatchConflicts', () => {
+  it('detects multiple live matches without ending older matches', async () => {
     const matchUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const controlUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
@@ -32,27 +32,17 @@ describe('resolveOrganizationLiveMatchConflicts', () => {
         .mockImplementation(async (ops) => Promise.all(ops)),
     } as any;
 
-    const result = await resolveOrganizationLiveMatchConflicts(prisma, 'org-1');
+    const result = await detectOrganizationLiveMatchConflicts(prisma, 'org-1');
 
     expect(result).toEqual({
       keptId: 'match-new',
-      endedIds: ['match-old'],
+      endedIds: [],
+      liveIds: ['match-new', 'match-old'],
+      wouldEndIds: ['match-old'],
     });
-    expect(matchUpdateMany).toHaveBeenCalledWith({
-      where: { id: { in: ['match-old'] } },
-      data: expect.objectContaining({
-        status: 'ENDED',
-        liveState: 'ENDED',
-        endedReason: 'LIVE_CONFLICT_RESOLUTION',
-      }),
-    });
-    expect(controlUpdateMany).toHaveBeenCalledWith({
-      where: { matchId: { in: ['match-old'] } },
-      data: expect.objectContaining({
-        state: 'ENDED',
-        reason: 'LIVE_CONFLICT_RESOLUTION',
-      }),
-    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(matchUpdateMany).not.toHaveBeenCalled();
+    expect(controlUpdateMany).not.toHaveBeenCalled();
   });
 
   it('does nothing when the organization already has a single live match', async () => {
@@ -75,11 +65,13 @@ describe('resolveOrganizationLiveMatchConflicts', () => {
       $transaction: jest.fn(),
     } as any;
 
-    const result = await resolveOrganizationLiveMatchConflicts(prisma, 'org-1');
+    const result = await detectOrganizationLiveMatchConflicts(prisma, 'org-1');
 
     expect(result).toEqual({
       keptId: 'match-1',
       endedIds: [],
+      liveIds: ['match-1'],
+      wouldEndIds: [],
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(prisma.match.updateMany).not.toHaveBeenCalled();

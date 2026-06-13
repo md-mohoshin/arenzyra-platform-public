@@ -39,15 +39,18 @@ export class ResultsManualService {
     if (!slot) {
       throw new BadRequestException('Team is not assigned to any slot');
     }
-    await this.resultsService.assertSlotPresentForMutation({
-      id: slot.id,
-      matchId: match.id,
-      slotNumber: slot.slotNumber,
-      teamId: slot.teamId ?? null,
-      wasPresentInMatch: slot.wasPresentInMatch ?? null,
-    }, {
-      allowManualPromote: true,
-    });
+    await this.resultsService.assertSlotPresentForMutation(
+      {
+        id: slot.id,
+        matchId: match.id,
+        slotNumber: slot.slotNumber,
+        teamId: slot.teamId ?? null,
+        wasPresentInMatch: slot.wasPresentInMatch ?? null,
+      },
+      {
+        allowManualPromote: true,
+      },
+    );
 
     const before = { ...slot };
     const placement =

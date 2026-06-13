@@ -14,6 +14,7 @@ export type AuthUser = Actor & {
 export type AuthRequest = Omit<Request, 'user'> & {
   user: AuthUser;
   isSuperAdmin?: boolean;
+  isServiceToken?: boolean;
 };
 
 // Backwards compatibility alias

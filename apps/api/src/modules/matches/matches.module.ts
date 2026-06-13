@@ -21,6 +21,7 @@ import { OrganizerLiveRadarController } from './live-radar.controller';
 import { OrganizerMatchesController } from './organizer-matches.controller';
 import { BroadcastModule } from '../broadcast/broadcast.module';
 import { RealtimeModule } from '../../realtime/realtime.module';
+import { LiveStateRepairService } from './live-state-repair.service';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { RealtimeModule } from '../../realtime/realtime.module';
   ],
   providers: [
     MatchesService,
+    LiveStateRepairService,
     AuditService,
     ScoringService,
     LiveService,

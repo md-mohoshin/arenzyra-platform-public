@@ -64,7 +64,7 @@ class PrismaMock {
         widgetKey: String(data.widgetKey),
         version: String(data.version),
         status: data.status ?? WidgetVersionStatus.DRAFT,
-        configSchema: (data.configSchema ?? null) as Prisma.JsonValue | null,
+        configSchema: data.configSchema ?? null,
         createdAt: new Date(),
         publishedAt: (data.publishedAt as Date | null | undefined) ?? null,
       };

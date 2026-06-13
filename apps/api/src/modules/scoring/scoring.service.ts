@@ -19,8 +19,7 @@ import { LiveService } from '../live/live.service';
 import type { Actor } from '../matches/matches.service';
 import { ScoreboardService } from '../scoreboard/scoreboard.service';
 import { ResultsService } from '../results/results.service';
-
-const GK = GameKey as unknown as Record<string, GameKey>;
+import { defaultRulesetConfigForGame } from '../../common/game-rules.util';
 
 @Injectable()
 export class ScoringService {
@@ -74,33 +73,7 @@ export class ScoringService {
   }
 
   private defaultRulesetConfig(game: GameKey) {
-    if (game === GK.VALORANT || game === GK.CS2) {
-      return { type: 'ROUND_WINS', roundWinPoints: 1, winBonus: 0 };
-    }
-    if (game === GK.MLBB) {
-      return {
-        type: 'ROUND_WINS',
-        roundWinPoints: 1,
-        winBonus: 0,
-        lossPoints: 0,
-        drawPoints: 0,
-        maxTeams: 2,
-      };
-    }
-    if (game === GK.FREE_FIRE) {
-      return {
-        type: 'BR_POINTS',
-        placementPoints: { 1: 10, 2: 6, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1, 8: 1 },
-        killPoints: 1,
-        maxTeams: 25,
-      };
-    }
-    return {
-      type: 'BR_POINTS',
-      placementPoints: { 1: 10, 2: 6, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1, 8: 1 },
-      killPoints: 1,
-      maxTeams: 25,
-    };
+    return defaultRulesetConfigForGame(game);
   }
 
   private isSuper(actor: Actor | null | undefined) {

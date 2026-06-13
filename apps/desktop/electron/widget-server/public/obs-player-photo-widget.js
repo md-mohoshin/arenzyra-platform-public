@@ -8,20 +8,24 @@
     return;
   }
 
-  const OBSERVER_POLL_MS = 2500;
+  const OBSERVER_STATE_POLL_MS = 5000;
+  const OBSERVER_FOCUS_POLL_MS = 100;
   const RECONNECT_DELAY_MS = 2000;
-  const LIVE_STATE_STABILIZE_MS = 120;
+  const LIVE_STATE_STABILIZE_MS = 0;
   const WS_PLAYER_STALE_MS = 1500;
+  const LIVE_WORKFLOW_STATES = new Set(["MATCH_LIVE", "PRODUCTION_LIVE"]);
   const bootstrapMatchId = asString(
     (bootstrap.match && bootstrap.match.id) || bootstrap.matchId || "",
   );
   const localStateUrl = asString(bootstrap.localStateUrl || bootstrap.observerStateUrl || "");
+  const localFocusUrl = asString(bootstrap.localFocusUrl || bootstrap.observerFocusUrl || "");
 
   const state = {
     currentMatchId: bootstrapMatchId || null,
     focusedPlayer: null,
     focusSignature: "",
     observerTimer: null,
+    focusTimer: null,
     reconnectTimer: null,
     renderFrame: null,
     socket: null,
@@ -29,6 +33,8 @@
     focusRequestToken: 0,
     lastImageToken: "",
     lastRenderSignature: "",
+    lastObserverState: null,
+    focusPollInFlight: false,
     appliedLiveState: null,
     appliedLiveSignature: "",
     pendingLiveState: null,
@@ -37,6 +43,10 @@
     staleTimer: null,
     staleWs: false,
     lastFocusedWsSeenAt: 0,
+    workflowState: asString(bootstrap.workflowState) || null,
+    productionStatus: asString(bootstrap.productionStatus) || null,
+    playerAssetsVersion: asString(bootstrap.playerAssetsVersion) || "0:0",
+    roundStarted: false,
   };
 
   function asString(value) {
@@ -69,6 +79,22 @@
     return normalizeKey(player && player.name);
   }
 
+  function collectPlayerLookupIds(player) {
+    return [
+      player && player.playerId,
+      player && player.id,
+      player && player.playerKey,
+      player && player.externalPlayerId,
+      player && player.pubgPlayerId,
+      player && player.pubgAccountId,
+      player && player.playerOpenId,
+      player && player.openId,
+      player && player.inGameId,
+    ]
+      .map(normalizeKey)
+      .filter(Boolean);
+  }
+
   function resolveApiUrl(pathname) {
     if (!pathname) {
       return null;
@@ -93,6 +119,29 @@
     return new URL(pathname, window.location.href).toString();
   }
 
+  function isDefaultPlayerPhotoUrl(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    return (
+      !raw ||
+      raw.includes("default-player") ||
+      raw.includes("defaults/default") ||
+      raw.includes("placeholder")
+    );
+  }
+
+  function getExplicitPlayerPhotoUrl(player) {
+    const raw = String((player && (player.avatarUrl || player.photoUrl)) || "").trim();
+    return raw && !isDefaultPlayerPhotoUrl(raw) ? raw : "";
+  }
+
+  function getPlayerImageVersionToken(player) {
+    return getExplicitPlayerPhotoUrl(player) ? state.playerAssetsVersion : "default";
+  }
+
+  function usesVersionedPlayerAsset(player) {
+    return Boolean(getExplicitPlayerPhotoUrl(player));
+  }
+
   function setVisible(visible) {
     root.hidden = !visible;
     root.classList.toggle("is-visible", visible);
@@ -102,6 +151,71 @@
     if (root.dataset[key] !== value) {
       root.dataset[key] = value;
     }
+  }
+
+  function isLiveWorkflowState(value) {
+    return LIVE_WORKFLOW_STATES.has(asString(value));
+  }
+
+  function hasZoneSignal(zone) {
+    return Boolean(
+      zone &&
+        typeof zone === "object" &&
+        (typeof zone.radius === "number" ||
+          typeof zone.centerX === "number" ||
+          typeof zone.centerY === "number" ||
+          typeof zone.x === "number" ||
+          typeof zone.y === "number"),
+    );
+  }
+
+  function hasCircleSignal(circle) {
+    if (!circle || typeof circle !== "object") {
+      return false;
+    }
+
+    return Boolean(
+      typeof circle.phase === "number" ||
+        toTimestampMs(circle.nextShrinkAt) !== null ||
+        hasZoneSignal(circle.safeZone) ||
+        hasZoneSignal(circle.nextZone),
+    );
+  }
+
+  function hasFreshTelemetrySignal(observerState) {
+    const leaderboard = Array.isArray(observerState && observerState.leaderboard)
+      ? observerState.leaderboard
+      : [];
+
+    for (const row of leaderboard) {
+      const players = Array.isArray(row && row.players) ? row.players : [];
+      for (const player of players) {
+        if (player && player.lifeTelemetryFresh === true) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  function hasRoundStartedSignal(observerState) {
+    if (!observerState || typeof observerState !== "object") {
+      return false;
+    }
+
+    return (
+      hasCircleSignal(observerState.circle) ||
+      hasFreshTelemetrySignal(observerState)
+    );
+  }
+
+  function applyPreferredLayout() {
+    root.style.left = "calc(50% + clamp(250px, 17vw, 340px))";
+    root.style.right = "auto";
+    root.style.bottom = "0";
+    root.style.width = "clamp(124px, 7.8vw, 154px)";
+    root.style.maxWidth = "154px";
   }
 
   function clearRenderFrame() {
@@ -127,22 +241,22 @@
 
   function buildImageCandidates(player) {
     const candidates = [];
+    const explicitPhotoUrl = getExplicitPlayerPhotoUrl(player);
+    const localPhotoVersion = encodeURIComponent(
+      [state.playerAssetsVersion, explicitPhotoUrl].filter(Boolean).join("|") || "0",
+    );
 
-    if (player && player.playerId) {
-      const localPlayerPhotoPath = `/assets/players/${encodeURIComponent(player.playerId)}.png`;
+    if (player && player.playerId && explicitPhotoUrl) {
+      const localPlayerPhotoPath =
+        `/assets/players/${encodeURIComponent(player.playerId)}.png?v=${localPhotoVersion}`;
       candidates.push(resolveBrowserUrl(localPlayerPhotoPath));
       candidates.push(resolveApiUrl(localPlayerPhotoPath));
     }
-    if (player && player.avatarUrl) {
-      candidates.push(resolveApiUrl(player.avatarUrl));
-    }
-    if (player && player.photoUrl) {
-      candidates.push(resolveApiUrl(player.photoUrl));
+    if (explicitPhotoUrl) {
+      candidates.push(resolveApiUrl(explicitPhotoUrl));
     }
 
     candidates.push(resolveBrowserUrl("/assets/default-player.png"));
-    candidates.push(resolveApiUrl("/assets/default-player.png"));
-    candidates.push(resolveApiUrl("/assets/defaults/default-player.png"));
 
     return Array.from(
       new Set(candidates.filter((candidate) => typeof candidate === "string" && candidate.trim())),
@@ -152,7 +266,8 @@
   function setImageSource(player) {
     const imageToken = [
       getFocusedPlayerId(player),
-      String((player && (player.avatarUrl || player.photoUrl)) || "").trim(),
+      getPlayerImageVersionToken(player),
+      getExplicitPlayerPhotoUrl(player),
     ].join("|");
 
     if (imageToken === state.lastImageToken) {
@@ -222,7 +337,16 @@
       ? observerState.leaderboard
       : [];
     const playerId = normalizeKey(
-      playerCard && (playerCard.playerId || playerCard.id || playerCard.playerKey),
+      playerCard &&
+        (playerCard.playerId ||
+          playerCard.id ||
+          playerCard.playerKey ||
+          playerCard.externalPlayerId ||
+          playerCard.pubgPlayerId ||
+          playerCard.pubgAccountId ||
+          playerCard.playerOpenId ||
+          playerCard.openId ||
+          playerCard.inGameId),
     );
     const playerName = normalizeKey(
       playerCard && (playerCard.playerName || playerCard.name || playerCard.player),
@@ -231,10 +355,7 @@
     for (const row of leaderboard) {
       const players = Array.isArray(row && row.players) ? row.players : [];
       for (const player of players) {
-        if (
-          playerId &&
-          normalizeKey(player && (player.playerId || player.id || player.playerKey)) === playerId
-        ) {
+        if (playerId && collectPlayerLookupIds(player).includes(playerId)) {
           return {
             row,
             player,
@@ -275,10 +396,16 @@
     return {
       playerId:
         asString(
-          playerCard.playerId ||
+          (player && (player.playerId || player.id || player.playerKey)) ||
+            playerCard.playerId ||
             playerCard.id ||
             playerCard.playerKey ||
-            (player && (player.playerId || player.id || player.playerKey)),
+            playerCard.externalPlayerId ||
+            playerCard.pubgPlayerId ||
+            playerCard.pubgAccountId ||
+            playerCard.playerOpenId ||
+            playerCard.openId ||
+            playerCard.inGameId,
         ) || null,
       name:
         asString(
@@ -383,6 +510,13 @@
   }
 
   function syncDom() {
+    if (!isLiveWorkflowState(state.workflowState) || state.roundStarted !== true) {
+      setVisible(false);
+      state.lastRenderSignature = "";
+      state.lastImageToken = "";
+      return;
+    }
+
     const player = getMergedPlayer();
 
     if (!player) {
@@ -401,7 +535,8 @@
       playerId,
       playerName,
       statusKey,
-      String(player.avatarUrl || player.photoUrl || ""),
+      getPlayerImageVersionToken(player),
+      getExplicitPlayerPhotoUrl(player),
       isOffline ? "offline" : "online",
       isStale ? "stale" : "fresh",
     ].join("|");
@@ -452,6 +587,15 @@
       fromPlayerId: previousPlayerId || null,
       toPlayerId: nextPlayerId || null,
     });
+  }
+
+  function applyRuntimeReset() {
+    const previousPlayerId = state.focusedPlayer && state.focusedPlayer.playerId;
+    state.wsConnected = false;
+    state.focusedPlayer = null;
+    state.focusSignature = "";
+    resetFocusRuntime(previousPlayerId || null, null);
+    flushSync();
   }
 
   function markFocusedStateStale() {
@@ -519,6 +663,10 @@
     const nextToken = state.pendingLiveToken + 1;
     state.pendingLiveToken = nextToken;
     clearStabilizeTimer();
+    if (LIVE_STATE_STABILIZE_MS <= 0) {
+      applyFocusedLiveState(state.pendingLiveState);
+      return;
+    }
     state.stabilizeTimer = window.setTimeout(function () {
       state.stabilizeTimer = null;
       if (state.pendingLiveToken !== nextToken) {
@@ -550,6 +698,80 @@
     }
   }
 
+  function applyObserverFocusPayload(payload) {
+    const focus =
+      payload && payload.focus && typeof payload.focus === "object"
+        ? payload.focus
+        : payload && typeof payload === "object"
+          ? payload
+          : null;
+    if (!focus || !state.lastObserverState) {
+      return;
+    }
+
+    const focusedObserverState = {
+      ...state.lastObserverState,
+      playerCard: {
+        ...focus,
+        name: focus.name || focus.playerName || null,
+        playerName: focus.playerName || focus.name || null,
+      },
+    };
+    applyFocusedPlayer(normalizeFocusedPlayer(focusedObserverState));
+  }
+
+  async function fetchObserverFocusPayload() {
+    if (!localFocusUrl) {
+      return null;
+    }
+
+    const response = await window.fetch(resolveBrowserUrl(localFocusUrl), {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`player photo focus ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async function pollObserverFocus() {
+    if (!localFocusUrl || state.focusPollInFlight) {
+      return;
+    }
+
+    state.focusPollInFlight = true;
+    try {
+      const payload = await fetchObserverFocusPayload();
+      const nextMatchId = asString(payload && payload.matchId) || null;
+      if (nextMatchId && nextMatchId !== state.currentMatchId) {
+        state.currentMatchId = nextMatchId;
+        state.lastObserverState = null;
+        applyFocusedPlayer(null);
+      }
+
+      state.workflowState =
+        asString(payload && payload.workflowState) || state.workflowState || null;
+      state.productionStatus =
+        asString(payload && payload.productionStatus) || state.productionStatus || null;
+
+      const nextPlayerAssetsVersion =
+        asString(payload && payload.playerAssetsVersion) || state.playerAssetsVersion;
+      const playerAssetsChanged = nextPlayerAssetsVersion !== state.playerAssetsVersion;
+      state.playerAssetsVersion = nextPlayerAssetsVersion;
+
+      applyObserverFocusPayload(payload);
+      if (playerAssetsChanged && usesVersionedPlayerAsset(getMergedPlayer())) {
+        state.lastRenderSignature = "";
+        state.lastImageToken = "";
+        scheduleSync();
+      }
+    } catch (_) {
+      // Keep the last known focus during transient local observer failures.
+    } finally {
+      state.focusPollInFlight = false;
+    }
+  }
+
   async function fetchObserverStatePayload() {
     if (localStateUrl) {
       const response = await window.fetch(resolveBrowserUrl(localStateUrl), {
@@ -562,6 +784,9 @@
       const payload = await response.json();
       return {
         matchId: asString(payload && payload.matchId) || null,
+        workflowState: asString(payload && payload.workflowState) || null,
+        productionStatus: asString(payload && payload.productionStatus) || null,
+        playerAssetsVersion: asString(payload && payload.playerAssetsVersion) || "0:0",
         observerState:
           payload && payload.observerState && typeof payload.observerState === "object"
             ? payload.observerState
@@ -588,6 +813,9 @@
 
     return {
       matchId: bootstrapMatchId,
+      workflowState: asString(bootstrap.workflowState) || null,
+      productionStatus: asString(bootstrap.productionStatus) || null,
+      playerAssetsVersion: "0:0",
       observerState: await response.json(),
     };
   }
@@ -607,16 +835,32 @@
         applyFocusedPlayer(null);
       }
 
+      state.workflowState = asString(payload && payload.workflowState) || null;
+      state.productionStatus = asString(payload && payload.productionStatus) || null;
+      const nextPlayerAssetsVersion =
+        asString(payload && payload.playerAssetsVersion) || "0:0";
+      const playerAssetsChanged =
+        nextPlayerAssetsVersion !== state.playerAssetsVersion;
+      state.playerAssetsVersion = nextPlayerAssetsVersion;
+
       const observerState =
         payload && payload.observerState && typeof payload.observerState === "object"
           ? payload.observerState
           : null;
+      state.roundStarted = hasRoundStartedSignal(observerState);
       if (!observerState) {
+        state.lastObserverState = null;
         applyFocusedPlayer(null);
         return;
       }
 
+      state.lastObserverState = observerState;
       applyFocusedPlayer(normalizeFocusedPlayer(observerState));
+      if (playerAssetsChanged && usesVersionedPlayerAsset(getMergedPlayer())) {
+        state.lastRenderSignature = "";
+        state.lastImageToken = "";
+        scheduleSync();
+      }
     } catch (_) {
       // Keep the last known focus during transient API failures.
     }
@@ -647,6 +891,9 @@
     const players = Array.isArray(message.payload && message.payload.players)
       ? message.payload.players
       : [];
+    if (players.length > 0) {
+      state.roundStarted = true;
+    }
     const receivedAt = Date.now();
     let focusedPacket = null;
 
@@ -686,6 +933,16 @@
 
     if (message.type === "player_positions") {
       handlePlayerPositions(message);
+      return;
+    }
+
+    if (message.type === "observer_focus") {
+      applyObserverFocusPayload(message.payload);
+      return;
+    }
+
+    if (message.type === "runtime_reset") {
+      applyRuntimeReset();
     }
   }
 
@@ -733,7 +990,7 @@
     });
   }
 
-  function startObserverPolling() {
+  function startObserverStatePolling() {
     if (state.observerTimer !== null) {
       return;
     }
@@ -741,11 +998,24 @@
     void pollObserverState();
     state.observerTimer = window.setInterval(function () {
       void pollObserverState();
-    }, OBSERVER_POLL_MS);
+    }, OBSERVER_STATE_POLL_MS);
   }
 
+  function startObserverFocusPolling() {
+    if (!localFocusUrl || state.focusTimer !== null) {
+      return;
+    }
+
+    void pollObserverFocus();
+    state.focusTimer = window.setInterval(function () {
+      void pollObserverFocus();
+    }, OBSERVER_FOCUS_POLL_MS);
+  }
+
+  applyPreferredLayout();
   connect();
-  startObserverPolling();
+  startObserverStatePolling();
+  startObserverFocusPolling();
 
   window.addEventListener("beforeunload", function () {
     clearRenderFrame();
@@ -755,6 +1025,10 @@
     if (state.observerTimer !== null) {
       window.clearInterval(state.observerTimer);
       state.observerTimer = null;
+    }
+    if (state.focusTimer !== null) {
+      window.clearInterval(state.focusTimer);
+      state.focusTimer = null;
     }
     if (state.reconnectTimer !== null) {
       window.clearTimeout(state.reconnectTimer);

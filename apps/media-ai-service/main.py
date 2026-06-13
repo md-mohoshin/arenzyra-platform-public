@@ -1,9 +1,11 @@
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from functools import lru_cache
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
-from rembg import remove
+from rembg import new_session, remove
 
 app = FastAPI(title="Arenzyra Media AI Service", version="0.1.0")
 
@@ -14,7 +16,15 @@ ALLOWED_CONTENT_TYPES = {
     "image/webp",
 }
 
-MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_FILE_BYTES = 8 * 1024 * 1024  # 8 MB
+
+MODEL_ALIASES = {
+    "general": "u2net",
+    "logo": "u2net",
+    "person": "u2net_human_seg",
+    "human": "u2net_human_seg",
+    "player": "u2net_human_seg",
+}
 
 
 @app.get("/health")
@@ -31,10 +41,34 @@ def _to_rgba_png(image_bytes: bytes) -> bytes:
         return buf.getvalue()
 
 
+def _resolve_model(model: str | None) -> str:
+    key = (model or "general").strip().lower()
+    if key not in MODEL_ALIASES:
+        raise HTTPException(
+            status_code=400,
+            detail="model must be one of: general, logo, person, human, player.",
+        )
+    return MODEL_ALIASES[key]
+
+
+@lru_cache(maxsize=4)
+def _session(model_name: str):
+    return new_session(model_name)
+
+
+def _remove_background(image_bytes: bytes, model_name: str) -> bytes:
+    return remove(image_bytes, session=_session(model_name))
+
+
 @app.post("/remove-bg", response_class=Response, responses={200: {"content": {"image/png": {}}}})
-async def remove_bg(file: UploadFile = File(...)):
+async def remove_bg(
+    file: UploadFile = File(...),
+    model: str = Form("general"),
+):
     if not file:
         raise HTTPException(status_code=400, detail="File is required")
+
+    model_name = _resolve_model(model)
 
     content_type = (file.content_type or "").lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
@@ -52,11 +86,11 @@ async def remove_bg(file: UploadFile = File(...)):
     if len(data) > MAX_FILE_BYTES:
         raise HTTPException(
             status_code=413,
-            detail="File too large. Max size is 5MB.",
+            detail="File too large. Max size is 8MB.",
         )
 
     try:
-        cutout_bytes = await run_in_threadpool(remove, data)
+        cutout_bytes = await run_in_threadpool(_remove_background, data, model_name)
     except Exception as exc:
         raise HTTPException(
             status_code=422, detail="Background removal failed."

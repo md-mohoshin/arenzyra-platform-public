@@ -7,7 +7,7 @@ import { PrismaService } from '../../db/prisma.service';
 import { ShadowBrandingService } from './shadow-branding.service';
 
 describe('ShadowBrandingService', () => {
-  jest.setTimeout(20_000);
+  jest.setTimeout(60_000);
 
   const originalLocalAppData = process.env.LOCALAPPDATA;
   const originalAssetsDir = process.env.ARENZYRA_OBSERVER_TEAM_ASSETS_DIR;

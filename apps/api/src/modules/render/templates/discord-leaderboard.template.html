@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Arenzyra Discord Result Card</title>
+    <style>
+      {{fontCssImport}}
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        font-family: {{fontFamily}};
+        background: {{background}};
+        color: {{textPrimary}};
+      }
+      .frame {
+        width: 100%;
+        height: 100%;
+        padding: {{framePaddingTop}} {{framePaddingRight}} {{framePaddingBottom}} {{framePaddingLeft}};
+        position: relative;
+        overflow: hidden;
+      }
+      .shell {
+        position: relative;
+        height: 100%;
+        padding: 28px;
+        z-index: 10;
+      }
+      .overlay-layer {
+        position: absolute;
+        height: auto;
+        max-width: none;
+        object-fit: contain;
+        pointer-events: none;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: {{headerMargin}};
+      }
+      .eyebrow {
+        display: inline-block;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid {{border}};
+        background: {{panelSurface}};
+        color: {{primaryColor}};
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .title {
+        margin: 14px 0 0;
+        font-size: {{titleSize}};
+        font-weight: 800;
+        line-height: 1.04;
+        letter-spacing: 0;
+      }
+      .subtitle {
+        margin-top: 8px;
+        color: {{textMuted}};
+        font-size: 16px;
+      }
+      .brand-logo {
+        width: 96px;
+        height: 96px;
+        object-fit: contain;
+        border-radius: 20px;
+        background: {{panelSurface}};
+        border: 1px solid {{border}};
+        padding: 16px;
+      }
+      .brand-logo--empty {
+        background: {{panelSurface}};
+      }
+      .board {
+        display: grid;
+        grid-template-columns: repeat({{boardColumns}}, minmax(0, 1fr));
+        gap: {{boardGap}};
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 88px 1fr auto;
+        align-items: center;
+        gap: 16px;
+        min-height: {{rowMinHeight}};
+        padding: {{rowPadding}};
+        border-radius: {{rowRadius}};
+        background: {{panelSurface}};
+        border: 1px solid {{border}};
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
+      }
+      .row--hero {
+        min-height: 142px;
+        grid-template-columns: 112px 1fr auto;
+        padding: 24px 26px;
+        background: {{panelSurface}};
+      }
+      .row--player {
+        grid-template-columns: 72px 62px minmax(0, 1fr) auto;
+      }
+      .row--player.row--hero {
+        min-height: 154px;
+        grid-template-columns: 112px 132px minmax(0, 1fr) auto;
+        padding: 20px 24px;
+      }
+      .row-rank {
+        color: {{primaryColor}};
+        font-size: {{rowRankSize}};
+        font-weight: 800;
+      }
+      .row--hero .row-rank {
+        font-size: 50px;
+      }
+      .row-main {
+        min-width: 0;
+      }
+      .row-title {
+        font-size: {{rowTitleSize}};
+        font-weight: 800;
+        text-transform: uppercase;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .row--hero .row-title {
+        font-size: 42px;
+      }
+      .row-logo {
+        width: 24px;
+        height: 24px;
+        object-fit: contain;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid {{border}};
+        padding: 3px;
+      }
+      .player-photo {
+        width: 56px;
+        height: 56px;
+        display: block;
+        object-fit: contain;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid {{border}};
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+      }
+      .row--player.row--hero .player-photo {
+        width: 120px;
+        height: 120px;
+        border-radius: 22px;
+      }
+      .row--mvp {
+        min-height: {{rowMinHeight}};
+        grid-template-columns: 96px 300px minmax(0, 1fr) 210px;
+        gap: 28px;
+        padding: {{rowPadding}};
+      }
+      .row--mvp .player-photo {
+        width: 280px;
+        height: 280px;
+        border-radius: 24px;
+        object-fit: contain;
+        padding: 6px;
+      }
+      .row--mvp .row-title {
+        font-size: {{rowTitleSize}};
+        white-space: normal;
+        line-height: 1.05;
+      }
+      .row--mvp .row-subtitle {
+        margin-top: 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: {{rowMetaSize}};
+      }
+      .row--mvp .row-metric {
+        font-size: {{rowMetricSize}};
+        line-height: 0.95;
+        text-align: right;
+      }
+      .row--mvp .row-detail {
+        display: none;
+      }
+      .row--fragger {
+        grid-template-columns: 46px 58px minmax(0, 1fr) 104px;
+        gap: 12px;
+      }
+      .row--fragger .player-photo {
+        width: 52px;
+        height: 52px;
+        border-radius: 14px;
+        object-fit: contain;
+        padding: 3px;
+      }
+      .row--fragger .row-title {
+        font-size: {{rowTitleSize}};
+      }
+      .row--fragger .row-subtitle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .row--fragger .row-metric {
+        text-align: right;
+      }
+      .player-team-logo {
+        width: 18px;
+        height: 18px;
+        object-fit: contain;
+        border-radius: 5px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid {{border}};
+        padding: 2px;
+        flex: 0 0 auto;
+      }
+      .row--mvp .player-team-logo {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        padding: 4px;
+      }
+      .row--fragger .player-team-logo {
+        width: 20px;
+        height: 20px;
+        border-radius: 6px;
+        padding: 2px;
+      }
+      .row--ranking {
+        grid-template-columns: 34px 28px minmax(0, 1fr) 36px 42px 50px 52px;
+        gap: 8px;
+      }
+      .row--ranking .row-title {
+        font-size: {{rowTitleSize}};
+      }
+      .row-stat,
+      .row-total {
+        text-align: right;
+        color: {{textPrimary}};
+        font-size: {{rowMetaSize}};
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .row-total {
+        color: {{primaryColor}};
+        font-size: {{rowMetricSize}};
+      }
+      .row-subtitle {
+        margin-top: 5px;
+        color: {{textMuted}};
+        font-size: {{rowMetaSize}};
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .row--hero .row-subtitle {
+        font-size: 18px;
+      }
+      .row-metric {
+        color: {{primaryColor}};
+        font-size: {{rowMetricSize}};
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .row--hero .row-metric {
+        font-size: 38px;
+      }
+      .row-detail {
+        margin-top: 5px;
+        color: {{textMuted}};
+        font-size: 13px;
+        text-align: right;
+      }
+      .empty {
+        min-height: 300px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+        border-radius: 20px;
+        border: 1px dashed {{border}};
+        background: {{panelSurface}};
+        color: {{textMuted}};
+        font-size: 26px;
+        font-weight: 700;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      {{overlayLayersHtml}}
+      <div class="shell">
+        <div class="header">
+          <div>
+            <div class="eyebrow">{{eyebrow}}</div>
+            <div class="title">{{title}}</div>
+            <div class="subtitle">{{subtitle}}</div>
+          </div>
+          {{logoHtml}}
+        </div>
+        <div class="board">{{rowsHtml}}</div>
+      </div>
+    </div>
+  </body>
+</html>

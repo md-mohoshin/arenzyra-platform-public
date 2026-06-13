@@ -4,8 +4,7 @@ export type MatchLifecycleStatus =
   | 'READY'
   | 'COUNTDOWN'
   | 'LIVE'
-  | 'PAUSED'
-  | 'ENDED'
+  | 'FINISH_PENDING'
   | 'FINISHED';
 
 export type MatchStatusLike = string | null | undefined;
@@ -34,9 +33,8 @@ export type PublicControlStatus =
   | 'READY'
   | 'COUNTDOWN'
   | 'LIVE'
-  | 'PAUSED'
-  | 'ENDED'
-  | 'CONFIRMED';
+  | 'FINISH_PENDING'
+  | 'FINISHED';
 
 const normalize = (value: MatchStatusLike): string =>
   (value ?? '').toString().trim().toUpperCase();
@@ -94,10 +92,10 @@ function normalizeLifecycleFromMatchStatus(
     return 'LIVE';
   }
   if (normalized === MatchStatus.FINISH_PENDING) {
-    return 'ENDED';
+    return 'FINISH_PENDING';
   }
   if (normalized === MatchStatus.ENDED) {
-    return 'ENDED';
+    return 'FINISH_PENDING';
   }
   if (normalized === MatchStatus.FINISHED) {
     return 'FINISHED';
@@ -116,7 +114,7 @@ function normalizeLifecycleFromLiveState(
     return 'LIVE';
   }
   if (normalized === 'ENDED') {
-    return 'ENDED';
+    return 'FINISH_PENDING';
   }
   return null;
 }
@@ -132,10 +130,15 @@ function normalizeLifecycleFromControlState(
     normalized === 'READY' ||
     normalized === 'COUNTDOWN' ||
     normalized === 'LIVE' ||
-    normalized === 'PAUSED' ||
-    normalized === 'ENDED'
+    normalized === 'FINISH_PENDING'
   ) {
     return normalized as MatchLifecycleStatus;
+  }
+  if (normalized === 'PAUSED') {
+    return 'LIVE';
+  }
+  if (normalized === 'ENDED') {
+    return 'FINISH_PENDING';
   }
   if (normalized === 'CONFIRMED') {
     return 'FINISHED';
@@ -151,15 +154,12 @@ export function normalizeMatchLifecycleStatus(
 
 export function deriveControlStateFromMatchStatus(
   status: MatchStatusLike,
-): 'READY' | 'LIVE' | 'ENDED' {
+): 'READY' | 'LIVE' | 'FINISH_PENDING' {
   if (isMatchLiveStatus(status)) {
     return 'LIVE';
   }
   if (isMatchFinalizingStatus(status)) {
-    return 'ENDED';
-  }
-  if (isMatchFinishedStatus(status)) {
-    return 'ENDED';
+    return 'FINISH_PENDING';
   }
   return 'READY';
 }
@@ -177,25 +177,20 @@ export function deriveCanonicalMatchLifecycleStatus(
   if (matchLifecycle === 'FINISHED') {
     return 'FINISHED';
   }
-  if (isMatchFinalizingStatus(ctx?.status)) {
-    return 'ENDED';
-  }
   if (
-    matchLifecycle === 'ENDED' &&
-    (!controlLifecycle ||
-      controlLifecycle === 'READY' ||
-      controlLifecycle === 'COUNTDOWN' ||
-      controlLifecycle === 'LIVE' ||
-      controlLifecycle === 'PAUSED' ||
-      controlLifecycle === 'ENDED')
+    matchLifecycle === 'FINISH_PENDING' ||
+    isMatchFinalizingStatus(ctx?.status)
   ) {
-    return 'ENDED';
+    return 'FINISH_PENDING';
   }
   if (controlLifecycle === 'FINISHED') {
     return 'FINISHED';
   }
-  if (controlLifecycle === 'ENDED' && finalized) {
+  if (controlLifecycle === 'FINISH_PENDING' && finalized) {
     return 'FINISHED';
+  }
+  if (controlLifecycle === 'FINISH_PENDING') {
+    return 'FINISH_PENDING';
   }
   if (controlLifecycle && controlLifecycle !== 'READY') {
     return controlLifecycle;
@@ -215,31 +210,7 @@ export function derivePublicControlStatus(
   ctx: MatchLifecycleContext | null | undefined,
 ): PublicControlStatus {
   const lifecycleStatus = deriveCanonicalMatchLifecycleStatus(ctx);
-  const controlLifecycle = normalizeLifecycleFromControlState(
-    ctx?.controlState,
-  );
-
-  if (lifecycleStatus === 'FINISHED') {
-    return controlLifecycle === 'FINISHED' ? 'CONFIRMED' : 'ENDED';
-  }
-
-  if (lifecycleStatus === 'ENDED') {
-    return 'ENDED';
-  }
-
-  if (controlLifecycle === 'PAUSED') {
-    return 'PAUSED';
-  }
-
-  if (controlLifecycle === 'COUNTDOWN') {
-    return 'COUNTDOWN';
-  }
-
-  if (lifecycleStatus === 'LIVE') {
-    return 'LIVE';
-  }
-
-  return 'READY';
+  return lifecycleStatus;
 }
 
 export function deriveMatchLockContract(
@@ -269,18 +240,16 @@ export function deriveMatchLockContract(
       resultsLocked = true;
       reason = 'Results are finalized for this match.';
     }
-  } else if (finalizing || lifecycleStatus === 'ENDED') {
+  } else if (finalizing || lifecycleStatus === 'FINISH_PENDING') {
     resultsLocked = true;
     reason = 'Results remain locked until match finalization completes.';
   } else if (
-    !manual &&
-    (lifecycleStatus === 'READY' ||
-      lifecycleStatus === 'COUNTDOWN' ||
-      lifecycleStatus === 'LIVE' ||
-      lifecycleStatus === 'PAUSED')
+    lifecycleStatus === 'READY' ||
+    lifecycleStatus === 'COUNTDOWN' ||
+    lifecycleStatus === 'LIVE'
   ) {
     resultsLocked = true;
-    reason = 'Results are locked while telemetry controls the match.';
+    reason = 'Results are locked until match finalization begins.';
   } else if (forceUnlock) {
     resultsLocked = true;
     reason = 'Results remain locked until match finalization completes.';
@@ -289,11 +258,11 @@ export function deriveMatchLockContract(
   return {
     lifecycleStatus,
     lifecycleLocked:
-      lifecycleStatus === 'ENDED' || lifecycleStatus === 'FINISHED',
+      lifecycleStatus === 'FINISH_PENDING' || lifecycleStatus === 'FINISHED',
     resultsLocked,
     slotLocked:
       finalizing ||
-      lifecycleStatus === 'ENDED' ||
+      lifecycleStatus === 'FINISH_PENDING' ||
       lifecycleStatus === 'FINISHED',
     resultLockState: resultsLocked ? 'LOCKED' : 'UNLOCKED',
     reason,
@@ -336,5 +305,5 @@ export function isMatchStartableStatus(status: MatchStatusLike): boolean {
 }
 
 export function canStartMatchForLifecycle(status: MatchStatusLike): boolean {
-  return !isMatchFinalizingStatus(status) && !isMatchLockedStatus(status);
+  return isMatchStartableStatus(status);
 }

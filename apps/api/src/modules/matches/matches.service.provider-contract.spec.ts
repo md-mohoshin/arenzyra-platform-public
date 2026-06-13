@@ -3,6 +3,7 @@ import {
   GameKey,
   LiveState,
   MatchDataSource,
+  MatchResultSource,
   MatchStatus,
 } from '@prisma/client';
 import { MatchesService } from './matches.service';
@@ -30,6 +31,7 @@ describe('MatchesService provider contract', () => {
     recallEnabled: false,
     dataMode: DataMode.MANUAL,
     dataSource: MatchDataSource.MANUAL,
+    resultSource: MatchResultSource.MANUAL,
     pcobSessionId: null,
     pcobMode: false,
     pcobBoundAt: null,
@@ -77,6 +79,14 @@ describe('MatchesService provider contract', () => {
             return null;
           },
         ),
+      },
+      organization: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'org-1',
+          planId: 'multi-game-production',
+          accessMode: null,
+          enabledGames: [GameKey.PUBG_MOBILE, GameKey.FREE_FIRE],
+        }),
       },
       match: {
         findFirst: jest.fn(),
@@ -162,6 +172,8 @@ describe('MatchesService provider contract', () => {
       matchName: 'Live Match',
       map: 'ERANGEL',
       startsAt: '2026-04-01T10:02:00.000Z',
+      sessionId: null,
+      sessionName: null,
     });
     expect(prisma.match.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -176,7 +188,7 @@ describe('MatchesService provider contract', () => {
     );
   });
 
-  it('rejects an invalid PCOB provider create without adapter and session', async () => {
+  it('rejects explicit PCOB provider create from the generic match setup flow', async () => {
     const { service } = buildService();
 
     await expect(
@@ -189,7 +201,7 @@ describe('MatchesService provider contract', () => {
         },
         groupContext,
       ),
-    ).rejects.toThrow('telemetryProvider PCOB requires adapterKey pubgm-pcob');
+    ).rejects.toThrow('dataSource must be one of MANUAL, API');
   });
 
   it('allows API match create when pcobSessionId is omitted entirely', async () => {
@@ -209,11 +221,55 @@ describe('MatchesService provider contract', () => {
       expect.objectContaining({
         dataSource: MatchDataSource.API,
         dataMode: DataMode.MANUAL,
+        resultSource: MatchResultSource.TELEMETRY,
         pcobSessionId: null,
         pcobMode: false,
         adapterKey: null,
       }),
     );
+  });
+
+  it('creates OCR matches as manual telemetry with an OCR result source', async () => {
+    const { service } = buildService();
+
+    await expect(
+      (service as any).buildMatchCreateInput(
+        {
+          name: 'OCR Match',
+          gameKey: GameKey.PUBG_MOBILE,
+          map: 'ERANGEL',
+          dataSource: MatchDataSource.MANUAL,
+          resultSource: MatchResultSource.OCR,
+        },
+        groupContext,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        dataSource: MatchDataSource.MANUAL,
+        dataMode: DataMode.MANUAL,
+        resultSource: MatchResultSource.OCR,
+        pcobSessionId: null,
+        pcobMode: false,
+        adapterKey: null,
+      }),
+    );
+  });
+
+  it('rejects OCR result source when telemetry is selected', async () => {
+    const { service } = buildService();
+
+    await expect(
+      (service as any).buildMatchCreateInput(
+        {
+          name: 'Conflicting OCR Match',
+          gameKey: GameKey.PUBG_MOBILE,
+          map: 'ERANGEL',
+          dataSource: MatchDataSource.API,
+          resultSource: MatchResultSource.OCR,
+        },
+        groupContext,
+      ),
+    ).rejects.toThrow('OCR result source requires a MANUAL dataSource');
   });
 
   it('allows API session match create when pcobSessionId is omitted entirely', async () => {
@@ -282,7 +338,38 @@ describe('MatchesService provider contract', () => {
     });
   });
 
-  it('generic updates keep a bound PCOB match canonical when AUTO is used as a compatibility alias', async () => {
+  it('rejects generic PCOB session linking for API/manual matches', async () => {
+    const { service, prisma } = buildService();
+    jest.spyOn(service, 'validatePubgSlots').mockResolvedValue(undefined);
+    prisma.match.findFirst.mockResolvedValue(buildMatch());
+
+    await expect(
+      service.linkPcobSession(actor, 'match-1', 'session-1'),
+    ).rejects.toThrow('Legacy PCOB session linking is disabled');
+
+    expect(service.validatePubgSlots).not.toHaveBeenCalled();
+    expect(prisma.match.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects generic PCOB session unlinking for API/manual matches', async () => {
+    const { service, prisma } = buildService();
+    prisma.match.findFirst.mockResolvedValue(
+      buildMatch({
+        dataSource: MatchDataSource.API,
+        dataMode: DataMode.MANUAL,
+        pcobSessionId: 'session-1',
+        adapterKey: 'pubgm-pcob',
+      }),
+    );
+
+    await expect(service.unlinkPcobSession(actor, 'match-1')).rejects.toThrow(
+      'Legacy PCOB session linking is disabled',
+    );
+
+    expect(prisma.match.update).not.toHaveBeenCalled();
+  });
+
+  it('generic updates normalize a legacy PCOB match when AUTO is used as a compatibility alias', async () => {
     const { service, prisma } = buildService();
     const currentMatch = buildMatch({
       dataMode: DataMode.PCOB,
@@ -319,24 +406,29 @@ describe('MatchesService provider contract', () => {
     expect(updateCall.data).toEqual(
       expect.objectContaining({
         name: 'Renamed Match',
-        dataSource: MatchDataSource.PCOB,
-        dataMode: DataMode.PCOB,
-        pcobSessionId: 'session-1',
-        pcobMode: true,
-        adapterKey: 'pubgm-pcob',
+        dataSource: MatchDataSource.API,
+        dataMode: DataMode.MANUAL,
+        pcobSessionId: null,
+        pcobMode: false,
+        adapterKey: null,
       }),
     );
-    expect(updateCall.data.pcobBoundAt).toBeUndefined();
-    expect(updateCall.data.pcobLastSeenAt).toBeUndefined();
+    expect(updateCall.data.pcobBoundAt).toBeNull();
+    expect(updateCall.data.pcobLastSeenAt).toBeNull();
     expect(result).toEqual(
       expect.objectContaining({
-        telemetryProvider: MatchDataSource.PCOB,
-        sourceMode: 'AUTO',
-        pcobConfigured: true,
-        pcobBound: true,
-        pcobReady: true,
+        telemetryProvider: MatchDataSource.API,
+        sourceMode: MatchDataSource.API,
       }),
     );
+    expect(result).not.toHaveProperty('pcobSessionId');
+    expect(result).not.toHaveProperty('pcobMode');
+    expect(result).not.toHaveProperty('pcobBoundAt');
+    expect(result).not.toHaveProperty('pcobLastSeenAt');
+    expect(result).not.toHaveProperty('adapterKey');
+    expect(result).not.toHaveProperty('pcobConfigured');
+    expect(result).not.toHaveProperty('pcobBound');
+    expect(result).not.toHaveProperty('pcobReady');
   });
 
   it('canonical match reads expose provider and source mode without treating AUTO as authoritative', async () => {
@@ -351,15 +443,19 @@ describe('MatchesService provider contract', () => {
       }),
     );
 
-    await expect(service.get(actor, 'match-1')).resolves.toEqual(
+    const result = await service.get(actor, 'match-1');
+
+    expect(result).toEqual(
       expect.objectContaining({
-        dataSource: MatchDataSource.AUTO,
+        dataSource: MatchDataSource.API,
         telemetryProvider: MatchDataSource.API,
-        sourceMode: 'AUTO',
-        pcobConfigured: false,
-        pcobBound: false,
-        pcobReady: false,
+        sourceMode: MatchDataSource.API,
       }),
     );
+    expect(result).not.toHaveProperty('pcobSessionId');
+    expect(result).not.toHaveProperty('pcobMode');
+    expect(result).not.toHaveProperty('pcobBoundAt');
+    expect(result).not.toHaveProperty('pcobLastSeenAt');
+    expect(result).not.toHaveProperty('adapterKey');
   });
 });

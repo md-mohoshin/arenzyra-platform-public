@@ -16,6 +16,9 @@ import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrgStatusDto } from './dto/update-org-status.dto';
 import { UpdateOrgKycDto } from './dto/update-org-kyc.dto';
 import { UpdateOrgOwnerDto } from './dto/update-org-owner.dto';
+import { UpdateOrgAccessModeDto } from './dto/update-org-access-mode.dto';
+import { UpdateOrgSubscriptionDto } from './dto/update-org-subscription.dto';
+import { UpdateOrgPlanDto } from './dto/update-org-plan.dto';
 import { CreateLicenseDto } from './dto/create-license.dto';
 import { UpdateLicenseDto } from './dto/update-license.dto';
 
@@ -165,6 +168,48 @@ export class SuperOrganizationsController {
     @Req() req: AuthRequest,
   ) {
     const data = await this.superService.updateOrganizationOwner(
+      id,
+      dto,
+      req.user,
+    );
+    return { data };
+  }
+
+  @Patch(':id/access-mode')
+  async updateAccessMode(
+    @Param('id') id: string,
+    @Body() dto: UpdateOrgAccessModeDto,
+    @Req() req: AuthRequest,
+  ) {
+    const data = await this.superService.updateOrganizationAccessMode(
+      id,
+      dto,
+      req.user,
+    );
+    return { data };
+  }
+
+  @Patch(':id/subscription')
+  async updateSubscription(
+    @Param('id') id: string,
+    @Body() dto: UpdateOrgSubscriptionDto,
+    @Req() req: AuthRequest,
+  ) {
+    const data = await this.superService.updateOrganizationSubscription(
+      id,
+      dto,
+      req.user,
+    );
+    return { data };
+  }
+
+  @Patch(':id/plan')
+  async updatePlan(
+    @Param('id') id: string,
+    @Body() dto: UpdateOrgPlanDto,
+    @Req() req: AuthRequest,
+  ) {
+    const data = await this.superService.updateOrganizationPlan(
       id,
       dto,
       req.user,

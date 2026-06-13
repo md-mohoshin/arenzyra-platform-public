@@ -7,9 +7,10 @@ const DEFAULT_TEAM_TAG = "AZ";
 const DEFAULT_TEAM_COLOR = { r: 255, g: 255, b: 255 };
 const DEFAULT_TEAM_LOGO_NAME = "arenzyra-default.png";
 const BRANDING_CACHE_FILE_NAME = ".shadow-branding-cache.json";
-const BRANDING_CACHE_VERSION = 1;
+const BRANDING_CACHE_VERSION = 2;
 const BRANDING_RENDER_CONCURRENCY = 4;
-const SHADOW_LOGO_FIT_RATIO = 0.88;
+const SHADOW_LOGO_FIT_RATIO = 0.96;
+const SHADOW_LOGO_TRIM_THRESHOLD = 8;
 const PLACEHOLDER_LOGO_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axzwoAAAAASUVORK5CYII=";
 const SHADOW_LOGO_VARIANTS = Object.freeze([
@@ -179,20 +180,40 @@ async function prepareBrandingSlot(options) {
     sourceLogoPath,
     shadowLogoTemplatePath: options.shadowLogoTemplatePath,
   });
-  const cached = await getUsableCachedSlot(
+  let cached = await getUsableCachedSlot(
     options.brandingCache,
     slotNumber,
     fingerprint,
   );
+  if (!cached) {
+    const legacyFingerprint = await buildSlotCacheFingerprint({
+      matchId: options.matchId,
+      slotNumber,
+      slot,
+      sourceLogoPath,
+      shadowLogoTemplatePath: options.shadowLogoTemplatePath,
+      includeMatchId: true,
+    });
+    cached = await getUsableCachedSlot(
+      options.brandingCache,
+      slotNumber,
+      legacyFingerprint,
+    );
+  }
   if (cached) {
+    const preparedSlot = {
+      ...cached.preparedSlot,
+      matchId: options.matchId,
+    };
     return {
       slotNumber,
-      preparedSlot: {
-        ...cached.preparedSlot,
-        matchId: options.matchId,
-      },
+      preparedSlot,
       line: cached.line,
-      cacheEntry: cached,
+      cacheEntry: {
+        ...cached,
+        fingerprint,
+        preparedSlot,
+      },
       cacheHit: true,
     };
   }
@@ -440,7 +461,9 @@ async function buildSlotCacheFingerprint(options) {
   const team = slot?.team && typeof slot.team === "object" ? slot.team : null;
   const payload = {
     version: BRANDING_CACHE_VERSION,
-    matchId: String(options.matchId || ""),
+    ...(options.includeMatchId === true
+      ? { matchId: String(options.matchId || "") }
+      : {}),
     slotNumber: options.slotNumber,
     slot: {
       id: slot?.id ? String(slot.id) : null,
@@ -782,7 +805,10 @@ async function renderLogoVariant(options) {
     options.shadowLogoTemplatePath,
     options.size,
   );
-  const logoBuffer = await sharp(options.sourceLogoPath)
+  const logoSourceBuffer = await readTrimmedLogoSourceBuffer(
+    options.sourceLogoPath,
+  );
+  const logoBuffer = await sharp(logoSourceBuffer)
     .resize(
       Math.round(options.size * SHADOW_LOGO_FIT_RATIO),
       Math.round(options.size * SHADOW_LOGO_FIT_RATIO),
@@ -812,6 +838,23 @@ async function renderLogoVariant(options) {
     .png()
     .toBuffer();
   await writeBufferIfChanged(options.targetPath, outputBuffer);
+}
+
+async function readTrimmedLogoSourceBuffer(sourceLogoPath) {
+  const sharp = getSharp();
+
+  try {
+    return await sharp(sourceLogoPath)
+      .ensureAlpha()
+      .trim({
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+        threshold: SHADOW_LOGO_TRIM_THRESHOLD,
+      })
+      .png()
+      .toBuffer();
+  } catch {
+    return sharp(sourceLogoPath).ensureAlpha().png().toBuffer();
+  }
 }
 
 async function resolveShadowLogoTemplate(templatePath, size) {

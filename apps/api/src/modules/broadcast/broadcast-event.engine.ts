@@ -12,6 +12,7 @@ import type {
   MatchStateSummary,
   TeamScoreState,
 } from '../match-control/state.store';
+import { isAutomaticMatchStateSourceMode } from '../match-control/state.store';
 import { EventBusService } from '../event-bus/event-bus.service';
 import {
   EVENT_BUS_TOPICS,
@@ -63,6 +64,7 @@ type BroadcastMatchState = {
   processedFightEventKeys: Set<string>;
   killStreaksByPlayer: Map<string, KillMarker[]>;
   lastKillByPair: Map<string, KillPairMarker>;
+  lastKnownKillsByPlayer: Map<string, number>;
   emittedKeys: Set<string>;
   firstBloodEmitted: boolean;
   winnerEmitted: boolean;
@@ -180,7 +182,7 @@ export class BroadcastEventEngine implements OnModuleInit, OnModuleDestroy {
   }
 
   processMatch(input: BroadcastEventEngineInput): BroadcastEvent[] {
-    if (input.sourceMode !== 'AUTO') {
+    if (!isAutomaticMatchStateSourceMode(input.sourceMode)) {
       this.stateByMatch.delete(input.matchId);
       return [];
     }
@@ -214,7 +216,35 @@ export class BroadcastEventEngine implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const orderedMatchEvents = [...input.matchEvents].sort((left, right) => {
+    const explicitKillCountsByPlayer = new Map<string, number>();
+    for (const event of input.matchEvents) {
+      if (event.type !== 'PLAYER_KILL') {
+        continue;
+      }
+      const payload = event.payload ?? {};
+      const killerPlayerId =
+        this.stringValue(payload.killerPlayerId) ??
+        this.stringValue(payload.killerId) ??
+        event.playerId ??
+        null;
+      if (!killerPlayerId) {
+        continue;
+      }
+      explicitKillCountsByPlayer.set(
+        killerPlayerId,
+        (explicitKillCountsByPlayer.get(killerPlayerId) ?? 0) + 1,
+      );
+    }
+
+    const syntheticKillEvents = this.buildSyntheticKillEvents(
+      input,
+      matchState,
+      explicitKillCountsByPlayer,
+    );
+    const orderedMatchEvents = [
+      ...input.matchEvents,
+      ...syntheticKillEvents,
+    ].sort((left, right) => {
       if (left.ts !== right.ts) return left.ts - right.ts;
       return left.id.localeCompare(right.id);
     });
@@ -395,7 +425,10 @@ export class BroadcastEventEngine implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    const finished = input.finished === true || input.status === 'ENDED';
+    const finished =
+      input.finished === true ||
+      input.status === 'FINISH_PENDING' ||
+      input.status === 'FINISHED';
     const winnerTeamId =
       input.summary?.winnerTeamId ??
       input.teams.find((team) => team.placement === 1)?.teamId ??
@@ -451,10 +484,79 @@ export class BroadcastEventEngine implements OnModuleInit, OnModuleDestroy {
       processedFightEventKeys: new Set<string>(),
       killStreaksByPlayer: new Map<string, KillMarker[]>(),
       lastKillByPair: new Map<string, KillPairMarker>(),
+      lastKnownKillsByPlayer: new Map<string, number>(),
       emittedKeys: new Set<string>(),
       firstBloodEmitted: false,
       winnerEmitted: false,
     };
+  }
+
+  private buildSyntheticKillEvents(
+    input: BroadcastEventEngineInput,
+    matchState: BroadcastMatchState,
+    explicitKillCountsByPlayer: Map<string, number>,
+  ): MatchStateEvent[] {
+    const syntheticEvents: MatchStateEvent[] = [];
+    const nextKnownKills = new Map<string, number>();
+    const snapshotTimestamp = this.toTimestamp(input.updatedAt) ?? Date.now();
+    const firstSnapshotForMatch = matchState.lastKnownKillsByPlayer.size === 0;
+
+    for (const team of input.teams) {
+      for (const player of team.players ?? []) {
+        const playerId =
+          this.stringValue(player.playerId) ?? this.stringValue(player.id);
+        if (!playerId) {
+          continue;
+        }
+
+        const currentKills = Math.max(
+          0,
+          typeof player.kills === 'number' && Number.isFinite(player.kills)
+            ? Math.trunc(player.kills)
+            : 0,
+        );
+        nextKnownKills.set(playerId, currentKills);
+
+        const previousKills = matchState.lastKnownKillsByPlayer.get(playerId);
+        if (firstSnapshotForMatch || previousKills === undefined) {
+          continue;
+        }
+
+        const explicitKills = explicitKillCountsByPlayer.get(playerId) ?? 0;
+        const delta = currentKills - previousKills - explicitKills;
+        if (delta <= 0) {
+          continue;
+        }
+
+        const playerName =
+          this.stringValue(player.ign) ?? this.stringValue(player.name);
+        const eventTimestamp =
+          this.toTimestamp(player.updatedAt) ?? snapshotTimestamp;
+        for (let index = 0; index < delta; index += 1) {
+          const totalKills = previousKills + explicitKills + index + 1;
+          syntheticEvents.push({
+            id: `synthetic-kill:${playerId}:${eventTimestamp}:${totalKills}`,
+            type: 'PLAYER_KILL',
+            ts: eventTimestamp + index,
+            teamId: team.teamId,
+            playerId,
+            payload: {
+              killerPlayerId: playerId,
+              killerId: playerId,
+              killerTeamId: team.teamId,
+              killerName: playerName,
+              killerIgn: playerName,
+              timestamp: eventTimestamp + index,
+              synthetic: true,
+              syntheticSource: 'kill-delta',
+            },
+          });
+        }
+      }
+    }
+
+    matchState.lastKnownKillsByPlayer = nextKnownKills;
+    return syntheticEvents;
   }
 
   private logStreak(type: BroadcastEventType, playerId: string): void {

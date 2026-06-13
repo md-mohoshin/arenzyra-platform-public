@@ -38,6 +38,7 @@ export class PrismaService
     'MediaAsset',
     'AuditLog',
     'OrganizationBranding',
+    'SessionBranding',
     'OrganizationFeature',
     'License',
     'ObserverLauncherSession',

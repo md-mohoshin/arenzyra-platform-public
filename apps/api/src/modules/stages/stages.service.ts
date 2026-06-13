@@ -12,21 +12,30 @@ import { AuditService } from '../audit/audit.service';
 import {
   deriveGroupStateFromMatches,
   deriveStageStateFromGroups,
+  isLiveMatchLifecycle,
 } from '../../common/live-state.util';
+import { recalcTournamentLiveState } from '../../common/live-state-sync.util';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { assertStructureChangeAllowed } from '../../common/policy/structure-policy.util';
+import { buildQualificationSettingsData } from '../../common/qualification-settings.util';
 
 type StageLight = {
   id: string;
   name: string;
   order: number;
   maxTeams: number | null;
+  qualifiedTeamsCount: number | null;
+  qualificationBubbleCount: number | null;
+  qualificationLabel: string | null;
   createdAt: Date;
   liveState: string | null;
   liveAt: Date | null;
   endedAt: Date | null;
   groupCount: number;
   matchCount: number;
+  registrationCount: number;
+  inviteCount: number;
+  isDefaultRegistrationStage: boolean;
   groups: Array<{
     id: string;
     name: string | null;
@@ -57,10 +66,16 @@ export class StagesService {
     id: string;
     organizationId: string | null;
     status: string | null;
+    defaultRegistrationStageId: string | null;
   }> {
     const tournament = await this.prisma.tournament.findFirst({
       where: { id: tournamentId, deletedAt: null },
-      select: { id: true, organizationId: true, status: true },
+      select: {
+        id: true,
+        organizationId: true,
+        status: true,
+        defaultRegistrationStageId: true,
+      },
     });
     if (!tournament) throw new NotFoundException('Tournament not found');
     // Enforce tenant match for non-super-admin callers; orgId=null is treated as super-admin / unrestricted.
@@ -89,12 +104,18 @@ export class StagesService {
       name: stage.name,
       order: stage.order,
       maxTeams: stage.maxTeams,
+      qualifiedTeamsCount: stage.qualifiedTeamsCount,
+      qualificationBubbleCount: stage.qualificationBubbleCount,
+      qualificationLabel: stage.qualificationLabel,
       createdAt: stage.createdAt,
       liveState: stage.liveState,
       liveAt: stage.liveAt,
       endedAt: stage.endedAt,
       groupCount: 0,
       matchCount: 0,
+      registrationCount: 0,
+      inviteCount: 0,
+      isDefaultRegistrationStage: false,
       groups: [],
     };
   }
@@ -103,7 +124,7 @@ export class StagesService {
     orgId: string | null,
     tournamentId: string,
   ): Promise<StageLight[]> {
-    await this.ensureTournament(orgId, tournamentId);
+    const tournament = await this.ensureTournament(orgId, tournamentId);
     const stages = await this.prisma.stage.findMany({
       where: {
         tournamentId,
@@ -122,8 +143,38 @@ export class StagesService {
             },
           },
         },
+        matches: {
+          where: { deletedAt: null },
+          select: { id: true, controlState: { select: { state: true } } },
+        },
       },
     });
+
+    const stageIds = stages.map((stage) => stage.id);
+    const [registrationCounts, inviteCounts] = stageIds.length
+      ? await Promise.all([
+          this.prisma.tournamentRegistration.groupBy({
+            by: ['stageId'],
+            where: { tournamentId, stageId: { in: stageIds } },
+            _count: { _all: true },
+          }),
+          this.prisma.tournamentInvite.groupBy({
+            by: ['stageId'],
+            where: { tournamentId, stageId: { in: stageIds } },
+            _count: { _all: true },
+          }),
+        ])
+      : [[], []];
+
+    const registrationCountByStage = new Map(
+      registrationCounts.map(
+        (entry) => [entry.stageId, entry._count._all] as const,
+      ),
+    );
+    const inviteCountByStage = new Map(
+      inviteCounts.map((entry) => [entry.stageId, entry._count._all] as const),
+    );
+
     return stages.map((s) => {
       const groups =
         (s.groups ?? []).map((g) => ({
@@ -137,18 +188,26 @@ export class StagesService {
         (sum, g) => sum + (g.matchCount ?? 0),
         0,
       );
+      const hasGroups = groups.length > 0;
+      const liveState = hasGroups
+        ? deriveStageStateFromGroups(
+            groups.map((g) => ({
+              matches: g.matches ?? [],
+              state: deriveGroupStateFromMatches(g.matches ?? []),
+            })),
+          )
+        : deriveGroupStateFromMatches(s.matches ?? []);
 
       return {
         ...this.toLight(s),
         groups,
         groupCount: groups.length,
-        matchCount,
-        liveState: deriveStageStateFromGroups(
-          groups.map((g) => ({
-            matches: g.matches ?? [],
-            state: deriveGroupStateFromMatches(g.matches ?? []),
-          })),
-        ),
+        matchCount: hasGroups ? matchCount : (s.matches?.length ?? 0),
+        liveState,
+        registrationCount: registrationCountByStage.get(s.id) ?? 0,
+        inviteCount: inviteCountByStage.get(s.id) ?? 0,
+        isDefaultRegistrationStage:
+          tournament.defaultRegistrationStageId === s.id,
       };
     });
   }
@@ -176,7 +235,8 @@ export class StagesService {
     const nextOrder = (currentMax._max.order ?? 0) + 1;
     const order = body.order ?? nextOrder;
     const type = body.type ?? StageType.GROUP;
-    const maxTeams = body?.maxTeams ?? 25;
+    const maxTeams = body?.maxTeams ?? null;
+    const qualificationSettings = buildQualificationSettingsData(body);
 
     const created = await this.prisma.stage.create({
       data: {
@@ -184,6 +244,7 @@ export class StagesService {
         order,
         type,
         maxTeams,
+        ...qualificationSettings,
         description: body?.description ?? null,
         startDate: this.parseDateInput(body?.startDate),
         endDate: this.parseDateInput(body?.endDate),
@@ -270,6 +331,7 @@ export class StagesService {
     if (body?.endDate !== undefined)
       data.endDate = this.parseDateInput(body.endDate);
     if (body?.maxTeams !== undefined) data.maxTeams = body.maxTeams;
+    Object.assign(data, buildQualificationSettingsData(body));
 
     if (!Object.keys(data).length) return this.toLight(stage);
 
@@ -311,7 +373,24 @@ export class StagesService {
         id: stageId,
         deletedAt: null,
       },
-      include: { tournament: { select: { id: true, organizationId: true } } },
+      include: {
+        tournament: {
+          select: {
+            id: true,
+            organizationId: true,
+            defaultRegistrationStageId: true,
+          },
+        },
+        matches: {
+          where: { deletedAt: null },
+          select: {
+            id: true,
+            status: true,
+            liveState: true,
+            controlState: { select: { state: true } },
+          },
+        },
+      },
     });
     if (!stage) throw new NotFoundException('Stage not found');
 
@@ -334,17 +413,48 @@ export class StagesService {
       }
     }
 
-    const groupCount = await this.prisma.group.count({
-      where: { stageId, deletedAt: null },
-    });
-    if (groupCount > 0) {
-      throw new BadRequestException('Cannot delete stage that has groups');
+    const [stageRegistrationCount, stageInviteCount] = await Promise.all([
+      this.prisma.tournamentRegistration.count({
+        where: { stageId },
+      }),
+      this.prisma.tournamentInvite.count({
+        where: { stageId },
+      }),
+    ]);
+
+    const hasLiveMatch = (stage.matches ?? []).some((match) =>
+      isLiveMatchLifecycle(match),
+    );
+    if (hasLiveMatch) {
+      throw new BadRequestException(
+        'Cannot delete stage while a match is LIVE',
+      );
+    }
+
+    if (stage.tournament?.defaultRegistrationStageId === stageId) {
+      throw new BadRequestException('Cannot delete default registration stage');
+    }
+
+    if (stageRegistrationCount > 0 || stageInviteCount > 0) {
+      throw new BadRequestException(
+        'Cannot delete stage that has registrations or invites',
+      );
     }
 
     const deletedAt = new Date();
     const stageTournamentId = stage.tournament?.id ?? null;
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.match.updateMany({
+        where: { stageId, deletedAt: null },
+        data: { deletedAt },
+      });
+
+      await tx.group.updateMany({
+        where: { stageId, deletedAt: null },
+        data: { deletedAt },
+      });
+
       await tx.stage.update({
         where: { id: stageId },
         data: { deletedAt },
@@ -361,6 +471,8 @@ export class StagesService {
           },
         });
       }
+
+      await recalcTournamentLiveState(tx, stageTournamentId);
     });
 
     await this.audit.log({
@@ -472,12 +584,6 @@ export class StagesService {
   ) {
     const stage = await this.ensureStage(stageId, orgId);
     const ids = Array.from(new Set((tournamentTeamIds ?? []).filter(Boolean)));
-
-    if (stage.maxTeams && ids.length > stage.maxTeams) {
-      throw new BadRequestException(
-        `Stage maxTeams is ${stage.maxTeams}; received ${ids.length} teams`,
-      );
-    }
 
     const validTeams = await this.prisma.tournamentTeam.findMany({
       where: {

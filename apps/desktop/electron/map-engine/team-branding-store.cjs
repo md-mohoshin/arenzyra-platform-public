@@ -49,7 +49,7 @@ function cloneUpdate(update) {
   };
 }
 
-function normalizeTeam(source, index) {
+function normalizeTeam(source, _index) {
   const record = source && typeof source === "object" && !Array.isArray(source) ? source : {};
   const nestedTeam =
     record.team && typeof record.team === "object" && !Array.isArray(record.team)

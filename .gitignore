@@ -45,6 +45,7 @@ yarn-error.log*
 **/.env.development.local
 **/.env.test.local
 **/.env.production.local
+**/.env.*
 **/.env.publish
 !infra/.env.example
 !infra/.env.publish.example
@@ -62,7 +63,21 @@ yarn-error.log*
 *.7z
 *.rar
 *.tar
+*.tgz
 *.gz
+.codex/
+.codex-*/
+.tmp/
+_cleanup-archive/
+deploy-artifacts/
+deploy-backups/
+backups/
+logs/
+
+# Root-level scratch artifacts
+/*.png
+/ob.js
+/obs-map-widget.js
 
 # Local certificates and keys
 *.pem

@@ -1,7 +1,8 @@
 import type { MatchLifecycleStatus } from './match-status.util';
+import { canonicalizeTelemetryRuntimeSource } from './telemetry-source.util';
 
 export const TELEMETRY_RUNTIME_TRANSPORT_WINDOW_MS = 15_000;
-export const TELEMETRY_RUNTIME_PACKET_WINDOW_MS = 5_000;
+export const TELEMETRY_RUNTIME_PACKET_WINDOW_MS = 15_000;
 export const TELEMETRY_RUNTIME_ACCEPTED_WINDOW_MS = 15_000;
 
 export type TelemetryRuntimeMeta = {
@@ -94,9 +95,13 @@ export function readTelemetryRuntimeMeta(
   return {
     lastTransportAt: normalizeTimestamp(runtime?.lastTransportAt),
     lastPacketAt: normalizeTimestamp(runtime?.lastPacketAt),
-    lastTransportSource: normalizeReason(runtime?.lastTransportSource),
+    lastTransportSource: canonicalizeTelemetryRuntimeSource(
+      normalizeReason(runtime?.lastTransportSource),
+    ),
     lastAcceptedAt: normalizeTimestamp(runtime?.lastAcceptedAt),
-    lastAcceptedSource: normalizeReason(runtime?.lastAcceptedSource),
+    lastAcceptedSource: canonicalizeTelemetryRuntimeSource(
+      normalizeReason(runtime?.lastAcceptedSource),
+    ),
     lastAcceptedSequence: normalizeSequence(runtime?.lastAcceptedSequence),
     lastIgnoredAt: normalizeTimestamp(runtime?.lastIgnoredAt),
     lastIgnoredReason: normalizeReason(runtime?.lastIgnoredReason),
@@ -118,13 +123,13 @@ export function writeTelemetryRuntimeMeta(
     lastPacketAt: normalizeTimestamp(
       patch.lastPacketAt ?? current.lastPacketAt,
     ),
-    lastTransportSource: normalizeReason(
+    lastTransportSource: canonicalizeTelemetryRuntimeSource(
       patch.lastTransportSource ?? current.lastTransportSource,
     ),
     lastAcceptedAt: normalizeTimestamp(
       patch.lastAcceptedAt ?? current.lastAcceptedAt,
     ),
-    lastAcceptedSource: normalizeReason(
+    lastAcceptedSource: canonicalizeTelemetryRuntimeSource(
       patch.lastAcceptedSource ?? current.lastAcceptedSource,
     ),
     lastAcceptedSequence: normalizeSequence(

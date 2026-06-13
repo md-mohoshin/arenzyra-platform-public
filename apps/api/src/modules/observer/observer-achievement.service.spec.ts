@@ -2,16 +2,15 @@ import { ObserverAchievementService } from './observer-achievement.service';
 
 describe('ObserverAchievementService', () => {
   it('accepts FIRST_BLOOD events from the broadcast moment stream', () => {
+    type BroadcastMomentHandler = (envelope: {
+      id?: string;
+      payload: {
+        matchId: string;
+        broadcastEvent: Record<string, unknown>;
+      };
+    }) => void;
     const emitObserverAchievement = jest.fn();
-    let handler:
-      | ((envelope: {
-          id?: string;
-          payload: {
-            matchId: string;
-            broadcastEvent: Record<string, unknown>;
-          };
-        }) => void)
-      | null = null;
+    let handler: BroadcastMomentHandler | null = null;
     const eventBus = {
       subscribe: jest
         .fn()
@@ -33,7 +32,9 @@ describe('ObserverAchievementService', () => {
     const service = new ObserverAchievementService(eventBus, realtime);
     service.onModuleInit();
 
-    handler?.({
+    expect(handler).toBeTruthy();
+    const emitBroadcastMoment = handler as unknown as BroadcastMomentHandler;
+    emitBroadcastMoment({
       id: 'first-blood-1',
       payload: {
         matchId: 'match-1',

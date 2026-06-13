@@ -335,8 +335,11 @@ async function fetchObserverSnapshot() {
     playersResponse,
     teamsResponse,
     killResponse,
+    backpackResponse,
     circleResponse,
     gameGlobalInfoResponse,
+    routePayloadsResponse,
+    observerSnapshotResponse,
   ] = await Promise.all([
     axios.get(`${OBSERVER_BASE_URL}/getallinfo`, {
       timeout: 1200,
@@ -354,11 +357,23 @@ async function fetchObserverSnapshot() {
       timeout: 1200,
       validateStatus: () => true,
     }),
+    axios.get(`${OBSERVER_BASE_URL}/getteambackpackinfo`, {
+      timeout: 1200,
+      validateStatus: () => true,
+    }),
     axios.get(`${OBSERVER_BASE_URL}/getcircleinfo`, {
       timeout: 1200,
       validateStatus: () => true,
     }),
     axios.get(`${OBSERVER_BASE_URL}/getgameglobalinfo`, {
+      timeout: 1200,
+      validateStatus: () => true,
+    }),
+    axios.get(`${OBSERVER_BASE_URL}/getroutepayloads`, {
+      timeout: 1200,
+      validateStatus: () => true,
+    }),
+    axios.get(`${OBSERVER_BASE_URL}/getobserversnapshot`, {
       timeout: 1200,
       validateStatus: () => true,
     }),
@@ -385,6 +400,22 @@ async function fetchObserverSnapshot() {
     killResponse?.data?.killList ||
     killResponse?.data?.KillList ||
     [];
+  const backpacks =
+    backpackResponse?.data?.backpacks ||
+    backpackResponse?.data?.TeamBackpackInfo ||
+    backpackResponse?.data?.teamBackpackInfo ||
+    allInfo?.TeamBackpackInfo ||
+    allInfo?.teamBackpackInfo ||
+    [];
+  const routePayloads =
+    routePayloadsResponse?.data?.routePayloads ||
+    routePayloadsResponse?.data ||
+    null;
+  const observerSnapshot =
+    observerSnapshotResponse?.data?.observerSnapshot ||
+    observerSnapshotResponse?.data?.snapshot ||
+    observerSnapshotResponse?.data ||
+    null;
   const baseCirclePayload =
     circleResponse?.data ||
     allInfo?.circleInfo ||
@@ -448,8 +479,11 @@ async function fetchObserverSnapshot() {
     players: Array.isArray(players) ? players : [],
     teams: Array.isArray(teams) ? teams : [],
     kills: Array.isArray(kills) ? kills : [],
+    backpacks: Array.isArray(backpacks) ? backpacks : [],
     circlePayload,
     allInfo,
+    routePayloads,
+    observerSnapshot,
     observer: allInfo?.observingPlayer || allInfo?.ObservingPlayer || null,
   };
 }

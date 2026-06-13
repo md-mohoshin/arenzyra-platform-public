@@ -6,6 +6,7 @@ import type {
   MatchStateSummary,
   TeamScoreState,
 } from '../match-control/state.store';
+import { isAutomaticMatchStateSourceMode } from '../match-control/state.store';
 import type { FightEvent } from '../telemetry/fight-detection.engine';
 
 export type StorylineEventType =
@@ -77,7 +78,7 @@ export class StorylineEngine {
   private readonly maxProcessedIds = 4096;
 
   processMatch(input: StorylineEngineInput): StorylineEvent[] {
-    if (input.sourceMode !== 'AUTO') {
+    if (!isAutomaticMatchStateSourceMode(input.sourceMode)) {
       this.stateByMatch.delete(input.matchId);
       return [];
     }
@@ -248,7 +249,10 @@ export class StorylineEngine {
       );
     }
 
-    const finished = input.finished === true || input.status === 'ENDED';
+    const finished =
+      input.finished === true ||
+      input.status === 'FINISH_PENDING' ||
+      input.status === 'FINISHED';
     const winnerTeam = input.summary?.winnerTeamId
       ? teamsById.get(input.summary.winnerTeamId)
       : (input.teams.find((team) => team.placement === 1) ?? null);

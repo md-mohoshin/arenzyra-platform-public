@@ -11,23 +11,38 @@
   const alertPhaseEl = document.getElementById("zone-alert-phase");
   const alertCountdownEl = document.getElementById("zone-alert-countdown");
   const alertStatusEl = document.getElementById("zone-alert-status");
+  const nextZoneRoot = document.getElementById("next-zone-update-root");
+  const nextZonePhaseEl = document.getElementById("next-zone-update-phase");
+  const nextZoneCountdownEl = document.getElementById("next-zone-update-countdown");
+  const nextZoneProgressEl = document.getElementById("next-zone-update-progress");
+  const nextZoneStatusEl = document.getElementById("next-zone-update-status");
 
   if (
     !timerRoot &&
-    !alertRoot
+    !alertRoot &&
+    !nextZoneRoot
   ) {
     return;
   }
 
   const RECONNECT_DELAY_MS = 2000;
   const ZONE_STALE_MS = 1500;
-  const ALERT_WARNING_MS = 10 * 1000;
+  const NEXT_ZONE_REVEAL_MS = 20 * 1000;
+  const NEXT_ZONE_DISPLAY_LATENCY_COMPENSATION_MS = 900;
+  const BRANDING_REFRESH_MS = 5000;
   const TIMER_RESYNC_DRIFT_MS = 500;
   const INFERRED_MODE_STABILIZE_MS = 140;
   const COUNTDOWN_CLAMP_LOG_THRESHOLD_MS = 250;
   const MIN_EVENT_TIMESTAMP_MS = Date.UTC(2020, 0, 1);
   const MAX_EVENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
   const CIRCLE_DELTA_EPSILON = 1;
+  const OPENING_OR_FINISHED_PHASES = new Set([
+    "lobby",
+    "waiting",
+    "plane",
+    "parachuting",
+    "finished",
+  ]);
 
   const state = {
     socket: null,
@@ -46,11 +61,15 @@
     alertState: "idle",
     lastTimerSignature: "",
     lastAlertSignature: "",
+    lastNextZoneSignature: "",
+    lastBrandingSignature: "",
     lastCountdownClampLogAt: 0,
     pendingInferredMode: "",
     pendingInferredModePhaseKey: "",
     pendingInferredModeSince: 0,
     lastAlertReplayIgnoredSignature: "",
+    brandingRefreshTimer: null,
+    brandingRefreshInFlight: false,
   };
 
   function asString(value) {
@@ -101,6 +120,297 @@
     }
   }
 
+  function parseMaybeJsonObject(value) {
+    if (!value) {
+      return null;
+    }
+
+    if (typeof value === "object") {
+      return value;
+    }
+
+    if (typeof value !== "string") {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function sanitizeCssColor(value, fallback) {
+    const normalized = asString(value);
+    if (
+      !normalized ||
+      normalized.length > 96 ||
+      /[;{}<>]/.test(normalized)
+    ) {
+      return fallback;
+    }
+
+    return normalized;
+  }
+
+  function pickBrandingColor(source, names, fallback) {
+    const branding = source && typeof source === "object" ? source : {};
+    for (const name of names) {
+      const value = sanitizeCssColor(branding[name], "");
+      if (value) {
+        return value;
+      }
+    }
+    return fallback;
+  }
+
+  function hexToRgb(value) {
+    const normalized = asString(value).replace(/^#/, "");
+    if (!/^[a-fA-F0-9]{3}$|^[a-fA-F0-9]{6}$/.test(normalized)) {
+      return null;
+    }
+
+    const expanded =
+      normalized.length === 3
+        ? normalized
+            .split("")
+            .map((character) => `${character}${character}`)
+            .join("")
+        : normalized;
+
+    return {
+      r: parseInt(expanded.slice(0, 2), 16),
+      g: parseInt(expanded.slice(2, 4), 16),
+      b: parseInt(expanded.slice(4, 6), 16),
+    };
+  }
+
+  function alphaColor(value, alpha, fallback) {
+    const rgb = hexToRgb(value);
+    if (!rgb) {
+      return fallback;
+    }
+
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+  }
+
+  function relativeLuminance(value) {
+    const rgb = hexToRgb(value);
+    if (!rgb) {
+      return null;
+    }
+
+    const toLinear = (channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.03928
+        ? normalized / 12.92
+        : Math.pow((normalized + 0.055) / 1.055, 2.4);
+    };
+
+    return (
+      0.2126 * toLinear(rgb.r) +
+      0.7152 * toLinear(rgb.g) +
+      0.0722 * toLinear(rgb.b)
+    );
+  }
+
+  function contrastRatio(first, second) {
+    const firstLuminance = relativeLuminance(first);
+    const secondLuminance = relativeLuminance(second);
+    if (firstLuminance === null || secondLuminance === null) {
+      return null;
+    }
+
+    const light = Math.max(firstLuminance, secondLuminance);
+    const dark = Math.min(firstLuminance, secondLuminance);
+    return (light + 0.05) / (dark + 0.05);
+  }
+
+  function readableTextColorForBackground(background, dark, light) {
+    const darkRatio = contrastRatio(background, dark);
+    const lightRatio = contrastRatio(background, light);
+    if (darkRatio === null || lightRatio === null) {
+      return light;
+    }
+
+    return darkRatio >= lightRatio ? dark : light;
+  }
+
+  function getBrandingSource() {
+    const organizationBranding = parseMaybeJsonObject(
+      bootstrap.organization && bootstrap.organization.branding,
+    );
+    const directBranding = parseMaybeJsonObject(bootstrap.branding);
+    return organizationBranding || directBranding || {};
+  }
+
+  function applyBrandingFromBootstrap() {
+    if (!nextZoneRoot) {
+      return;
+    }
+
+    const branding = getBrandingSource();
+    const primary = pickBrandingColor(
+      branding,
+      ["primaryColor", "primary", "liveColor", "accent"],
+      "#00e5ff",
+    );
+    const accent = pickBrandingColor(
+      branding,
+      ["accent", "secondaryColor", "secondary", "primaryColor"],
+      "#66f5d6",
+    );
+    const panel = pickBrandingColor(
+      branding,
+      ["panel", "widgetBackground", "backgroundSolid", "effectiveBackground"],
+      "#081521",
+    );
+    const text = pickBrandingColor(
+      branding,
+      ["textPrimary", "text", "badgeText"],
+      "#f8fbff",
+    );
+    const muted = pickBrandingColor(
+      branding,
+      ["textMuted", "muted"],
+      "rgba(226, 239, 248, 0.72)",
+    );
+    const border = pickBrandingColor(
+      branding,
+      ["border"],
+      alphaColor(primary, 0.34, "rgba(0, 229, 255, 0.34)"),
+    );
+    const glow = pickBrandingColor(
+      branding,
+      ["glowAccent"],
+      alphaColor(primary, 0.32, "rgba(0, 229, 255, 0.32)"),
+    );
+    const primaryText = readableTextColorForBackground(
+      primary,
+      "#101410",
+      "#ffffff",
+    );
+    const accentText = readableTextColorForBackground(
+      accent,
+      "#15110a",
+      "#ffffff",
+    );
+    const signature = [
+      primary,
+      accent,
+      panel,
+      text,
+      muted,
+      border,
+      glow,
+      primaryText,
+      accentText,
+    ].join("|");
+
+    if (signature === state.lastBrandingSignature) {
+      return;
+    }
+
+    const style = document.documentElement.style;
+    style.setProperty("--next-zone-primary", primary);
+    style.setProperty("--next-zone-accent", accent);
+    style.setProperty("--next-zone-panel", panel);
+    style.setProperty("--next-zone-text", text);
+    style.setProperty("--next-zone-muted", muted);
+    style.setProperty("--next-zone-border", border);
+    style.setProperty("--next-zone-glow", glow);
+    style.setProperty("--next-zone-primary-text", primaryText);
+    style.setProperty("--next-zone-accent-text", accentText);
+    style.setProperty(
+      "--next-zone-primary-soft",
+      alphaColor(primary, 0.18, "rgba(0, 229, 255, 0.18)"),
+    );
+    style.setProperty(
+      "--next-zone-accent-soft",
+      alphaColor(accent, 0.16, "rgba(102, 245, 214, 0.16)"),
+    );
+    state.lastBrandingSignature = signature;
+  }
+
+  function applyBootstrapContext(payload) {
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+
+    if (payload.organization !== undefined) {
+      bootstrap.organization = payload.organization;
+    }
+    if (payload.tournament !== undefined) {
+      bootstrap.tournament = payload.tournament;
+    }
+    if (payload.match !== undefined) {
+      bootstrap.match = payload.match;
+    }
+    if (payload.organizationId !== undefined) {
+      bootstrap.organizationId = payload.organizationId;
+    }
+    if (payload.organizationSlug !== undefined) {
+      bootstrap.organizationSlug = payload.organizationSlug;
+    }
+    if (payload.tournamentId !== undefined) {
+      bootstrap.tournamentId = payload.tournamentId;
+    }
+    if (payload.matchId !== undefined) {
+      bootstrap.matchId = payload.matchId;
+    }
+
+    applyBrandingFromBootstrap();
+  }
+
+  async function refreshBrandingContext() {
+    const path = asString(bootstrap.brandingRefreshPath);
+    if (!path || state.brandingRefreshInFlight) {
+      return;
+    }
+
+    state.brandingRefreshInFlight = true;
+    try {
+      const response = await fetch(path, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      if (payload && payload.ok !== false) {
+        applyBootstrapContext(payload);
+      }
+    } catch (_) {
+      // Keep the current branding when the backend is unreachable.
+    } finally {
+      state.brandingRefreshInFlight = false;
+    }
+  }
+
+  function clearBrandingRefreshTimer() {
+    if (state.brandingRefreshTimer !== null) {
+      window.clearInterval(state.brandingRefreshTimer);
+      state.brandingRefreshTimer = null;
+    }
+  }
+
+  function startBrandingRefresh() {
+    if (!nextZoneRoot) {
+      return;
+    }
+
+    applyBrandingFromBootstrap();
+    refreshBrandingContext();
+    clearBrandingRefreshTimer();
+    if (asString(bootstrap.brandingRefreshPath)) {
+      state.brandingRefreshTimer = window.setInterval(
+        refreshBrandingContext,
+        BRANDING_REFRESH_MS,
+      );
+    }
+  }
+
   function clearRenderFrame() {
     if (state.renderFrame !== null) {
       window.cancelAnimationFrame(state.renderFrame);
@@ -119,6 +429,24 @@
     state.pendingInferredMode = "";
     state.pendingInferredModePhaseKey = "";
     state.pendingInferredModeSince = 0;
+  }
+
+  function applyRuntimeReset() {
+    clearStaleTimer();
+    clearPendingInferredMode();
+    state.zone = null;
+    state.displayTargetEndAt = null;
+    state.visibleRemainingMs = null;
+    state.lastVisibleRemainingAt = 0;
+    state.allowCountdownReset = false;
+    state.lastZoneSeenAt = 0;
+    state.warningTriggeredPhaseKeys.clear();
+    state.closingTriggeredPhaseKeys.clear();
+    state.alertState = "idle";
+    state.lastTimerSignature = "";
+    state.lastAlertSignature = "";
+    state.lastNextZoneSignature = "";
+    state.lastAlertReplayIgnoredSignature = "";
   }
 
   function normalizeDurationMs(value) {
@@ -192,6 +520,19 @@
     return `Phase ${String(phase).toUpperCase()}`;
   }
 
+  function formatCompactPhaseLabel(phase) {
+    if (phase === null) {
+      return "P--";
+    }
+
+    const numeric = toFiniteNumber(phase);
+    if (numeric !== null) {
+      return `P${Math.trunc(numeric)}`;
+    }
+
+    return String(phase).toUpperCase();
+  }
+
   function resolveCircle(payload, prefix) {
     const directCircle = payload && payload[`${prefix}Circle`];
     const rawCircle =
@@ -229,6 +570,57 @@
     };
   }
 
+  function resolveModeCandidate(candidate) {
+    const numeric = toFiniteNumber(candidate);
+    if (numeric !== null) {
+      const status = Math.trunc(numeric);
+      if (status === 2) {
+        return "closing";
+      }
+      if (status === 0 || status === 1) {
+        return "waiting";
+      }
+    }
+
+    const normalized = asString(candidate)
+      .toLowerCase()
+      .replace(/[_-]+/g, " ");
+    if (!normalized) {
+      return null;
+    }
+
+    if (
+      /\b(no|not)\s+(clos|clos(?:ing)?|shrink|shrinking|move|moving|collapse|collapsing)\b/.test(
+        normalized,
+      )
+    ) {
+      return "waiting";
+    }
+
+    if (
+      normalized.includes("wait") ||
+      normalized.includes("idle") ||
+      normalized.includes("hold") ||
+      normalized.includes("next") ||
+      normalized.includes("open") ||
+      normalized.includes("static") ||
+      normalized.includes("prepare")
+    ) {
+      return "waiting";
+    }
+
+    if (
+      normalized.includes("clos") ||
+      normalized.includes("shrink") ||
+      normalized.includes("move") ||
+      normalized.includes("collapse")
+    ) {
+      return "closing";
+    }
+
+    return null;
+  }
+
   function resolveExplicitMode(payload) {
     const candidates = [
       payload && payload.mode,
@@ -240,27 +632,9 @@
     ];
 
     for (const candidate of candidates) {
-      const normalized = asString(candidate).toLowerCase();
-      if (!normalized) {
-        continue;
-      }
-
-      if (
-        normalized.includes("clos") ||
-        normalized.includes("shrink") ||
-        normalized.includes("move") ||
-        normalized.includes("collapse")
-      ) {
-        return "closing";
-      }
-
-      if (
-        normalized.includes("wait") ||
-        normalized.includes("idle") ||
-        normalized.includes("hold") ||
-        normalized.includes("next")
-      ) {
-        return "waiting";
+      const mode = resolveModeCandidate(candidate);
+      if (mode) {
+        return mode;
       }
     }
 
@@ -343,6 +717,7 @@
     return {
       phase,
       phaseKey,
+      matchPhase: asString(payload.matchPhase).toLowerCase() || null,
       targetEndAt,
       mode: modeResolution.mode,
       modeSource: modeResolution.modeSource,
@@ -445,6 +820,27 @@
     }
 
     return "";
+  }
+
+  function isOpeningOrFinishedMatchPhase(matchPhase) {
+    const normalized = asString(matchPhase).toLowerCase();
+    return normalized ? OPENING_OR_FINISHED_PHASES.has(normalized) : false;
+  }
+
+  function shouldShowNextZoneUpdate(zone, remainingMs, revealWindowMs) {
+    if (!zone || remainingMs === null) {
+      return false;
+    }
+
+    if (zone.mode !== "closing") {
+      return false;
+    }
+
+    if (isOpeningOrFinishedMatchPhase(zone.matchPhase)) {
+      return false;
+    }
+
+    return remainingMs > 0 && remainingMs <= revealWindowMs;
   }
 
   function resolveMode({
@@ -567,21 +963,6 @@
       return;
     }
 
-    if (
-      remainingMs !== null &&
-      remainingMs > 0 &&
-      remainingMs <= ALERT_WARNING_MS
-    ) {
-      if (
-        !state.warningTriggeredPhaseKeys.has(phaseKey) ||
-        state.alertState !== "warning"
-      ) {
-        triggerAlert("warning", phaseKey, zone, remainingMs);
-      }
-      state.alertState = "warning";
-      return;
-    }
-
     state.alertState = "idle";
   }
 
@@ -676,11 +1057,92 @@
     state.lastAlertSignature = signature;
   }
 
+  function updateNextZoneProgress(remainingMs, revealWindowMs, visible) {
+    if (!nextZoneProgressEl) {
+      return;
+    }
+
+    const windowMs = Math.max(1, pickFinite(revealWindowMs, NEXT_ZONE_REVEAL_MS));
+    const progress =
+      visible && remainingMs !== null
+        ? Math.max(0, Math.min(1, remainingMs / windowMs))
+        : 0;
+    const transform = `scaleX(${progress.toFixed(4)})`;
+    if (nextZoneProgressEl.style.transform !== transform) {
+      nextZoneProgressEl.style.transform = transform;
+    }
+  }
+
+  function getNextZoneDisplayRemainingMs(zone, remainingMs) {
+    if (!zone || remainingMs === null || remainingMs <= 0) {
+      return remainingMs;
+    }
+
+    const compensationMs = Math.max(
+      0,
+      pickFinite(
+        bootstrap.nextZoneDisplayLatencyCompensationMs,
+        bootstrap.displayLatencyCompensationMs,
+        NEXT_ZONE_DISPLAY_LATENCY_COMPENSATION_MS,
+      ),
+    );
+    if (compensationMs <= 0) {
+      return remainingMs;
+    }
+
+    return Math.max(0, remainingMs + compensationMs);
+  }
+
+  function renderNextZoneUpdate(now, remainingMs) {
+    if (!nextZoneRoot) {
+      return;
+    }
+
+    const zone = state.zone;
+    const revealWindowMs = pickFinite(bootstrap.revealWindowMs, NEXT_ZONE_REVEAL_MS);
+    const visible = shouldShowNextZoneUpdate(zone, remainingMs, revealWindowMs);
+    const displayRemainingMs = getNextZoneDisplayRemainingMs(zone, remainingMs);
+    updateNextZoneProgress(displayRemainingMs, revealWindowMs, visible);
+    const countdownText = formatCountdown(displayRemainingMs);
+    const statusText = getConnectionLabel(zone);
+    const signature = [
+      visible ? "1" : "0",
+      zone ? zone.phaseKey : "",
+      zone ? zone.matchPhase || "" : "",
+      zone ? zone.mode : "",
+      countdownText,
+      statusText,
+      zone && zone.stale ? "1" : "0",
+      state.wsConnected ? "1" : "0",
+      state.lastBrandingSignature,
+    ].join("|");
+
+    if (signature === state.lastNextZoneSignature) {
+      return;
+    }
+
+    if (!visible) {
+      setVisible(nextZoneRoot, false);
+      state.lastNextZoneSignature = signature;
+      return;
+    }
+
+    setElementData(nextZoneRoot, "stale", zone && zone.stale ? "true" : "false");
+    setElementData(nextZoneRoot, "offline", state.wsConnected ? "false" : "true");
+    setText(nextZonePhaseEl, formatCompactPhaseLabel(zone.phase));
+    setText(nextZoneCountdownEl, countdownText);
+    setText(nextZoneStatusEl, statusText);
+    setHidden(nextZoneStatusEl, !statusText);
+    setVisible(nextZoneRoot, true);
+    state.lastNextZoneSignature = signature;
+  }
+
   function render(now = Date.now()) {
     const remainingMs = getRemainingMs(now);
     syncAlertLifecycle(now, remainingMs);
     renderTimer(now, remainingMs);
     renderAlert(now, remainingMs);
+    renderNextZoneUpdate(now, remainingMs);
   }
 
   function scheduleRender() {
@@ -797,6 +1259,11 @@
 
     if (message.type === "zone_update") {
       handleZoneMessage(message.payload || null, message.timestamp);
+      return;
+    }
+
+    if (message.type === "runtime_reset") {
+      applyRuntimeReset();
     }
   }
 
@@ -838,6 +1305,9 @@
     });
 
     socket.addEventListener("message", function (event) {
+      if (state.socket === socket && socket.readyState === WebSocket.OPEN) {
+        state.wsConnected = true;
+      }
       handleMessage(event.data);
     });
 
@@ -859,6 +1329,7 @@
     });
   }
 
+  startBrandingRefresh();
   scheduleRender();
   connect();
 
@@ -869,6 +1340,7 @@
       window.clearTimeout(state.reconnectTimer);
       state.reconnectTimer = null;
     }
+    clearBrandingRefreshTimer();
     if (state.socket) {
       try {
         state.socket.close();

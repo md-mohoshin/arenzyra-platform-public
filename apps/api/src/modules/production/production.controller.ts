@@ -2,8 +2,11 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   Param,
+  Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -13,6 +16,12 @@ import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
 import { Roles } from '../../common/auth/roles.decorator';
 import { OrgScopeGuard } from '../../common/org/org-scope.guard';
 import type { AdminAdjustmentDto, PcobBindDto } from './dto/adjustment.dto';
+import {
+  CreateProductionDiscordSetDto,
+  ImportProductionDiscordSlotsDto,
+  UpdateProductionDiscordConfigDto,
+  UpsertProductionDiscordTeamDto,
+} from './dto/production-discord.dto';
 import { ProductionService } from './production.service';
 
 @Controller('org/:orgId/production')
@@ -20,6 +29,56 @@ import { ProductionService } from './production.service';
 @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.ORGANIZER)
 export class ProductionController {
   constructor(private svc: ProductionService) {}
+
+  @Get('discord-config')
+  getDiscordConfig(@Param('orgId') orgId: string, @Req() req: AuthRequest) {
+    return this.svc.getProductionDiscordConfig(orgId, req.user);
+  }
+
+  @Patch('discord-config')
+  updateDiscordConfig(
+    @Param('orgId') orgId: string,
+    @Body() body: UpdateProductionDiscordConfigDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.updateProductionDiscordConfig(orgId, body, req.user);
+  }
+
+  @Post('discord-config/sets')
+  createDiscordSet(
+    @Param('orgId') orgId: string,
+    @Body() body: CreateProductionDiscordSetDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.createProductionDiscordSet(orgId, body, req.user);
+  }
+
+  @Delete('discord-config/sets/:setKey')
+  deleteDiscordSet(
+    @Param('orgId') orgId: string,
+    @Param('setKey') setKey: string,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.deleteProductionDiscordSet(orgId, setKey, req.user);
+  }
+
+  @Post('discord/import-slots')
+  importDiscordSlots(
+    @Param('orgId') orgId: string,
+    @Body() body: ImportProductionDiscordSlotsDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.importProductionDiscordSlots(orgId, body, req.user);
+  }
+
+  @Post('discord/teams')
+  upsertDiscordTeam(
+    @Param('orgId') orgId: string,
+    @Body() body: UpsertProductionDiscordTeamDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.upsertProductionDiscordTeam(orgId, body, req.user);
+  }
 
   @Post('matches/:matchId/start')
   startMatch(
@@ -104,5 +163,28 @@ export class ProductionController {
     @Req() req: AuthRequest,
   ) {
     return this.svc.unbindPcob(orgId, matchId, req.user);
+  }
+}
+
+@Controller('production/discord')
+@UseGuards(JwtAuthGuard)
+@Roles(Role.SUPER_ADMIN, Role.ORGANIZER)
+export class ProductionDiscordController {
+  constructor(private svc: ProductionService) {}
+
+  @Get('resolve-channel')
+  resolveChannel(
+    @Query('guildId') guildId: string,
+    @Query('channelId') channelId: string,
+    @Req() req: AuthRequest,
+  ) {
+    return this.svc.resolveProductionDiscordChannel({
+      guildId,
+      channelId,
+      actor: {
+        ...req.user,
+        serviceToken: req.isServiceToken === true || req.user.serviceToken,
+      },
+    });
   }
 }

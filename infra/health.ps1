@@ -138,7 +138,7 @@ function Test-Web($repoRoot) {
 
 function Test-MatchState($repoRoot) {
     $matchDir = Join-Path $repoRoot "apps\match-state-service"
-    Test-NodeApp $matchDir "Match State Service" @(".env") @("build")
+    Test-NodeApp $matchDir "Legacy Match State Service" @(".env") @("build")
 }
 
 function Test-DiscordBot($repoRoot) {
@@ -153,8 +153,8 @@ function Test-Overlay($repoRoot) {
 
 function Test-ShadowApi($repoRoot) {
     $shadowDir = Join-Path $repoRoot "apps\shadow_api"
-    Require-Path $shadowDir "Shadow API"
-    Require-Path (Join-Path $shadowDir "shadow_receiver.py") "Shadow API entrypoint"
+    Require-Path $shadowDir "Legacy Shadow API"
+    Require-Path (Join-Path $shadowDir "shadow_receiver.py") "Legacy Shadow API entrypoint"
 
     $python = Resolve-Python $shadowDir @(
         "venv\Scripts\python.exe",
@@ -163,28 +163,28 @@ function Test-ShadowApi($repoRoot) {
     )
 
     if (-not $python) {
-        Fail "Shadow API Python runtime not found"
+        Fail "Legacy Shadow API Python runtime not found"
     }
 
-    Write-Ok "Shadow API Python runtime available ($python)"
+    Write-Ok "Legacy Shadow API Python runtime available ($python)"
 
     Push-Location $shadowDir
-    Write-Step "Shadow API validating Python imports"
+    Write-Step "Legacy Shadow API validating Python imports"
     & $python -c "import flask, requests"
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
-        Fail "Shadow API Python imports failed"
+        Fail "Legacy Shadow API Python imports failed"
     }
-    Write-Ok "Shadow API imports passed"
+    Write-Ok "Legacy Shadow API imports passed"
 
-    Write-Step "Shadow API compiling shadow_receiver.py"
+    Write-Step "Legacy Shadow API compiling shadow_receiver.py"
     & $python -m py_compile shadow_receiver.py
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
-        Fail "Shadow API py_compile failed"
+        Fail "Legacy Shadow API py_compile failed"
     }
     Pop-Location
-    Write-Ok "Shadow API syntax check passed"
+    Write-Ok "Legacy Shadow API syntax check passed"
 }
 
 function Test-MediaAi($repoRoot) {
@@ -230,8 +230,13 @@ Write-Step "Using repository root $repoRoot"
 Require-Path (Join-Path $repoRoot "apps") "Apps directory"
 
 Test-Api $repoRoot
-Test-ShadowApi $repoRoot
-Test-MatchState $repoRoot
+if ($env:ALLOW_LEGACY_SHADOW_API -eq "1") {
+    Test-ShadowApi $repoRoot
+    Test-MatchState $repoRoot
+}
+else {
+    Write-Warn "Skipping Legacy Shadow API and Legacy Match State Service checks; set ALLOW_LEGACY_SHADOW_API=1 only for explicit legacy workflows"
+}
 Test-DiscordBot $repoRoot
 Test-Overlay $repoRoot
 Test-MediaAi $repoRoot

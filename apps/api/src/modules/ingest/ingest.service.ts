@@ -9,6 +9,7 @@ import { MatchEventDto } from './dto/match-event.dto';
 import { ScoringService } from '../scoring/scoring.service';
 import { ResultsService } from '../results/results.service';
 import { canAcceptTelemetryForMatch } from '../../common/match-status.util';
+import { hasLegacyPcobControlSignal } from '../../common/pcob-binding.util';
 
 type RejectedItem = {
   event_id: string;
@@ -23,6 +24,24 @@ export class IngestService {
     @Inject(forwardRef(() => ResultsService))
     private results: ResultsService,
   ) {}
+
+  private normalizeSource(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim().toLowerCase();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private isLegacySnapshotSource(value: unknown): boolean {
+    const source = this.normalizeSource(value);
+    return (
+      source === 'pcob' ||
+      source === 'shadow' ||
+      source === 'shadow_api' ||
+      source === 'simulator'
+    );
+  }
 
   async ingestBatch(events: MatchEventDto[]) {
     if (!events.length) {
@@ -45,6 +64,11 @@ export class IngestService {
         deletedAt: true,
         tournamentId: true,
         organizationId: true,
+        dataSource: true,
+        dataMode: true,
+        pcobSessionId: true,
+        pcobMode: true,
+        adapterKey: true,
       },
     });
 
@@ -59,6 +83,15 @@ export class IngestService {
 
     if (!canAcceptTelemetryForMatch(match.status)) {
       throw new BadRequestException('Match not live');
+    }
+
+    const hasLegacySnapshotSource = events.some((event) =>
+      this.isLegacySnapshotSource(event.raw_payload?.source),
+    );
+    if (hasLegacySnapshotSource && !hasLegacyPcobControlSignal(match)) {
+      throw new BadRequestException(
+        'Legacy snapshot ingest is disabled for API and MANUAL matches',
+      );
     }
 
     // 3️⃣ Preload registered teams ONCE

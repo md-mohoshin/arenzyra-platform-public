@@ -1,11 +1,9 @@
 import {
   BadRequestException,
-  Inject,
   Injectable,
   Logger,
   NotFoundException,
   Optional,
-  forwardRef,
 } from '@nestjs/common';
 import type {
   MatchSlotPlayerResult,
@@ -19,7 +17,6 @@ import {
   type MatchState,
 } from '../observer/match-state.service';
 import { ObserverTeamEliminationService } from '../observer/observer-team-elimination.service';
-import { ResultsService } from '../results/results.service';
 import { resolveLiveMappingTeamTag } from '../teams/team-list-scope.util';
 import { FightDetectionEngine } from './fight-detection.engine';
 import { buildMatchPlayerKey } from '../../common/match-player-key.util';
@@ -285,8 +282,6 @@ export class MatchEngineService {
 
   constructor(
     private readonly prisma: PrismaService,
-    @Inject(forwardRef(() => ResultsService))
-    private readonly results: ResultsService,
     private readonly matchState: MatchStateService,
     @Optional() private readonly fightDetection?: FightDetectionEngine,
     @Optional()
@@ -340,8 +335,6 @@ export class MatchEngineService {
       match.controlState?.resultsManualLock === true &&
       match.controlState?.resultsForceUnlock !== true;
     const preserveStoredOutcome = matchAlreadyFinished || resultsManuallyLocked;
-
-    await this.results.ensureResultsFromSlots(match.id);
 
     const slotResults = (await this.prisma.matchSlotResult.findMany({
       where: { matchId: match.id, teamId: { not: null } },
@@ -854,10 +847,6 @@ export class MatchEngineService {
             );
           })
           .sort((left, right) => left.slotNumber - right.slotNumber);
-    const newlyEliminatedSlotResultIds = new Set(
-      newlyEliminated.map((team) => team.slotResultId),
-    );
-
     if (!matchAlreadyFinished) {
       for (const team of missedTeams) {
         team.eliminated = true;
@@ -897,113 +886,42 @@ export class MatchEngineService {
       winnerTeam.eliminatedAt = null;
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const team of teamStates) {
-        if (team.hasTelemetryPlayers) {
-          const retainedNames = team.players.map((player) => player.playerName);
-
-          for (const player of team.players) {
-            await tx.matchSlotPlayerResult.upsert({
-              where: {
-                slotResultId_playerName: {
-                  slotResultId: team.slotResultId,
-                  playerName: player.playerName,
-                },
-              },
-              update: {
-                kills: player.kills,
-                isAlive: player.alive,
-                alive: player.alive,
-                isKnocked: player.knocked,
-                isAutoFilled: true,
-              },
-              create: {
-                slotResultId: team.slotResultId,
-                organizationId: match.organizationId,
-                playerName: player.playerName,
-                kills: player.kills,
-                isAlive: player.alive,
-                alive: player.alive,
-                isKnocked: player.knocked,
-                isAutoFilled: true,
-              },
-            });
-          }
-
-          await tx.matchSlotPlayerResult.deleteMany({
-            where: retainedNames.length
-              ? {
-                  slotResultId: team.slotResultId,
-                  playerName: { notIn: retainedNames },
-                }
-              : { slotResultId: team.slotResultId },
-          });
-        } else if (
-          newlyEliminatedSlotResultIds.has(team.slotResultId) &&
-          !team.alive
-        ) {
-          await tx.matchSlotPlayerResult.updateMany({
-            where: { slotResultId: team.slotResultId },
-            data: {
-              isAlive: false,
-              alive: false,
-              isKnocked: false,
-            },
-          });
-        }
-
-        await tx.matchSlotResult.update({
-          where: { id: team.slotResultId },
-          data: {
-            placement: team.placement,
-            totalKills: team.totalKills,
-            manualTotalKills: false,
-            eliminatedAt: team.eliminated ? team.eliminatedAt : null,
-            isLocked: preserveStoredOutcome ? true : team.eliminated,
-          },
-        });
-      }
-
-      const currentMeta = await tx.matchControlState.findUnique({
-        where: { matchId: match.id },
-        select: { metaJson: true, organizationId: true },
-      });
-      const existingMeta = asRecord(currentMeta?.metaJson) ?? {};
-      const nextMissedSlots = teamStates
-        .filter((team) => team.missed)
-        .map((team) => team.slotNumber)
-        .sort((left, right) => left - right);
-      const previousMissedSlots = readMetaNumberSet(
-        existingMeta.missedSlotNumbers,
-      );
-      const missedSlotsChanged =
-        nextMissedSlots.length !== previousMissedSlots.size ||
-        nextMissedSlots.some(
-          (slotNumber) => !previousMissedSlots.has(slotNumber),
-        );
-
-      if (missedSlotsChanged) {
-        const nextMeta: Prisma.InputJsonObject = {
-          ...(existingMeta as Prisma.InputJsonObject),
-          missedSlotNumbers: nextMissedSlots,
-        };
-        await tx.matchControlState.upsert({
-          where: { matchId: match.id },
-          update: {
-            metaJson: nextMeta,
-          },
-          create: {
-            matchId: match.id,
-            organizationId: match.organizationId,
-            state: match.controlState?.state ?? 'READY',
-            metaJson: nextMeta,
-          },
-        });
-      }
+    const currentMeta = await this.prisma.matchControlState.findUnique({
+      where: { matchId: match.id },
+      select: { metaJson: true, organizationId: true },
     });
+    const existingMeta = asRecord(currentMeta?.metaJson) ?? {};
+    const nextMissedSlots = teamStates
+      .filter((team) => team.missed)
+      .map((team) => team.slotNumber)
+      .sort((left, right) => left - right);
+    const previousMissedSlots = readMetaNumberSet(
+      existingMeta.missedSlotNumbers,
+    );
+    const missedSlotsChanged =
+      nextMissedSlots.length !== previousMissedSlots.size ||
+      nextMissedSlots.some(
+        (slotNumber) => !previousMissedSlots.has(slotNumber),
+      );
 
-    await this.results.recomputeAllSlots(match.id);
-    await this.results.syncMatchPlayers(match.id);
+    if (missedSlotsChanged) {
+      const nextMeta: Prisma.InputJsonObject = {
+        ...(existingMeta as Prisma.InputJsonObject),
+        missedSlotNumbers: nextMissedSlots,
+      };
+      await this.prisma.matchControlState.upsert({
+        where: { matchId: match.id },
+        update: {
+          metaJson: nextMeta,
+        },
+        create: {
+          matchId: match.id,
+          organizationId: match.organizationId,
+          state: match.controlState?.state ?? 'READY',
+          metaJson: nextMeta,
+        },
+      });
+    }
 
     const state = this.buildMatchState(
       match.id,
@@ -1052,7 +970,7 @@ export class MatchEngineService {
       .filter((teamId): teamId is string => Boolean(teamId));
 
     this.logger.log(
-      `[MatchEngine] updated live results match=${match.id} slotResults=${teamStates.length} players=${teamStates.reduce((sum, team) => sum + team.players.length, 0)} aliveTeams=${aliveTeams.length} alivePlayers=${alivePlayers} eliminated=${eliminatedTeamIds.length} winner=${winnerTeamId ?? 'none'}`,
+      `[MatchEngine] updated live telemetry state match=${match.id} slotResults=${teamStates.length} players=${teamStates.reduce((sum, team) => sum + team.players.length, 0)} aliveTeams=${aliveTeams.length} alivePlayers=${alivePlayers} eliminated=${eliminatedTeamIds.length} winner=${winnerTeamId ?? 'none'}`,
     );
 
     return {

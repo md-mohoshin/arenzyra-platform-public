@@ -1,9 +1,22 @@
-import type { ControlState } from '@prisma/client';
-
 export type DerivedState = 'LIVE' | 'ENDED' | 'UPCOMING';
+export type ControlLifecycleState =
+  | 'READY'
+  | 'LIVE'
+  | 'FINISH_PENDING'
+  | 'FINISHED'
+  | 'COUNTDOWN'
+  | 'PAUSED'
+  | 'ENDED'
+  | 'CONFIRMED';
 
 export type ControlLike = {
-  controlState?: { state?: ControlState | null } | null;
+  controlState?: { state?: ControlLifecycleState | null } | null;
+};
+
+export type MatchLifecycleLike = {
+  status?: string | null;
+  liveState?: string | null;
+  controlState?: { state?: string | null } | null;
 };
 
 export type GroupLike = {
@@ -12,11 +25,18 @@ export type GroupLike = {
 };
 
 export function deriveControlLiveState(
-  controlState?: ControlState | null,
+  controlState?: ControlLifecycleState | null,
 ): DerivedState {
   const normalized = controlState ?? null;
   if (normalized === 'LIVE' || normalized === 'PAUSED') return 'LIVE';
-  if (normalized === 'ENDED' || normalized === 'CONFIRMED') return 'ENDED';
+  if (
+    normalized === 'FINISH_PENDING' ||
+    normalized === 'FINISHED' ||
+    normalized === 'ENDED' ||
+    normalized === 'CONFIRMED'
+  ) {
+    return 'ENDED';
+  }
   return 'UPCOMING';
 }
 
@@ -26,11 +46,21 @@ export function anyMatchLive(matches: Array<ControlLike>): boolean {
   );
 }
 
+export function isLiveMatchLifecycle(match: MatchLifecycleLike): boolean {
+  const controlState = match.controlState?.state ?? null;
+  return (
+    match.status === 'LIVE' ||
+    match.liveState === 'LIVE' ||
+    controlState === 'LIVE' ||
+    controlState === 'PAUSED'
+  );
+}
+
 /**
  * Derive the lifecycle state of a group from its matches' control states.
  *
- * LIVE  -> any match is LIVE/PAUSED
- * ENDED -> all matches (if any) are ENDED/CONFIRMED
+ * LIVE  -> any match is LIVE
+ * ENDED -> all matches (if any) are FINISH_PENDING/FINISHED aliases
  * UPCOMING -> otherwise (no matches or still pending)
  */
 export function deriveGroupStateFromMatches(

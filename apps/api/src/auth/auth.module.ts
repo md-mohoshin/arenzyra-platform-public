@@ -5,8 +5,10 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { ApplicationNotificationService } from './application-notification.service';
 import { JwtStrategy } from '../common/auth/jwt.strategy';
 import { JwtAuthGuard } from '../common/auth/jwt-auth.guard';
+import { OrganizerAccessModeGuard } from '../common/auth/organizer-access-mode.guard';
 import { AuditModule } from '../modules/audit/audit.module';
 import { env } from '../config/env.validation';
 
@@ -31,9 +33,11 @@ const expiresIn = (process.env.JWT_EXPIRES_IN ??
   controllers: [AuthController],
   providers: [
     AuthService,
+    ApplicationNotificationService,
     JwtStrategy,
     JwtAuthGuard,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: OrganizerAccessModeGuard },
   ],
   exports: [JwtModule, JwtAuthGuard, AuthService],
 })

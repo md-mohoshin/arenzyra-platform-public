@@ -4,6 +4,10 @@ import { PrismaService } from '../../db/prisma.service';
 import { deriveResultLockState, type ResultLockContext } from './results.lock';
 import { WidgetBroadcastGateway } from '../broadcast/broadcast.gateway';
 import { RankingEmitterService } from '../../realtime/ranking-emitter.service';
+import {
+  RealtimeGateway,
+  type MatchControlUpdateEventType,
+} from '../../realtime/realtime.gateway';
 
 @Injectable()
 export class ResultsEventsService {
@@ -12,6 +16,7 @@ export class ResultsEventsService {
     private readonly prisma: PrismaService,
     private readonly widgetGateway: WidgetBroadcastGateway,
     private readonly rankingEmitter: RankingEmitterService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   private matchEmitCache = new Map<string, number>();
@@ -40,6 +45,9 @@ export class ResultsEventsService {
   ): void {
     void this.resolveContext(matchId).then(({ orgId, tournamentId }) => {
       this.pcobGateway.emitResultsUpdated(matchId, roundIndex, payload, orgId);
+      void this.realtime.emitMatchControlUpdate(matchId, 'RESULTS_CHANGED', {
+        orgId,
+      });
       // Push live-ranking snapshot to broadcast listeners
       void this.widgetGateway.emitLiveRankingForMatch(matchId).catch(() => {});
       void this.rankingEmitter.emitLiveRanking(matchId, { force: true });
@@ -124,6 +132,11 @@ export class ResultsEventsService {
       },
       orgId,
     );
+    await this.realtime.emitMatchControlUpdate(
+      matchId,
+      'RESULTS_LOCK_CHANGED',
+      { orgId },
+    );
   }
 
   emitMatchUpdate(matchId: string, payload?: { reason?: string | null }) {
@@ -135,5 +148,25 @@ export class ResultsEventsService {
     void this.resolveContext(matchId).then(({ orgId }) =>
       this.pcobGateway.emitMatchUpdate(matchId, payload, orgId),
     );
+  }
+
+  emitControlContractUpdated(
+    matchId: string,
+    eventType: MatchControlUpdateEventType,
+  ): void {
+    void this.resolveContext(matchId).then(({ orgId, tournamentId }) => {
+      void this.realtime.emitMatchControlUpdate(matchId, eventType, { orgId });
+      if (eventType !== 'SLOTS_CHANGED') return;
+      void this.widgetGateway.emitLiveRankingForMatch(matchId).catch(() => {});
+      void this.widgetGateway
+        .emitLiveBattleRankingForMatch(matchId)
+        .catch(() => {});
+      void this.rankingEmitter.emitLiveRanking(matchId, { force: true });
+      if (tournamentId) {
+        void this.rankingEmitter.emitOverallRanking(tournamentId, {
+          force: true,
+        });
+      }
+    });
   }
 }

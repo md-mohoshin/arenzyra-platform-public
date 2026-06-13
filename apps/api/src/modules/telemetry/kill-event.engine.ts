@@ -4,6 +4,7 @@ import type {
   MatchStateSourceMode,
   TeamScoreState,
 } from '../match-control/state.store';
+import { isAutomaticMatchStateSourceMode } from '../match-control/state.store';
 import type { TelemetryPlayerKillEvent } from './telemetry.types';
 
 type KillEventEngineInput = {
@@ -37,7 +38,7 @@ export class KillEventEngine {
     const teams = this.mergeTeams(input.currentTeams ?? [], input.teams);
     this.recomputeTrackedTeamKills(teams);
 
-    if (input.sourceMode !== 'AUTO') {
+    if (!isAutomaticMatchStateSourceMode(input.sourceMode)) {
       this.previousSnapshotKeys.delete(scope);
       return { teams: this.sortTeams(teams), events: [] };
     }

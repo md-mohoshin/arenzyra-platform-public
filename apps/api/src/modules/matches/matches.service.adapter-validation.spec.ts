@@ -24,6 +24,14 @@ describe('MatchesService adapter/game validation', () => {
           },
         ),
       },
+      organization: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'org-1',
+          planId: 'multi-game-production',
+          accessMode: null,
+          enabledGames: [GameKey.PUBG_MOBILE, GameKey.FREE_FIRE],
+        }),
+      },
     } as any;
 
     const adapters = {

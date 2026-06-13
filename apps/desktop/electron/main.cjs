@@ -15,13 +15,32 @@ const { createBootstrapService } = require("./bootstrapService.cjs");
 const { createConfigManager } = require("./configManager.cjs");
 const { createHealthService } = require("./healthService.cjs");
 const { createLogger, normalizeScope } = require("./logger.cjs");
-const { createProductionModeService, isProductionReadyStatus } = require("./productionModeService.cjs");
+const {
+  createProductionModeService,
+  isProductionReadyStatus,
+} = require("./productionModeService.cjs");
 const { generateShadowBranding } = require("./shadowBranding.cjs");
 const {
   REQUIRED_PUBG_MAP_KEYS,
 } = require("./map-engine/map-asset-resolver.cjs");
+const {
+  resolveObserverBindHost,
+  resolveWidgetServerHost,
+  shouldAllowDirectObserverWidgetPolling,
+  shouldPollDirectObserverWidgetRuntime,
+  shouldEnableWidgetMutationRoutes,
+} = require("./launcher-runtime-policy.cjs");
+const {
+  normalizePreviousMatchNumber,
+  shouldApplyPreviousMatchSlotRecovery,
+} = require("./slotRecoveryPolicy.cjs");
 const { createSessionManager } = require("./sessionManager.cjs");
 const { createTelemetryBridge } = require("./telemetryBridge.cjs");
+const { createVisualModeService } = require("./visualModeService.cjs");
+const {
+  HOTKEY_CONTROL_APPROVAL_KEY,
+  createWidgetHotkeyControl,
+} = require("./widgetHotkeyControl.cjs");
 const { startWidgetsServer } = require("./widget-server/server.cjs");
 let electronModule = require("electron");
 const preloadPath = path.join(__dirname, "preload.cjs");
@@ -52,6 +71,10 @@ const DEFAULT_TELEMETRY_BRIDGE_SCRIPT = path.join(
 const REPO_TELEMETRY_BRIDGE_SCRIPT = path.join(REPO_ROOT, "ob.js");
 const CONNECTOR_RESOURCE_DIR_NAME = "connectors";
 const CONNECTOR_SCRIPT_NAME = "ob.js";
+const CONNECTOR_SUPPORT_FILE_NAMES = Object.freeze([
+  "direct-observer-transport-payload.cjs",
+  "observer-telemetry-contract.cjs",
+]);
 const CONNECTOR_MANIFEST_NAME = "arenzyra-ob.version.json";
 const CONNECTOR_BACKUP_PREFIX = "ob.arenzyra-backup";
 const OLDER_SHADOWTRACKER_PREFIX = "C:\\PCOB 401\\";
@@ -72,17 +95,7 @@ const SHADOWTRACKER_PROCESS_NAME = "ShadowTrackerExtra.exe";
 const DEFAULT_SHADOW_TELEMETRY_BASE_URL = "http://127.0.0.1:10086";
 const DEFAULT_SHADOW_TELEMETRY_PORT = 10086;
 const SHADOW_TELEMETRY_DISCOVERY_PORTS = Object.freeze([
-  10086,
-  10085,
-  10087,
-  10088,
-  10089,
-  10090,
-  10091,
-  10092,
-  10093,
-  10094,
-  10095,
+  10086, 10085, 10087, 10088, 10089, 10090, 10091, 10092, 10093, 10094, 10095,
   11086,
 ]);
 const SHADOW_TELEMETRY_PROBE_PATHS = [
@@ -98,6 +111,8 @@ const SHADOW_TELEMETRY_READY_POLL_MS = 250;
 const SHADOW_TELEMETRY_RECOVERY_COOLDOWN_MS = 10_000;
 const SHADOW_TELEMETRY_DISCOVERY_CACHE_MS = 2_000;
 const SHADOWTRACKER_PROCESS_DISCOVERY_CACHE_MS = 3_000;
+const LOCAL_RUNTIME_LIFECYCLE_POLL_INTERVAL_MS = 2_000;
+const PLAYER_PHOTO_CACHE_REFRESH_INTERVAL_MS = 15_000;
 const OBSERVER_COMMAND_PATH_PREFIXES = Object.freeze([
   "/debug/operator/",
   "/debug/observer/",
@@ -160,7 +175,8 @@ function summarizeProductionModeResult(result) {
   }
 
   const selectedMapKey = Array.isArray(result.checks)
-    ? result.checks.find((check) => check?.key === "assets")?.meta?.selectedMapKey
+    ? result.checks.find((check) => check?.key === "assets")?.meta
+        ?.selectedMapKey
     : null;
 
   return {
@@ -193,10 +209,13 @@ function shouldInvalidateProductionModeState(nextMatchFlow) {
   }
 
   const currentMatchId =
-    typeof nextMatchFlow?.currentMatchId === "string" && nextMatchFlow.currentMatchId.trim()
+    typeof nextMatchFlow?.currentMatchId === "string" &&
+    nextMatchFlow.currentMatchId.trim()
       ? nextMatchFlow.currentMatchId.trim()
       : null;
-  const currentStatus = normalizeMatchLifecycleStatus(nextMatchFlow?.currentStatus);
+  const currentStatus = normalizeMatchLifecycleStatus(
+    nextMatchFlow?.currentStatus,
+  );
 
   return (
     !currentMatchId ||
@@ -368,8 +387,16 @@ if (
   return;
 }
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } =
-  electronModule;
+const {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  dialog,
+  ipcMain,
+  safeStorage,
+  shell,
+} = electronModule;
 const isDev = !app.isPackaged;
 const devPort = process.env.DEV_SERVER_PORT || "5400";
 const LAUNCHER_PROTOCOL = "arenzyra-launcher";
@@ -391,14 +418,27 @@ let shadowTrackerProcessDiscoveryCache = {
 };
 const telemetrySourceStoppingPids = new Set();
 let observerFeedState = createDefaultObserverFeedState();
+let widgetDirectObserverPollingAllowed = false;
+let localRuntimeLifecyclePollTimer = null;
+let localRuntimeLifecyclePollInFlight = false;
 let launcherAccessState = null;
 let launcherHeartbeatTimer = null;
 let quittingAfterCleanup = false;
 let mainWindow = null;
 let pendingSyncCommand = null;
 let windowLoaded = false;
+let commentatorDeskWindow = null;
+let commentatorDeskWindowClickThrough = false;
+let commentatorDeskWindowUrl = null;
 let widgetServer = null;
 let pendingWidgetTeamBranding = null;
+let cachedAiCasterAccess = null;
+let cachedCommentatorDeskAccess = null;
+const playerPhotoCacheRefreshState = {
+  matchId: null,
+  lastStartedAt: 0,
+  inFlight: false,
+};
 let didConsumeStartupBootstrapResult = false;
 let startupLicenseStatus = null;
 let lastSessionActivityPersistAt = 0;
@@ -409,6 +449,9 @@ const telemetryBridge = createTelemetryBridge({
   log,
   refreshAuth: refreshTelemetryAuth,
   onUnauthorized: handleTelemetryUnauthorized,
+  onStopped: (details = {}) => {
+    stopObserverFeedSilently(details.reason || "stopped");
+  },
   onSnapshot: (snapshot) => {
     try {
       widgetServer?.ingestTelemetrySnapshot(snapshot);
@@ -426,8 +469,33 @@ const sessionManager = createSessionManager({
 });
 const configManager = createConfigManager({
   getUserDataPath: () => app.getPath("userData"),
+  isPackaged: app.isPackaged,
   env: process.env,
   log: logger.child("config").log,
+});
+const widgetHotkeyControl = createWidgetHotkeyControl({
+  getConfig: () => configManager.getSettings()?.widgetHotkeyControl,
+  setConfig: (config) => {
+    configManager.setSettings({
+      ...(configManager.getSettings() || {}),
+      widgetHotkeyControl: config,
+    });
+    broadcastConfigUpdate("widget-hotkey-control");
+  },
+  getWidgetServer: () => widgetServer,
+  log,
+  logWarn,
+  logError,
+});
+const visualModeService = createVisualModeService({
+  desktopCapturer,
+  logger: logger.child("visual"),
+  getCaptureDir: () => path.join(app.getPath("userData"), "visual-captures"),
+  getSettings: () => configManager.getSettings(),
+  setSettings: (settings) => {
+    configManager.setSettings(settings);
+    broadcastConfigUpdate("visual-mode");
+  },
 });
 const healthService = createHealthService({
   logger: logger.child("health"),
@@ -470,10 +538,11 @@ const productionModeService = createProductionModeService({
   resetTelemetryForMatch: () => telemetryBridge.resetForMatchSwitch(),
   getAssetStatus: () => getAssetStatusView(),
   getSession: () => getStoredSession(),
-  syncTeams: (session, matchId) => syncTeams(session, matchId, {
-    repairSlots: true,
-    syncPlayerPhotos: false,
-  }),
+  syncTeams: (session, matchId) =>
+    syncTeams(session, matchId, {
+      repairSlots: true,
+      syncPlayerPhotos: false,
+    }),
   generateBranding: (session, matchId, context) =>
     generateBranding(session, matchId, context),
 });
@@ -525,7 +594,10 @@ const bootstrapService = createBootstrapService({
     {
       name: "SESSION_RESTORE",
       run: async () => {
-        if (!shouldKeepSignedIn() && hasStoredLauncherSession(sessionManager.readSession())) {
+        if (
+          !shouldKeepSignedIn() &&
+          hasStoredLauncherSession(sessionManager.readSession())
+        ) {
           await endLauncherSession({ clearAuth: true });
         }
 
@@ -539,6 +611,7 @@ const bootstrapService = createBootstrapService({
           launcherAccessState = null;
           telemetryBridge.stop("stopped");
           stopObserverFeedSilently("stopped");
+          visualModeService.stop("stopped");
         }
 
         return {
@@ -563,7 +636,10 @@ const bootstrapService = createBootstrapService({
       run: async () => {
         const storedSession = sessionManager.readSession();
         const expiryInfo = getStoredSessionExpiryInfo();
-        if (!hasStoredLauncherSession(storedSession) || expiryInfo?.expired === true) {
+        if (
+          !hasStoredLauncherSession(storedSession) ||
+          expiryInfo?.expired === true
+        ) {
           startupLicenseStatus = null;
           return {
             meta: {
@@ -577,9 +653,8 @@ const bootstrapService = createBootstrapService({
           };
         }
 
-        const resolvedSession = await validateStoredLauncherSession(
-          normalizeBaseUrl(),
-        );
+        const resolvedSession =
+          await validateStoredLauncherSession(normalizeBaseUrl());
         startupLicenseStatus = null;
         return {
           meta: {
@@ -642,7 +717,8 @@ const bootstrapService = createBootstrapService({
           };
         }
 
-        const licenseStatus = startupLicenseStatus || (await checkLauncherLicense(session));
+        const licenseStatus =
+          startupLicenseStatus || (await checkLauncherLicense(session));
         if (licenseStatus.valid !== true) {
           launcherAccessState = licenseStatus.access;
           stopLauncherHeartbeat();
@@ -671,31 +747,7 @@ const bootstrapService = createBootstrapService({
     {
       name: "START_WIDGET_SERVER",
       run: async () => {
-        if (!widgetServer) {
-          widgetServer = startWidgetsServer({
-            port: Number(process.env.ARENZYRA_WIDGET_PORT || 5510),
-            enableDebugRoutes: isDev,
-            enableOperatorRoutes: true,
-            teamAssetsRoot: TEAM_ASSETS_DIR,
-            playerAssetsRoot: PLAYER_ASSETS_DIR,
-            resolveApiBase: () => normalizeBaseUrl(),
-            getObserverBaseUrl: () => getShadowTelemetryBaseUrl(),
-            shouldPollDirectObserver: () =>
-              Boolean(telemetryBridgeProcess) || getObserverFeedStatusView().running === true,
-            getForcedMapKey: () => productionModeState.selectedMapKey,
-            getCurrentMatchContext: () => getCurrentWidgetMatchContext(),
-            logger: logger.child("widgets"),
-          });
-        }
-
-        if (typeof widgetServer?.whenReady === "function") {
-          await widgetServer.whenReady();
-        }
-        if (pendingWidgetTeamBranding) {
-          publishTeamBrandingToWidgetServer(pendingWidgetTeamBranding);
-        }
-
-        const widgetStatus = getWidgetServerStatusView();
+        const widgetStatus = await ensureWidgetServerReady();
         return {
           meta: {
             running: widgetStatus.running,
@@ -823,6 +875,7 @@ function syncRuntimeConfig(source = "system") {
       refreshToken: storedSession?.refreshToken || "",
     });
   }
+  widgetHotkeyControl.sync(source);
   return broadcastConfigUpdate(source);
 }
 
@@ -886,13 +939,33 @@ function touchStoredSessionActivity(reason = "api-request") {
   );
   if (nextSession) {
     lastSessionActivityPersistAt = activityMs;
-    logInfo("[auth] session activity refreshed", { reason });
+    log("[auth] session activity refreshed", { reason });
   }
   return nextSession;
 }
 
+function shouldPreserveSessionAfterUnauthorized(details = {}) {
+  const currentSession = sessionManager.readSession();
+  const currentAccessToken = String(
+    currentSession?.token || currentSession?.accessToken || "",
+  ).trim();
+  const currentRefreshToken = String(currentSession?.refreshToken || "").trim();
+  const failedAccessToken = String(details?.accessToken || "").trim();
+  const failedRefreshToken = String(details?.refreshToken || "").trim();
+
+  if (!currentAccessToken && !currentRefreshToken) {
+    return false;
+  }
+
+  return (
+    Boolean(failedRefreshToken && currentRefreshToken !== failedRefreshToken) ||
+    Boolean(failedAccessToken && currentAccessToken !== failedAccessToken)
+  );
+}
+
 const apiClient = createLauncherApiClient({
   resolveApiBase: normalizeBaseUrl,
+  getSession: () => sessionManager.readSession(),
   onSessionUpdate: async (session) => {
     const currentSession = sessionManager.readSession() ?? {};
     persistStoredSession({
@@ -910,12 +983,21 @@ const apiClient = createLauncherApiClient({
       )}`,
     );
   },
-  onUnauthorized: () => {
+  onUnauthorized: (details = {}) => {
+    if (shouldPreserveSessionAfterUnauthorized(details)) {
+      logWarn("[auth] ignoring stale unauthorized after session refresh", {
+        path: details?.path || null,
+        method: details?.method || null,
+      });
+      return;
+    }
+
     stopLauncherHeartbeat();
     launcherAccessState = null;
     startupLicenseStatus = null;
     telemetryBridge.stop("stopped");
     stopObserverFeedSilently("stopped");
+    visualModeService.stop("stopped");
     lastSessionActivityPersistAt = 0;
     sessionManager.clearSession();
   },
@@ -923,7 +1005,9 @@ const apiClient = createLauncherApiClient({
 
 async function refreshTelemetryAuth(params = {}) {
   const storedSession = sessionManager.readSession() ?? {};
-  const resolvedApiBase = normalizeBaseUrl(params?.apiBase || storedSession?.apiBase);
+  const resolvedApiBase = normalizeBaseUrl(
+    params?.apiBase || storedSession?.apiBase,
+  );
   const refreshToken = String(
     params?.refreshToken || storedSession?.refreshToken || "",
   ).trim();
@@ -983,6 +1067,35 @@ function toNullableTimestamp(value) {
   return null;
 }
 
+function getAlivePlayersFromUpdate(update) {
+  const players = Array.isArray(update?.players) ? update.players : [];
+  if (players.length === 0) {
+    return null;
+  }
+
+  return players.filter((player) => player?.alive !== false).length;
+}
+
+function getAliveTeamsFromUpdate(update) {
+  const players = Array.isArray(update?.players) ? update.players : [];
+  if (players.length === 0) {
+    return null;
+  }
+
+  const aliveTeamIds = new Set();
+  for (const player of players) {
+    if (player?.alive === false) {
+      continue;
+    }
+    const teamId = String(player?.teamId || player?.teamSlot || "").trim();
+    if (teamId) {
+      aliveTeamIds.add(teamId);
+    }
+  }
+
+  return aliveTeamIds.size > 0 ? aliveTeamIds.size : null;
+}
+
 function getRuntimeTelemetryStatusLabel(telemetryStatus = {}) {
   if (telemetryStatus?.resultFinalized === true) {
     return "finalized";
@@ -1025,6 +1138,7 @@ function buildEmptyObserverCommandCenterSnapshot() {
       matchId: telemetryStatus.matchId ?? null,
       packetsPerSecond: telemetryStatus.packetsPerSecond ?? 0,
       aliveTeams: telemetryStatus.aliveTeams ?? null,
+      alivePlayers: telemetryStatus.alivePlayers ?? null,
       gameTime: telemetryStatus.gameTime ?? null,
       circleIndex: telemetryStatus.circleIndex ?? null,
       circleStatus: telemetryStatus.circleStatus ?? null,
@@ -1064,15 +1178,26 @@ function buildObserverCommandCenterSnapshot(preferredMapKey = null) {
 
   const telemetryStatus = telemetryBridge.getStatus();
   const engineStatus =
-    typeof widgetServer.engine.getStatus === "function" ? widgetServer.engine.getStatus() : null;
-  const requestedMapKey = String(preferredMapKey || engineStatus?.currentMapKey || "").trim() || null;
+    typeof widgetServer.engine.getStatus === "function"
+      ? widgetServer.engine.getStatus()
+      : null;
+  const requestedMapKey =
+    String(preferredMapKey || engineStatus?.currentMapKey || "").trim() || null;
   const engineSnapshot =
     typeof widgetServer.engine.getSnapshot === "function"
       ? widgetServer.engine.getSnapshot(requestedMapKey)
       : null;
   const productionSupport =
-    engineSnapshot?.productionSupport ?? engineStatus?.latestProductionSupport ?? null;
-  const latestPlayers = engineSnapshot?.players ?? engineStatus?.latestPlayerUpdate ?? null;
+    engineSnapshot?.productionSupport ??
+    engineStatus?.latestProductionSupport ??
+    null;
+  const latestPlayers =
+    engineSnapshot?.players ?? engineStatus?.latestPlayerUpdate ?? null;
+  const latestPlayerTimestamp =
+    toNullableTimestamp(latestPlayers?.receivedAt) ??
+    toNullableTimestamp(latestPlayers?.timestamp);
+  const latestAlivePlayers = getAlivePlayersFromUpdate(latestPlayers);
+  const latestAliveTeams = getAliveTeamsFromUpdate(latestPlayers);
   const widgetStatus =
     typeof widgetServer.getStatus === "function"
       ? widgetServer.getStatus()
@@ -1094,14 +1219,19 @@ function buildObserverCommandCenterSnapshot(preferredMapKey = null) {
   return {
     telemetry: {
       connected: hasAcceptedRuntimeTelemetry(telemetryStatus),
-      lastUpdateAt: toNullableTimestamp(telemetryStatus.lastPacketTime),
+      lastUpdateAt:
+        toNullableTimestamp(telemetryStatus.lastPacketTime) ??
+        latestPlayerTimestamp,
       mapKey: resolvedMapKey,
-      playerCount: Array.isArray(latestPlayers?.players) ? latestPlayers.players.length : null,
+      playerCount: Array.isArray(latestPlayers?.players)
+        ? latestPlayers.players.length
+        : null,
       phase: telemetryStatus.phase ?? null,
       connectionStatus: getRuntimeTelemetryStatusLabel(telemetryStatus),
       matchId: telemetryStatus.matchId ?? null,
       packetsPerSecond: telemetryStatus.packetsPerSecond ?? 0,
-      aliveTeams: telemetryStatus.aliveTeams ?? null,
+      aliveTeams: telemetryStatus.aliveTeams ?? latestAliveTeams,
+      alivePlayers: telemetryStatus.alivePlayers ?? latestAlivePlayers,
       gameTime: telemetryStatus.gameTime ?? null,
       circleIndex: telemetryStatus.circleIndex ?? null,
       circleStatus: telemetryStatus.circleStatus ?? null,
@@ -1118,12 +1248,19 @@ function buildObserverCommandCenterSnapshot(preferredMapKey = null) {
     },
     mapContext: engineSnapshot?.mapContext ?? null,
     mapKey: resolvedMapKey,
-    recommendation: productionSupport?.cameraAssistPayload?.recommendation ?? null,
+    recommendation:
+      productionSupport?.cameraAssistPayload?.recommendation ?? null,
     cameraAssistPayload: productionSupport?.cameraAssistPayload ?? null,
-    observerControlSuggestion: productionSupport?.observerControlSuggestion ?? null,
-    observerOperatorSuggestion: productionSupport?.observerOperatorSuggestion ?? null,
-    watchTargets: Array.isArray(productionSupport?.watchTargets) ? productionSupport.watchTargets : [],
-    alerts: Array.isArray(productionSupport?.activeAlerts) ? productionSupport.activeAlerts : [],
+    observerControlSuggestion:
+      productionSupport?.observerControlSuggestion ?? null,
+    observerOperatorSuggestion:
+      productionSupport?.observerOperatorSuggestion ?? null,
+    watchTargets: Array.isArray(productionSupport?.watchTargets)
+      ? productionSupport.watchTargets
+      : [],
+    alerts: Array.isArray(productionSupport?.activeAlerts)
+      ? productionSupport.activeAlerts
+      : [],
     replayCandidates: Array.isArray(productionSupport?.replayCandidates)
       ? productionSupport.replayCandidates
       : [],
@@ -1165,7 +1302,11 @@ function normalizeObserverCommandPath(inputPath, mapKey = null) {
 
 function isLoopbackHostname(hostname) {
   const normalized = String(hostname || "").toLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1"
+  );
 }
 
 function isPathInside(parentPath, targetPath) {
@@ -1209,7 +1350,10 @@ function openValidatedExternalUrl(urlValue, source = "renderer") {
     logWarn("[electron] blocked external URL", {
       source,
       url: String(urlValue || ""),
-      reason: error instanceof Error ? error.message : String(error || "Invalid URL."),
+      reason:
+        error instanceof Error
+          ? error.message
+          : String(error || "Invalid URL."),
     });
     return;
   }
@@ -1218,7 +1362,10 @@ function openValidatedExternalUrl(urlValue, source = "renderer") {
     logWarn("[electron] failed to open external URL", {
       source,
       url: externalUrl,
-      error: error instanceof Error ? error.message : String(error || "openExternal failed."),
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error || "openExternal failed."),
     });
   });
 }
@@ -1251,10 +1398,12 @@ function createWindow() {
   mainWindow = win;
   windowLoaded = false;
 
-  win.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
-    logWarn("[electron] blocked renderer permission request", { permission });
-    callback(false);
-  });
+  win.webContents.session.setPermissionRequestHandler(
+    (_webContents, permission, callback) => {
+      logWarn("[electron] blocked renderer permission request", { permission });
+      callback(false);
+    },
+  );
 
   win.webContents.setWindowOpenHandler((details) => {
     openValidatedExternalUrl(details?.url, "window-open");
@@ -1356,13 +1505,15 @@ function createWindow() {
   const indexPath = path.join(__dirname, "../dist/index.html");
   win
     .loadFile(indexPath)
-    .then(() => log("[electron] Loaded dist HTML"))
-    .catch((err) =>
+    .then(() => {
+      log("[electron] Loaded dist HTML");
+    })
+    .catch((err) => {
       log(
         "[electron] Failed to load dist HTML",
         err && err.stack ? err.stack : err,
-      ),
-    );
+      );
+    });
 }
 
 function focusMainWindow() {
@@ -1471,7 +1622,9 @@ function parseSyncCommand(rawUrl) {
     return null;
   }
 
-  const action = (parsed.hostname || parsed.pathname.replace(/^\/+/, "")).toLowerCase();
+  const action = (
+    parsed.hostname || parsed.pathname.replace(/^\/+/, "")
+  ).toLowerCase();
   if (action !== "sync") {
     return null;
   }
@@ -1483,7 +1636,9 @@ function parseSyncCommand(rawUrl) {
 
   return {
     apiBase: normalizeOptionalString(parsed.searchParams.get("apiBase")),
-    tournamentId: normalizeOptionalString(parsed.searchParams.get("tournamentId")),
+    tournamentId: normalizeOptionalString(
+      parsed.searchParams.get("tournamentId"),
+    ),
     matchId,
   };
 }
@@ -1638,7 +1793,10 @@ function getWidgetCatalogErrorMessage(error, fallback) {
   if (Array.isArray(responseData?.message) && responseData.message.length > 0) {
     return responseData.message.map((item) => String(item)).join(", ");
   }
-  if (typeof responseData?.message === "string" && responseData.message.trim()) {
+  if (
+    typeof responseData?.message === "string" &&
+    responseData.message.trim()
+  ) {
     return responseData.message.trim();
   }
   if (typeof responseData?.error === "string" && responseData.error.trim()) {
@@ -1650,6 +1808,95 @@ function getWidgetCatalogErrorMessage(error, fallback) {
   return fallback;
 }
 
+const COMMENTATOR_DESK_WIDGET_KEY = "commentator-desk";
+const EXPLICIT_WIDGET_APPROVAL_KEYS = new Set([
+  "ai-caster",
+  COMMENTATOR_DESK_WIDGET_KEY,
+  HOTKEY_CONTROL_APPROVAL_KEY,
+  "map",
+  "next-zone-update-kinetic-hud",
+  "next-zone-update-pro-sidebar",
+]);
+
+function isWidgetApprovedForCatalog(approval, enforced, widgetKey) {
+  return (
+    approval?.isApproved === true ||
+    (!approval &&
+      enforced === false &&
+      !EXPLICIT_WIDGET_APPROVAL_KEYS.has(widgetKey))
+  );
+}
+
+function getApprovalRecordFromAccessList(accessList, widgetKey) {
+  const normalizedWidgetKey = String(widgetKey || "").trim();
+  if (!normalizedWidgetKey) {
+    return null;
+  }
+  return (
+    (Array.isArray(accessList?.approvals) ? accessList.approvals : []).find(
+      (approval) =>
+        String(approval?.widgetKey || "").trim() === normalizedWidgetKey,
+    ) || null
+  );
+}
+
+function buildRouteAccessFromCatalogItem({
+  accessList,
+  catalogItem,
+  organizationId,
+  widgetKey,
+}) {
+  const approved = catalogItem?.approved === true;
+  const organizationSlug =
+    asOptionalString(catalogItem?.organizationSlug) ||
+    asOptionalString(accessList?.organizationSlug) ||
+    asOptionalString(accessList?.organization?.slug);
+  const approval = getApprovalRecordFromAccessList(accessList, widgetKey);
+  return {
+    featureKey: widgetKey,
+    widgetKey,
+    organization:
+      organizationId || organizationSlug
+        ? {
+            id: organizationId || null,
+            slug: organizationSlug || null,
+            name: asOptionalString(accessList?.organization?.name),
+          }
+        : null,
+    approved,
+    approval: approval
+      ? {
+          widgetKey,
+          isApproved: approval.isApproved === true,
+          approvedAt: asOptionalString(approval.approvedAt),
+          approvedBy: asOptionalString(approval.approvedBy),
+        }
+      : null,
+    canUse: approved,
+    reason: approved ? null : "SUPER_ADMIN_APPROVAL_REQUIRED",
+  };
+}
+
+function publishCommentatorDeskAccessToWidgetServer(access) {
+  cachedCommentatorDeskAccess = access ?? null;
+  if (
+    widgetServer &&
+    typeof widgetServer.setCommentatorDeskAccess === "function"
+  ) {
+    widgetServer.setCommentatorDeskAccess(cachedCommentatorDeskAccess);
+  }
+}
+
+function publishWidgetHotkeyControlApproval(catalogItem) {
+  const approved = catalogItem?.approved === true;
+  return widgetHotkeyControl.setApproval({
+    isApproved: approved,
+    reason: approved
+      ? null
+      : catalogItem?.message || "SUPER_ADMIN_APPROVAL_REQUIRED",
+  });
+}
+
 async function getWidgetCatalogState(payload) {
   assertLauncherAccess();
   const session = getStoredSession();
@@ -1657,12 +1904,23 @@ async function getWidgetCatalogState(payload) {
     asOptionalString(payload?.organizationId) ||
     asOptionalString(session?.organization?.id) ||
     asOptionalString(session?.user?.organizationId);
-  const widgetKeys = Array.from(
+  const requestedWidgetKeys = Array.from(
     new Set(
       (Array.isArray(payload?.widgetKeys) ? payload.widgetKeys : [])
         .map((widgetKey) => String(widgetKey || "").trim())
         .filter(Boolean),
     ),
+  );
+  const accessOnlyWidgetKeys = new Set(
+    (Array.isArray(payload?.accessOnlyWidgetKeys)
+      ? payload.accessOnlyWidgetKeys
+      : []
+    )
+      .map((widgetKey) => String(widgetKey || "").trim())
+      .filter(Boolean),
+  );
+  const widgetKeys = Array.from(
+    new Set([...requestedWidgetKeys, ...accessOnlyWidgetKeys]),
   );
 
   if (!organizationId || widgetKeys.length === 0) {
@@ -1676,13 +1934,16 @@ async function getWidgetCatalogState(payload) {
 
   let accessList = null;
   try {
-    const response = await axios.get(`${session.apiBase}/api/widgets/access-list`, {
-      params: { organizationId },
-      timeout: 10000,
-      headers: {
-        Accept: "application/json",
+    const response = await axios.get(
+      `${session.apiBase}/api/widgets/access-list`,
+      {
+        params: { organizationId },
+        timeout: 10000,
+        headers: {
+          Accept: "application/json",
+        },
       },
-    });
+    );
     accessList = response?.data ?? null;
   } catch (error) {
     const message = getWidgetCatalogErrorMessage(
@@ -1719,36 +1980,69 @@ async function getWidgetCatalogState(payload) {
     : "Organization slug unavailable for widget resolution.";
 
   if (!organizationSlug) {
+    const items = Object.fromEntries(
+      widgetKeys.map((widgetKey) => [
+        widgetKey,
+        {
+          widgetKey,
+          widgetInstanceId: null,
+          widgetInstanceKey: null,
+          organizationSlug: null,
+          matchId: null,
+          tournamentId: null,
+          approved: null,
+          message: unresolvedMessage,
+        },
+      ]),
+    );
+    if (widgetKeys.includes(COMMENTATOR_DESK_WIDGET_KEY)) {
+      publishCommentatorDeskAccessToWidgetServer(
+        buildRouteAccessFromCatalogItem({
+          accessList,
+          catalogItem: items[COMMENTATOR_DESK_WIDGET_KEY],
+          organizationId,
+          widgetKey: COMMENTATOR_DESK_WIDGET_KEY,
+        }),
+      );
+    }
+    if (widgetKeys.includes(HOTKEY_CONTROL_APPROVAL_KEY)) {
+      publishWidgetHotkeyControlApproval(items[HOTKEY_CONTROL_APPROVAL_KEY]);
+    }
     return {
       organizationId,
       organizationSlug: null,
       enforced,
-      items: Object.fromEntries(
-        widgetKeys.map((widgetKey) => [
-          widgetKey,
-          {
-            widgetKey,
-            widgetInstanceId: null,
-            widgetInstanceKey: null,
-            organizationSlug: null,
-            matchId: null,
-            tournamentId: null,
-            approved: null,
-            message: unresolvedMessage,
-          },
-        ]),
-      ),
+      items,
     };
   }
 
   const items = await Promise.all(
     widgetKeys.map(async (widgetKey) => {
       const approval = approvals.get(widgetKey);
-      const approved =
-        approval?.isApproved === true || (!approval && enforced === false);
+      const approved = isWidgetApprovedForCatalog(
+        approval,
+        enforced,
+        widgetKey,
+      );
       const fallbackMessage = approved
         ? "Widget instance key not resolved yet"
         : "Widget not approved for this organization.";
+
+      if (accessOnlyWidgetKeys.has(widgetKey)) {
+        return [
+          widgetKey,
+          {
+            widgetKey,
+            widgetInstanceId: null,
+            widgetInstanceKey: null,
+            organizationSlug,
+            matchId: null,
+            tournamentId: null,
+            approved,
+            message: approved ? null : fallbackMessage,
+          },
+        ];
+      }
 
       try {
         const resolveWidgetInstance = async () => {
@@ -1817,11 +2111,14 @@ async function getWidgetCatalogState(payload) {
             widgetInstanceId,
             widgetInstanceKey,
             organizationSlug:
-              asOptionalString(resolved?.organization?.slug) || organizationSlug,
+              asOptionalString(resolved?.organization?.slug) ||
+              organizationSlug,
             matchId: asOptionalString(resolved?.match?.id),
             tournamentId: asOptionalString(resolved?.tournament?.id),
             approved,
-            message: widgetInstanceKey ? null : unresolvedReason || fallbackMessage,
+            message: widgetInstanceKey
+              ? null
+              : unresolvedReason || fallbackMessage,
           },
         ];
       } catch (error) {
@@ -1852,17 +2149,36 @@ async function getWidgetCatalogState(payload) {
     }),
   );
 
+  const itemsByWidgetKey = Object.fromEntries(items);
+  if (widgetKeys.includes(COMMENTATOR_DESK_WIDGET_KEY)) {
+    publishCommentatorDeskAccessToWidgetServer(
+      buildRouteAccessFromCatalogItem({
+        accessList,
+        catalogItem: itemsByWidgetKey[COMMENTATOR_DESK_WIDGET_KEY],
+        organizationId,
+        widgetKey: COMMENTATOR_DESK_WIDGET_KEY,
+      }),
+    );
+  }
+  if (widgetKeys.includes(HOTKEY_CONTROL_APPROVAL_KEY)) {
+    publishWidgetHotkeyControlApproval(
+      itemsByWidgetKey[HOTKEY_CONTROL_APPROVAL_KEY],
+    );
+  }
+
   return {
     organizationId,
     organizationSlug,
     enforced,
-    items: Object.fromEntries(items),
+    items: itemsByWidgetKey,
   };
 }
 
 function getWidgetServerStatusView() {
   const fallbackPort = Number(process.env.ARENZYRA_WIDGET_PORT || 5510);
-  const resolvedFallbackPort = Number.isInteger(fallbackPort) ? fallbackPort : 5510;
+  const resolvedFallbackPort = Number.isInteger(fallbackPort)
+    ? fallbackPort
+    : 5510;
   const status =
     typeof widgetServer?.getStatus === "function"
       ? widgetServer.getStatus()
@@ -1896,13 +2212,255 @@ function getWidgetServerStatusView() {
     path: status?.path ? String(status.path) : null,
     clientCount: Number(status?.clientCount ?? 0) || 0,
     lastBroadcastAt:
-      typeof status?.lastBroadcastAt === "number" ? status.lastBroadcastAt : null,
-    startedAt:
-      typeof status?.startedAt === "number" ? status.startedAt : null,
+      typeof status?.lastBroadcastAt === "number"
+        ? status.lastBroadcastAt
+        : null,
+    startedAt: typeof status?.startedAt === "number" ? status.startedAt : null,
     baseUrl: localBaseUrl,
     localBaseUrl,
     networkBaseUrl,
   };
+}
+
+async function ensureWidgetServerReady() {
+  if (!widgetServer) {
+    widgetServer = startWidgetsServer({
+      port: Number(process.env.ARENZYRA_WIDGET_PORT || 5510),
+      host: resolveWidgetServerHost({
+        isPackaged: app.isPackaged,
+        env: process.env,
+      }),
+      enableDebugRoutes: isDev,
+      enableOperatorRoutes: shouldEnableWidgetMutationRoutes({
+        isPackaged: app.isPackaged,
+        env: process.env,
+      }),
+      teamAssetsRoot: TEAM_ASSETS_DIR,
+      playerAssetsRoot: PLAYER_ASSETS_DIR,
+      resolveApiBase: () => normalizeBaseUrl(),
+      getObserverBaseUrl: () => getShadowTelemetryBaseUrl(),
+      shouldPollDirectObserver: () => shouldPollDirectObserverForWidgets(),
+      getForcedMapKey: () => productionModeState.selectedMapKey,
+      getCurrentMatchContext: () => getCurrentWidgetMatchContext(),
+      requestPlayerPhotoRefresh: (matchId) =>
+        requestPlayerPhotoCacheRefresh(matchId),
+      logger: logger.child("widgets"),
+    });
+  }
+
+  if (typeof widgetServer?.whenReady === "function") {
+    await widgetServer.whenReady();
+  }
+  if (pendingWidgetTeamBranding) {
+    publishTeamBrandingToWidgetServer(pendingWidgetTeamBranding);
+  }
+  await refreshAiCasterAccess(getStoredSession(), {
+    throwOnError: false,
+  });
+  await refreshCommentatorDeskAccess(getStoredSession(), {
+    throwOnError: false,
+  });
+  await refreshWidgetHotkeyControlApproval(getStoredSession(), {
+    throwOnError: false,
+  });
+  widgetHotkeyControl.sync("widget-server-ready");
+
+  return getWidgetServerStatusView();
+}
+
+function buildPinnedCommentatorDeskUrl(widgetStatus, payload = {}) {
+  const baseUrl =
+    widgetStatus?.localBaseUrl || widgetStatus?.baseUrl || "http://localhost:5510";
+  const url = new URL("/obs/commentator-desk", `${baseUrl}/`);
+  url.searchParams.set("transparent", "1");
+  url.searchParams.set("pinned", "1");
+
+  const mapKey = String(payload?.mapKey || "").trim();
+  if (mapKey) {
+    url.searchParams.set("map", mapKey);
+  }
+
+  return url.toString();
+}
+
+function isAllowedPinnedCommentatorDeskUrl(urlValue) {
+  try {
+    const parsed = new URL(String(urlValue || ""));
+    const status = getWidgetServerStatusView();
+    return (
+      parsed.protocol === "http:" &&
+      isLoopbackHostname(parsed.hostname) &&
+      Number(parsed.port || "80") === Number(status.port || 5510) &&
+      parsed.pathname === "/obs/commentator-desk"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getPinnedCommentatorDeskWindowStatus() {
+  const win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+  if (!win) {
+    return {
+      open: false,
+      visible: false,
+      clickThrough: commentatorDeskWindowClickThrough,
+      alwaysOnTop: false,
+      transparent: true,
+      url: null,
+    };
+  }
+
+  return {
+    open: true,
+    visible: win.isVisible(),
+    clickThrough: commentatorDeskWindowClickThrough,
+    alwaysOnTop: win.isAlwaysOnTop(),
+    transparent: true,
+    url: commentatorDeskWindowUrl,
+  };
+}
+
+function applyPinnedCommentatorDeskClickThrough(clickThrough) {
+  commentatorDeskWindowClickThrough = clickThrough === true;
+  const win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+  if (!win) {
+    return getPinnedCommentatorDeskWindowStatus();
+  }
+
+  win.setIgnoreMouseEvents(commentatorDeskWindowClickThrough, {
+    forward: true,
+  });
+  if (typeof win.setFocusable === "function") {
+    win.setFocusable(!commentatorDeskWindowClickThrough);
+  }
+  if (commentatorDeskWindowClickThrough) {
+    win.showInactive();
+  } else {
+    win.focus();
+  }
+  return getPinnedCommentatorDeskWindowStatus();
+}
+
+async function openPinnedCommentatorDeskWindow(payload = {}) {
+  assertLauncherAccess();
+  const widgetStatus = await ensureWidgetServerReady();
+  if (widgetStatus.running !== true || !widgetStatus.port) {
+    throw new Error("Local widget server is unavailable.");
+  }
+
+  const nextUrl = buildPinnedCommentatorDeskUrl(widgetStatus, payload);
+  let win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+
+  if (!win) {
+    win = new BrowserWindow({
+      width: 1260,
+      height: 720,
+      minWidth: 860,
+      minHeight: 480,
+      frame: false,
+      transparent: true,
+      backgroundColor: "#00000000",
+      hasShadow: false,
+      resizable: true,
+      movable: true,
+      show: false,
+      skipTaskbar: false,
+      alwaysOnTop: true,
+      title: "Arenzyra Commentator Desk",
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        devTools: isDev,
+      },
+    });
+    commentatorDeskWindow = win;
+
+    win.setAlwaysOnTop(true, "screen-saver");
+    if (typeof win.setVisibleOnAllWorkspaces === "function") {
+      win.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+      });
+    }
+
+    win.webContents.session.setPermissionRequestHandler(
+      (_webContents, permission, callback) => {
+        logWarn("[commentator-desk-window] blocked permission request", {
+          permission,
+        });
+        callback(false);
+      },
+    );
+
+    win.webContents.setWindowOpenHandler((details) => {
+      openValidatedExternalUrl(details?.url, "commentator-desk-window-open");
+      return { action: "deny" };
+    });
+
+    win.webContents.on("will-navigate", (event, url) => {
+      if (isAllowedPinnedCommentatorDeskUrl(url)) {
+        return;
+      }
+      event.preventDefault();
+      logWarn("[commentator-desk-window] blocked navigation", { url });
+    });
+
+    win.webContents.on(
+      "before-input-event",
+      (_event, input) => {
+        if (input?.key === "Escape" && input.type === "keyDown") {
+          win.close();
+        }
+      },
+    );
+
+    win.on("closed", () => {
+      if (commentatorDeskWindow === win) {
+        commentatorDeskWindow = null;
+        commentatorDeskWindowUrl = null;
+      }
+    });
+  }
+
+  commentatorDeskWindowUrl = nextUrl;
+  await win.loadURL(nextUrl);
+  win.setAlwaysOnTop(true, "screen-saver");
+  applyPinnedCommentatorDeskClickThrough(payload?.clickThrough === true);
+  if (commentatorDeskWindowClickThrough) {
+    win.showInactive();
+  } else {
+    win.show();
+    win.focus();
+  }
+  if (typeof win.moveTop === "function") {
+    win.moveTop();
+  }
+
+  return getPinnedCommentatorDeskWindowStatus();
+}
+
+function closePinnedCommentatorDeskWindow() {
+  const win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+  if (win) {
+    win.close();
+  }
+  commentatorDeskWindow = null;
+  commentatorDeskWindowUrl = null;
+  return getPinnedCommentatorDeskWindowStatus();
 }
 
 function buildFallbackAssetStatusView() {
@@ -1937,10 +2495,11 @@ function getAssetStatusView() {
   }
 
   return {
-    checkedAt:
-      typeof status.checkedAt === "number" ? status.checkedAt : null,
+    checkedAt: typeof status.checkedAt === "number" ? status.checkedAt : null,
     assetsRoot: status.assetsRoot ? String(status.assetsRoot) : null,
-    routePrefix: status.routePrefix ? String(status.routePrefix) : "/assets/maps",
+    routePrefix: status.routePrefix
+      ? String(status.routePrefix)
+      : "/assets/maps",
     fallbackAssetUrl: status.fallbackAssetUrl
       ? String(status.fallbackAssetUrl)
       : "/assets/maps/map-not-available.svg",
@@ -1950,8 +2509,12 @@ function getAssetStatusView() {
     total: Number(status.total ?? 0) || 0,
     available: Number(status.available ?? 0) || 0,
     missing: Number(status.missing ?? 0) || 0,
-    availableKeys: Array.isArray(status.availableKeys) ? [...status.availableKeys] : [],
-    missingKeys: Array.isArray(status.missingKeys) ? [...status.missingKeys] : [],
+    availableKeys: Array.isArray(status.availableKeys)
+      ? [...status.availableKeys]
+      : [],
+    missingKeys: Array.isArray(status.missingKeys)
+      ? [...status.missingKeys]
+      : [],
     requiredTotal: Number(status.requiredTotal ?? 0) || 0,
     requiredAvailable: Number(status.requiredAvailable ?? 0) || 0,
     requiredMissing: Number(status.requiredMissing ?? 0) || 0,
@@ -2003,8 +2566,7 @@ function createUnauthorizedError(message) {
 function isUnauthorizedError(error) {
   return (
     error?.code === UNAUTHORIZED_ERROR_CODE ||
-    (error instanceof Error &&
-      error.message.includes(UNAUTHORIZED_ERROR_CODE))
+    (error instanceof Error && error.message.includes(UNAUTHORIZED_ERROR_CODE))
   );
 }
 
@@ -2088,7 +2650,7 @@ function getStoredSession() {
 function hasStoredLauncherSession(session) {
   return Boolean(
     String(session?.token || session?.accessToken || "").trim() ||
-      String(session?.refreshToken || "").trim(),
+    String(session?.refreshToken || "").trim(),
   );
 }
 
@@ -2116,6 +2678,7 @@ function clearLauncherRuntimeState(options = {}) {
   productionModeState = createDefaultProductionModeState();
   telemetryBridge.stop(options?.reason || "stopped");
   stopObserverFeedSilently(options?.reason || "stopped");
+  visualModeService.stop(options?.reason || "stopped");
   if (options?.clearSession === true) {
     sessionManager.clearSession();
   }
@@ -2252,10 +2815,12 @@ function toAccessView(access) {
         reason: access.reason ? String(access.reason) : null,
         license: access.license ?? null,
         machineId: access.machineId ? String(access.machineId) : "",
-        activeSessions:
-          Number.isFinite(access.activeSessions) ? access.activeSessions : null,
-        maxObservers:
-          Number.isFinite(access.maxObservers) ? access.maxObservers : null,
+        activeSessions: Number.isFinite(access.activeSessions)
+          ? access.activeSessions
+          : null,
+        maxObservers: Number.isFinite(access.maxObservers)
+          ? access.maxObservers
+          : null,
       }
     : null;
 }
@@ -2406,11 +2971,10 @@ function refreshHeartbeatAccessState(licenseStatus) {
   const currentAccess = launcherAccessState;
   launcherAccessState = {
     allowed: currentAccess?.allowed === true,
-    reason: currentAccess?.allowed === true ? null : currentAccess?.reason ?? null,
+    reason:
+      currentAccess?.allowed === true ? null : (currentAccess?.reason ?? null),
     license:
-      licenseStatus?.licenseCheck?.license ??
-      currentAccess?.license ??
-      null,
+      licenseStatus?.licenseCheck?.license ?? currentAccess?.license ?? null,
     machineId:
       currentAccess?.machineId ||
       licenseStatus?.access?.machineId ||
@@ -2456,6 +3020,7 @@ async function maintainLauncherSession() {
       startupLicenseStatus = null;
       telemetryBridge.stop("stopped");
       stopObserverFeedSilently("stopped");
+      visualModeService.stop("stopped");
       sessionManager.clearSession();
       return;
     }
@@ -2476,6 +3041,9 @@ async function endLauncherSession(options = {}) {
   if (!storedSession?.token && !storedSession?.refreshToken) {
     telemetryBridge.stop("stopped");
     stopObserverFeedSilently("stopped");
+    visualModeService.stop("stopped");
+    publishAiCasterAccessToWidgetServer(null);
+    publishCommentatorDeskAccessToWidgetServer(null);
     if (options.clearAuth === true) {
       sessionManager.clearSession();
     }
@@ -2514,6 +3082,9 @@ async function endLauncherSession(options = {}) {
     }
     telemetryBridge.stop("stopped");
     stopObserverFeedSilently("stopped");
+    visualModeService.stop("stopped");
+    publishAiCasterAccessToWidgetServer(null);
+    publishCommentatorDeskAccessToWidgetServer(null);
     if (options.clearAuth === true) {
       sessionManager.clearSession();
     }
@@ -2534,12 +3105,29 @@ async function tryFetchLiveMatch(url) {
   }
 }
 
-function buildLiveMatchResult(apiBase, matchId, status, source) {
+function buildLiveMatchResult(
+  apiBase,
+  matchId,
+  status,
+  source,
+  tournamentId = null,
+  stageId = null,
+  extra = {},
+) {
   return {
     apiBase,
     matchId: matchId ? String(matchId) : null,
     status: status ? String(status) : null,
     source,
+    tournamentId: tournamentId ? String(tournamentId) : null,
+    stageId: stageId ? String(stageId) : null,
+    sessionId: extra?.sessionId ? String(extra.sessionId) : null,
+    sessionName: extra?.sessionName ? String(extra.sessionName) : null,
+    matchName: extra?.matchName ? String(extra.matchName) : null,
+    matchNumber: Number.isFinite(Number(extra?.matchNumber))
+      ? Number(extra.matchNumber)
+      : null,
+    map: extra?.map ? String(extra.map) : null,
   };
 }
 
@@ -2563,6 +3151,84 @@ function readLiveMatchStatus(payload) {
   );
 }
 
+function readLiveMatchTournamentId(payload) {
+  return (
+    payload?.tournamentId ||
+    payload?.match?.tournamentId ||
+    payload?.activeMatch?.tournamentId ||
+    null
+  );
+}
+
+function readLiveMatchStageId(payload) {
+  return (
+    payload?.stageId ||
+    payload?.match?.stageId ||
+    payload?.activeMatch?.stageId ||
+    null
+  );
+}
+
+function readLiveMatchSessionId(payload) {
+  return (
+    payload?.sessionId ||
+    payload?.match?.sessionId ||
+    payload?.activeMatch?.sessionId ||
+    null
+  );
+}
+
+function readLiveMatchSessionName(payload) {
+  return (
+    payload?.sessionName ||
+    payload?.match?.sessionName ||
+    payload?.match?.session?.name ||
+    payload?.activeMatch?.sessionName ||
+    payload?.activeMatch?.session?.name ||
+    null
+  );
+}
+
+function readLiveMatchName(payload) {
+  return (
+    payload?.matchName ||
+    payload?.name ||
+    payload?.match?.matchName ||
+    payload?.match?.name ||
+    payload?.activeMatch?.matchName ||
+    payload?.activeMatch?.name ||
+    null
+  );
+}
+
+function readLiveMatchNumber(payload) {
+  return (
+    payload?.matchNumber ??
+    payload?.match?.matchNumber ??
+    payload?.activeMatch?.matchNumber ??
+    null
+  );
+}
+
+function readLiveMatchMap(payload) {
+  return (
+    payload?.map ||
+    payload?.match?.map ||
+    payload?.activeMatch?.map ||
+    null
+  );
+}
+
+function readLiveMatchExtra(payload) {
+  return {
+    sessionId: readLiveMatchSessionId(payload),
+    sessionName: readLiveMatchSessionName(payload),
+    matchName: readLiveMatchName(payload),
+    matchNumber: readLiveMatchNumber(payload),
+    map: readLiveMatchMap(payload),
+  };
+}
+
 async function fetchAuthenticatedLiveMatch(apiBase, session) {
   const token = String(session?.token || session?.accessToken || "").trim();
   const refreshToken = String(session?.refreshToken || "").trim();
@@ -2583,14 +3249,6 @@ async function fetchAuthenticatedLiveMatch(apiBase, session) {
       readMatchId: readLiveMatchId,
       readStatus: readLiveMatchStatus,
     },
-    {
-      source: "pcob/active-match",
-      fetch: () => apiClient.getPcobActiveMatch(requestParams),
-      readMatchId: (payload) =>
-        payload?.active === true ? payload?.matchId || payload?.id || null : null,
-      readStatus: (payload) =>
-        payload?.active === true ? payload?.status || "LIVE" : null,
-    },
   ];
 
   for (const attempt of attempts) {
@@ -2603,6 +3261,9 @@ async function fetchAuthenticatedLiveMatch(apiBase, session) {
           matchId,
           attempt.readStatus(payload),
           attempt.source,
+          readLiveMatchTournamentId(payload),
+          readLiveMatchStageId(payload),
+          readLiveMatchExtra(payload),
         );
       }
     } catch (error) {
@@ -2642,37 +3303,9 @@ function normalizeHexColor(value) {
   return "#FFFFFF";
 }
 
-function hexToRgb(hex) {
-  const normalized = normalizeHexColor(hex);
-  return {
-    r: parseInt(normalized.slice(1, 3), 16),
-    g: parseInt(normalized.slice(3, 5), 16),
-    b: parseInt(normalized.slice(5, 7), 16),
-  };
-}
-
-function toShadowTeamName(slot) {
-  const source =
-    slot?.team?.tag ||
-    slot?.team?.name ||
-    slot?.teamId ||
-    `TEAM_${slot?.slotNumber ?? "0"}`;
-  const normalized = String(source)
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return normalized || `TEAM_${slot?.slotNumber ?? "0"}`;
-}
-
-function toShadowLogoPath(filePath) {
-  return String(filePath || "").replace(/\\/g, "/");
-}
-
 function getBrandingConfigPath() {
   const localAppData =
-    process.env.LOCALAPPDATA ||
-    path.join(os.homedir(), "AppData", "Local");
+    process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
   return path.join(
     localAppData,
     "ShadowTrackerExtra",
@@ -2699,9 +3332,18 @@ function ensurePlaceholderLogo() {
 }
 
 function resolveLogoUrl(baseUrl, logoUrl) {
-  if (!logoUrl) return null;
+  const rawLogoUrl = typeof logoUrl === "string" ? logoUrl.trim() : "";
+  if (!rawLogoUrl) return null;
+  if (/^[a-zA-Z]:[\\/]/.test(rawLogoUrl) || rawLogoUrl.startsWith("\\\\")) {
+    return null;
+  }
+
   try {
-    return new URL(String(logoUrl), `${baseUrl}/`).toString();
+    const parsed = new URL(rawLogoUrl, `${baseUrl}/`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.toString();
   } catch {
     return null;
   }
@@ -2750,7 +3392,9 @@ function collectPlayerAssetKeys(player) {
 }
 
 function isDefaultPlayerPhotoUrl(urlValue) {
-  const raw = String(urlValue || "").trim().toLowerCase();
+  const raw = String(urlValue || "")
+    .trim()
+    .toLowerCase();
   return (
     !raw ||
     raw.includes("default-player") ||
@@ -2828,10 +3472,9 @@ function normalizePlayerRecord(record, context = {}) {
       null,
     avatarUrl: asOptionalString(source.avatarUrl),
     teamId: asOptionalString(context.teamId) || asOptionalString(source.teamId),
-    slotNumber:
-      Number.isFinite(Number(context.slotNumber))
-        ? Math.trunc(Number(context.slotNumber))
-        : null,
+    slotNumber: Number.isFinite(Number(context.slotNumber))
+      ? Math.trunc(Number(context.slotNumber))
+      : null,
     assetKeys: keys,
   };
 }
@@ -2900,13 +3543,16 @@ async function downloadPlayerPhoto(baseUrl, player) {
     responseType: "arraybuffer",
     timeout: 15000,
     headers: {
-      Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+      Accept:
+        "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
       "ngrok-skip-browser-warning": "1",
     },
   });
   const contentType = String(response?.headers?.["content-type"] || "");
   if (contentType && !contentType.toLowerCase().startsWith("image/")) {
-    throw new Error(`Player photo URL did not return an image (${contentType}).`);
+    throw new Error(
+      `Player photo URL did not return an image (${contentType}).`,
+    );
   }
 
   const extension = detectFileExtension(photoUrl, contentType);
@@ -2947,7 +3593,11 @@ function normalizeSlot(slot) {
     id: String(slot?.id ?? `slot-${slot?.slotNumber ?? "0"}`),
     matchId: String(slot?.matchId ?? ""),
     slotNumber: Number(slot?.slotNumber ?? slot?.teamNo ?? 0),
-    teamId: slot?.teamId ? String(slot.teamId) : teamRecord?.id ? String(teamRecord.id) : null,
+    teamId: slot?.teamId
+      ? String(slot.teamId)
+      : teamRecord?.id
+        ? String(teamRecord.id)
+        : null,
     lobbyStatus: slot?.lobbyStatus ? String(slot.lobbyStatus) : null,
     playersInLobby:
       slot?.playersInLobby === null || slot?.playersInLobby === undefined
@@ -3021,17 +3671,18 @@ async function syncSlotsFromPreviousMatch(session, matchId, options = {}) {
   );
 }
 
-async function recoverObserverSlotsFromPreviousMatch(
-  session,
-  observerSlots,
-) {
+async function recoverObserverSlotsFromPreviousMatch(session, observerSlots) {
   const currentAssignedCount = countAssignedObserverSlots(observerSlots?.slots);
   let recoveryPlan = null;
 
   try {
-    recoveryPlan = await syncSlotsFromPreviousMatch(session, observerSlots.matchId, {
-      dryRun: true,
-    });
+    recoveryPlan = await syncSlotsFromPreviousMatch(
+      session,
+      observerSlots.matchId,
+      {
+        dryRun: true,
+      },
+    );
   } catch (error) {
     const status = Number(error?.status);
     if (status === 400 || status === 404) {
@@ -3045,6 +3696,9 @@ async function recoverObserverSlotsFromPreviousMatch(
 
   const sourceAssignedCount = Number(recoveryPlan?.syncedSlots ?? 0);
   const needsSync = recoveryPlan?.needsSync === true;
+  const previousMatchNumber = normalizePreviousMatchNumber(
+    recoveryPlan?.previousMatchNumber,
+  );
   if (!needsSync) {
     return {
       observerSlots,
@@ -3055,11 +3709,7 @@ async function recoverObserverSlotsFromPreviousMatch(
             currentAssignedCount,
             sourceAssignedCount,
             previousMatchId: recoveryPlan?.previousMatchId ?? null,
-            previousMatchNumber: Number.isFinite(
-              Number(recoveryPlan?.previousMatchNumber),
-            )
-              ? Number(recoveryPlan.previousMatchNumber)
-              : null,
+            previousMatchNumber,
             needsSync: false,
             message:
               recoveryPlan?.message ||
@@ -3069,10 +3719,40 @@ async function recoverObserverSlotsFromPreviousMatch(
     };
   }
 
-  const syncResult = await syncSlotsFromPreviousMatch(session, observerSlots.matchId, {
-    overwrite: currentAssignedCount > 0,
-  });
-  const refreshedObserverSlots = await fetchObserverSlots(session, observerSlots.matchId);
+  if (
+    !shouldApplyPreviousMatchSlotRecovery({
+      currentAssignedCount,
+      needsSync,
+    })
+  ) {
+    return {
+      observerSlots,
+      recovery: {
+        applied: false,
+        attempted: false,
+        currentAssignedCount,
+        sourceAssignedCount,
+        previousMatchId: recoveryPlan?.previousMatchId ?? null,
+        previousMatchNumber,
+        needsSync: true,
+        skippedReason: "current-slots-present",
+        message:
+          "Current match slots differ from the previous match; kept current slot assignments to preserve manual edits.",
+      },
+    };
+  }
+
+  const syncResult = await syncSlotsFromPreviousMatch(
+    session,
+    observerSlots.matchId,
+    {
+      overwrite: false,
+    },
+  );
+  const refreshedObserverSlots = await fetchObserverSlots(
+    session,
+    observerSlots.matchId,
+  );
 
   return {
     observerSlots: refreshedObserverSlots,
@@ -3083,13 +3763,9 @@ async function recoverObserverSlotsFromPreviousMatch(
       sourceAssignedCount,
       previousMatchId:
         syncResult?.previousMatchId ?? recoveryPlan?.previousMatchId ?? null,
-      previousMatchNumber: Number.isFinite(
-        Number(syncResult?.previousMatchNumber ?? recoveryPlan?.previousMatchNumber),
-      )
-        ? Number(
-            syncResult?.previousMatchNumber ?? recoveryPlan?.previousMatchNumber,
-          )
-        : null,
+      previousMatchNumber: normalizePreviousMatchNumber(
+        syncResult?.previousMatchNumber ?? recoveryPlan?.previousMatchNumber,
+      ),
       needsSync: false,
       message:
         syncResult?.message ||
@@ -3118,6 +3794,9 @@ async function fetchLiveMatch(apiBase, session = null) {
       publicPayload.matchId,
       publicPayload.status,
       "public/live-match",
+      readLiveMatchTournamentId(publicPayload),
+      readLiveMatchStageId(publicPayload),
+      readLiveMatchExtra(publicPayload),
     );
   }
 
@@ -3128,6 +3807,9 @@ async function fetchLiveMatch(apiBase, session = null) {
       feedPayload?.match?.id || feedPayload?.matchId || feedPayload?.id,
       feedPayload?.match?.status || feedPayload?.status,
       "match/live",
+      readLiveMatchTournamentId(feedPayload),
+      readLiveMatchStageId(feedPayload),
+      readLiveMatchExtra(feedPayload),
     );
   }
 
@@ -3136,27 +3818,14 @@ async function fetchLiveMatch(apiBase, session = null) {
     publicPayload?.matchId,
     publicPayload?.status || feedPayload?.match?.status || feedPayload?.status,
     publicPayload ? "public/live-match" : feedPayload ? "match/live" : null,
+    readLiveMatchTournamentId(publicPayload) ||
+      readLiveMatchTournamentId(feedPayload),
+    readLiveMatchStageId(publicPayload) || readLiveMatchStageId(feedPayload),
+    {
+      ...readLiveMatchExtra(feedPayload),
+      ...readLiveMatchExtra(publicPayload),
+    },
   );
-}
-
-async function resolveRequestedMatch(apiBase, matchId, session = null) {
-  const trimmedMatchId = String(matchId || "").trim();
-  if (trimmedMatchId) {
-    return {
-      matchId: trimmedMatchId,
-      source: "manual",
-      status: null,
-    };
-  }
-
-  const liveMatch = await fetchLiveMatch(apiBase, session);
-  if (!liveMatch.matchId) {
-    throw new Error(
-      "No live match is available. Start a live match or enter a match ID manually.",
-    );
-  }
-
-  return liveMatch;
 }
 
 async function downloadLogoForSlot(baseUrl, slot, placeholderPath) {
@@ -3245,9 +3914,7 @@ async function syncAssignedObserverSlots(baseUrl, slots, placeholderPath) {
   const syncedSlots = [];
 
   for (const slot of assignedSlots) {
-    syncedSlots.push(
-      await downloadLogoForSlot(baseUrl, slot, placeholderPath),
-    );
+    syncedSlots.push(await downloadLogoForSlot(baseUrl, slot, placeholderPath));
   }
 
   return syncedSlots;
@@ -3262,6 +3929,178 @@ function getSessionOrganizationId(session) {
   );
 }
 
+function publishAiCasterAccessToWidgetServer(access) {
+  cachedAiCasterAccess = access ?? null;
+  if (widgetServer && typeof widgetServer.setAiCasterAccess === "function") {
+    widgetServer.setAiCasterAccess(cachedAiCasterAccess);
+  }
+}
+
+async function refreshAiCasterAccess(
+  session,
+  { throwOnError = false, organizationId = null } = {},
+) {
+  const resolvedSession = session || getStoredSession();
+  const resolvedOrganizationId =
+    asOptionalString(organizationId) ||
+    getSessionOrganizationId(resolvedSession);
+
+  try {
+    const access = await apiClient.getAiCasterAccess({
+      apiBase: resolvedSession.apiBase,
+      token: resolvedSession.token,
+      refreshToken: resolvedSession.refreshToken,
+      organizationId: resolvedOrganizationId,
+    });
+    publishAiCasterAccessToWidgetServer(access);
+    return access;
+  } catch (error) {
+    const message = getWidgetCatalogErrorMessage(
+      error,
+      "Failed to load AI caster access.",
+    );
+    logWarn("[ai-caster] access refresh failed", message);
+    if (throwOnError) {
+      throw new Error(message);
+    }
+    return cachedAiCasterAccess;
+  }
+}
+
+async function refreshCommentatorDeskAccess(
+  session,
+  { throwOnError = false, organizationId = null } = {},
+) {
+  const resolvedSession = session || getStoredSession();
+  const resolvedOrganizationId =
+    asOptionalString(organizationId) ||
+    getSessionOrganizationId(resolvedSession);
+
+  try {
+    await getWidgetCatalogState({
+      organizationId: resolvedOrganizationId,
+      widgetKeys: [],
+      accessOnlyWidgetKeys: [COMMENTATOR_DESK_WIDGET_KEY],
+    });
+    return cachedCommentatorDeskAccess;
+  } catch (error) {
+    const message = getWidgetCatalogErrorMessage(
+      error,
+      "Failed to load commentator desk access.",
+    );
+    logWarn("[commentator-desk] access refresh failed", message);
+    if (throwOnError) {
+      throw new Error(message);
+    }
+    return cachedCommentatorDeskAccess;
+  }
+}
+
+async function refreshWidgetHotkeyControlApproval(
+  session,
+  { throwOnError = false, organizationId = null } = {},
+) {
+  const resolvedSession = session || getStoredSession();
+  const resolvedOrganizationId =
+    asOptionalString(organizationId) ||
+    getSessionOrganizationId(resolvedSession);
+
+  try {
+    await getWidgetCatalogState({
+      organizationId: resolvedOrganizationId,
+      widgetKeys: [],
+      accessOnlyWidgetKeys: [HOTKEY_CONTROL_APPROVAL_KEY],
+    });
+    return widgetHotkeyControl.getStatus();
+  } catch (error) {
+    const message = getWidgetCatalogErrorMessage(
+      error,
+      "Failed to load widget hotkey control approval.",
+    );
+    logWarn("[widget-hotkey] approval refresh failed", message);
+    if (throwOnError) {
+      throw new Error(message);
+    }
+    widgetHotkeyControl.setApproval({
+      isApproved: false,
+      reason: message || "SUPER_ADMIN_APPROVAL_REQUIRED",
+    });
+    return widgetHotkeyControl.getStatus();
+  }
+}
+
+async function getWidgetHotkeyControlStatus(payload = {}) {
+  assertLauncherAccess();
+  const session = getStoredSession();
+  await refreshWidgetHotkeyControlApproval(session, {
+    throwOnError: false,
+    organizationId: payload?.organizationId ?? null,
+  });
+  return widgetHotkeyControl.getStatus();
+}
+
+async function updateWidgetHotkeyControl(payload = {}) {
+  assertLauncherAccess();
+  const session = getStoredSession();
+  await refreshWidgetHotkeyControlApproval(session, {
+    throwOnError: true,
+    organizationId: payload?.organizationId ?? null,
+  });
+  if (widgetHotkeyControl.getStatus().approved !== true) {
+    throw new Error("Widget hotkey control requires Super Admin approval.");
+  }
+  return widgetHotkeyControl.updateConfig(payload?.config || {});
+}
+
+async function triggerWidgetHotkeyControl(payload = {}) {
+  assertLauncherAccess();
+  const session = getStoredSession();
+  await refreshWidgetHotkeyControlApproval(session, {
+    throwOnError: true,
+    organizationId: payload?.organizationId ?? null,
+  });
+  return widgetHotkeyControl.trigger(payload?.active === true);
+}
+
+async function updateAiCasterSettings(payload) {
+  assertLauncherAccess();
+  const session = getStoredSession();
+  const organizationId =
+    asOptionalString(payload?.organizationId) ||
+    getSessionOrganizationId(session);
+  const access = await apiClient.updateAiCasterSettings({
+    apiBase: session.apiBase,
+    token: session.token,
+    refreshToken: session.refreshToken,
+    organizationId,
+    settings: payload?.settings || {},
+  });
+  publishAiCasterAccessToWidgetServer(access);
+  return access;
+}
+
+async function previewAiCasterVoice(payload) {
+  assertLauncherAccess();
+  const session = getStoredSession();
+  const organizationId =
+    asOptionalString(payload?.organizationId) ||
+    getSessionOrganizationId(session);
+  return apiClient.previewAiCasterVoice({
+    apiBase: session.apiBase,
+    token: session.token,
+    refreshToken: session.refreshToken,
+    organizationId,
+    preview: {
+      voice: payload?.voice,
+      role: payload?.role,
+      text: payload?.text,
+      mode: payload?.mode,
+      speakingSpeed: payload?.speakingSpeed,
+      expression: payload?.expression,
+    },
+  });
+}
+
 async function fetchAssignedPlayerPhotos(session, slots) {
   const assignedSlots = Array.isArray(slots)
     ? slots.filter((slot) => slot?.teamId || slot?.team?.id)
@@ -3273,7 +4112,8 @@ async function fetchAssignedPlayerPhotos(session, slots) {
   const seenPlayers = new Set();
 
   for (const slot of assignedSlots) {
-    const teamId = asOptionalString(slot?.teamId) || asOptionalString(slot?.team?.id);
+    const teamId =
+      asOptionalString(slot?.teamId) || asOptionalString(slot?.team?.id);
     if (!teamId || seenTeams.has(teamId)) {
       continue;
     }
@@ -3363,6 +4203,71 @@ async function syncAssignedPlayerPhotos(session, baseUrl, slots) {
   };
 }
 
+async function refreshAssignedPlayerPhotoCache(session, matchId) {
+  const observerSlots = await fetchObserverSlots(session, matchId);
+  return syncAssignedPlayerPhotos(
+    session,
+    observerSlots.baseUrl,
+    observerSlots.slots,
+  );
+}
+
+function requestPlayerPhotoCacheRefresh(matchId) {
+  const requestedMatchId = normalizeOptionalString(matchId);
+  if (!requestedMatchId) {
+    return;
+  }
+
+  const now = Date.now();
+  if (playerPhotoCacheRefreshState.inFlight) {
+    return;
+  }
+  if (
+    playerPhotoCacheRefreshState.matchId === requestedMatchId &&
+    now - playerPhotoCacheRefreshState.lastStartedAt <
+      PLAYER_PHOTO_CACHE_REFRESH_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  let session;
+  try {
+    session = getStoredSession();
+  } catch {
+    return;
+  }
+
+  playerPhotoCacheRefreshState.matchId = requestedMatchId;
+  playerPhotoCacheRefreshState.lastStartedAt = now;
+  playerPhotoCacheRefreshState.inFlight = true;
+
+  refreshAssignedPlayerPhotoCache(session, requestedMatchId)
+    .catch((error) => {
+      logWarn("[launcher] player photo cache refresh failed", {
+        matchId: requestedMatchId,
+        error: error instanceof Error ? error.message : String(error || ""),
+      });
+    })
+    .finally(() => {
+      playerPhotoCacheRefreshState.inFlight = false;
+    });
+}
+
+function schedulePlayerPhotoCacheRefresh(matchId, delayMs = 0) {
+  const requestedMatchId = normalizeOptionalString(matchId);
+  if (!requestedMatchId) {
+    return;
+  }
+
+  const timer = setTimeout(
+    () => requestPlayerPhotoCacheRefresh(requestedMatchId),
+    Math.max(0, Number(delayMs) || 0),
+  );
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+}
+
 function mergeObserverSlotsWithLocalLogos(slots, syncedSlots) {
   const syncedBySlotNumber = new Map(
     (Array.isArray(syncedSlots) ? syncedSlots : [])
@@ -3391,11 +4296,15 @@ function buildWidgetTeamLogoAssetUrl(localLogoPath) {
 function buildWidgetTeamBrandingPayload(baseUrl, matchId, slots) {
   const teams = (Array.isArray(slots) ? slots : [])
     .map((slot) => {
-      const team = slot?.team && typeof slot.team === "object" ? slot.team : null;
-      const slotNumber = Number(slot?.slotNumber ?? slot?.teamNo ?? slot?.slot ?? 0);
-      const normalizedSlot = Number.isFinite(slotNumber) && slotNumber > 0
-        ? Math.trunc(slotNumber)
-        : null;
+      const team =
+        slot?.team && typeof slot.team === "object" ? slot.team : null;
+      const slotNumber = Number(
+        slot?.slotNumber ?? slot?.teamNo ?? slot?.slot ?? 0,
+      );
+      const normalizedSlot =
+        Number.isFinite(slotNumber) && slotNumber > 0
+          ? Math.trunc(slotNumber)
+          : null;
       const localLogoUrl = buildWidgetTeamLogoAssetUrl(slot?.localLogoPath);
       const remoteLogoUrl = resolveLogoUrl(
         baseUrl,
@@ -3403,7 +4312,7 @@ function buildWidgetTeamBrandingPayload(baseUrl, matchId, slots) {
       );
       const logoUrl =
         slot?.usedPlaceholder === true
-          ? remoteLogoUrl || "/assets/default-team.png"
+          ? remoteLogoUrl || localLogoUrl || "/assets/default-team.png"
           : localLogoUrl || remoteLogoUrl || "/assets/default-team.png";
 
       return {
@@ -3413,8 +4322,16 @@ function buildWidgetTeamBrandingPayload(baseUrl, matchId, slots) {
             ? String(team.id)
             : null,
         slot: normalizedSlot,
-        teamName: team?.name ? String(team.name) : slot?.teamName ? String(slot.teamName) : null,
-        teamTag: team?.tag ? String(team.tag) : slot?.teamTag ? String(slot.teamTag) : null,
+        teamName: team?.name
+          ? String(team.name)
+          : slot?.teamName
+            ? String(slot.teamName)
+            : null,
+        teamTag: team?.tag
+          ? String(team.tag)
+          : slot?.teamTag
+            ? String(slot.teamTag)
+            : null,
         logoUrl,
         color:
           slot?.resolvedColor ||
@@ -3483,11 +4400,7 @@ async function syncTeams(session, matchId, options = {}) {
     placeholderPath,
   );
   const playerPhotoSync = shouldSyncPlayerPhotos
-    ? await syncAssignedPlayerPhotos(
-        session,
-        baseUrl,
-        syncedSlots,
-      )
+    ? await syncAssignedPlayerPhotos(session, baseUrl, syncedSlots)
     : null;
 
   const result = {
@@ -3547,9 +4460,7 @@ async function generateBranding(session, matchId, options = {}) {
   });
   const result = {
     ok: payload?.ok !== false,
-    matchId: payload?.matchId
-      ? String(payload.matchId)
-      : requestedMatchId,
+    matchId: payload?.matchId ? String(payload.matchId) : requestedMatchId,
     matchSource: "selected",
     brandingConfigPath: payload?.brandingConfigPath
       ? String(payload.brandingConfigPath)
@@ -3576,13 +4487,32 @@ async function generateBranding(session, matchId, options = {}) {
 
 async function pinSelectedMatchLive(session, matchId, sessionId) {
   const requestedMatchId = requireMatchId(matchId);
-  await assertMatchLifecycleStartable(session, requestedMatchId);
+  const lifecycle = await assertMatchLifecycleStartable(
+    session,
+    requestedMatchId,
+  );
+  await assertNoDifferentLiveMatch(session, requestedMatchId);
+  const boundSessionId = String(
+    lifecycle?.control?.binding?.sessionId ||
+      lifecycle?.control?.pcobSessionId ||
+      "",
+  ).trim();
+  if (
+    lifecycle?.lifecycleStatus === "LIVE" &&
+    boundSessionId &&
+    boundSessionId === String(sessionId || "").trim()
+  ) {
+    return requestedMatchId;
+  }
   await apiClient.startMatchControl({
     apiBase: session.apiBase,
     token: session.token,
     refreshToken: session.refreshToken,
     matchId: requestedMatchId,
     sessionId,
+    source: "desktop-launcher",
+    clientId: getLauncherClientId(),
+    requestedMatchId,
   });
   return requestedMatchId;
 }
@@ -3662,8 +4592,36 @@ async function fetchMatchControlState(session, matchId) {
   };
 }
 
+function getLauncherClientId() {
+  return `${os.hostname() || "unknown-host"}:${process.pid}`;
+}
+
+async function assertNoDifferentLiveMatch(session, matchId) {
+  const requestedMatchId = requireMatchId(matchId);
+  const liveMatch = await fetchAuthenticatedLiveMatch(
+    normalizeBaseUrl(session.apiBase),
+    session,
+  );
+  const liveMatchId = String(liveMatch?.matchId || "").trim();
+  if (!liveMatchId || liveMatchId === requestedMatchId) {
+    return;
+  }
+
+  const liveStatus = normalizeMatchLifecycleStatus(liveMatch?.status);
+  if (liveStatus && liveStatus !== "LIVE" && liveStatus !== "PAUSED") {
+    return;
+  }
+
+  throw new Error(
+    `Cannot start telemetry for match ${requestedMatchId}: match ${liveMatchId} is already LIVE. End or reset the existing live match first.`,
+  );
+}
+
 async function assertMatchLifecycleStartable(session, matchId) {
-  const { control, lifecycleStatus } = await fetchMatchControlState(session, matchId);
+  const { control, lifecycleStatus } = await fetchMatchControlState(
+    session,
+    matchId,
+  );
 
   if (lifecycleStatus === "FINISHED") {
     logWarn("[Telemetry] Cannot start, match is FINISHED", {
@@ -3671,9 +4629,14 @@ async function assertMatchLifecycleStartable(session, matchId) {
     });
     throw new Error("Cannot start telemetry: match is FINISHED.");
   }
-  if (control?.isFinalizing === true || lifecycleStatus === "FINISH_PENDING" || lifecycleStatus === "ENDED") {
+  if (
+    control?.isFinalizing === true ||
+    lifecycleStatus === "FINISH_PENDING" ||
+    lifecycleStatus === "ENDED"
+  ) {
     throw new Error("Cannot start telemetry while the match is finalizing.");
   }
+  return { control, lifecycleStatus };
 }
 
 function assertProductionModeReadyForMatch(matchId) {
@@ -3693,15 +4656,6 @@ function assertProductionModeReadyForMatch(matchId) {
   throw new Error(
     "Telemetry start is blocked until Production Mode completes with READY or READY_WITH_WARNINGS for the selected match.",
   );
-}
-
-function findExistingPath(candidates) {
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return "";
 }
 
 function isExistingFile(filePath) {
@@ -3733,7 +4687,9 @@ function normalizeProcessEntry(entry) {
     return null;
   }
 
-  const pid = Number(entry.ProcessId ?? entry.processId ?? entry.PID ?? entry.pid);
+  const pid = Number(
+    entry.ProcessId ?? entry.processId ?? entry.PID ?? entry.pid,
+  );
   return {
     pid: Number.isFinite(pid) && pid > 0 ? Math.trunc(pid) : null,
     executablePath,
@@ -3831,9 +4787,12 @@ function getRunningShadowTrackerProcesses(options = {}) {
     return [...shadowTrackerProcessDiscoveryCache.entries];
   }
 
+  const powerShellEntries = readRunningShadowTrackerProcessesFromPowerShell();
   const entries = [
-    ...readRunningShadowTrackerProcessesFromPowerShell(),
-    ...readRunningShadowTrackerProcessesFromWmic(),
+    ...powerShellEntries,
+    ...(powerShellEntries.length > 0
+      ? []
+      : readRunningShadowTrackerProcessesFromWmic()),
   ];
   const seen = new Set();
   const uniqueEntries = [];
@@ -3882,11 +4841,12 @@ function sanitizeTimestampForFilename(value = new Date()) {
 function createConnectorSetupStatus(patch = {}) {
   return {
     ok: patch.ok === true,
-    status: typeof patch.status === "string" && patch.status.trim()
-      ? patch.status.trim()
-      : patch.ok === true
-        ? "ready"
-        : "unknown",
+    status:
+      typeof patch.status === "string" && patch.status.trim()
+        ? patch.status.trim()
+        : patch.ok === true
+          ? "ready"
+          : "unknown",
     sourcePath: patch.sourcePath || null,
     targetPath: patch.targetPath || null,
     targetStrategy: patch.targetStrategy || null,
@@ -3917,11 +4877,14 @@ function setConnectorSetupStatus(patch = {}) {
 }
 
 function getConnectorSetupStatusView() {
-  return lastConnectorSetupStatus || createConnectorSetupStatus({
-    ok: false,
-    status: "unknown",
-    error: "Arenzyra OB connector has not been checked yet.",
-  });
+  return (
+    lastConnectorSetupStatus ||
+    createConnectorSetupStatus({
+      ok: false,
+      status: "unknown",
+      error: "Arenzyra OB connector has not been checked yet.",
+    })
+  );
 }
 
 function getManagedTelemetryBridgeSourcePath() {
@@ -3933,10 +4896,26 @@ function getManagedTelemetryBridgeSourcePath() {
       )
     : "";
 
-  return findExistingFile([
-    packagedSourcePath,
-    REPO_TELEMETRY_BRIDGE_SCRIPT,
-  ]);
+  return findExistingFile([packagedSourcePath, REPO_TELEMETRY_BRIDGE_SCRIPT]);
+}
+
+function getManagedTelemetryBridgeSupportResources() {
+  const packagedSourceDir = app.isPackaged
+    ? path.join(process.resourcesPath, CONNECTOR_RESOURCE_DIR_NAME)
+    : "";
+  const repoSourceDir = path.join(REPO_ROOT, "apps", "desktop", "electron");
+
+  return CONNECTOR_SUPPORT_FILE_NAMES.map((fileName) => ({
+    fileName,
+    sourcePath: findExistingFile([
+      packagedSourceDir ? path.join(packagedSourceDir, fileName) : "",
+      path.join(repoSourceDir, fileName),
+    ]),
+  }));
+}
+
+function getManagedTelemetryBridgeSupportTargetPath(targetPath, fileName) {
+  return path.join(path.dirname(targetPath), fileName);
 }
 
 function createConnectorManifestPayload({
@@ -3944,6 +4923,7 @@ function createConnectorManifestPayload({
   sourcePath,
   targetPath,
   shadowTrackerPath,
+  supportFiles = [],
 }) {
   return `${JSON.stringify(
     {
@@ -3953,6 +4933,11 @@ function createConnectorManifestPayload({
       sourcePath,
       targetPath,
       shadowTrackerPath,
+      supportFiles: supportFiles.map((supportFile) => ({
+        fileName: supportFile.fileName,
+        sourceHash: supportFile.sourceHash || null,
+        targetPath: supportFile.targetPath || null,
+      })),
       installedAt: new Date().toISOString(),
     },
     null,
@@ -3990,14 +4975,22 @@ function runElevatedConnectorCopy({
   manifestPayload,
   backupPath,
   sourceHash,
+  supportFiles = [],
 }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "arenzyra-connector-"));
   const stagedSourcePath = path.join(tempDir, CONNECTOR_SCRIPT_NAME);
   const stagedManifestPath = path.join(tempDir, CONNECTOR_MANIFEST_NAME);
+  const stagedSupportFiles = supportFiles.map((supportFile) => ({
+    ...supportFile,
+    stagedSourcePath: path.join(tempDir, supportFile.fileName),
+  }));
   const scriptPath = path.join(tempDir, "install-connector.ps1");
 
   fs.copyFileSync(sourcePath, stagedSourcePath);
   fs.writeFileSync(stagedManifestPath, manifestPayload);
+  for (const supportFile of stagedSupportFiles) {
+    fs.copyFileSync(supportFile.sourcePath, supportFile.stagedSourcePath);
+  }
   fs.writeFileSync(
     scriptPath,
     [
@@ -4009,10 +5002,26 @@ function runElevatedConnectorCopy({
       `$backup = ${quotePowerShellSingleQuoted(backupPath || "")}`,
       "$targetDir = Split-Path -Parent -LiteralPath $target",
       "New-Item -ItemType Directory -Force -Path $targetDir | Out-Null",
+      "$supportFiles = @(",
+      ...stagedSupportFiles.map(
+        (supportFile) =>
+          `  @{ Source = ${quotePowerShellSingleQuoted(
+            supportFile.stagedSourcePath,
+          )}; Target = ${quotePowerShellSingleQuoted(
+            getManagedTelemetryBridgeSupportTargetPath(
+              targetPath,
+              supportFile.fileName,
+            ),
+          )} }`,
+      ),
+      ")",
       "if ($backup -and (Test-Path -LiteralPath $target)) {",
       "  Copy-Item -LiteralPath $target -Destination $backup -Force",
       "}",
       "Copy-Item -LiteralPath $source -Destination $target -Force",
+      "foreach ($support in $supportFiles) {",
+      "  Copy-Item -LiteralPath $support.Source -Destination $support.Target -Force",
+      "}",
       "Copy-Item -LiteralPath $manifestSource -Destination $manifestTarget -Force",
       "",
     ].join("\r\n"),
@@ -4060,13 +5069,18 @@ function copyManagedTelemetryBridge({
   shadowTrackerPath,
   sourceHash,
   existingTargetHash,
+  supportFiles = [],
 }) {
-  const manifestPath = path.join(path.dirname(targetPath), CONNECTOR_MANIFEST_NAME);
+  const manifestPath = path.join(
+    path.dirname(targetPath),
+    CONNECTOR_MANIFEST_NAME,
+  );
   const manifestPayload = createConnectorManifestPayload({
     sourceHash,
     sourcePath,
     targetPath,
     shadowTrackerPath,
+    supportFiles,
   });
   const backupPath = existingTargetHash
     ? path.join(
@@ -4081,6 +5095,15 @@ function copyManagedTelemetryBridge({
       fs.copyFileSync(targetPath, backupPath);
     }
     fs.copyFileSync(sourcePath, targetPath);
+    for (const supportFile of supportFiles) {
+      fs.copyFileSync(
+        supportFile.sourcePath,
+        getManagedTelemetryBridgeSupportTargetPath(
+          targetPath,
+          supportFile.fileName,
+        ),
+      );
+    }
     writeConnectorManifest(manifestPath, manifestPayload);
     return {
       targetHash: fileHash(targetPath),
@@ -4100,6 +5123,7 @@ function copyManagedTelemetryBridge({
       manifestPayload,
       backupPath,
       sourceHash,
+      supportFiles,
     });
     return {
       targetHash,
@@ -4113,6 +5137,7 @@ function copyManagedTelemetryBridge({
 function ensureManagedTelemetryBridgeInstalled(options = {}) {
   const checkedAt = new Date().toISOString();
   const sourcePath = getManagedTelemetryBridgeSourcePath();
+  const supportResources = getManagedTelemetryBridgeSupportResources();
   const requestedShadowTrackerPath =
     options?.shadowTrackerPath || configManager.getShadowTrackerPath();
   const shadowTrackerPath = resolveShadowTrackerExecutable(
@@ -4127,9 +5152,25 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
     return setConnectorSetupStatus({
       ok: false,
       status: "missing-source",
-      shadowTrackerPath: shadowTrackerPath || requestedShadowTrackerPath || null,
+      shadowTrackerPath:
+        shadowTrackerPath || requestedShadowTrackerPath || null,
       error:
         "Bundled Arenzyra ob.js connector was not found in the launcher resources.",
+      checkedAt,
+    });
+  }
+
+  const missingSupportResource = supportResources.find(
+    (supportResource) => !supportResource.sourcePath,
+  );
+  if (missingSupportResource) {
+    return setConnectorSetupStatus({
+      ok: false,
+      status: "missing-support-source",
+      sourcePath,
+      shadowTrackerPath:
+        shadowTrackerPath || requestedShadowTrackerPath || null,
+      error: `Bundled connector support file was not found: ${missingSupportResource.fileName}.`,
       checkedAt,
     });
   }
@@ -4142,11 +5183,37 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
       ok: false,
       status: "source-unreadable",
       sourcePath,
-      shadowTrackerPath: shadowTrackerPath || requestedShadowTrackerPath || null,
+      shadowTrackerPath:
+        shadowTrackerPath || requestedShadowTrackerPath || null,
       error:
         error instanceof Error
           ? error.message
           : "Bundled Arenzyra ob.js connector could not be read.",
+      checkedAt,
+    });
+  }
+
+  const supportFiles = [];
+  try {
+    for (const supportResource of supportResources) {
+      supportFiles.push({
+        fileName: supportResource.fileName,
+        sourcePath: supportResource.sourcePath,
+        sourceHash: fileHash(supportResource.sourcePath),
+      });
+    }
+  } catch (error) {
+    return setConnectorSetupStatus({
+      ok: false,
+      status: "support-source-unreadable",
+      sourcePath,
+      sourceHash,
+      shadowTrackerPath:
+        shadowTrackerPath || requestedShadowTrackerPath || null,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Bundled connector support files could not be read.",
       checkedAt,
     });
   }
@@ -4181,9 +5248,20 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
   }
 
   const existingTargetHash = getOptionalFileHash(targetPath);
-  const manifestPath = path.join(path.dirname(targetPath), CONNECTOR_MANIFEST_NAME);
+  const manifestPath = path.join(
+    path.dirname(targetPath),
+    CONNECTOR_MANIFEST_NAME,
+  );
+  const supportFilesReady = supportFiles.every((supportFile) => {
+    const targetSupportPath = getManagedTelemetryBridgeSupportTargetPath(
+      targetPath,
+      supportFile.fileName,
+    );
+    supportFile.targetPath = targetSupportPath;
+    return getOptionalFileHash(targetSupportPath) === supportFile.sourceHash;
+  });
 
-  if (existingTargetHash === sourceHash) {
+  if (existingTargetHash === sourceHash && supportFilesReady) {
     writeConnectorManifest(
       manifestPath,
       createConnectorManifestPayload({
@@ -4191,6 +5269,7 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
         sourcePath,
         targetPath,
         shadowTrackerPath,
+        supportFiles,
       }),
     );
     telemetryBridgeScriptPath = targetPath;
@@ -4217,6 +5296,7 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
       shadowTrackerPath,
       sourceHash,
       existingTargetHash,
+      supportFiles,
     });
 
     if (copyResult.targetHash !== sourceHash) {
@@ -4288,8 +5368,10 @@ function isBundledTelemetryBridgeScriptPath(targetPath) {
   const bundledScriptPath = normalizeComparablePath(
     getBundledTelemetryBridgeScriptPath(),
   );
-  return Boolean(normalizedTargetPath && bundledScriptPath) &&
-    normalizedTargetPath === bundledScriptPath;
+  return (
+    Boolean(normalizedTargetPath && bundledScriptPath) &&
+    normalizedTargetPath === bundledScriptPath
+  );
 }
 
 function isShadowTrackerExecutablePath(executablePath) {
@@ -4298,8 +5380,7 @@ function isShadowTrackerExecutablePath(executablePath) {
     return false;
   }
 
-  const executableName =
-    path.basename(normalizedExecutablePath).toLowerCase();
+  const executableName = path.basename(normalizedExecutablePath).toLowerCase();
   return executableName === "shadowtrackerextra.exe";
 }
 
@@ -4350,7 +5431,13 @@ function getAncestorDirectories(startDir, maxDepth = 8) {
 
 function hasChildEntryNamed(dirPath, names) {
   const expected = new Set(
-    names.map((name) => String(name || "").trim().toLowerCase()).filter(Boolean),
+    names
+      .map((name) =>
+        String(name || "")
+          .trim()
+          .toLowerCase(),
+      )
+      .filter(Boolean),
   );
   if (expected.size === 0) {
     return false;
@@ -4411,7 +5498,8 @@ function getShadowTrackerInstallRootCandidates(executablePath) {
   }
 
   const executableDir = path.dirname(path.resolve(executablePath));
-  const legacyRoot = resolveLegacyTelemetryRootFromShadowTrackerPath(executablePath);
+  const legacyRoot =
+    resolveLegacyTelemetryRootFromShadowTrackerPath(executablePath);
   const ancestors = getAncestorDirectories(executableDir, 8);
   const candidates = [
     legacyRoot,
@@ -4419,12 +5507,24 @@ function getShadowTrackerInstallRootCandidates(executablePath) {
     ...ancestors.filter(looksLikeShadowTrackerInstallRoot),
   ];
 
-  return uniquePaths(candidates.filter((candidate) => {
-    return candidate && !isFilesystemRoot(candidate) && isExistingDirectory(candidate);
-  }));
+  return uniquePaths(
+    candidates.filter((candidate) => {
+      return (
+        candidate &&
+        !isFilesystemRoot(candidate) &&
+        isExistingDirectory(candidate)
+      );
+    }),
+  );
 }
 
-function pushTelemetryBridgeTarget(targets, seen, targetPath, strategy, options = {}) {
+function pushTelemetryBridgeTarget(
+  targets,
+  seen,
+  targetPath,
+  strategy,
+  options = {},
+) {
   const normalizedTargetPath = String(targetPath || "").trim();
   if (!normalizedTargetPath) {
     return;
@@ -4443,7 +5543,12 @@ function pushTelemetryBridgeTarget(targets, seen, targetPath, strategy, options 
   });
 }
 
-function addTelemetryBridgeTargetsForRoot(targets, seen, rootDir, strategyPrefix) {
+function addTelemetryBridgeTargetsForRoot(
+  targets,
+  seen,
+  rootDir,
+  strategyPrefix,
+) {
   if (!rootDir || !isExistingDirectory(rootDir) || isFilesystemRoot(rootDir)) {
     return;
   }
@@ -4498,16 +5603,24 @@ function addTelemetryBridgeTargetsForRoot(targets, seen, rootDir, strategyPrefix
   }
 }
 
-function getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(executablePath) {
+function getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(
+  executablePath,
+) {
   if (!isShadowTrackerExecutablePath(executablePath)) {
     return [];
   }
 
   const targets = [];
   const seen = new Set();
-  const legacyRoot = resolveLegacyTelemetryRootFromShadowTrackerPath(executablePath);
+  const legacyRoot =
+    resolveLegacyTelemetryRootFromShadowTrackerPath(executablePath);
   if (legacyRoot) {
-    addTelemetryBridgeTargetsForRoot(targets, seen, legacyRoot, "legacy-global");
+    addTelemetryBridgeTargetsForRoot(
+      targets,
+      seen,
+      legacyRoot,
+      "legacy-global",
+    );
   }
 
   for (const rootDir of getShadowTrackerInstallRootCandidates(executablePath)) {
@@ -4518,7 +5631,8 @@ function getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(executablePath)
 }
 
 function resolveTelemetryBridgeTargetFromShadowTrackerPath(executablePath) {
-  const targets = getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(executablePath);
+  const targets =
+    getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(executablePath);
   if (targets.length === 0) {
     return null;
   }
@@ -4538,7 +5652,10 @@ function resolveTelemetryBridgeTargetFromShadowTrackerPath(executablePath) {
   }
 
   const existingDirectoryTarget = targets.find((target) => {
-    return target.createAllowed !== false && isExistingDirectory(path.dirname(target.targetPath));
+    return (
+      target.createAllowed !== false &&
+      isExistingDirectory(path.dirname(target.targetPath))
+    );
   });
   if (existingDirectoryTarget) {
     return {
@@ -4547,7 +5664,8 @@ function resolveTelemetryBridgeTargetFromShadowTrackerPath(executablePath) {
     };
   }
 
-  const createTarget = targets.find((target) => target.createAllowed !== false) || targets[0];
+  const createTarget =
+    targets.find((target) => target.createAllowed !== false) || targets[0];
   return {
     ...createTarget,
     targetExisting: false,
@@ -4555,18 +5673,22 @@ function resolveTelemetryBridgeTargetFromShadowTrackerPath(executablePath) {
 }
 
 function resolveTelemetryBridgeScriptFromShadowTrackerPath(executablePath) {
-  const target = resolveTelemetryBridgeTargetFromShadowTrackerPath(executablePath);
+  const target =
+    resolveTelemetryBridgeTargetFromShadowTrackerPath(executablePath);
   return target?.targetPath || "";
 }
 
 function getTelemetryBridgeTargetPathsFromShadowTrackerPath(executablePath) {
-  return getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(executablePath).map(
-    (target) => target.targetPath,
-  );
+  return getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(
+    executablePath,
+  ).map((target) => target.targetPath);
 }
 
-function resolveTelemetryBridgeScriptFromLegacyShadowTrackerPath(executablePath) {
-  const legacyRoot = resolveLegacyTelemetryRootFromShadowTrackerPath(executablePath);
+function resolveTelemetryBridgeScriptFromLegacyShadowTrackerPath(
+  executablePath,
+) {
+  const legacyRoot =
+    resolveLegacyTelemetryRootFromShadowTrackerPath(executablePath);
   if (!legacyRoot) {
     return "";
   }
@@ -4639,9 +5761,21 @@ function getShadowTrackerCandidates() {
     DEFAULT_SHADOWTRACKER_EXECUTABLE,
     LEGACY_SHADOWTRACKER_EXECUTABLE,
     OLDER_SHADOWTRACKER_EXECUTABLE,
-    path.join(DEFAULT_SHADOWTRACKER_PREFIX, "WindowsNoEditor", "ShadowTrackerExtra.exe"),
-    path.join(LEGACY_SHADOWTRACKER_PREFIX, "WindowsNoEditor", "ShadowTrackerExtra.exe"),
-    path.join(OLDER_SHADOWTRACKER_PREFIX, "WindowsNoEditor", "ShadowTrackerExtra.exe"),
+    path.join(
+      DEFAULT_SHADOWTRACKER_PREFIX,
+      "WindowsNoEditor",
+      "ShadowTrackerExtra.exe",
+    ),
+    path.join(
+      LEGACY_SHADOWTRACKER_PREFIX,
+      "WindowsNoEditor",
+      "ShadowTrackerExtra.exe",
+    ),
+    path.join(
+      OLDER_SHADOWTRACKER_PREFIX,
+      "WindowsNoEditor",
+      "ShadowTrackerExtra.exe",
+    ),
     process.env.ProgramFiles
       ? path.join(
           process.env.ProgramFiles,
@@ -4673,7 +5807,9 @@ function getTelemetryBridgeCandidates() {
     { preferRunning: true },
   );
   const derivedCandidates = uniquePaths([
-    ...getTelemetryBridgeTargetPathsFromShadowTrackerPath(configuredShadowTrackerPath),
+    ...getTelemetryBridgeTargetPathsFromShadowTrackerPath(
+      configuredShadowTrackerPath,
+    ),
     ...getTelemetryBridgeTargetPathsFromShadowTrackerPath(
       DEFAULT_SHADOWTRACKER_EXECUTABLE,
     ),
@@ -4713,14 +5849,20 @@ function getTelemetryBridgeCandidates() {
   ]);
 }
 
-function persistDetectedShadowTrackerPath(executablePath, source = "discovery") {
+function persistDetectedShadowTrackerPath(
+  executablePath,
+  source = "discovery",
+) {
   const normalizedPath = String(executablePath || "").trim();
   if (!isExistingFile(normalizedPath)) {
     return "";
   }
 
   const currentPath = String(configManager.getShadowTrackerPath() || "").trim();
-  if (normalizeComparablePath(currentPath) === normalizeComparablePath(normalizedPath)) {
+  if (
+    normalizeComparablePath(currentPath) ===
+    normalizeComparablePath(normalizedPath)
+  ) {
     return normalizedPath;
   }
 
@@ -4746,8 +5888,16 @@ function resolveShadowTrackerExecutable(inputPath, options = {}) {
   const preferRunning = options.preferRunning === true;
 
   const candidates = preferRunning
-    ? [...runningCandidates, ...inputCandidates, ...getShadowTrackerCandidates()]
-    : [...inputCandidates, ...runningCandidates, ...getShadowTrackerCandidates()];
+    ? [
+        ...runningCandidates,
+        ...inputCandidates,
+        ...getShadowTrackerCandidates(),
+      ]
+    : [
+        ...inputCandidates,
+        ...runningCandidates,
+        ...getShadowTrackerCandidates(),
+      ];
 
   return findExistingFile(candidates);
 }
@@ -4768,7 +5918,9 @@ function resolveTelemetryBridgeScript(inputPath) {
         preferRunning: true,
       }),
     );
-  if (isSupportedTelemetryBridgeScriptPath(derivedFromConfiguredShadowTracker)) {
+  if (
+    isSupportedTelemetryBridgeScriptPath(derivedFromConfiguredShadowTracker)
+  ) {
     return derivedFromConfiguredShadowTracker;
   }
 
@@ -4797,7 +5949,10 @@ function spawnNodeScript(scriptPath, envOverrides = null) {
     .filter(Boolean);
 
   if (app.isPackaged) {
-    nodePathEntries.unshift(path.join(process.resourcesPath, "app.asar", "node_modules"));
+    nodePathEntries.unshift(
+      path.join(process.resourcesPath, "app", "node_modules"),
+      path.join(process.resourcesPath, "app.asar", "node_modules"),
+    );
   }
 
   const env = {
@@ -4839,14 +5994,16 @@ function getObserverFeedStatusView() {
     enabled: observerFeedState.enabled === true,
     running: observerFeedState.running === true,
     mode:
-      typeof observerFeedState.mode === "string" && observerFeedState.mode.trim()
+      typeof observerFeedState.mode === "string" &&
+      observerFeedState.mode.trim()
         ? observerFeedState.mode
         : "off",
     managed: observerFeedState.managed === true,
     matchId: observerFeedState.matchId ?? null,
     sessionId: observerFeedState.sessionId ?? null,
     pid:
-      Number.isFinite(Number(observerFeedState.pid)) && Number(observerFeedState.pid) > 0
+      Number.isFinite(Number(observerFeedState.pid)) &&
+      Number(observerFeedState.pid) > 0
         ? Number(observerFeedState.pid)
         : null,
     scriptPath: observerFeedState.scriptPath ?? null,
@@ -4877,8 +6034,132 @@ function resetObserverFeedState(patch = {}) {
   return getObserverFeedStatusView();
 }
 
+function isDirectObserverWidgetPollingPermittedByPolicy() {
+  return shouldAllowDirectObserverWidgetPolling({
+    isPackaged: app.isPackaged,
+    env: process.env,
+  });
+}
+
+function isShadowTelemetryReachableFromCache() {
+  return shadowTelemetryDiscoveryCache?.health?.reachable === true;
+}
+
+function setWidgetDirectObserverPollingAllowed(enabled) {
+  widgetDirectObserverPollingAllowed =
+    enabled === true && isDirectObserverWidgetPollingPermittedByPolicy();
+  return widgetDirectObserverPollingAllowed;
+}
+
+function shouldPollDirectObserverForWidgets() {
+  return shouldPollDirectObserverWidgetRuntime({
+    isPackaged: app.isPackaged,
+    env: process.env,
+    widgetPollingEnabled: widgetDirectObserverPollingAllowed === true,
+    observerFeedRunning: getObserverFeedStatusView().running === true,
+    shadowReachable: isShadowTelemetryReachableFromCache(),
+    telemetryRunning: telemetryBridge.getStatus().running === true,
+  });
+}
+
+function clearWidgetRuntimeState(reason = "stopped") {
+  if (typeof widgetServer?.clearRuntimeState === "function") {
+    widgetServer.clearRuntimeState({ reason });
+  }
+}
+
+function shouldMonitorLocalRuntimeLifecycle() {
+  return getObserverFeedStatusView().running === true;
+}
+
+function clearLocalRuntimeLifecyclePollTimer() {
+  if (!localRuntimeLifecyclePollTimer) {
+    return;
+  }
+
+  clearInterval(localRuntimeLifecyclePollTimer);
+  localRuntimeLifecyclePollTimer = null;
+}
+
+async function pollLocalRuntimeLifecycleOnce() {
+  if (
+    localRuntimeLifecyclePollInFlight ||
+    !shouldMonitorLocalRuntimeLifecycle()
+  ) {
+    return;
+  }
+
+  let session;
+  let matchId;
+  try {
+    session = getStoredSession();
+    matchId = requireMatchId(getObserverFeedStatusView().matchId);
+  } catch {
+    return;
+  }
+
+  localRuntimeLifecyclePollInFlight = true;
+  try {
+    const { control, lifecycleStatus } = await fetchMatchControlState(
+      session,
+      matchId,
+    );
+    const isFinalizing =
+      control?.isFinalizing === true ||
+      lifecycleStatus === "FINISH_PENDING" ||
+      lifecycleStatus === "ENDED";
+    const isFinished = lifecycleStatus === "FINISHED";
+    if (!isFinalizing && !isFinished) {
+      return;
+    }
+
+    const reason = isFinished ? "finished" : "finalizing";
+    logWarn("[Observer Feed] Backend lifecycle forced local runtime stop", {
+      matchId,
+      matchStatus: lifecycleStatus,
+      controlStatus: control?.matchStatus ?? control?.status ?? null,
+      reason,
+    });
+    telemetryBridge.stop(reason, {
+      matchStatus: lifecycleStatus,
+      isLocked: isFinished,
+      isFinalizing,
+    });
+    await stopObserverFeed(reason);
+  } catch (error) {
+    logWarn("[Observer Feed] Lifecycle authority poll failed", {
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error || "Unknown error"),
+      matchId,
+    });
+  } finally {
+    localRuntimeLifecyclePollInFlight = false;
+  }
+}
+
+function refreshLocalRuntimeLifecyclePoller() {
+  if (!shouldMonitorLocalRuntimeLifecycle()) {
+    clearLocalRuntimeLifecyclePollTimer();
+    return;
+  }
+
+  if (localRuntimeLifecyclePollTimer) {
+    return;
+  }
+
+  localRuntimeLifecyclePollTimer = setInterval(() => {
+    void pollLocalRuntimeLifecycleOnce();
+  }, LOCAL_RUNTIME_LIFECYCLE_POLL_INTERVAL_MS);
+  localRuntimeLifecyclePollTimer.unref?.();
+  void pollLocalRuntimeLifecycleOnce();
+}
+
 function getCurrentWidgetMatchContext() {
-  const observerFeedMatchId = normalizeOptionalString(observerFeedState.matchId);
+  const observerFeedMatchId = normalizeOptionalString(
+    observerFeedState.matchId,
+  );
   if (observerFeedMatchId) {
     return {
       matchId: observerFeedMatchId,
@@ -4888,7 +6169,9 @@ function getCurrentWidgetMatchContext() {
     };
   }
 
-  const productionMatchId = normalizeOptionalString(productionModeState.matchId);
+  const productionMatchId = normalizeOptionalString(
+    productionModeState.matchId,
+  );
   if (productionMatchId) {
     return {
       matchId: productionMatchId,
@@ -4898,7 +6181,9 @@ function getCurrentWidgetMatchContext() {
     };
   }
 
-  const matchFlowMatchId = normalizeOptionalString(matchFlowState.currentMatchId);
+  const matchFlowMatchId = normalizeOptionalString(
+    matchFlowState.currentMatchId,
+  );
   return {
     matchId: matchFlowMatchId,
     source: matchFlowMatchId ? "match-flow" : null,
@@ -4907,7 +6192,10 @@ function getCurrentWidgetMatchContext() {
   };
 }
 
-function normalizeShadowTelemetryBaseUrl(value, fallback = DEFAULT_SHADOW_TELEMETRY_BASE_URL) {
+function normalizeShadowTelemetryBaseUrl(
+  value,
+  fallback = DEFAULT_SHADOW_TELEMETRY_BASE_URL,
+) {
   const raw = String(value || "").trim();
   if (!raw) {
     return fallback;
@@ -4981,8 +6269,12 @@ function persistShadowTelemetryBaseUrl(baseUrl, source = "discovery") {
 function extractPortFromBaseUrl(baseUrl) {
   try {
     const parsed = new URL(normalizeShadowTelemetryBaseUrl(baseUrl));
-    const port = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
-    return Number.isInteger(port) && port > 0 ? port : DEFAULT_SHADOW_TELEMETRY_PORT;
+    const port = Number(
+      parsed.port || (parsed.protocol === "https:" ? 443 : 80),
+    );
+    return Number.isInteger(port) && port > 0
+      ? port
+      : DEFAULT_SHADOW_TELEMETRY_PORT;
   } catch {
     return DEFAULT_SHADOW_TELEMETRY_PORT;
   }
@@ -4999,7 +6291,12 @@ function getShadowTelemetryCandidateBaseUrls() {
     "",
   );
   const currentUrl = getShadowTelemetryBaseUrl();
-  const urls = [configuredUrl, envUrl, currentUrl, DEFAULT_SHADOW_TELEMETRY_BASE_URL];
+  const urls = [
+    configuredUrl,
+    envUrl,
+    currentUrl,
+    DEFAULT_SHADOW_TELEMETRY_BASE_URL,
+  ];
 
   for (const port of SHADOW_TELEMETRY_DISCOVERY_PORTS) {
     urls.push(`http://127.0.0.1:${port}`);
@@ -5028,10 +6325,10 @@ function isShadowTelemetryProbeResponse(pathname, response) {
   if (pathname === "/health") {
     return Boolean(
       data &&
-        typeof data === "object" &&
-        (data.status === "ok" ||
-          Object.prototype.hasOwnProperty.call(data, "forwardEnabled") ||
-          Object.prototype.hasOwnProperty.call(data, "forwardBaseUrl")),
+      typeof data === "object" &&
+      (data.status === "ok" ||
+        Object.prototype.hasOwnProperty.call(data, "forwardEnabled") ||
+        Object.prototype.hasOwnProperty.call(data, "forwardBaseUrl")),
     );
   }
 
@@ -5076,7 +6373,9 @@ async function probeShadowTelemetryBaseUrl(baseUrl, checkedAt, options = {}) {
         error && typeof error === "object" ? String(error.code || "") : "";
       if (
         code &&
-        !["ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(code)
+        !["ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(
+          code,
+        )
       ) {
         lastError = code;
       }
@@ -5134,7 +6433,17 @@ function buildTelemetrySourceProcessEnv(config = null) {
   const normalizedConfig =
     config && typeof config === "object" ? config : { mode: "local" };
   const mode = normalizedConfig.mode === "direct" ? "direct" : "local";
+  const mapKey = String(
+    normalizedConfig.mapKey ||
+      normalizedConfig.selectedMapKey ||
+      process.env.ARENZYRA_FORCE_MAP_KEY ||
+      "",
+  ).trim();
   const baseEnv = {
+    HOST: resolveObserverBindHost({
+      isPackaged: app.isPackaged,
+      env: process.env,
+    }),
     PORT: String(getShadowTelemetryPort()),
   };
 
@@ -5149,7 +6458,16 @@ function buildTelemetrySourceProcessEnv(config = null) {
     API_BASE_URL: normalizeBaseUrl(normalizedConfig.apiBase),
     MATCH_ID: requireMatchId(normalizedConfig.matchId),
     OBSERVER_SESSION_ID: String(normalizedConfig.sessionId || "").trim(),
-    ARENZYRA_OBSERVER_FEED_TOKEN: String(normalizedConfig.feedToken || "").trim(),
+    ARENZYRA_OBSERVER_FEED_TOKEN: String(
+      normalizedConfig.feedToken || "",
+    ).trim(),
+    ...(mapKey
+      ? {
+          ARENZYRA_FORCE_MAP_KEY: mapKey,
+          OBSERVER_MAP_NAME: mapKey,
+          MATCH_MAP_NAME: mapKey,
+        }
+      : {}),
   };
 }
 
@@ -5174,7 +6492,8 @@ function sameTelemetrySourceConfig(currentConfig, nextConfig) {
     currentConfig.matchId === nextConfig.matchId &&
     currentConfig.sessionId === nextConfig.sessionId &&
     currentConfig.apiBase === nextConfig.apiBase &&
-    currentConfig.feedToken === nextConfig.feedToken
+    currentConfig.feedToken === nextConfig.feedToken &&
+    (currentConfig.mapKey || null) === (nextConfig.mapKey || null)
   );
 }
 
@@ -5375,7 +6694,10 @@ async function probeShadowTelemetryHealthWithRecovery() {
   }
 
   const now = Date.now();
-  if (now - lastShadowTelemetryRecoveryAttemptAt < SHADOW_TELEMETRY_RECOVERY_COOLDOWN_MS) {
+  if (
+    now - lastShadowTelemetryRecoveryAttemptAt <
+    SHADOW_TELEMETRY_RECOVERY_COOLDOWN_MS
+  ) {
     return initialProbe;
   }
   lastShadowTelemetryRecoveryAttemptAt = now;
@@ -5415,7 +6737,9 @@ async function ensureTelemetrySourceRunning(options = {}) {
     shadowTrackerPath: options?.shadowTrackerPath,
   });
   if (!connector.ok) {
-    const fallbackScriptPath = resolveTelemetryBridgeScript(telemetryBridgeScriptPath);
+    const fallbackScriptPath = resolveTelemetryBridgeScript(
+      telemetryBridgeScriptPath,
+    );
     const lastReadyConnector = getConnectorSetupStatusView();
     const usingVerifiedConnector =
       lastReadyConnector.ok === true &&
@@ -5435,7 +6759,9 @@ async function ensureTelemetrySourceRunning(options = {}) {
       };
     }
   }
-  const resolvedScriptPath = resolveTelemetryBridgeScript(telemetryBridgeScriptPath);
+  const resolvedScriptPath = resolveTelemetryBridgeScript(
+    telemetryBridgeScriptPath,
+  );
   const desiredConfig =
     desiredMode === "direct"
       ? {
@@ -5444,6 +6770,11 @@ async function ensureTelemetrySourceRunning(options = {}) {
           matchId: requireMatchId(options?.matchId),
           sessionId: String(options?.sessionId || "").trim(),
           feedToken: String(options?.feedToken || "").trim(),
+          mapKey: String(
+            options?.mapKey || productionModeState.selectedMapKey || "",
+          )
+            .trim()
+            .toLowerCase(),
           scriptPath: resolvedScriptPath || telemetryBridgeScriptPath || null,
         }
       : {
@@ -5481,8 +6812,11 @@ async function ensureTelemetrySourceRunning(options = {}) {
 
   if (
     desiredMode !== "direct" &&
-    !(isChildProcessRunning(telemetryBridgeProcess) && isDirectTelemetrySourceConfig(telemetrySourceProcessConfig)) &&
-    await isShadowTelemetryAvailable({ force: true })
+    !(
+      isChildProcessRunning(telemetryBridgeProcess) &&
+      isDirectTelemetrySourceConfig(telemetrySourceProcessConfig)
+    ) &&
+    (await isShadowTelemetryAvailable({ force: true }))
   ) {
     if (resolvedScriptPath) {
       telemetryBridgeScriptPath = resolvedScriptPath;
@@ -5517,7 +6851,9 @@ async function ensureTelemetrySourceRunning(options = {}) {
       };
     }
 
-    if (sameTelemetrySourceConfig(telemetrySourceProcessConfig, desiredConfig)) {
+    if (
+      sameTelemetrySourceConfig(telemetrySourceProcessConfig, desiredConfig)
+    ) {
       const ready = await waitForShadowTelemetryReady();
       if (desiredMode === "direct") {
         setObserverFeedState({
@@ -5548,7 +6884,10 @@ async function ensureTelemetrySourceRunning(options = {}) {
     await stopManagedTelemetrySourceProcess("restart");
   }
 
-  if (desiredMode === "direct" && await isShadowTelemetryAvailable({ force: true })) {
+  if (
+    desiredMode === "direct" &&
+    (await isShadowTelemetryAvailable({ force: true }))
+  ) {
     return {
       pid: null,
       scriptPath: desiredConfig.scriptPath,
@@ -5583,11 +6922,12 @@ async function ensureTelemetrySourceRunning(options = {}) {
   log("[launcher] resolved telemetry source script", {
     mode: desiredMode,
     scriptPath: resolvedScriptPath,
-    derivedFromShadowTracker: resolveTelemetryBridgeScriptFromShadowTrackerPath(
-      resolveShadowTrackerExecutable(configManager.getShadowTrackerPath(), {
-        preferRunning: true,
-      }),
-    ) || null,
+    derivedFromShadowTracker:
+      resolveTelemetryBridgeScriptFromShadowTrackerPath(
+        resolveShadowTrackerExecutable(configManager.getShadowTrackerPath(), {
+          preferRunning: true,
+        }),
+      ) || null,
     baseUrl: getShadowTelemetryBaseUrl(),
   });
 
@@ -5655,6 +6995,7 @@ async function ensureTelemetrySourceRunning(options = {}) {
 }
 
 async function startObserverFeedForMatch(matchId) {
+  const startedAt = Date.now();
   const session = getStoredSession();
   assertLauncherAccess();
   const requestedMatchId = requireMatchId(matchId);
@@ -5666,6 +7007,10 @@ async function startObserverFeedForMatch(matchId) {
     );
   }
 
+  if (visualModeService.getStatus().running) {
+    throw new Error("Stop Visual Mode before enabling the direct Observer Feed.");
+  }
+
   const currentFeed = getObserverFeedStatusView();
   if (
     currentFeed.running &&
@@ -5673,6 +7018,10 @@ async function startObserverFeedForMatch(matchId) {
     typeof currentFeed.sessionId === "string" &&
     currentFeed.sessionId.trim()
   ) {
+    logger.child("production").info("[LiveDesk] Observer feed reused", {
+      matchId: requestedMatchId,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
     return {
       ...currentFeed,
       alreadyRunning: true,
@@ -5681,7 +7030,11 @@ async function startObserverFeedForMatch(matchId) {
   }
 
   const sessionId = randomUUID();
-  const pinnedMatchId = await pinSelectedMatchLive(session, requestedMatchId, sessionId);
+  const pinnedMatchId = await pinSelectedMatchLive(
+    session,
+    requestedMatchId,
+    sessionId,
+  );
   const tokenBundle = await createObserverFeedToken(session);
   const source = await ensureTelemetrySourceRunning({
     mode: "direct",
@@ -5689,9 +7042,12 @@ async function startObserverFeedForMatch(matchId) {
     matchId: pinnedMatchId,
     sessionId,
     feedToken: tokenBundle.accessToken,
+    mapKey: productionModeState.selectedMapKey,
   });
 
   if (source?.error) {
+    setWidgetDirectObserverPollingAllowed(false);
+    refreshLocalRuntimeLifecyclePoller();
     resetObserverFeedState({
       lastError: source.error,
       lastStoppedAt: new Date().toISOString(),
@@ -5699,8 +7055,17 @@ async function startObserverFeedForMatch(matchId) {
     throw new Error(source.error);
   }
 
+  setWidgetDirectObserverPollingAllowed(true);
+  refreshLocalRuntimeLifecyclePoller();
+  const status = getObserverFeedStatusView();
+  logger.child("production").info("[LiveDesk] Observer feed started", {
+    matchId: requestedMatchId,
+    durationMs: Math.max(0, Date.now() - startedAt),
+    ready: status.ready === true,
+    pid: status.pid ?? null,
+  });
   return {
-    ...getObserverFeedStatusView(),
+    ...status,
     alreadyRunning: false,
     connector: source?.connector || getConnectorSetupStatusView(),
     expiresIn: tokenBundle.expiresIn,
@@ -5709,22 +7074,30 @@ async function startObserverFeedForMatch(matchId) {
 
 async function stopObserverFeed(reason = "stopped") {
   const currentFeed = getObserverFeedStatusView();
+  setWidgetDirectObserverPollingAllowed(false);
   await stopManagedTelemetrySourceProcess(reason);
-  return resetObserverFeedState({
+  const nextState = resetObserverFeedState({
     lastStoppedAt: new Date().toISOString(),
     lastError: null,
     scriptPath: currentFeed.scriptPath,
   });
+  clearWidgetRuntimeState(reason);
+  refreshLocalRuntimeLifecyclePoller();
+  return nextState;
 }
 
 function stopObserverFeedSilently(reason = "stopped") {
   const currentFeed = getObserverFeedStatusView();
+  setWidgetDirectObserverPollingAllowed(false);
   void stopManagedTelemetrySourceProcess(reason);
-  return resetObserverFeedState({
+  const nextState = resetObserverFeedState({
     lastStoppedAt: new Date().toISOString(),
     lastError: null,
     scriptPath: currentFeed.scriptPath,
   });
+  clearWidgetRuntimeState(reason);
+  refreshLocalRuntimeLifecyclePoller();
+  return nextState;
 }
 
 function getLauncherDefaults(apiBase) {
@@ -5851,12 +7224,13 @@ if (singleInstanceLock) {
 
 async function loginLauncher(params) {
   const keepSignedIn = params?.keepSignedIn !== false;
+  const resolvedApiBase = normalizeBaseUrl(params?.apiBase);
   const loginResult = await apiClient.login({
-    apiBase: params?.apiBase,
+    apiBase: resolvedApiBase,
     email: params?.email,
     password: params?.password,
   });
-  persistUserConfiguredApiBase(params?.apiBase, "login");
+  persistUserConfiguredApiBase(resolvedApiBase, "login");
   configManager.setSettings({ keepSignedIn });
   broadcastConfigUpdate("login");
 
@@ -5869,6 +7243,9 @@ async function loginLauncher(params) {
     organization: loginResult.organization,
   });
   const access = await evaluateLauncherAccess(nextSession);
+  await refreshWidgetHotkeyControlApproval(nextSession, {
+    throwOnError: false,
+  });
 
   return {
     apiBase: loginResult.apiBase,
@@ -5878,357 +7255,555 @@ async function loginLauncher(params) {
 }
 
 if (singleInstanceLock) {
-app.whenReady().then(async () => {
-  if (process.platform === "win32") {
-    app.setAppUserModelId(APP_USER_MODEL_ID);
-  }
-  log("[launcher] structured logger ready", {
-    logsDir: path.join(app.getPath("userData"), "logs"),
-  });
-  await bootstrapService.bootstrap();
-  ipcMain.handle("launcher:getConfig", () => getLauncherConfigView());
-
-  ipcMain.handle("launcher:setConfig", (_event, payload) =>
-    setLauncherConfigValue(payload?.key, payload?.value, "renderer"),
-  );
-
-  ipcMain.handle("launcher:getDefaults", () => getLauncherDefaults());
-
-  ipcMain.on("launcher:pathExists", (event, payload) => {
-    event.returnValue = pathExistsOnDisk(payload?.targetPath);
-  });
-
-  ipcMain.on("launcher:isFile", (event, payload) => {
-    event.returnValue = isFileOnDisk(payload?.targetPath);
-  });
-
-  ipcMain.handle("launcher:bootstrap", async (_event, payload) =>
-    bootstrapLauncher(payload?.apiBase),
-  );
-
-  ipcMain.handle("launcher:login", async (_event, payload) =>
-    loginLauncher(payload),
-  );
-
-  ipcMain.handle("launcher:logout", () => endLauncherSession({ clearAuth: true }));
-
-  ipcMain.handle("launcher:chooseFile", async (_event, options) => {
-    const result = await dialog.showOpenDialog({
-      title: options?.title || "Select file",
-      defaultPath: options?.defaultPath || undefined,
-      properties: ["openFile"],
-      filters: Array.isArray(options?.filters) ? options.filters : undefined,
-    });
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
+  app.whenReady().then(async () => {
+    if (process.platform === "win32") {
+      app.setAppUserModelId(APP_USER_MODEL_ID);
     }
-    return result.filePaths[0];
-  });
-
-  ipcMain.handle("launcher:copyText", (_event, payload) => {
-    const text = String(payload?.text || "");
-    clipboard.writeText(text);
-    return { ok: true };
-  });
-
-  ipcMain.handle("launcher:openExternal", async (_event, payload) => {
-    const url = normalizeHttpUrl(payload?.url);
-    await shell.openExternal(url);
-    return { ok: true };
-  });
-
-  ipcMain.handle("launcher:getLiveMatch", async (_event, payload) => {
-    let session = null;
-    try {
-      session = getStoredSession();
-    } catch {
-      session = null;
-    }
-    return fetchLiveMatch(payload?.apiBase || session?.apiBase, session);
-  });
-
-  ipcMain.handle("launcher:getNextMatchSuggestion", async (_event, payload) => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    return apiClient.getNextMatchSuggestion({
-      apiBase: session.apiBase,
-      token: session.token,
-      refreshToken: session.refreshToken,
-      matchId: payload?.matchId,
-      suggestedMatchId: payload?.suggestedMatchId,
+    log("[launcher] structured logger ready", {
+      logsDir: path.join(app.getPath("userData"), "logs"),
     });
-  });
+    await bootstrapService.bootstrap();
+    ipcMain.handle("launcher:getConfig", () => getLauncherConfigView());
 
-  ipcMain.handle("launcher:listTournaments", async () => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    return apiClient.listTournaments({
-      apiBase: session.apiBase,
-      token: session.token,
-      refreshToken: session.refreshToken,
+    ipcMain.handle("launcher:setConfig", (_event, payload) =>
+      setLauncherConfigValue(payload?.key, payload?.value, "renderer"),
+    );
+
+    ipcMain.handle("launcher:getDefaults", () => getLauncherDefaults());
+
+    ipcMain.on("launcher:pathExists", (event, payload) => {
+      event.returnValue = pathExistsOnDisk(payload?.targetPath);
     });
-  });
 
-  ipcMain.handle("launcher:listStages", async (_event, payload) => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    return apiClient.listStages({
-      apiBase: session.apiBase,
-      token: session.token,
-      refreshToken: session.refreshToken,
-      tournamentId: payload?.tournamentId,
+    ipcMain.on("launcher:isFile", (event, payload) => {
+      event.returnValue = isFileOnDisk(payload?.targetPath);
     });
-  });
 
-  ipcMain.handle("launcher:listMatches", async (_event, payload) => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    return apiClient.listMatches({
-      apiBase: session.apiBase,
-      token: session.token,
-      refreshToken: session.refreshToken,
-      tournamentId: payload?.tournamentId,
+    ipcMain.handle("launcher:bootstrap", async (_event, payload) =>
+      bootstrapLauncher(payload?.apiBase),
+    );
+
+    ipcMain.handle("launcher:login", async (_event, payload) =>
+      loginLauncher(payload),
+    );
+
+    ipcMain.handle("launcher:logout", () =>
+      endLauncherSession({ clearAuth: true }),
+    );
+
+    ipcMain.handle("launcher:chooseFile", async (_event, options) => {
+      const result = await dialog.showOpenDialog({
+        title: options?.title || "Select file",
+        defaultPath: options?.defaultPath || undefined,
+        properties: ["openFile"],
+        filters: Array.isArray(options?.filters) ? options.filters : undefined,
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      return result.filePaths[0];
     });
-  });
 
-  ipcMain.handle("launcher:getMatchControl", async (_event, payload) => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    const { control } = await fetchMatchControlState(session, payload?.matchId);
-    return control;
-  });
-
-  ipcMain.handle("launcher:syncTeams", async (_event, payload) => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    return syncTeams(session, payload?.matchId, {
-      repairSlots: payload?.repairSlots === true,
+    ipcMain.handle("launcher:copyText", (_event, payload) => {
+      const text = String(payload?.text || "");
+      clipboard.writeText(text);
+      return { ok: true };
     });
-  });
 
-  ipcMain.handle("launcher:generateBranding", async (_event, payload) => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    return generateBranding(session, payload?.matchId);
-  });
+    ipcMain.handle("launcher:openExternal", async (_event, payload) => {
+      const url = normalizeHttpUrl(payload?.url);
+      await shell.openExternal(url);
+      return { ok: true };
+    });
 
-  ipcMain.handle("launcher:getTelemetryStatus", () =>
-    telemetryBridge.getStatus(),
-  );
+    ipcMain.handle("launcher:getLiveMatch", async (_event, payload) => {
+      let session = null;
+      try {
+        session = getStoredSession();
+      } catch {
+        session = null;
+      }
+      return fetchLiveMatch(payload?.apiBase || session?.apiBase, session);
+    });
 
-  ipcMain.handle("launcher:getObserverFeedStatus", () =>
-    getObserverFeedStatusView(),
-  );
+    ipcMain.handle(
+      "launcher:getNextMatchSuggestion",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        return apiClient.getNextMatchSuggestion({
+          apiBase: session.apiBase,
+          token: session.token,
+          refreshToken: session.refreshToken,
+          matchId: payload?.matchId,
+          suggestedMatchId: payload?.suggestedMatchId,
+        });
+      },
+    );
 
-  ipcMain.handle("launcher:getConnectorStatus", () =>
-    getConnectorSetupStatusView(),
-  );
+    ipcMain.handle("launcher:listTournaments", async () => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      return apiClient.listTournaments({
+        apiBase: session.apiBase,
+        token: session.token,
+        refreshToken: session.refreshToken,
+      });
+    });
 
-  ipcMain.handle("launcher:repairConnector", (_event, payload) =>
-    ensureManagedTelemetryBridgeInstalled({
-      shadowTrackerPath: payload?.shadowTrackerPath,
-    }),
-  );
+    ipcMain.handle("launcher:listStages", async (_event, payload) => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      return apiClient.listStages({
+        apiBase: session.apiBase,
+        token: session.token,
+        refreshToken: session.refreshToken,
+        tournamentId: payload?.tournamentId,
+      });
+    });
 
-  ipcMain.handle("launcher:updateMatchFlowState", (_event, payload) => {
-    const nextMatchFlowState = normalizeMatchFlowState(payload);
-    if (shouldInvalidateProductionModeState(nextMatchFlowState)) {
+    ipcMain.handle("launcher:listMatches", async (_event, payload) => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      return apiClient.listMatches({
+        apiBase: session.apiBase,
+        token: session.token,
+        refreshToken: session.refreshToken,
+        tournamentId: payload?.tournamentId,
+      });
+    });
+
+    ipcMain.handle("launcher:getMatchControl", async (_event, payload) => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      const { control } = await fetchMatchControlState(
+        session,
+        payload?.matchId,
+      );
+      return control;
+    });
+
+    ipcMain.handle("launcher:syncTeams", async (_event, payload) => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      return syncTeams(session, payload?.matchId, {
+        repairSlots: payload?.repairSlots === true,
+      });
+    });
+
+    ipcMain.handle("launcher:generateBranding", async (_event, payload) => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      return generateBranding(session, payload?.matchId);
+    });
+
+    ipcMain.handle("launcher:getTelemetryStatus", () =>
+      telemetryBridge.getStatus(),
+    );
+
+    ipcMain.handle("launcher:getObserverFeedStatus", () =>
+      getObserverFeedStatusView(),
+    );
+
+    ipcMain.handle("launcher:listVisualSources", async () => {
+      assertLauncherAccess();
+      return visualModeService.listSources();
+    });
+
+    ipcMain.handle("launcher:getVisualModeStatus", () =>
+      visualModeService.getStatus(),
+    );
+
+    ipcMain.handle("launcher:getVisualModeConfig", () =>
+      visualModeService.getConfig(),
+    );
+
+    ipcMain.handle("launcher:setVisualModeConfig", (_event, payload) => {
+      assertLauncherAccess();
+      return visualModeService.setConfig(payload?.config || payload);
+    });
+
+    ipcMain.handle("launcher:getVisualReviewQueue", () =>
+      visualModeService.getReviewQueue(),
+    );
+
+    ipcMain.handle("launcher:clearVisualReviewQueue", () => {
+      assertLauncherAccess();
+      return visualModeService.clearReviewQueue();
+    });
+
+    ipcMain.handle("launcher:captureVisualReviewCandidate", async () => {
+      assertLauncherAccess();
+      return visualModeService.captureReviewCandidate();
+    });
+
+    ipcMain.handle("launcher:runVisualReviewOcr", async (_event, payload) => {
+      assertLauncherAccess();
+      const item = visualModeService.getReviewItem(payload?.id);
+      const matchId = requireMatchId(item?.matchId || payload?.matchId);
+      if (!item?.imagePath) {
+        throw new Error("Capture an image before running OCR preview.");
+      }
+
+      visualModeService.markReviewItemOcrProcessing(item.id);
+      const session = getStoredSession();
+      try {
+        const upload = await apiClient.uploadScreenshot({
+          apiBase: session.apiBase,
+          token: session.token || session.accessToken,
+          refreshToken: session.refreshToken,
+          filePath: item.imagePath,
+        });
+        const imageUrl = String(upload?.imageUrl || upload?.url || "").trim();
+        if (!imageUrl) {
+          throw new Error("Screenshot upload did not return a public image URL.");
+        }
+        const preview = await apiClient.previewScreenshotResults({
+          apiBase: session.apiBase,
+          token: session.token || session.accessToken,
+          refreshToken: session.refreshToken,
+          matchId,
+          imageUrl,
+        });
+        return visualModeService.attachReviewItemOcrPreview(item.id, {
+          imageUrl,
+          preview,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error || "OCR preview failed.");
+        logWarn("[visual] OCR preview failed", { error: message });
+        return visualModeService.markReviewItemOcrFailed(item.id, message);
+      }
+    });
+
+    ipcMain.handle("launcher:ignoreVisualReviewItem", (_event, payload) => {
+      assertLauncherAccess();
+      return visualModeService.ignoreReviewItem(payload?.id);
+    });
+
+    ipcMain.handle("launcher:markVisualReviewItemReviewed", (_event, payload) => {
+      assertLauncherAccess();
+      return visualModeService.markReviewItemReviewed(payload?.id);
+    });
+
+    ipcMain.handle("launcher:getConnectorStatus", () =>
+      getConnectorSetupStatusView(),
+    );
+
+    ipcMain.handle("launcher:repairConnector", (_event, payload) =>
+      ensureManagedTelemetryBridgeInstalled({
+        shadowTrackerPath: payload?.shadowTrackerPath,
+      }),
+    );
+
+    ipcMain.handle("launcher:updateMatchFlowState", (_event, payload) => {
+      const nextMatchFlowState = normalizeMatchFlowState(payload);
+      if (shouldInvalidateProductionModeState(nextMatchFlowState)) {
+        productionModeState = createDefaultProductionModeState();
+      }
+      matchFlowState = nextMatchFlowState;
+      return { ...matchFlowState };
+    });
+
+    ipcMain.handle("launcher:enterProductionMode", async (_event, payload) => {
+      const startedAt = Date.now();
+      assertLauncherAccess();
+      const resolvedShadowTrackerPath = resolveShadowTrackerExecutable(
+        payload?.shadowTrackerPath,
+        { preferRunning: true, forceProcessScan: true },
+      );
+      if (resolvedShadowTrackerPath) {
+        persistDetectedShadowTrackerPath(
+          resolvedShadowTrackerPath,
+          "production-mode",
+        );
+      }
+      const result = await productionModeService.runPreflight({
+        matchId: payload?.matchId,
+        selectedMatch: payload?.selectedMatch ?? null,
+        shadowTrackerPath:
+          resolvedShadowTrackerPath || payload?.shadowTrackerPath || null,
+      });
+      productionModeState = summarizeProductionModeResult(result);
+      logger.child("production").info(
+        "[LiveDesk] Production preflight completed",
+        {
+          matchId: result?.matchId ?? payload?.matchId ?? null,
+          status: result?.status ?? null,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          preflightDurationMs:
+            Number.isFinite(Number(result?.durationMs))
+              ? Number(result.durationMs)
+              : null,
+        },
+      );
+      if (isProductionReadyStatus(result?.status)) {
+        schedulePlayerPhotoCacheRefresh(result?.matchId || payload?.matchId, 3000);
+      }
+      return result;
+    });
+
+    ipcMain.handle("launcher:getWidgetServerStatus", () =>
+      getWidgetServerStatusView(),
+    );
+
+    ipcMain.handle("launcher:getPinnedCommentatorDeskWindow", () =>
+      getPinnedCommentatorDeskWindowStatus(),
+    );
+
+    ipcMain.handle(
+      "launcher:openPinnedCommentatorDeskWindow",
+      async (_event, payload) => openPinnedCommentatorDeskWindow(payload),
+    );
+
+    ipcMain.handle("launcher:closePinnedCommentatorDeskWindow", () =>
+      closePinnedCommentatorDeskWindow(),
+    );
+
+    ipcMain.handle(
+      "launcher:setPinnedCommentatorDeskClickThrough",
+      (_event, payload) =>
+        applyPinnedCommentatorDeskClickThrough(payload?.clickThrough === true),
+    );
+
+    ipcMain.handle("launcher:getAssetStatus", () => getAssetStatusView());
+
+    ipcMain.handle("launcher:getHealthStatus", () => healthService.getStatus());
+
+    ipcMain.handle("launcher:getBootstrapStatus", () =>
+      bootstrapService.getStatus(),
+    );
+
+    ipcMain.handle("launcher:getRecentLogs", (_event, payload) =>
+      logger.getRecent(payload?.scope, payload?.limit),
+    );
+
+    ipcMain.handle("launcher:getWidgetCatalogState", async (_event, payload) =>
+      getWidgetCatalogState(payload),
+    );
+
+    ipcMain.handle("launcher:getWidgetHotkeyControl", async (_event, payload) =>
+      getWidgetHotkeyControlStatus(payload),
+    );
+
+    ipcMain.handle(
+      "launcher:updateWidgetHotkeyControl",
+      async (_event, payload) => updateWidgetHotkeyControl(payload),
+    );
+
+    ipcMain.handle(
+      "launcher:triggerWidgetHotkeyControl",
+      async (_event, payload) => triggerWidgetHotkeyControl(payload),
+    );
+
+    ipcMain.handle("launcher:getAiCasterAccess", async (_event, payload) => {
+      assertLauncherAccess();
+      return refreshAiCasterAccess(getStoredSession(), {
+        throwOnError: true,
+        organizationId: payload?.organizationId ?? null,
+      });
+    });
+
+    ipcMain.handle("launcher:updateAiCasterSettings", async (_event, payload) =>
+      updateAiCasterSettings(payload),
+    );
+
+    ipcMain.handle("launcher:previewAiCasterVoice", async (_event, payload) =>
+      previewAiCasterVoice(payload),
+    );
+
+    ipcMain.handle(
+      "launcher:getObserverCommandCenterSnapshot",
+      (_event, payload) =>
+        buildObserverCommandCenterSnapshot(payload?.mapKey ?? null),
+    );
+
+    ipcMain.handle(
+      "launcher:runObserverCommandAction",
+      async (_event, payload) => {
+        if (
+          !widgetServer?.port ||
+          typeof widgetServer.runObserverCommandAction !== "function"
+        ) {
+          throw new Error("Widget server is unavailable.");
+        }
+
+        const mapKey = payload?.mapKey ?? null;
+        const normalizedPath = normalizeObserverCommandPath(
+          payload?.path,
+          mapKey,
+        );
+        const actionResult =
+          await widgetServer.runObserverCommandAction(normalizedPath);
+        return {
+          ok: actionResult?.ok !== false,
+          path: normalizedPath,
+          actionResult: actionResult ?? null,
+          snapshot: buildObserverCommandCenterSnapshot(mapKey),
+        };
+      },
+    );
+
+    ipcMain.handle("launcher:launchShadowTracker", async (_event, payload) => {
+      assertLauncherAccess();
+      const executablePath = resolveShadowTrackerExecutable(
+        payload?.shadowTrackerPath,
+        { preferRunning: false },
+      );
+      if (!executablePath) {
+        throw new Error(
+          `ShadowTrackerExtra.exe was not found. Use ${DEFAULT_SHADOWTRACKER_EXECUTABLE} or browse to the Win64 executable.`,
+        );
+      }
+
+      const child = spawnDetached(executablePath, [], {
+        cwd: path.dirname(executablePath),
+        windowsHide: false,
+      });
+      configManager.setShadowTrackerPath(executablePath);
+      const telemetrySource = await ensureTelemetrySourceRunning({
+        shadowTrackerPath: executablePath,
+      });
+      const telemetry = telemetryBridge.getStatus();
+
+      return {
+        ok: true,
+        pid: child.pid ?? null,
+        executablePath,
+        telemetry,
+        telemetryError: null,
+        connector: telemetrySource?.connector || getConnectorSetupStatusView(),
+        telemetrySource: telemetrySource
+          ? {
+              pid: telemetrySource.pid,
+              scriptPath: telemetrySource.scriptPath,
+              started: telemetrySource.started,
+              alreadyRunning: telemetrySource.alreadyRunning,
+              ready: telemetrySource.ready,
+              baseUrl: getShadowTelemetryBaseUrl(),
+              connector: telemetrySource.connector || null,
+            }
+          : null,
+        telemetrySourceError: telemetrySource?.error || null,
+      };
+    });
+
+    ipcMain.handle("launcher:startTelemetryBridge", async (_event, payload) => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      const requestedMatchId = requireMatchId(payload?.matchId);
+      if (getObserverFeedStatusView().running) {
+        throw new Error(
+          "Stop the direct Observer Feed before starting the Telemetry Bridge.",
+        );
+      }
+      if (visualModeService.getStatus().running) {
+        throw new Error("Stop Visual Mode before starting the Telemetry Bridge.");
+      }
+      assertProductionModeReadyForMatch(requestedMatchId);
+      const currentTelemetryStatus = telemetryBridge.getStatus();
+      const sessionId =
+        currentTelemetryStatus.running &&
+        currentTelemetryStatus.matchId === requestedMatchId &&
+        typeof currentTelemetryStatus.sessionId === "string" &&
+        currentTelemetryStatus.sessionId.trim()
+          ? currentTelemetryStatus.sessionId.trim()
+          : randomUUID();
+      const matchId = await pinSelectedMatchLive(
+        session,
+        requestedMatchId,
+        sessionId,
+      );
+      const telemetrySource = await ensureTelemetrySourceRunning();
+      const activeSession = getStoredSession();
+      const telemetry = await telemetryBridge.start({
+        apiBase: activeSession.apiBase,
+        token: activeSession.token,
+        refreshToken: activeSession.refreshToken,
+        matchId,
+        sessionId,
+      });
+      setWidgetDirectObserverPollingAllowed(false);
+      refreshLocalRuntimeLifecyclePoller();
+      return {
+        ...telemetry,
+        connector: telemetrySource?.connector || getConnectorSetupStatusView(),
+        telemetrySource: telemetrySource
+          ? {
+              pid: telemetrySource.pid,
+              scriptPath: telemetrySource.scriptPath,
+              started: telemetrySource.started,
+              alreadyRunning: telemetrySource.alreadyRunning,
+              ready: telemetrySource.ready,
+              baseUrl: getShadowTelemetryBaseUrl(),
+              connector: telemetrySource.connector || null,
+            }
+          : null,
+        telemetrySourceError: telemetrySource?.error || null,
+      };
+    });
+
+    ipcMain.handle("launcher:stopTelemetryBridge", () =>
+      telemetryBridge.stop("stopped"),
+    );
+
+    ipcMain.handle("launcher:startVisualMode", async (_event, payload) => {
+      const session = getStoredSession();
+      assertLauncherAccess();
+      const requestedMatchId = requireMatchId(payload?.matchId);
+      if (telemetryBridge.getStatus().running) {
+        throw new Error(
+          "Stop the Telemetry Bridge before starting Visual Mode.",
+        );
+      }
+      if (getObserverFeedStatusView().running) {
+        throw new Error("Stop the Observer Feed before starting Visual Mode.");
+      }
+      await assertMatchLifecycleStartable(session, requestedMatchId);
+      return visualModeService.start({
+        matchId: requestedMatchId,
+        config: payload?.config || {},
+      });
+    });
+
+    ipcMain.handle("launcher:stopVisualMode", () =>
+      visualModeService.stop("stopped"),
+    );
+
+    ipcMain.handle("launcher:startObserverFeed", async (_event, payload) => {
+      const result = await startObserverFeedForMatch(payload?.matchId);
+      return result;
+    });
+
+    ipcMain.handle("launcher:stopObserverFeed", () =>
+      stopObserverFeed("stopped"),
+    );
+
+    ipcMain.handle("launcher:resetTelemetryForMatchSwitch", () => {
       productionModeState = createDefaultProductionModeState();
-    }
-    matchFlowState = nextMatchFlowState;
-    return { ...matchFlowState };
-  });
-
-  ipcMain.handle("launcher:enterProductionMode", async (_event, payload) => {
-    assertLauncherAccess();
-    const resolvedShadowTrackerPath = resolveShadowTrackerExecutable(
-      payload?.shadowTrackerPath,
-      { preferRunning: true, forceProcessScan: true },
-    );
-    if (resolvedShadowTrackerPath) {
-      persistDetectedShadowTrackerPath(resolvedShadowTrackerPath, "production-mode");
-    }
-    await ensureTelemetrySourceRunning({
-      shadowTrackerPath: resolvedShadowTrackerPath || payload?.shadowTrackerPath,
+      stopObserverFeedSilently("match-switch");
+      visualModeService.stop("match-switch");
+      return telemetryBridge.resetForMatchSwitch();
     });
-    const result = await productionModeService.runPreflight({
-      matchId: payload?.matchId,
-      selectedMatch: payload?.selectedMatch ?? null,
-      shadowTrackerPath:
-        resolvedShadowTrackerPath || payload?.shadowTrackerPath || null,
+
+    ipcMain.handle("launcher:consumePendingSyncCommand", () => {
+      const command = pendingSyncCommand;
+      pendingSyncCommand = null;
+      return command;
     });
-    productionModeState = summarizeProductionModeResult(result);
-    return result;
-  });
 
-  ipcMain.handle("launcher:getWidgetServerStatus", () =>
-    getWidgetServerStatusView(),
-  );
+    createWindow();
+    consumeProtocolArguments(process.argv);
 
-  ipcMain.handle("launcher:getAssetStatus", () => getAssetStatusView());
-
-  ipcMain.handle("launcher:getHealthStatus", () => healthService.getStatus());
-
-  ipcMain.handle("launcher:getBootstrapStatus", () => bootstrapService.getStatus());
-
-  ipcMain.handle("launcher:getRecentLogs", (_event, payload) =>
-    logger.getRecent(payload?.scope, payload?.limit),
-  );
-
-  ipcMain.handle("launcher:getWidgetCatalogState", async (_event, payload) =>
-    getWidgetCatalogState(payload),
-  );
-
-  ipcMain.handle("launcher:getObserverCommandCenterSnapshot", (_event, payload) =>
-    buildObserverCommandCenterSnapshot(payload?.mapKey ?? null),
-  );
-
-  ipcMain.handle("launcher:runObserverCommandAction", async (_event, payload) => {
-    if (!widgetServer?.port) {
-      throw new Error("Widget server is unavailable.");
-    }
-
-    const mapKey = payload?.mapKey ?? null;
-    const normalizedPath = normalizeObserverCommandPath(payload?.path, mapKey);
-    const response = await axios.get(`http://127.0.0.1:${widgetServer.port}${normalizedPath}`, {
-      timeout: 3000,
+    app.on("activate", () => {
+      if (!mainWindow) {
+        createWindow();
+      }
     });
-    return {
-      ok: response?.data?.ok !== false,
-      path: normalizedPath,
-      actionResult: response?.data ?? null,
-      snapshot: buildObserverCommandCenterSnapshot(mapKey),
-    };
   });
-
-  ipcMain.handle("launcher:launchShadowTracker", async (_event, payload) => {
-    assertLauncherAccess();
-    const executablePath = resolveShadowTrackerExecutable(
-      payload?.shadowTrackerPath,
-      { preferRunning: false },
-    );
-    if (!executablePath) {
-      throw new Error(
-        `ShadowTrackerExtra.exe was not found. Use ${DEFAULT_SHADOWTRACKER_EXECUTABLE} or browse to the Win64 executable.`,
-      );
-    }
-
-    const child = spawnDetached(executablePath, [], {
-      cwd: path.dirname(executablePath),
-      windowsHide: false,
-    });
-    configManager.setShadowTrackerPath(executablePath);
-    const telemetrySource = await ensureTelemetrySourceRunning({
-      shadowTrackerPath: executablePath,
-    });
-    const telemetry = telemetryBridge.getStatus();
-
-    return {
-      ok: true,
-      pid: child.pid ?? null,
-      executablePath,
-      telemetry,
-      telemetryError: null,
-      connector: telemetrySource?.connector || getConnectorSetupStatusView(),
-      telemetrySource: telemetrySource
-        ? {
-            pid: telemetrySource.pid,
-            scriptPath: telemetrySource.scriptPath,
-            started: telemetrySource.started,
-            alreadyRunning: telemetrySource.alreadyRunning,
-            ready: telemetrySource.ready,
-            baseUrl: getShadowTelemetryBaseUrl(),
-            connector: telemetrySource.connector || null,
-          }
-        : null,
-      telemetrySourceError: telemetrySource?.error || null,
-    };
-  });
-
-  ipcMain.handle("launcher:startTelemetryBridge", async (_event, payload) => {
-    const session = getStoredSession();
-    assertLauncherAccess();
-    const requestedMatchId = requireMatchId(payload?.matchId);
-    if (getObserverFeedStatusView().running) {
-      throw new Error(
-        "Stop the direct Observer Feed before starting the Telemetry Bridge.",
-      );
-    }
-    assertProductionModeReadyForMatch(requestedMatchId);
-    const currentTelemetryStatus = telemetryBridge.getStatus();
-    const sessionId =
-      currentTelemetryStatus.running &&
-      currentTelemetryStatus.matchId === requestedMatchId &&
-      typeof currentTelemetryStatus.sessionId === "string" &&
-      currentTelemetryStatus.sessionId.trim()
-        ? currentTelemetryStatus.sessionId.trim()
-        : randomUUID();
-    const matchId = await pinSelectedMatchLive(
-      session,
-      requestedMatchId,
-      sessionId,
-    );
-    const telemetrySource = await ensureTelemetrySourceRunning();
-    const activeSession = getStoredSession();
-    const telemetry = await telemetryBridge.start({
-      apiBase: activeSession.apiBase,
-      token: activeSession.token,
-      refreshToken: activeSession.refreshToken,
-      matchId,
-      sessionId,
-    });
-    return {
-      ...telemetry,
-      connector: telemetrySource?.connector || getConnectorSetupStatusView(),
-      telemetrySource: telemetrySource
-        ? {
-            pid: telemetrySource.pid,
-            scriptPath: telemetrySource.scriptPath,
-            started: telemetrySource.started,
-            alreadyRunning: telemetrySource.alreadyRunning,
-            ready: telemetrySource.ready,
-            baseUrl: getShadowTelemetryBaseUrl(),
-            connector: telemetrySource.connector || null,
-          }
-        : null,
-      telemetrySourceError: telemetrySource?.error || null,
-    };
-  });
-
-  ipcMain.handle("launcher:stopTelemetryBridge", () =>
-    telemetryBridge.stop("stopped"),
-  );
-
-  ipcMain.handle("launcher:startObserverFeed", async (_event, payload) => {
-    const result = await startObserverFeedForMatch(payload?.matchId);
-    return result;
-  });
-
-  ipcMain.handle("launcher:stopObserverFeed", () =>
-    stopObserverFeed("stopped"),
-  );
-
-  ipcMain.handle("launcher:resetTelemetryForMatchSwitch", () => {
-    productionModeState = createDefaultProductionModeState();
-    stopObserverFeedSilently("match-switch");
-    return telemetryBridge.resetForMatchSwitch();
-  });
-
-  ipcMain.handle("launcher:consumePendingSyncCommand", () => {
-    const command = pendingSyncCommand;
-    pendingSyncCommand = null;
-    return command;
-  });
-
-  createWindow();
-  consumeProtocolArguments(process.argv);
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
 }
 
 app.on("before-quit", (event) => {
@@ -6244,6 +7819,8 @@ app.on("before-quit", (event) => {
     .then(() => endLauncherSession({ clearAuth: clearAuthOnQuit }))
     .finally(async () => {
       try {
+        closePinnedCommentatorDeskWindow();
+        widgetHotkeyControl.shutdown();
         await widgetServer?.stop();
       } catch (error) {
         logError(
