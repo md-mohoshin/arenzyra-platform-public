@@ -9,7 +9,7 @@ const DEFAULT_API_BASE =
   getProcessDefaultApiBase();
 const DEFAULT_WS_PATH = "/ws";
 const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v4";
-const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v10";
+const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v11";
 
 const LIVE_WIDGET_KEYS = new Set([
   "teams-alive",
@@ -21,6 +21,7 @@ const LIVE_WIDGET_KEYS = new Set([
   "player-photo",
   "map-overlay",
   "next-zone-update",
+  "next-zone-update-kinetic-hud",
   "next-zone-update-pro-sidebar",
   "wwcd",
   "winner",
@@ -552,6 +553,55 @@ function buildLocalWidgetPage({
         </div>
       </section>
       <div class="next-zone-update-progress next-zone-update-progress--pro-sidebar" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
+  if (widgetKey === "next-zone-update-kinetic-hud") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update Kinetic HUD",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        styleVariant: "kinetic-hud",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root obs-next-zone-update-root--kinetic-hud"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      data-style="kinetic-hud"
+      hidden
+    >
+      <section class="next-zone-update-card next-zone-update-card--kinetic-hud" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-phase-block next-zone-update-phase-block--kinetic-hud">
+          <span id="next-zone-update-phase">P--</span>
+        </div>
+        <div class="next-zone-update-copy next-zone-update-copy--kinetic-hud">
+          <div class="next-zone-update-topline next-zone-update-topline--kinetic-hud">Zone Telemetry</div>
+          <div class="next-zone-update-title next-zone-update-title--kinetic-hud">Next Zone Update</div>
+          <div class="next-zone-update-subtitle next-zone-update-subtitle--kinetic-hud">Final shrink window</div>
+        </div>
+        <div class="next-zone-update-timer next-zone-update-timer--kinetic-hud">
+          <div class="next-zone-update-timer-inner next-zone-update-timer-inner--kinetic-hud">
+            <div class="next-zone-update-countdown next-zone-update-countdown--kinetic-hud" id="next-zone-update-countdown">00:20</div>
+            <div class="next-zone-update-timer-label next-zone-update-timer-label--kinetic-hud">Remaining</div>
+          </div>
+        </div>
+        <div class="next-zone-update-status" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress next-zone-update-progress--kinetic-hud" aria-hidden="true">
         <span id="next-zone-update-progress"></span>
       </div>
     </main>`,

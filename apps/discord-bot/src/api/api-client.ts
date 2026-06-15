@@ -90,6 +90,36 @@ export type RefreshDiscordSourceImportsResponse = {
   skipped: boolean;
 };
 
+export type SyncOldDiscordLogosResponse = {
+  ok: true;
+  sessionId: string;
+  guildId: string;
+  channelIds: string[];
+  limit: number;
+  scanned: number;
+  matched: number;
+  saved: number;
+  pending: number;
+  backfilled: number;
+  skipped: number;
+  failed: number;
+  failures: Array<{ channelId: string; messageId: string; reason: string }>;
+};
+
+export type SyncOldDiscordPlayerPhotosResponse = {
+  ok: true;
+  sessionId: string;
+  guildId: string;
+  channelIds: string[];
+  limit: number;
+  scanned: number;
+  matched: number;
+  saved: number;
+  skipped: number;
+  failed: number;
+  failures: Array<{ channelId: string; messageId: string; reason: string }>;
+};
+
 export type RemoveSlotRegistrationsResponse = {
   removedRegistrations: SessionRegistrationResponse[];
   removedTeamIds: string[];
@@ -168,6 +198,184 @@ export type ResolvedDiscordChannelResponse = {
   channelKind: string;
 };
 
+export type ProductionDiscordChannelKind =
+  | "slots"
+  | "logos"
+  | "player-photos"
+  | "idp"
+  | "logs"
+  | "control";
+
+export type ProductionDiscordSlot = {
+  slotNumber: number;
+  teamName: string;
+  teamTag: string | null;
+  teamId: string;
+  sourceChannelId: string | null;
+  sourceMessageId: string | null;
+  importedAt: string;
+};
+
+export type ProductionDiscordLastSlotImport = {
+  sourceChannelId: string | null;
+  sourceMessageId: string | null;
+  importedAt: string;
+  parsedSlotRows: number;
+  importedTeams: number;
+};
+
+export type ProductionDiscordConfig = {
+  enabled: boolean;
+  guildId: string | null;
+  guildName: string | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  slotsChannelId: string | null;
+  slotsChannelName: string | null;
+  logosChannelId: string | null;
+  logosChannelName: string | null;
+  playerPhotosChannelId: string | null;
+  playerPhotosChannelName: string | null;
+  idpChannelId: string | null;
+  idpChannelName: string | null;
+  logsChannelId: string | null;
+  logsChannelName: string | null;
+  controlChannelId: string | null;
+  controlChannelName: string | null;
+  productionRoleId: string | null;
+  productionRoleName: string | null;
+  startSlot: number | null;
+  normalSlots: number | null;
+  vipSlots: number | null;
+  slots: ProductionDiscordSlot[];
+  lastSlotImport: ProductionDiscordLastSlotImport | null;
+  sets: ProductionDiscordSet[];
+};
+
+export type ProductionDiscordSet = {
+  key: string;
+  index: number;
+  setName: string | null;
+  eventId: string | null;
+  eventName: string | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  slotsChannelId: string | null;
+  slotsChannelName: string | null;
+  logosChannelId: string | null;
+  logosChannelName: string | null;
+  playerPhotosChannelId: string | null;
+  playerPhotosChannelName: string | null;
+  idpChannelId: string | null;
+  idpChannelName: string | null;
+  logsChannelId: string | null;
+  logsChannelName: string | null;
+  controlChannelId: string | null;
+  controlChannelName: string | null;
+  productionRoleId: string | null;
+  productionRoleName: string | null;
+  startSlot: number | null;
+  normalSlots: number | null;
+  vipSlots: number | null;
+  slots: ProductionDiscordSlot[];
+  lastSlotImport: ProductionDiscordLastSlotImport | null;
+};
+
+export type ProductionDiscordConfigResponse = {
+  organizationId: string;
+  featureKey: string;
+  approved: boolean;
+  config: ProductionDiscordConfig;
+  canEdit: boolean;
+  setKey?: string;
+  setName?: string;
+  deletedSetKey?: string;
+  deletedSetName?: string;
+};
+
+export type UpdateProductionDiscordConfigPayload = Partial<
+  Omit<ProductionDiscordConfig, "slots" | "lastSlotImport" | "sets">
+> & {
+  setKey?: string | null;
+  setIndex?: number | null;
+  setName?: string | null;
+  eventId?: string | null;
+};
+
+export type ResolvedProductionDiscordChannelResponse = {
+  organizationId: string;
+  organizationName: string;
+  organizationSlug: string;
+  guildId: string;
+  channelId: string;
+  channelKind: ProductionDiscordChannelKind;
+  setKey: string;
+  setName: string;
+  eventId: string | null;
+  eventName: string | null;
+  set: ProductionDiscordSet;
+  config: ProductionDiscordConfig;
+};
+
+export type ImportProductionDiscordSlotsPayload = {
+  setKey?: string | null;
+  content: string;
+  guildId?: string | null;
+  sourceChannelId?: string | null;
+  sourceMessageId?: string | null;
+};
+
+export type ImportProductionDiscordSlotsResponse = {
+  organizationId: string;
+  setKey: string;
+  setName: string;
+  eventId: string | null;
+  eventName: string | null;
+  importedTeams: number;
+  parsedSlotRows: number;
+  slots: ProductionDiscordSlot[];
+  config: ProductionDiscordConfig;
+  autoSyncedEvent?: {
+    sessionId: string;
+    sessionName: string;
+    importedTeams: number;
+    removedTeams: number;
+    skipped: Array<{
+      slotNumber: number;
+      teamName: string;
+      reason: string;
+    }>;
+    syncedMatches: Array<{
+      matchId: string;
+      teams: number;
+      slots: number;
+      updatedSlots: number;
+      clearedSlots: number;
+      resetResults: number;
+    }>;
+  } | null;
+};
+
+export type UpsertProductionDiscordTeamPayload = {
+  name: string;
+  tag?: string | null;
+  guildId?: string | null;
+  sourceChannelId?: string | null;
+  sourceMessageId?: string | null;
+};
+
+export type UpsertProductionDiscordTeamResponse = {
+  organizationId: string;
+  team: TeamSummary & {
+    logoUrl?: string | null;
+  };
+  source: {
+    guildId: string | null;
+    sourceChannelId: string | null;
+    sourceMessageId: string | null;
+  };
+};
+
 export type DiscordChannelPauseResponse = {
   guildId: string;
   channelId: string;
@@ -235,6 +443,84 @@ export type MatchSlotResponse = {
     tag?: string | null;
     logoUrl?: string | null;
   } | null;
+};
+
+export type MatchResultPlayerResponse = {
+  id: string;
+  playerId: string;
+  externalPlayerId?: string | null;
+  name: string;
+  avatar?: string | null;
+  kills: number;
+  damage?: number | null;
+  knocks?: number | null;
+  assists?: number | null;
+  alive?: boolean | null;
+  isAlive?: boolean | null;
+  isKnocked?: boolean | null;
+};
+
+export type MatchResultRowResponse = {
+  id: string;
+  matchId: string;
+  teamId: string;
+  slot: number | null;
+  kills: number;
+  teamKills?: number | null;
+  placement: number | null;
+  placementPoints: number;
+  totalPoints: number;
+  wasPresentInMatch?: boolean | null;
+  presenceStatus?: string | null;
+  manualTotalKills?: boolean | null;
+  team?: {
+    id: string;
+    name?: string | null;
+    tag?: string | null;
+    logoUrl?: string | null;
+  } | null;
+  players?: MatchResultPlayerResponse[];
+};
+
+export type MatchResultsResponse = {
+  results: MatchResultRowResponse[];
+  data?: MatchResultRowResponse[];
+  version?: number | null;
+  locked?: boolean;
+  lockState?: string | null;
+  lockReason?: string | null;
+};
+
+export type UpdateMatchResultPayload = {
+  placement?: number | null;
+  kills?: number | null;
+  teamKills?: number | null;
+  playerKills?: Array<{
+    playerId?: string | null;
+    playerResultId?: string | null;
+    kills: number;
+    isAlive?: boolean | null;
+    alive?: boolean | null;
+    isKnocked?: boolean | null;
+    knocked?: boolean | null;
+  }>;
+};
+
+export type ManualMatchResultRowPayload = {
+  teamId: string;
+  placement: number;
+  kills: number;
+};
+
+export type ManualMatchResultsPayload = {
+  expectedVersion?: number | null;
+  results: ManualMatchResultRowPayload[];
+};
+
+export type ManualMatchResultsResponse = {
+  ok?: boolean;
+  version?: number | null;
+  updatedCount?: number;
 };
 
 export type SyncSessionMatchSlotsResponse = {
@@ -317,6 +603,89 @@ export type SessionStandingsResponse = {
   }>;
 };
 
+export type ResultBackupKind = "MATCH" | "OVERALL" | string;
+
+export type ResultBackupSummaryResponse = {
+  id: string;
+  organizationId: string;
+  sessionId: string;
+  sourceMatchId: string | null;
+  kind: ResultBackupKind;
+  source: string | null;
+  matchNumber: number | null;
+  matchName: string | null;
+  sessionName: string | null;
+  title: string | null;
+  postedChannelId: string | null;
+  postedMessageId: string | null;
+  repostedAt: string | null;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+  rowCount?: number;
+};
+
+export type ResultBackupPlayerResponse = Omit<MatchResultPlayerResponse, "playerId"> & {
+  playerId?: string | null;
+  playerName?: string | null;
+};
+
+export type ResultBackupRowResponse = {
+  id: string;
+  rank: number;
+  teamId: string | null;
+  teamName: string;
+  teamTag: string | null;
+  logoUrl: string | null;
+  slotNumber: number | null;
+  placement: number | null;
+  wwcd: number;
+  placementPoints: number;
+  kills: number;
+  totalPoints: number;
+  players?: ResultBackupPlayerResponse[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ResultBackupDetailResponse = ResultBackupSummaryResponse & {
+  session: {
+    id: string;
+    name: string;
+  };
+  rows: ResultBackupRowResponse[];
+};
+
+export type UpdateResultBackupRowPayload = {
+  rank: number;
+  teamId?: string | null;
+  teamName: string;
+  teamTag?: string | null;
+  logoUrl?: string | null;
+  slotNumber?: number | null;
+  placement?: number | null;
+  wwcd?: number | null;
+  placementPoints?: number | null;
+  kills?: number | null;
+  totalPoints?: number | null;
+  players?: Array<{
+    id?: string | null;
+    playerId?: string | null;
+    externalPlayerId?: string | null;
+    name?: string | null;
+    playerName?: string | null;
+    kills?: number | null;
+    knocks?: number | null;
+    assists?: number | null;
+    alive?: boolean | null;
+    isAlive?: boolean | null;
+    isKnocked?: boolean | null;
+    avatar?: string | null;
+  }>;
+};
+
+export type ResultBackupRenderKind = "match-result" | "overall-ranking";
+
 export type TeamSummary = {
   id: string;
   name: string;
@@ -361,6 +730,13 @@ export type RegisterDiscordTeamResponse = {
     organizationId: string;
   };
   members: TeamMemberSummary[];
+};
+
+export type DiscordManagedTeamResponse = {
+  team: TeamSummary & {
+    organizationId?: string;
+  };
+  managers: TeamMemberSummary[];
 };
 
 export type CleanupDiscordTeamResponse = {
@@ -607,6 +983,7 @@ export type ScreenshotPreviewEntry = {
   playerNames?: string[];
   confidence?: number | null;
   matchEvidence?: string;
+  ocrTag?: string;
 };
 
 export type ScreenshotPreviewResponse = {
@@ -695,6 +1072,19 @@ export type ApplyNoShowAutoBansResponse = {
   createdTeamBans: number;
   createdManagerBans: number;
   createdTeamIds: string[];
+  createdManagerDiscordUserIds: string[];
+  serverActionDetails?: string[];
+  createdBans: Array<{
+    teamId: string;
+    teamName: string | null;
+    teamTag: string | null;
+    scope: "TEAM" | "SESSION";
+    reason: string;
+    expiresAt: string | null;
+    durationDays: number | null;
+    missedMatches: string[];
+    managerDiscordUserIds: string[];
+  }>;
   skippedAlreadyBanned: number;
   skippedProtected: number;
   skippedNoRule: number;
@@ -706,7 +1096,8 @@ export type MatchRenderKind =
   | "top-mvp"
   | "top-fraggers"
   | "overall-top-mvp"
-  | "overall-top-fraggers";
+  | "overall-top-fraggers"
+  | "match-schedule";
 
 export class ArenzyraApiError extends Error {
   constructor(
@@ -960,6 +1351,120 @@ export class ArenzyraApiClient {
     }
   }
 
+  async getProductionDiscordConfig(
+    organizationId: string,
+  ): Promise<ProductionDiscordConfigResponse> {
+    try {
+      const response = await this.request<ProductionDiscordConfigResponse>({
+        method: "get",
+        url: `/org/${organizationId}/production/discord-config`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async updateProductionDiscordConfig(
+    organizationId: string,
+    payload: UpdateProductionDiscordConfigPayload,
+  ): Promise<ProductionDiscordConfigResponse> {
+    try {
+      const response = await this.request<ProductionDiscordConfigResponse>({
+        method: "patch",
+        url: `/org/${organizationId}/production/discord-config`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async createProductionDiscordSet(
+    organizationId: string,
+    payload: { eventId?: string | null },
+  ): Promise<ProductionDiscordConfigResponse> {
+    try {
+      const response = await this.request<ProductionDiscordConfigResponse>({
+        method: "post",
+        url: `/org/${organizationId}/production/discord-config/sets`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async deleteProductionDiscordSet(
+    organizationId: string,
+    setKey: string,
+  ): Promise<ProductionDiscordConfigResponse> {
+    try {
+      const response = await this.request<ProductionDiscordConfigResponse>({
+        method: "delete",
+        url: `/org/${organizationId}/production/discord-config/sets/${encodeURIComponent(
+          setKey,
+        )}`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async resolveProductionDiscordChannel(
+    guildId: string,
+    channelId: string,
+  ): Promise<ResolvedProductionDiscordChannelResponse> {
+    try {
+      const response =
+        await this.request<ResolvedProductionDiscordChannelResponse>({
+          method: "get",
+          url: "/production/discord/resolve-channel",
+          params: { guildId, channelId },
+        });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async importProductionDiscordSlots(
+    organizationId: string,
+    payload: ImportProductionDiscordSlotsPayload,
+  ): Promise<ImportProductionDiscordSlotsResponse> {
+    try {
+      const response = await this.request<ImportProductionDiscordSlotsResponse>(
+        {
+          method: "post",
+          url: `/org/${organizationId}/production/discord/import-slots`,
+          data: payload,
+        },
+      );
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async upsertProductionDiscordTeam(
+    organizationId: string,
+    payload: UpsertProductionDiscordTeamPayload,
+  ): Promise<UpsertProductionDiscordTeamResponse> {
+    try {
+      const response = await this.request<UpsertProductionDiscordTeamResponse>({
+        method: "post",
+        url: `/org/${organizationId}/production/discord/teams`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
   async resolveDiscordGuild(
     guildId: string,
   ): Promise<ResolvedDiscordGuildResponse> {
@@ -1071,6 +1576,38 @@ export class ArenzyraApiClient {
       const response = await this.request<RefreshDiscordSourceImportsResponse>({
         method: "post",
         url: `/sessions/${sessionId}/discord-source-imports/refresh`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async syncOldDiscordLogos(
+    sessionId: string,
+    payload: { limit?: number; channelId?: string | null },
+  ): Promise<SyncOldDiscordLogosResponse> {
+    try {
+      const response = await this.request<SyncOldDiscordLogosResponse>({
+        method: "post",
+        url: `/sessions/${sessionId}/discord-logo-history-sync`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async syncOldDiscordPlayerPhotos(
+    sessionId: string,
+    payload: { limit?: number; channelId?: string | null },
+  ): Promise<SyncOldDiscordPlayerPhotosResponse> {
+    try {
+      const response = await this.request<SyncOldDiscordPlayerPhotosResponse>({
+        method: "post",
+        url: `/sessions/${sessionId}/discord-player-photo-history-sync`,
+        data: payload,
       });
       return response.data;
     } catch (error) {
@@ -1257,6 +1794,51 @@ export class ArenzyraApiClient {
     }
   }
 
+  async getMatchResults(matchId: string): Promise<MatchResultsResponse> {
+    try {
+      const response = await this.request<MatchResultsResponse>({
+        method: "get",
+        url: `/me/matches/${matchId}/results`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async updateMatchResult(
+    matchId: string,
+    teamId: string,
+    payload: UpdateMatchResultPayload,
+  ): Promise<MatchResultsResponse> {
+    try {
+      const response = await this.request<MatchResultsResponse>({
+        method: "patch",
+        url: `/me/matches/${matchId}/results/${encodeURIComponent(teamId)}`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async updateManualMatchResults(
+    matchId: string,
+    payload: ManualMatchResultsPayload,
+  ): Promise<ManualMatchResultsResponse> {
+    try {
+      const response = await this.request<ManualMatchResultsResponse>({
+        method: "patch",
+        url: `/me/matches/${matchId}/results/manual`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
   async syncSessionMatchSlots(
     sessionId: string,
     matchId: string,
@@ -1286,12 +1868,76 @@ export class ArenzyraApiClient {
     }
   }
 
+  async listResultBackups(
+    params: { sessionId?: string | null; kind?: string | null } = {},
+  ): Promise<ResultBackupSummaryResponse[]> {
+    try {
+      const response = await this.request<ResultBackupSummaryResponse[]>({
+        method: "get",
+        url: "/organizer/result-backups",
+        params: {
+          sessionId: params.sessionId?.trim() || undefined,
+          kind: params.kind?.trim() || undefined,
+        },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async getResultBackup(
+    backupId: string,
+  ): Promise<ResultBackupDetailResponse> {
+    try {
+      const response = await this.request<ResultBackupDetailResponse>({
+        method: "get",
+        url: `/organizer/result-backups/${encodeURIComponent(backupId)}`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async updateResultBackupRows(
+    backupId: string,
+    rows: UpdateResultBackupRowPayload[],
+  ): Promise<ResultBackupDetailResponse> {
+    try {
+      const response = await this.request<ResultBackupDetailResponse>({
+        method: "patch",
+        url: `/organizer/result-backups/${encodeURIComponent(backupId)}/rows`,
+        data: { rows },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
   async searchTeams(search: string): Promise<TeamSummary[]> {
     try {
       const response = await this.request<TeamSummary[]>({
         method: "get",
         url: "/organizer/teams",
         params: { search, scope: "all" },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async listDiscordManagedTeams(
+    discordUserIds: string[] = [],
+    limit?: number,
+  ): Promise<DiscordManagedTeamResponse[]> {
+    try {
+      const response = await this.request<DiscordManagedTeamResponse[]>({
+        method: "post",
+        url: "/organizer/teams/discord-managed",
+        data: { discordUserIds, limit },
       });
       return response.data;
     } catch (error) {
@@ -1665,6 +2311,24 @@ export class ArenzyraApiClient {
         url: kind
           ? `/render/match/${matchId}/discord/${kind}`
           : `/render/match/${matchId}`,
+        responseType: "arraybuffer",
+      });
+      return Buffer.from(response.data);
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async getResultBackupRenderImage(
+    backupId: string,
+    kind: ResultBackupRenderKind,
+  ): Promise<Buffer> {
+    try {
+      const response = await this.request<ArrayBuffer>({
+        method: "get",
+        url: `/render/result-backups/${encodeURIComponent(
+          backupId,
+        )}/discord/${kind}`,
         responseType: "arraybuffer",
       });
       return Buffer.from(response.data);

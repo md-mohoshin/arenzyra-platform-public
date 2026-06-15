@@ -80,6 +80,18 @@ export const widgets: ObsWidgetDefinition[] = [
     requiresWidgetInstanceKey: true,
   },
   {
+    id: "next_zone_update_kinetic_hud",
+    name: "Next Zone Update - Kinetic HUD",
+    category: "Desktop Raw Widgets",
+    description:
+      "Animated Kinetic HUD style final 20-second zone countdown driven by launcher telemetry.",
+    path: "/w/:widgetInstanceKey",
+    previewHeight: 160,
+    routeKind: "permanent",
+    widgetKey: "next-zone-update-kinetic-hud",
+    requiresWidgetInstanceKey: true,
+  },
+  {
     id: "obs_player_photo",
     name: "Player Photo",
     category: "Desktop Raw Widgets",

@@ -20,7 +20,9 @@ export const DEFAULT_DISCORD_EMOJIS = {
   empty: "\u25AB",
   slotListMode: "number",
   slotListMessageMode: "embed",
+  waitlistMessageMode: "embed",
   slotStatusResponseEnabled: "true",
+  idpDmForwardingEnabled: "false",
   confirmationMode: "text",
   playControlMode: "buttons",
   playButtonsEnabled: "true",
@@ -35,11 +37,21 @@ export const DEFAULT_DISCORD_EMOJIS = {
   playConfirmationMessageTitle: "Team Confirmation",
   playConfirmationMessageText:
     "Confirm your team status for this scrim.\n\n{confirm} Playing\n{notPlaying} Not playing",
+  playConfirmationCleanupEnabled: "false",
+  playConfirmationCleanupBanEnabled: "false",
+  playConfirmationCleanupReason: "Missed confirmation for {session}",
+  playConfirmationCleanupLastClosedAt: "",
+  playConfirmationWaitlistGraceMinutes: "30",
+  playConfirmationWaitlistGraceStartedAt: "",
+  playConfirmationWaitlistGraceUntil: "",
   registrationWeeklySchedule: "",
   registrationTimeZone: "",
   waitlistPromotionWeeklySchedule: "",
   waitlistPromotionTimeZone: "",
   waitlistPromotionManualState: "",
+  waitlistPromotionAutoOpenUntil: "",
+  waitlistPromotionScheduleOverrideState: "",
+  waitlistPromotionScheduleOverrideUpdatedAt: "",
   registrationMessageEnabled: "true",
   registrationMessageDisplayMode: "plain",
   registrationMessageTitle: "Arenzyra Scrim Registration",
@@ -65,6 +77,8 @@ export const DEFAULT_DISCORD_EMOJIS = {
     "{reject} Registration closed {closesRelative}. Opens {opensRelative}{schedule}.",
   registrationStatusClosedText: "{reject} Registration closed.",
   earlyAccessEnabled: "false",
+  earlyAccessWeeklySchedule: "",
+  earlyAccessTimeZone: "",
   earlyAccessOpensAt: "",
   earlyAccessClosesAt: "",
   earlyAccessMessageEnabled: "true",
@@ -72,22 +86,37 @@ export const DEFAULT_DISCORD_EMOJIS = {
     "{role} Early registration is open for {session}.",
   earlyAccessCloseMessageText: "Early registration is closed for {session}.",
   vipAccessEnabled: "false",
+  vipAccessWeeklySchedule: "",
+  vipAccessTimeZone: "",
   vipAccessOpensAt: "",
   vipAccessClosesAt: "",
   vipAccessMessageEnabled: "true",
   vipAccessOpenMessageText: "{role} VIP registration is open for {session}.",
   vipAccessCloseMessageText: "VIP registration is closed for {session}.",
+  roleAccessGroups: "",
+  autoRegistrationEnabled: "false",
+  autoRegistrationRoleId: "",
+  autoRegistrationRoleName: "",
+  autoRegistrationWeeklySchedule: "",
+  autoRegistrationTimeZone: "",
+  autoRegistrationPlacement: "normal",
+  autoRegistrationWaitlistFallback: "true",
+  autoRegistrationMaxTeams: "25",
+  autoRegistrationLastRunKey: "",
   discordLogoChannelIds: "",
   resultReviewChannelId: "",
   matchResultPostChannelId: "",
   overallResultPostChannelId: "",
+  finalResultPostChannelId: "",
+  finalResultPostMessageId: "",
+  finalResultPostBackupId: "",
   discordWidgetTemplateEnabled: "false",
   discordWidgetTemplateBackgroundUrl: "",
-  discordWidgetPrimaryColor: "#00e5ff",
-  discordWidgetTextColor: "#f5f7fb",
-  discordWidgetMutedColor: "#94a3b8",
-  discordWidgetRowColor: "#060a10",
-  discordWidgetPanelOpacity: "0.74",
+  discordWidgetPrimaryColor: "",
+  discordWidgetTextColor: "",
+  discordWidgetMutedColor: "",
+  discordWidgetRowColor: "",
+  discordWidgetPanelOpacity: "",
   discordWidgetOverlayStrength: "0.58",
   discordWidgetSafeTop: "32",
   discordWidgetSafeRight: "32",
@@ -105,6 +134,8 @@ export const DEFAULT_DISCORD_EMOJIS = {
   discordStudioContract: "",
   discordPausedChannelIds: "",
   finalResultWinnerCount: "3",
+  finalResultPostTemplate: "{message}",
+  finalResultRankEmojis: "",
   finalResultMessageTemplate: "{trophy} Final Results\n\n{winners}",
   finalResultWinnerRowTemplate:
     "{winnerEmoji} **{winnerTitle}:** {teamName} - {points} pts ({kills} kills)",
@@ -120,6 +151,7 @@ export const DEFAULT_DISCORD_EMOJIS = {
   discordTopFraggersEyebrow: "Top Fraggers",
   discordTopFraggersTitle: "{matchName}",
   discordTopFraggersSubtitle: "Player elimination leaders",
+  discordResultMatchSchedule: "",
   staffRoleId: "",
   staffRoleName: "Arenzyra Staff",
   playConfirmLabel: "Confirm",
@@ -137,6 +169,8 @@ export const DEFAULT_DISCORD_EMOJIS = {
   banDefaultReason: "Manual Discord ban",
   banServerAction: "ROLE",
   banApplyRoleOnTeamBan: "false",
+  banRoleIds: "",
+  permanentBanRoleIds: "",
   registrationBanReaction: "",
 } as const;
 
@@ -154,7 +188,9 @@ export type DiscordEmojiKey = Exclude<
   keyof typeof DEFAULT_DISCORD_EMOJIS,
   | "slotListMode"
   | "slotListMessageMode"
+  | "waitlistMessageMode"
   | "slotStatusResponseEnabled"
+  | "idpDmForwardingEnabled"
   | "confirmationMode"
   | "playControlMode"
   | "playButtonsEnabled"
@@ -168,11 +204,21 @@ export type DiscordEmojiKey = Exclude<
   | "playConfirmationMessageEnabled"
   | "playConfirmationMessageTitle"
   | "playConfirmationMessageText"
+  | "playConfirmationCleanupEnabled"
+  | "playConfirmationCleanupBanEnabled"
+  | "playConfirmationCleanupReason"
+  | "playConfirmationCleanupLastClosedAt"
+  | "playConfirmationWaitlistGraceMinutes"
+  | "playConfirmationWaitlistGraceStartedAt"
+  | "playConfirmationWaitlistGraceUntil"
   | "registrationWeeklySchedule"
   | "registrationTimeZone"
   | "waitlistPromotionWeeklySchedule"
   | "waitlistPromotionTimeZone"
   | "waitlistPromotionManualState"
+  | "waitlistPromotionAutoOpenUntil"
+  | "waitlistPromotionScheduleOverrideState"
+  | "waitlistPromotionScheduleOverrideUpdatedAt"
   | "registrationMessageEnabled"
   | "registrationMessageDisplayMode"
   | "registrationMessageTitle"
@@ -192,21 +238,38 @@ export type DiscordEmojiKey = Exclude<
   | "registrationStatusClosedRecentText"
   | "registrationStatusClosedText"
   | "earlyAccessEnabled"
+  | "earlyAccessWeeklySchedule"
+  | "earlyAccessTimeZone"
   | "earlyAccessOpensAt"
   | "earlyAccessClosesAt"
   | "earlyAccessMessageEnabled"
   | "earlyAccessOpenMessageText"
   | "earlyAccessCloseMessageText"
   | "vipAccessEnabled"
+  | "vipAccessWeeklySchedule"
+  | "vipAccessTimeZone"
   | "vipAccessOpensAt"
   | "vipAccessClosesAt"
   | "vipAccessMessageEnabled"
   | "vipAccessOpenMessageText"
   | "vipAccessCloseMessageText"
+  | "roleAccessGroups"
+  | "autoRegistrationEnabled"
+  | "autoRegistrationRoleId"
+  | "autoRegistrationRoleName"
+  | "autoRegistrationWeeklySchedule"
+  | "autoRegistrationTimeZone"
+  | "autoRegistrationPlacement"
+  | "autoRegistrationWaitlistFallback"
+  | "autoRegistrationMaxTeams"
+  | "autoRegistrationLastRunKey"
   | "discordLogoChannelIds"
   | "resultReviewChannelId"
   | "matchResultPostChannelId"
   | "overallResultPostChannelId"
+  | "finalResultPostChannelId"
+  | "finalResultPostMessageId"
+  | "finalResultPostBackupId"
   | "discordWidgetTemplateEnabled"
   | "discordWidgetTemplateBackgroundUrl"
   | "discordWidgetPrimaryColor"
@@ -231,6 +294,8 @@ export type DiscordEmojiKey = Exclude<
   | "discordStudioContract"
   | "discordPausedChannelIds"
   | "finalResultWinnerCount"
+  | "finalResultPostTemplate"
+  | "finalResultRankEmojis"
   | "finalResultMessageTemplate"
   | "finalResultWinnerRowTemplate"
   | "discordMatchResultEyebrow"
@@ -245,6 +310,7 @@ export type DiscordEmojiKey = Exclude<
   | "discordTopFraggersEyebrow"
   | "discordTopFraggersTitle"
   | "discordTopFraggersSubtitle"
+  | "discordResultMatchSchedule"
   | "staffRoleId"
   | "staffRoleName"
   | "playConfirmLabel"
@@ -262,6 +328,8 @@ export type DiscordEmojiKey = Exclude<
   | "banDefaultReason"
   | "banServerAction"
   | "banApplyRoleOnTeamBan"
+  | "banRoleIds"
+  | "permanentBanRoleIds"
   | "registrationBanReaction"
 >;
 export type DiscordEmojiMap = Partial<Record<DiscordEmojiKey, string>> &
@@ -288,6 +356,53 @@ export type RegistrationWindowSnapshot = {
   state: RegistrationWindowState;
   allowsAction: boolean;
   mode: "manual" | "always" | "weekly" | "session";
+  timeZone: string | null;
+};
+export type PlayConfirmationCleanupWindow = {
+  configured: boolean;
+  cleanupAt: Date | null;
+  nextCleanupAt: Date | null;
+  opensAt: Date | null;
+  closesAt: Date | null;
+  mode: "weekly" | "none";
+  timeZone: string | null;
+};
+export type RoleAccessKind = "earlyAccess" | "vipAccess";
+export type RoleAccessGroupMode = "normal" | "vip" | "both";
+export type AutoRegistrationPlacement = "normal" | "vip";
+export type RoleAccessGroup = {
+  id: string;
+  name: string;
+  roleId: string;
+  roleName: string;
+  mode: RoleAccessGroupMode;
+  enabled: boolean;
+  weeklySchedule: string;
+  timeZone: string;
+  messageEnabled: boolean;
+  openMessageText: string;
+  closeMessageText: string;
+  managedState: "open" | "closed" | "";
+  managedMessageId: string;
+};
+export type AutoRegistrationConfig = {
+  enabled: boolean;
+  roleId: string;
+  roleName: string;
+  weeklySchedule: string;
+  timeZone: string;
+  placement: AutoRegistrationPlacement;
+  waitlistFallback: boolean;
+  maxTeams: number;
+  lastRunKey: string;
+};
+export type RoleAccessWindowSnapshot = {
+  opensAt: Date | null;
+  closesAt: Date | null;
+  configured: boolean;
+  state: "open" | "closed";
+  allowsAction: boolean;
+  mode: "weekly" | "date" | "off";
   timeZone: string | null;
 };
 
@@ -392,6 +507,15 @@ export function slotListMessageMode(
     | null,
 ) {
   return emojiMap(config)?.slotListMessageMode === "plain" ? "plain" : "embed";
+}
+
+export function waitlistMessageMode(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+) {
+  return emojiMap(config)?.waitlistMessageMode === "plain" ? "plain" : "embed";
 }
 
 export function parseDiscordPausedChannelIds(
@@ -539,12 +663,12 @@ export function playConfirmationWindow(
 ) {
   const weeklyWindow = weeklyPlayConfirmationWindow(config, now);
   if (weeklyWindow) {
-    return weeklyWindow;
+    return applyPlayConfirmationWaitlistGrace(weeklyWindow, config, now);
   }
 
   const dailyWindow = dailyPlayConfirmationWindow(config, now);
   if (dailyWindow) {
-    return dailyWindow;
+    return applyPlayConfirmationWaitlistGrace(dailyWindow, config, now);
   }
 
   const opensAt = configuredDate(config, "playConfirmationOpensAt");
@@ -558,15 +682,144 @@ export function playConfirmationWindow(
     state = "not_open";
   }
 
+  return applyPlayConfirmationWaitlistGrace(
+    {
+      opensAt,
+      closesAt,
+      configured,
+      state,
+      allowsAction: state === "always_open" || state === "open",
+      mode: "absolute" as const,
+      timeZone: null,
+      waitlistStartsAt: null,
+    },
+    config,
+    now,
+  );
+}
+
+function applyPlayConfirmationWaitlistGrace<
+  T extends {
+    opensAt: Date | null;
+    closesAt: Date | null;
+    configured: boolean;
+    state: PlayConfirmationWindowState;
+    allowsAction: boolean;
+    mode: string;
+    timeZone: string | null;
+    waitlistStartsAt: Date | null;
+  },
+>(
+  window: T,
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+): T {
+  const graceUntil = configuredDate(
+    config,
+    "playConfirmationWaitlistGraceUntil",
+  );
+  if (
+    !graceUntil ||
+    now >= graceUntil ||
+    window.allowsAction ||
+    window.state !== "closed"
+  ) {
+    return window;
+  }
+
   return {
-    opensAt,
-    closesAt,
-    configured,
-    state,
-    allowsAction: state === "always_open" || state === "open",
-    mode: "absolute" as const,
+    ...window,
+    closesAt: graceUntil,
+    configured: true,
+    state: "open",
+    allowsAction: true,
+  };
+}
+
+export function playConfirmationWaitlistGraceUntil(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+) {
+  return configuredDate(config, "playConfirmationWaitlistGraceUntil");
+}
+
+export function playConfirmationCleanupWindow(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+): PlayConfirmationCleanupWindow {
+  const schedule = parseWeeklyConfirmationSchedule(config);
+  if (schedule.length === 0) {
+    return {
+      configured: false,
+      cleanupAt: null,
+      nextCleanupAt: null,
+      opensAt: null,
+      closesAt: null,
+      mode: "none",
+      timeZone: null,
+    };
+  }
+
+  const timeZone = configuredTimeZone(config);
+  const currentParts = zonedDateParts(now, timeZone);
+  const intervals = weeklyConfirmationIntervals(
+    schedule,
+    timeZone,
+    currentParts,
+  );
+  const previousInterval = intervals
+    .filter((interval) => interval.cleanupAt <= now)
+    .at(-1);
+  const nextInterval = intervals.find((interval) => interval.cleanupAt > now);
+
+  return {
+    configured: true,
+    cleanupAt: previousInterval?.cleanupAt ?? null,
+    nextCleanupAt: nextInterval?.cleanupAt ?? null,
+    opensAt: previousInterval?.opensAt ?? nextInterval?.opensAt ?? null,
+    closesAt: previousInterval?.closesAt ?? nextInterval?.closesAt ?? null,
+    mode: "weekly",
+    timeZone,
+  };
+}
+
+export function waitlistPromotionAutoOpenUntil(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+) {
+  return configuredDate(config, "waitlistPromotionAutoOpenUntil");
+}
+
+function temporaryWaitlistPromotionWindow(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+): RegistrationWindowSnapshot | null {
+  const autoOpenUntil = waitlistPromotionAutoOpenUntil(config);
+  if (!autoOpenUntil || now >= autoOpenUntil) {
+    return null;
+  }
+
+  return {
+    opensAt: null,
+    closesAt: autoOpenUntil,
+    configured: true,
+    state: "open",
+    allowsAction: true,
+    mode: "manual",
     timeZone: null,
-    waitlistStartsAt: null,
   };
 }
 
@@ -671,21 +924,22 @@ export function waitlistPromotionWindow(
     | null,
   now = new Date(),
 ): RegistrationWindowSnapshot {
-  const manualState = configuredWaitlistPromotionManualState(config);
-  if (manualState) {
-    return {
-      opensAt: null,
-      closesAt: null,
-      configured: true,
-      state: manualState === "open" ? "always_open" : "closed",
-      allowsAction: manualState === "open",
-      mode: "manual",
-      timeZone: null,
-    };
-  }
-
   const schedule = parseWeeklyWaitlistPromotionSchedule(config);
   if (schedule.length > 0) {
+    const overrideState =
+      configuredWaitlistPromotionScheduleOverrideState(config);
+    if (overrideState) {
+      return {
+        opensAt: null,
+        closesAt: null,
+        configured: true,
+        state: overrideState === "open" ? "always_open" : "closed",
+        allowsAction: overrideState === "open",
+        mode: "manual",
+        timeZone: null,
+      };
+    }
+
     const timeZone = configuredWaitlistPromotionTimeZone(config);
     const currentParts = zonedDateParts(now, timeZone);
     const intervals = weeklyRegistrationIntervals(
@@ -728,6 +982,24 @@ export function waitlistPromotionWindow(
     };
   }
 
+  const manualState = configuredWaitlistPromotionManualState(config);
+  if (manualState) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: true,
+      state: manualState === "open" ? "always_open" : "closed",
+      allowsAction: manualState === "open",
+      mode: "manual",
+      timeZone: null,
+    };
+  }
+
+  const temporaryWindow = temporaryWaitlistPromotionWindow(config, now);
+  if (temporaryWindow) {
+    return temporaryWindow;
+  }
+
   return {
     opensAt: null,
     closesAt: null,
@@ -736,6 +1008,350 @@ export function waitlistPromotionWindow(
     allowsAction: false,
     mode: "manual",
     timeZone: null,
+  };
+}
+
+export function roleAccessWindow(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  kind: RoleAccessKind = "earlyAccess",
+  now = new Date(),
+): RoleAccessWindowSnapshot {
+  const emojis = emojiMap(config);
+  const enabled = emojis?.[`${kind}Enabled`]?.trim() === "true";
+  if (!enabled) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: false,
+      state: "closed",
+      allowsAction: false,
+      mode: "off",
+      timeZone: null,
+    };
+  }
+
+  const schedule = parseWeeklyRoleAccessSchedule(config, kind);
+  if (schedule.length > 0) {
+    const timeZone = configuredRoleAccessTimeZone(config, kind);
+    const currentParts = zonedDateParts(now, timeZone);
+    const intervals = weeklyRegistrationIntervals(
+      schedule,
+      timeZone,
+      currentParts,
+    );
+    const activeInterval = intervals.find(
+      (interval) => interval.opensAt <= now && now < interval.closesAt,
+    );
+    if (activeInterval) {
+      return {
+        opensAt: activeInterval.opensAt,
+        closesAt: activeInterval.closesAt,
+        configured: true,
+        state: "open",
+        allowsAction: true,
+        mode: "weekly",
+        timeZone,
+      };
+    }
+
+    const nextInterval = intervals.find((interval) => interval.opensAt > now);
+    const previousInterval = intervals
+      .filter((interval) => interval.closesAt <= now)
+      .at(-1);
+
+    return {
+      opensAt: nextInterval?.opensAt ?? null,
+      closesAt: previousInterval?.closesAt ?? null,
+      configured: true,
+      state: "closed",
+      allowsAction: false,
+      mode: "weekly",
+      timeZone,
+    };
+  }
+
+  const opensAtText = emojis?.[`${kind}OpensAt`]?.trim() ?? "";
+  const closesAtText = emojis?.[`${kind}ClosesAt`]?.trim() ?? "";
+  const opensAt = opensAtText ? new Date(opensAtText) : null;
+  const closesAt = closesAtText ? new Date(closesAtText) : null;
+  const configured =
+    opensAt !== null &&
+    closesAt !== null &&
+    !Number.isNaN(opensAt.getTime()) &&
+    !Number.isNaN(closesAt.getTime()) &&
+    opensAt < closesAt;
+  const allowsAction =
+    configured &&
+    opensAt!.getTime() <= now.getTime() &&
+    now.getTime() < closesAt!.getTime();
+
+  return {
+    opensAt: configured ? opensAt : null,
+    closesAt: configured ? closesAt : null,
+    configured,
+    state: allowsAction ? "open" : "closed",
+    allowsAction,
+    mode: configured ? "date" : "off",
+    timeZone: null,
+  };
+}
+
+export function parseRoleAccessGroups(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+): RoleAccessGroup[] {
+  const raw = emojiMap(config)?.roleAccessGroups?.trim();
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const source =
+      Array.isArray(parsed)
+        ? parsed
+        : parsed &&
+            typeof parsed === "object" &&
+            Array.isArray((parsed as Record<string, unknown>).groups)
+          ? ((parsed as Record<string, unknown>).groups as unknown[])
+          : [];
+    const seenIds = new Set<string>();
+    return source
+      .map((entry, index): RoleAccessGroup | null => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return null;
+        }
+        const record = entry as Record<string, unknown>;
+        let id = normalizeRoleAccessGroupId(record.id, index);
+        while (seenIds.has(id)) {
+          id = `${id}-${index + 1}`;
+        }
+        seenIds.add(id);
+        const weeklySchedule =
+          typeof record.weeklySchedule === "string"
+            ? record.weeklySchedule
+            : record.weeklySchedule &&
+                typeof record.weeklySchedule === "object" &&
+                !Array.isArray(record.weeklySchedule)
+              ? JSON.stringify(record.weeklySchedule)
+              : "";
+        const managedState = stringValue(record.managedState)
+          .trim()
+          .toLowerCase();
+        return {
+          id,
+          name: stringValue(record.name).trim() || `Access Group ${index + 1}`,
+          roleId: stringValue(record.roleId).trim(),
+          roleName: stringValue(record.roleName).trim(),
+          mode: normalizeRoleAccessGroupMode(record.mode),
+          enabled: booleanFromUnknown(record.enabled, true),
+          weeklySchedule,
+          timeZone: stringValue(record.timeZone).trim(),
+          messageEnabled: booleanFromUnknown(record.messageEnabled, true),
+          openMessageText:
+            stringValue(record.openMessageText).trim() ||
+            "{role} {name} registration is open for {session}.",
+          closeMessageText:
+            stringValue(record.closeMessageText).trim() ||
+            "{name} registration is closed for {session}.",
+          managedState:
+            managedState === "open" || managedState === "closed"
+              ? managedState
+              : "",
+          managedMessageId: stringValue(record.managedMessageId).trim(),
+        };
+      })
+      .filter((entry): entry is RoleAccessGroup => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+export function roleAccessGroupWindow(
+  group: RoleAccessGroup,
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+): RoleAccessWindowSnapshot {
+  if (!group.enabled) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: false,
+      state: "closed",
+      allowsAction: false,
+      mode: "off",
+      timeZone: null,
+    };
+  }
+
+  const schedule = parseWeeklyRoleAccessScheduleText(group.weeklySchedule);
+  if (schedule.length === 0) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: false,
+      state: "closed",
+      allowsAction: false,
+      mode: "off",
+      timeZone: null,
+    };
+  }
+
+  const timeZone = configuredRoleAccessGroupTimeZone(group, config);
+  const currentParts = zonedDateParts(now, timeZone);
+  const intervals = weeklyRegistrationIntervals(
+    schedule,
+    timeZone,
+    currentParts,
+  );
+  const activeInterval = intervals.find(
+    (interval) => interval.opensAt <= now && now < interval.closesAt,
+  );
+  if (activeInterval) {
+    return {
+      opensAt: activeInterval.opensAt,
+      closesAt: activeInterval.closesAt,
+      configured: true,
+      state: "open",
+      allowsAction: true,
+      mode: "weekly",
+      timeZone,
+    };
+  }
+
+  const nextInterval = intervals.find((interval) => interval.opensAt > now);
+  const previousInterval = intervals
+    .filter((interval) => interval.closesAt <= now)
+    .at(-1);
+
+  return {
+    opensAt: nextInterval?.opensAt ?? null,
+    closesAt: previousInterval?.closesAt ?? null,
+    configured: true,
+    state: "closed",
+    allowsAction: false,
+    mode: "weekly",
+    timeZone,
+  };
+}
+
+function normalizeAutoRegistrationPlacement(
+  value: unknown,
+): AutoRegistrationPlacement {
+  return stringValue(value).trim().toLowerCase() === "vip" ? "vip" : "normal";
+}
+
+function integerFromUnknown(value: unknown, fallback: number, min: number, max: number) {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number.parseInt(stringValue(value).trim(), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+export function parseAutoRegistrationConfig(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+): AutoRegistrationConfig {
+  const emojis = emojiMap(config);
+  return {
+    enabled: emojis?.autoRegistrationEnabled?.trim() === "true",
+    roleId: emojis?.autoRegistrationRoleId?.trim() ?? "",
+    roleName: emojis?.autoRegistrationRoleName?.trim() ?? "",
+    weeklySchedule: emojis?.autoRegistrationWeeklySchedule?.trim() ?? "",
+    timeZone: emojis?.autoRegistrationTimeZone?.trim() ?? "",
+    placement: normalizeAutoRegistrationPlacement(
+      emojis?.autoRegistrationPlacement,
+    ),
+    waitlistFallback: emojis?.autoRegistrationWaitlistFallback !== "false",
+    maxTeams: integerFromUnknown(emojis?.autoRegistrationMaxTeams, 25, 1, 100),
+    lastRunKey: emojis?.autoRegistrationLastRunKey?.trim() ?? "",
+  };
+}
+
+export function autoRegistrationWindow(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+): RoleAccessWindowSnapshot {
+  const autoConfig = parseAutoRegistrationConfig(config);
+  if (!autoConfig.enabled || !autoConfig.roleId) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: false,
+      state: "closed",
+      allowsAction: false,
+      mode: "off",
+      timeZone: null,
+    };
+  }
+
+  const schedule = parseWeeklyRoleAccessScheduleText(
+    autoConfig.weeklySchedule,
+  );
+  if (schedule.length === 0) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: false,
+      state: "closed",
+      allowsAction: false,
+      mode: "off",
+      timeZone: null,
+    };
+  }
+
+  const timeZone = configuredAutoRegistrationTimeZone(autoConfig, config);
+  const currentParts = zonedDateParts(now, timeZone);
+  const intervals = weeklyRegistrationIntervals(
+    schedule,
+    timeZone,
+    currentParts,
+  );
+  const activeInterval = intervals.find(
+    (interval) => interval.opensAt <= now && now < interval.closesAt,
+  );
+  if (activeInterval) {
+    return {
+      opensAt: activeInterval.opensAt,
+      closesAt: activeInterval.closesAt,
+      configured: true,
+      state: "open",
+      allowsAction: true,
+      mode: "weekly",
+      timeZone,
+    };
+  }
+
+  const nextInterval = intervals.find((interval) => interval.opensAt > now);
+  const previousInterval = intervals
+    .filter((interval) => interval.closesAt <= now)
+    .at(-1);
+
+  return {
+    opensAt: nextInterval?.opensAt ?? null,
+    closesAt: previousInterval?.closesAt ?? null,
+    configured: true,
+    state: "closed",
+    allowsAction: false,
+    mode: "weekly",
+    timeZone,
   };
 }
 
@@ -769,6 +1385,18 @@ function configuredWaitlistPromotionManualState(
 ) {
   const value = emojiMap(config)
     ?.waitlistPromotionManualState?.trim()
+    .toLowerCase();
+  return value === "open" || value === "closed" ? value : null;
+}
+
+function configuredWaitlistPromotionScheduleOverrideState(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+) {
+  const value = emojiMap(config)
+    ?.waitlistPromotionScheduleOverrideState?.trim()
     .toLowerCase();
   return value === "open" || value === "closed" ? value : null;
 }
@@ -1166,6 +1794,7 @@ type WeeklyConfirmationEntry = {
   openTime: ParsedDailyTime;
   closeTime: ParsedDailyTime;
   waitlistStartTime: ParsedDailyTime | null;
+  cleanupTime: ParsedDailyTime | null;
 };
 type WeeklyRegistrationEntry = {
   dayIndex: number;
@@ -1273,10 +1902,20 @@ function parseWeeklyConfirmationSchedule(
         const waitlistStartTime = parseDailyTime(
           stringValue(day.waitlistStart),
         );
+        const cleanupTime =
+          parseDailyTime(stringValue(day.cleanup)) ||
+          parseDailyTime(stringValue(day.cleanupTime)) ||
+          closeTime;
         if (dayIndex === undefined || !enabled || !openTime || !closeTime) {
           return null;
         }
-        return { dayIndex, openTime, closeTime, waitlistStartTime };
+        return {
+          dayIndex,
+          openTime,
+          closeTime,
+          waitlistStartTime,
+          cleanupTime,
+        };
       })
       .filter((entry): entry is WeeklyConfirmationEntry => Boolean(entry));
   } catch {
@@ -1368,6 +2007,85 @@ function parseWeeklyWaitlistPromotionSchedule(
   }
 }
 
+function parseWeeklyRoleAccessSchedule(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  kind: RoleAccessKind = "earlyAccess",
+) {
+  const raw = emojiMap(config)?.[`${kind}WeeklySchedule`]?.trim();
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return [];
+    }
+
+    return Object.entries(value as Record<string, unknown>)
+      .map(([dayKey, dayValue]) => {
+        if (
+          !dayValue ||
+          typeof dayValue !== "object" ||
+          Array.isArray(dayValue)
+        ) {
+          return null;
+        }
+        const dayIndex = WEEKDAY_INDEX[dayKey.toLowerCase()];
+        const day = dayValue as Record<string, unknown>;
+        const enabled = day.enabled === true || day.enabled === "true";
+        const openTime = parseDailyTime(stringValue(day.open));
+        const closeTime = parseDailyTime(stringValue(day.close));
+        if (dayIndex === undefined || !enabled || !openTime || !closeTime) {
+          return null;
+        }
+        return { dayIndex, openTime, closeTime };
+      })
+      .filter((entry): entry is WeeklyRegistrationEntry => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function parseWeeklyRoleAccessScheduleText(raw: string) {
+  if (!raw.trim()) {
+    return [];
+  }
+
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return [];
+    }
+
+    return Object.entries(value as Record<string, unknown>)
+      .map(([dayKey, dayValue]) => {
+        if (
+          !dayValue ||
+          typeof dayValue !== "object" ||
+          Array.isArray(dayValue)
+        ) {
+          return null;
+        }
+        const dayIndex = WEEKDAY_INDEX[dayKey.toLowerCase()];
+        const day = dayValue as Record<string, unknown>;
+        const enabled = day.enabled === true || day.enabled === "true";
+        const openTime = parseDailyTime(stringValue(day.open));
+        const closeTime = parseDailyTime(stringValue(day.close));
+        if (dayIndex === undefined || !enabled || !openTime || !closeTime) {
+          return null;
+        }
+        return { dayIndex, openTime, closeTime };
+      })
+      .filter((entry): entry is WeeklyRegistrationEntry => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : "";
 }
@@ -1378,7 +2096,11 @@ function weeklyRegistrationIntervals(
   currentParts: ReturnType<typeof zonedDateParts>,
 ) {
   return weeklyConfirmationIntervals(
-    schedule.map((entry) => ({ ...entry, waitlistStartTime: null })),
+    schedule.map((entry) => ({
+      ...entry,
+      waitlistStartTime: null,
+      cleanupTime: entry.closeTime,
+    })),
     timeZone,
     currentParts,
   ).map((interval) => ({
@@ -1396,6 +2118,7 @@ function weeklyConfirmationIntervals(
     opensAt: Date;
     closesAt: Date;
     waitlistStartsAt: Date | null;
+    cleanupAt: Date;
   }> = [];
   for (let offset = -7; offset <= 14; offset += 1) {
     const openDate = shiftedLocalDate(
@@ -1443,6 +2166,12 @@ function weeklyConfirmationIntervals(
               entry.waitlistStartTime,
             )
           : null,
+        cleanupAt: zonedTimeAfterReference(
+          timeZone,
+          closeDate,
+          entry.closeTime,
+          entry.cleanupTime ?? entry.closeTime,
+        ),
       });
     }
   }
@@ -1655,6 +2384,83 @@ function configuredWaitlistPromotionTimeZone(
   } catch {
     return "UTC";
   }
+}
+
+function configuredRoleAccessTimeZone(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  kind: RoleAccessKind = "earlyAccess",
+) {
+  const emojis = emojiMap(config);
+  const timeZone =
+    emojis?.[`${kind}TimeZone`]?.trim() ||
+    emojis?.registrationTimeZone?.trim() ||
+    "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+function configuredRoleAccessGroupTimeZone(
+  group: Pick<RoleAccessGroup, "timeZone">,
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+) {
+  const emojis = emojiMap(config);
+  const timeZone =
+    group.timeZone.trim() || emojis?.registrationTimeZone?.trim() || "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+function configuredAutoRegistrationTimeZone(
+  autoConfig: Pick<AutoRegistrationConfig, "timeZone">,
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+) {
+  const emojis = emojiMap(config);
+  const timeZone =
+    autoConfig.timeZone.trim() || emojis?.registrationTimeZone?.trim() || "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+function normalizeRoleAccessGroupId(value: unknown, fallbackIndex: number) {
+  const text = stringValue(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return text || `access-${fallbackIndex + 1}`;
+}
+
+function normalizeRoleAccessGroupMode(value: unknown): RoleAccessGroupMode {
+  const text = stringValue(value).trim().toLowerCase();
+  return text === "vip" || text === "both" ? text : "normal";
+}
+
+function booleanFromUnknown(value: unknown, fallback: boolean) {
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return fallback;
 }
 
 function parseDailyTime(value?: string | null) {
@@ -2015,7 +2821,11 @@ function configuredDate(
     | DiscordEmojiMap
     | null
     | undefined,
-  key: "playConfirmationOpensAt" | "playConfirmationClosesAt",
+  key:
+    | "playConfirmationOpensAt"
+    | "playConfirmationClosesAt"
+    | "playConfirmationWaitlistGraceUntil"
+    | "waitlistPromotionAutoOpenUntil",
 ) {
   const value = emojiMap(config)?.[key]?.trim();
   if (!value) {

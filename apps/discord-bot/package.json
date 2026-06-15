@@ -1,5 +1,5 @@
 {
-  "name": "discord-bot",
+  "name": "arenzyra-discord-bot",
   "version": "0.1.0",
   "description": "Arenzyra Discord session bot MVP",
   "main": "dist/bot.js",
@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "ts-node src/bot.ts",
     "start": "node dist/bot.js",
-    "test": "node --test --require ts-node/register src/services/session.service.spec.ts src/services/message-registration.service.spec.ts src/services/control-panel.service.spec.ts src/services/scrim-discord-setup.service.spec.ts src/services/discord-emojis.spec.ts src/services/official-pricing-promo.service.spec.ts"
+    "test": "node --test --require ts-node/register --require ./src/test-env.ts src/services/session.service.spec.ts src/services/message-registration.service.spec.ts src/services/control-panel.service.spec.ts src/services/scrim-discord-setup.service.spec.ts src/services/discord-emojis.spec.ts src/services/official-pricing-promo.service.spec.ts"
   },
   "keywords": [],
   "author": "",

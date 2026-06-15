@@ -47,6 +47,22 @@ The same command is available as:
 npm run deploy:up
 ```
 
+After a build deploy, `deploy:up` also runs `scripts/production-maintenance.sh`.
+That keeps production Docker build cache bounded and removes old deployment
+backups without touching Postgres, Redis, uploads, or active containers.
+
+This command intentionally does not start the local `discord-bot` service. The
+Discord bot should have one production runtime only. If you deliberately need to
+start this stack's bot, opt in explicitly:
+
+```bash
+npm run deploy:up:discord-bot
+```
+
+The bot also has a startup lock: production-mode bot containers only connect to
+Discord when `ARENZYRA_DISCORD_BOT_INSTANCE=production` is present in the publish
+environment. Keep that flag off local machines.
+
 Do not use `next dev` on `localhost:3001` as a production parity check. For a true comparison, use the web app's production preview so the same build metadata and `BUILD_ID` flow are exercised locally:
 
 ```bash
@@ -133,6 +149,42 @@ If those services run on the same server outside Docker, `host.docker.internal` 
 docker compose --env-file infra/.env.publish -f infra/docker-compose.publish.yml ps
 docker compose --env-file infra/.env.publish -f infra/docker-compose.publish.yml logs -f
 docker compose --env-file infra/.env.publish -f infra/docker-compose.publish.yml down
+```
+
+## Production maintenance
+
+Production builds can leave Docker build cache behind. Keep these safeguards
+enabled on the server:
+
+```bash
+npm run deploy:maintenance
+npm run deploy:maintenance:check
+```
+
+The maintenance script defaults are conservative:
+
+- Docker builder cache is pruned with a `15GB` reserved cache target.
+- `/opt/arenzyra-backups` entries older than `30` days are deleted.
+- disk usage warnings start at `85%`; critical status starts at `90%`.
+- only build cache and old backup entries are removed.
+
+Install the checked-in cron template on production:
+
+```bash
+cp infra/arenzyra-maintenance.cron /etc/cron.d/arenzyra-maintenance
+chmod 0644 /etc/cron.d/arenzyra-maintenance
+```
+
+Optional environment overrides:
+
+```bash
+# See infra/arenzyra-maintenance.env.example.
+# Put overrides in /etc/arenzyra-maintenance.env for cron runs.
+ARENZYRA_DOCKER_BUILDER_KEEP_STORAGE=15GB
+ARENZYRA_BACKUP_RETENTION_DAYS=30
+ARENZYRA_DISK_WARN_PERCENT=85
+ARENZYRA_DISK_CRITICAL_PERCENT=90
+ARENZYRA_DISK_ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 ## Verify parity after deploy

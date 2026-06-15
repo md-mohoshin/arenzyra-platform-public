@@ -139,6 +139,1084 @@ test("slot status command toggles the per-session free slot replies", async () =
   ]);
 });
 
+test("idp dm command toggles forwarding for the synced idp channel", async () => {
+  const sent: string[] = [];
+  let updated: { sessionId: string; enabled: boolean } | null = null;
+  const config = {
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    organizationId: "org-1",
+    guildId: "guild-1",
+    manageRoleIds: [],
+    emojis: {},
+  };
+  const message = {
+    id: "123456789012345678",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%dm on",
+    guild: { id: "guild-1" },
+    channel: {
+      id: "idp-channel",
+      send: async (payload: { content?: string }) => {
+        sent.push(payload.content ?? "");
+        return { delete: async () => undefined };
+      },
+    },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: {
+        id: "00000000-0000-4000-8000-000000000001",
+        name: "Scrim 1",
+      },
+      config,
+      channelKind: "idp",
+    }),
+    setIdpDmForwardingEnabled: async (sessionId: string, enabled: boolean) => {
+      updated = { sessionId, enabled };
+      return {
+        ...config,
+        emojis: { idpDmForwardingEnabled: enabled ? "true" : "false" },
+      };
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(updated, {
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    enabled: true,
+  });
+  assert.match(sent[0], /IDP DM forwarding is now on for Scrim 1/);
+});
+
+test("idp staff message forwards to registered slot managers with reply button", async () => {
+  const dmPayloads: any[] = [];
+  let logPayload: any = null;
+  const managerId = "111111111111111111";
+  const config = {
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    organizationId: "org-1",
+    guildId: "guild-1",
+    logChannelId: "log-channel",
+    manageRoleIds: [],
+    emojis: { idpDmForwardingEnabled: "true" },
+  };
+  const message = {
+    id: "123456789012345678",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "Room ID: 123\nPass: abc",
+    guild: { id: "guild-1" },
+    channel: { id: "idp-channel" },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    attachments: new Collection(),
+    embeds: [],
+    client: {
+      users: {
+        fetch: async (userId: string) => ({
+          id: userId,
+          send: async (payload: any) => {
+            dmPayloads.push(payload);
+          },
+        }),
+      },
+    },
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: {
+        id: "00000000-0000-4000-8000-000000000001",
+        name: "Scrim 1",
+      },
+      config,
+      channelKind: "idp",
+    }),
+    listRegisteredSlotManagerDiscordIds: async () => [managerId],
+    sendDiscordActionLog: async (_guild: any, _config: any, payload: any) => {
+      logPayload = payload;
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(dmPayloads.length, 1);
+  assert.match(dmPayloads[0].content, /IDP update: Scrim 1/);
+  assert.match(dmPayloads[0].content, /Room ID: 123/);
+  assert.equal(dmPayloads[0].allowedMentions.parse.length, 0);
+  const button = dmPayloads[0].components[0].toJSON().components[0];
+  assert.equal(button.label, "Reply");
+  assert.match(
+    button.custom_id,
+    new RegExp(`^idpdm:reply:.*:123456789012345678:${managerId}$`),
+  );
+  assert.equal(logPayload.status, "1/1 delivered");
+});
+
+test("idp dm reply modal sends only manager identity and text to manager channel", async () => {
+  let managerMessage: any = null;
+  let replyPayload: any = null;
+  const managerId = "111111111111111111";
+  const sessionId = "00000000-0000-4000-8000-000000000001";
+  const sourceMessageId = "123456789012345678";
+  const service = new MessageRegistrationService({
+    getSessionDiscordContext: async () => ({
+      session: { id: sessionId, name: "Scrim 1" },
+      config: {
+        sessionId,
+        guildId: "guild-1",
+        managerChannelId: "manager-channel",
+        emojis: {},
+      },
+    }),
+  } as any);
+
+  const handled = await service.handleModalSubmit({
+    customId: `idpdm:modal:${sessionId}:${sourceMessageId}:${managerId}`,
+    user: {
+      id: managerId,
+      username: "manager",
+      globalName: "Manager Name",
+    },
+    fields: {
+      getTextInputValue: () => "Need 5 minutes extra.",
+    },
+    client: {
+      guilds: {
+        fetch: async () => ({
+          channels: {
+            fetch: async () => ({
+              isTextBased: () => true,
+              send: async (payload: any) => {
+                managerMessage = payload;
+              },
+            }),
+          },
+          members: {
+            fetch: async () => ({ displayName: "Manager Display" }),
+          },
+        }),
+      },
+    },
+    reply: async (payload: any) => {
+      replyPayload = payload;
+    },
+  } as any);
+
+  assert.equal(handled, true);
+  assert.match(managerMessage.content, /\*\*IDP reply\*\*/);
+  assert.match(managerMessage.content, new RegExp(`<@${managerId}>`));
+  assert.match(managerMessage.content, /Manager Display/);
+  assert.match(managerMessage.content, /Need 5 minutes extra/);
+  assert.doesNotMatch(managerMessage.content, /team/i);
+  assert.deepEqual(managerMessage.allowedMentions.users, [managerId]);
+  assert.equal(replyPayload.ephemeral, true);
+});
+
+test("rejected VIP registration logs original message proof", async () => {
+  const replies: string[] = [];
+  const logs: any[] = [];
+  const message = {
+    id: "message-1",
+    url: "https://discord.test/channels/guild-1/registration-channel/message-1",
+    author: {
+      id: "manager-1",
+      username: "manager",
+      globalName: "Manager",
+      bot: false,
+      tag: "manager#0001",
+    },
+    content: "%register\nvip\nTeam Alpha\nALP",
+    guild: { id: "guild-1" },
+    client: { user: { id: "bot-1" } },
+    channel: {
+      id: "registration-channel",
+      topic: "arenzyra-session=session-1;kind=registration",
+    },
+    member: {
+      permissions: { has: () => false },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection(),
+      channels: { first: () => null },
+    },
+    attachments: new Collection([
+      [
+        "attachment-1",
+        {
+          id: "attachment-1",
+          name: "logo.png",
+          url: "https://cdn.discord.test/logo.png",
+        },
+      ],
+    ]),
+    reactions: {
+      resolve: () => null,
+      cache: { find: () => undefined },
+    },
+    react: async () => undefined,
+    reply: async (payload: string | { content?: string }) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+      return { delete: async () => undefined };
+    },
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => null,
+    findScrimForRegistrationChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        sessionId: "session-1",
+        organizationId: "org-1",
+        registrationMode: "SCRIM",
+        logChannelId: "log-channel",
+        manageRoleIds: [],
+        emojis: {},
+      },
+      accepting: true,
+    }),
+    userHasVipRegistrationAccess: async () => false,
+    userHasCustomRoleRegistrationAccess: async () => false,
+    sendDiscordActionLog: async (
+      _guild: unknown,
+      _config: unknown,
+      log: any,
+    ) => {
+      logs.push(log);
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.match(replies[0], /VIP registration is closed/);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].action, "Registration rejected");
+  assert.equal(logs[0].status, "vip denied");
+  assert.deepEqual(logs[0].team, { name: "Team Alpha", tag: "ALP" });
+  assert.match(logs[0].details.join("\n"), /Original message ID: message-1/);
+  assert.match(logs[0].details.join("\n"), /%register/);
+  assert.match(logs[0].details.join("\n"), /logo\.png/);
+});
+
+test("ban-role registration rejection logs proof without public reply", async () => {
+  const replies: string[] = [];
+  const reactions: string[] = [];
+  const logs: any[] = [];
+  const message = {
+    id: "message-ban-role",
+    url: "https://discord.test/channels/guild-1/registration-channel/message-ban-role",
+    author: {
+      id: "manager-1",
+      username: "manager",
+      globalName: "Manager",
+      bot: false,
+      tag: "manager#0001",
+    },
+    content: "%register\nTeam Blocked\nBLK\n<@111111111111111111>",
+    guild: { id: "guild-1" },
+    client: { user: { id: "bot-1" } },
+    channel: {
+      id: "registration-channel",
+      topic: "arenzyra-session=session-1;kind=registration",
+    },
+    member: {
+      permissions: { has: () => false },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection([
+        [
+          "111111111111111111",
+          {
+            id: "111111111111111111",
+            username: "blocked-manager",
+            globalName: "Blocked Manager",
+            bot: false,
+            tag: "blocked#0001",
+          },
+        ],
+      ]),
+      channels: { first: () => null },
+    },
+    attachments: new Collection(),
+    reactions: {
+      resolve: () => null,
+      cache: { find: () => undefined },
+    },
+    react: async (emoji: string) => {
+      reactions.push(emoji);
+    },
+    reply: async (payload: string | { content?: string }) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+      return { delete: async () => undefined };
+    },
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => null,
+    findScrimForRegistrationChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        sessionId: "session-1",
+        organizationId: "org-1",
+        registrationMode: "SCRIM",
+        logChannelId: "log-channel",
+        manageRoleIds: [],
+        emojis: { ban: "BAN", reject: "REJECT" },
+      },
+      accepting: true,
+    }),
+    registerTeamAndJoinScrim: async () => {
+      throw new Error(
+        "REJECT You are blocked from registering for this scrim.",
+      );
+    },
+    sendDiscordActionLog: async (
+      _guild: unknown,
+      _config: unknown,
+      log: any,
+    ) => {
+      logs.push(log);
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(replies, []);
+  assert.ok(reactions.length >= 1);
+  assert.equal(reactions.at(-1), "🚫");
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].action, "Registration rejected");
+  assert.equal(logs[0].status, "banned");
+  assert.match(logs[0].reason, /blocked from registering/);
+  assert.match(logs[0].details.join("\n"), /message-ban-role/);
+});
+
+test("rejected confirm command logs proof before deleting original", async () => {
+  const replies: string[] = [];
+  const logs: any[] = [];
+  let deleted = false;
+  const message = {
+    id: "message-2",
+    url: "https://discord.test/channels/guild-1/slot-list/message-2",
+    author: { id: "manager-1", bot: false, tag: "manager#0001" },
+    content: "%confirm 22",
+    guild: { id: "guild-1" },
+    channel: {
+      id: "slot-list",
+      send: async (payload: { content?: string }) => {
+        replies.push(payload.content ?? "");
+        return { delete: async () => undefined };
+      },
+    },
+    attachments: new Collection(),
+    delete: async () => {
+      deleted = true;
+    },
+    reply: async (payload: string | { content?: string }) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+      return { delete: async () => undefined };
+    },
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        sessionId: "session-1",
+        organizationId: "org-1",
+        registrationMode: "SCRIM",
+        logChannelId: "log-channel",
+        manageRoleIds: [],
+        emojis: {},
+      },
+      channelKind: "slot-list",
+    }),
+    confirmSlotFromDiscord: async () =>
+      "\u274C No confirmed team is assigned to slot #22.",
+    sendDiscordActionLog: async (
+      _guild: unknown,
+      _config: unknown,
+      log: any,
+    ) => {
+      logs.push(log);
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(deleted, true);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].action, "Command rejected and deleted");
+  assert.equal(logs[0].status, "slot confirmation rejected");
+  assert.match(logs[0].details.join("\n"), /%confirm 22/);
+});
+
+test("%ban permanent choice asks for reason before creating manager ban", async () => {
+  let createdCommand: any = null;
+  let shownModal: any = null;
+  let promptEdit: any = null;
+  let editPayload: any = null;
+  const replies: any[] = [];
+  const manager = {
+    id: "111111111111111111",
+    username: "manager",
+    bot: false,
+  };
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: { banDefaultReason: "Manual Discord ban" },
+      },
+      channelKind: "manager",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createTeamBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Manager ban saved\nDuration: permanent";
+    },
+  };
+  const message = {
+    id: "message-1",
+    url: "https://discord.test/message-1",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%ban <@111111111111111111> + abusive behavior",
+    guild,
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection([[manager.id, manager]]),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return { id: "prompt-1" };
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].content, /Choose the ban duration/);
+  const selectId = replies[0].components[0].toJSON().components[0].custom_id;
+
+  const selectHandled = await service.handleStringSelectMenu({
+    customId: selectId,
+    values: ["permanent"],
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    guild,
+    showModal: async (modal: any) => {
+      shownModal = modal;
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(selectHandled, true);
+  assert.equal(createdCommand, null);
+  const modalJson = shownModal.toJSON();
+  assert.equal(modalJson.title, "Permanent Ban Reason");
+  assert.equal(modalJson.components[0].components[0].custom_id, "reason");
+  assert.equal(modalJson.components[0].components[0].value, "abusive behavior");
+
+  const modalHandled = await service.handleModalSubmit({
+    customId: modalJson.custom_id,
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    guild,
+    channel: {
+      messages: {
+        fetch: async () => ({
+          edit: async (payload: any) => {
+            promptEdit = payload;
+            return payload;
+          },
+        }),
+      },
+    },
+    fields: {
+      getTextInputValue: () => "abusive behavior",
+    },
+    deferReply: async () => undefined,
+    editReply: async (payload: any) => {
+      editPayload = payload;
+      return payload;
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(modalHandled, true);
+  assert.match(promptEdit.content, /Manager ban saved/);
+  assert.match(editPayload.content, /Manager ban saved/);
+  assert.deepEqual(createdCommand, {
+    target: { kind: "manager", discordUserId: "111111111111111111" },
+    scope: "SESSION",
+    sessionId: "session-1",
+    matchNumbers: [],
+    allMatches: false,
+    serverAction: null,
+    days: null,
+    reason: "abusive behavior",
+    note: "Created from Discord %ban command: https://discord.test/message-1",
+  });
+});
+
+test("%ban accepts all-sessions scope as an organization-wide manager ban", async () => {
+  let createdCommand: any = null;
+  const manager = {
+    id: "111111111111111111",
+    username: "manager",
+    bot: false,
+  };
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: { banDefaultReason: "Manual Discord ban" },
+      },
+      channelKind: "manager",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createTeamBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Manager ban saved";
+    },
+  };
+  const replies: any[] = [];
+  const message = {
+    id: "message-all-sessions",
+    url: "https://discord.test/message-all-sessions",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content:
+      "%ban <@111111111111111111> scope=all-sessions days=2 + repeated no-show",
+    guild,
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection([[manager.id, manager]]),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return { id: "reply-1" };
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(createdCommand, {
+    target: { kind: "manager", discordUserId: "111111111111111111" },
+    scope: "TEAM",
+    sessionId: "session-1",
+    matchNumbers: [],
+    allMatches: false,
+    serverAction: null,
+    days: 2,
+    reason: "repeated no-show",
+    note: "Created from Discord %ban command: https://discord.test/message-all-sessions",
+  });
+  assert.match(replies[0].content, /Manager ban saved/);
+});
+
+test("%ban accepts selected sessions by name", async () => {
+  let createdCommand: any = null;
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: { banDefaultReason: "Manual Discord ban" },
+      },
+      channelKind: "manager",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createTeamBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Manager ban saved";
+    },
+  };
+  const replies: any[] = [];
+  const message = {
+    id: "message-selected-sessions",
+    url: "https://discord.test/message-selected-sessions",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content:
+      '%ban DXB sessions="Scrim 16:00, Scrim 20:00" days=3 + wrong lobby',
+    guild,
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection(),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return { id: "reply-1" };
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(createdCommand, {
+    target: { kind: "team", query: "DXB" },
+    scope: "SESSION",
+    sessionId: "session-1",
+    sessionSelectors: ["Scrim 16:00", "Scrim 20:00"],
+    matchNumbers: [],
+    allMatches: false,
+    serverAction: null,
+    days: 3,
+    reason: "wrong lobby",
+    note: "Created from Discord %ban command: https://discord.test/message-selected-sessions",
+  });
+  assert.match(replies[0].content, /Manager ban saved/);
+});
+
+test("%ban timed choice asks for days and creates timed manager ban", async () => {
+  let createdCommand: any = null;
+  let shownModal: any = null;
+  let promptEdit: any = null;
+  let modalReply: any = null;
+  const replies: any[] = [];
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: {
+          banDefaultDurationDays: "3",
+          banDefaultReason: "Manual Discord ban",
+        },
+      },
+      channelKind: "manager",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createTeamBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Manager ban saved\nDuration: 7 day(s)";
+    },
+  };
+  const message = {
+    id: "message-2",
+    url: "https://discord.test/message-2",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%ban DXB + no-show abuse",
+    guild,
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection(),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return { id: "prompt-2" };
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  await service.handleMessage(message as any);
+  const selectId = replies[0].components[0].toJSON().components[0].custom_id;
+
+  const selectHandled = await service.handleStringSelectMenu({
+    customId: selectId,
+    values: ["days"],
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    showModal: async (modal: any) => {
+      shownModal = modal;
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(selectHandled, true);
+  const modalId = shownModal.toJSON().custom_id;
+
+  const modalHandled = await service.handleModalSubmit({
+    customId: modalId,
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    guild,
+    channel: {
+      messages: {
+        fetch: async () => ({
+          edit: async (payload: any) => {
+            promptEdit = payload;
+            return payload;
+          },
+        }),
+      },
+    },
+    fields: {
+      getTextInputValue: (customId: string) =>
+        customId === "days" ? "7" : "no-show abuse",
+    },
+    deferReply: async () => undefined,
+    editReply: async (payload: any) => {
+      modalReply = payload;
+      return payload;
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(modalHandled, true);
+  assert.match(promptEdit.content, /Manager ban saved/);
+  assert.match(modalReply.content, /Duration: 7 day/);
+  assert.deepEqual(createdCommand, {
+    target: { kind: "team", query: "DXB" },
+    scope: "SESSION",
+    sessionId: "session-1",
+    matchNumbers: [],
+    allMatches: false,
+    serverAction: null,
+    days: 7,
+    reason: "no-show abuse",
+    note: "Created from Discord %ban command: https://discord.test/message-2",
+  });
+});
+
+test("%ban-team permanent choice asks for reason before creating team target ban", async () => {
+  let createdCommand: any = null;
+  let shownModal: any = null;
+  let promptEdit: any = null;
+  let editPayload: any = null;
+  const replies: any[] = [];
+  const manager = {
+    id: "111111111111111111",
+    username: "manager",
+    bot: false,
+  };
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: { banDefaultReason: "Manual Discord ban" },
+      },
+      channelKind: "manager",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createTeamBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Manager ban saved for DXB [DXB]\nDuration: permanent";
+    },
+  };
+  const message = {
+    id: "message-team-ban",
+    url: "https://discord.test/message-team-ban",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%ban-team DXB <@111111111111111111> + stream sniping",
+    guild,
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection([[manager.id, manager]]),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return { id: "prompt-team-ban" };
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(createdCommand, null);
+  assert.match(replies[0].content, /Team ban prepared/);
+  assert.match(replies[0].content, /Target: DXB/);
+  assert.match(replies[0].content, /Choose the ban duration/);
+  const selectId = replies[0].components[0].toJSON().components[0].custom_id;
+
+  const selectHandled = await service.handleStringSelectMenu({
+    customId: selectId,
+    values: ["permanent"],
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    guild,
+    showModal: async (modal: any) => {
+      shownModal = modal;
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(selectHandled, true);
+  assert.equal(createdCommand, null);
+  const modalJson = shownModal.toJSON();
+  assert.equal(modalJson.title, "Permanent Ban Reason");
+  assert.equal(modalJson.components[0].components[0].custom_id, "reason");
+  assert.equal(modalJson.components[0].components[0].value, "stream sniping");
+
+  const modalHandled = await service.handleModalSubmit({
+    customId: modalJson.custom_id,
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    guild,
+    channel: {
+      messages: {
+        fetch: async () => ({
+          edit: async (payload: any) => {
+            promptEdit = payload;
+            return payload;
+          },
+        }),
+      },
+    },
+    fields: {
+      getTextInputValue: () => "stream sniping",
+    },
+    deferReply: async () => undefined,
+    editReply: async (payload: any) => {
+      editPayload = payload;
+      return payload;
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(modalHandled, true);
+  assert.match(promptEdit.content, /Manager ban saved for DXB/);
+  assert.match(editPayload.content, /Manager ban saved for DXB/);
+  assert.deepEqual(createdCommand, {
+    target: { kind: "team", query: "DXB" },
+    scope: "SESSION",
+    sessionId: "session-1",
+    matchNumbers: [],
+    allMatches: false,
+    serverAction: null,
+    days: null,
+    reason: "stream sniping",
+    note: "Created from Discord %ban-team command: https://discord.test/message-team-ban",
+  });
+});
+
+test("%unban manager mention revokes active manager bans", async () => {
+  let revokedCommand: any = null;
+  const replies: any[] = [];
+  const manager = {
+    id: "111111111111111111",
+    username: "manager",
+    bot: false,
+  };
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: { banDefaultReason: "Manual Discord ban" },
+      },
+      channelKind: "manager",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    revokeTeamBansFromDiscord: async (command: any) => {
+      revokedCommand = command;
+      return "Revoked 1 active manager ban(s).";
+    },
+  };
+  const message = {
+    id: "message-3",
+    url: "https://discord.test/message-3",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%unban <@111111111111111111> + mistaken ban",
+    guild,
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection([[manager.id, manager]]),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return payload;
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.match(replies[0].content, /Revoked 1 active manager ban/);
+  assert.deepEqual(revokedCommand, {
+    target: { kind: "manager", discordUserId: "111111111111111111" },
+    scope: null,
+    sessionId: "session-1",
+    matchNumbers: [],
+    allMatches: false,
+    reason: "mistaken ban",
+  });
+});
+
+test("%unban-team with team and manager mention revokes immediately for team target", async () => {
+  let revokedCommand: any = null;
+  const replies: any[] = [];
+  const manager = {
+    id: "111111111111111111",
+    username: "manager",
+    bot: false,
+  };
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: {},
+      },
+      channelKind: "manager",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    revokeTeamBansFromDiscord: async (command: any) => {
+      revokedCommand = command;
+      return "Revoked 1 active manager ban(s) for DXB.";
+    },
+  };
+  const message = {
+    id: "message-team-unban",
+    url: "https://discord.test/message-team-unban",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%unban-team DXB <@111111111111111111> + appeal accepted",
+    guild,
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Collection([[manager.id, manager]]),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return payload;
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.match(replies[0].content, /Revoked 1 active manager ban/);
+  assert.deepEqual(revokedCommand, {
+    target: { kind: "team", query: "DXB" },
+    scope: null,
+    sessionId: "session-1",
+    matchNumbers: [],
+    allMatches: false,
+    reason: "appeal accepted",
+  });
+});
+
+test("!ban manager mention is ignored", async () => {
+  let lookupCalled = false;
+  const replies: any[] = [];
+  const manager = {
+    id: "111111111111111111",
+    username: "manager",
+    bot: false,
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => {
+      lookupCalled = true;
+      return null;
+    },
+  };
+  const message = {
+    id: "message-4",
+    url: "https://discord.test/message-4",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "!ban <@111111111111111111> + chargeback",
+    guild: { id: "guild-1" },
+    channel: { id: "manager-channel" },
+    client: { user: { id: "bot-1" } },
+    mentions: {
+      users: new Collection([[manager.id, manager]]),
+    },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return payload;
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, false);
+  assert.equal(lookupCalled, false);
+  assert.deepEqual(replies, []);
+});
+
 test("staff registration messages use the first mentioned user as team leader", async () => {
   let capturedArgs: unknown[] | null = null;
   const reactions: string[] = [];
@@ -503,6 +1581,7 @@ test("normal users cannot use vip registration command", async () => {
       return "Should not happen";
     },
     userHasVipRegistrationAccess: async () => false,
+    userHasCustomRoleRegistrationAccess: async () => false,
     userHasEarlyAccessRegistrationAccess: async () => false,
   };
 
@@ -1565,6 +2644,7 @@ test("logo command in synced logo channel updates the saved team logo", async (t
     findScrimForLogoChannel: async (guildId: string, channelId: string) => ({
       session: { id: "session-1" },
       config: {
+        sessionId: "session-1",
         guildId,
         manageRoleIds: [],
         emojis: { discordLogoChannelIds: channelId },
@@ -1588,6 +2668,13 @@ test("logo command in synced logo channel updates the saved team logo", async (t
       refreshedGuildId = guild.id;
       refreshedSessionId = sessionId;
     },
+    queueVisibleDiscordScrimRefreshForActiveGuildSessions: async (
+      guild: { id: string },
+      config: { sessionId?: string },
+    ) => {
+      refreshedGuildId = guild.id;
+      refreshedSessionId = config.sessionId ?? null;
+    },
   };
 
   const service = new MessageRegistrationService(sessionService as any);
@@ -1602,6 +2689,94 @@ test("logo command in synced logo channel updates the saved team logo", async (t
   assert.equal(uploadedSource?.attachmentId, "attachment-1");
   assert.equal(replyPayload?.content, "Logo saved for Team DXB.");
   assert.equal(refreshedGuildId, "guild-1");
+  assert.equal(refreshedSessionId, "session-1");
+});
+
+test("sync old logos command scans the current synced logo channel", async () => {
+  let requested: any = null;
+  let refreshedSessionId: string | null = null;
+  let replyPayload: any = null;
+  const message = {
+    id: "sync-old-logos-message-1",
+    author: {
+      id: "staff-1",
+      username: "staff",
+      globalName: "Staff",
+      bot: false,
+      tag: "staff",
+    },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    content: "%sync-old-logos 250",
+    guild: { id: "guild-1" },
+    channel: { id: "111111111111111111" },
+    mentions: {
+      users: new Map(),
+      channels: { first: () => null },
+    },
+    attachments: { find: () => undefined },
+    client: { user: { id: "bot-1" } },
+    reactions: {
+      resolve: () => ({
+        users: { remove: async () => undefined },
+      }),
+    },
+    react: async () => undefined,
+    reply: async (payload: any) => {
+      replyPayload = payload;
+    },
+  };
+  const sessionService = {
+    findScrimForLogoChannel: async (guildId: string, channelId: string) => ({
+      session: { id: "session-1" },
+      config: {
+        organizationId: "org-1",
+        guildId,
+        manageRoleIds: [],
+        emojis: { discordLogoChannelIds: channelId },
+      },
+    }),
+    syncOldDiscordLogos: async (params: any) => {
+      requested = params;
+      return {
+        ok: true,
+        sessionId: "session-1",
+        guildId: "guild-1",
+        channelIds: ["111111111111111111"],
+        limit: params.limit,
+        scanned: 250,
+        matched: 10,
+        saved: 6,
+        pending: 3,
+        backfilled: 2,
+        skipped: 1,
+        failed: 0,
+        failures: [],
+      };
+    },
+    queueVisibleDiscordScrimRefresh: (
+      _guild: { id: string },
+      sessionId: string,
+    ) => {
+      refreshedSessionId = sessionId;
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(requested, {
+    sessionId: "session-1",
+    organizationId: "org-1",
+    channelId: "111111111111111111",
+    limit: 250,
+  });
+  assert.match(replyPayload?.content, /Scanned: 250/);
+  assert.match(replyPayload?.content, /Saved to teams: 6/);
+  assert.match(replyPayload?.content, /Backfilled active teams: 2/);
   assert.equal(refreshedSessionId, "session-1");
 });
 
@@ -1754,7 +2929,7 @@ test("staff can clean all slots from the synced slot-list channel", async () => 
           editedReply =
             typeof editPayload === "string"
               ? editPayload
-              : editPayload.content ?? "";
+              : (editPayload.content ?? "");
           return { delete: async () => undefined };
         },
         delete: async () => undefined,
@@ -1848,7 +3023,7 @@ test("staff can clean waitlist from the synced waitlist channel", async () => {
           editedReply =
             typeof editPayload === "string"
               ? editPayload
-              : editPayload.content ?? "";
+              : (editPayload.content ?? "");
           return { delete: async () => undefined };
         },
         delete: async () => undefined,
@@ -2149,6 +3324,93 @@ test("staff can close registration with the short close command", async () => {
   assert.equal(commandDeleted, true);
   assert.equal(previousDeleted, true);
   assert.equal(sentPayload.content, "REJECT Registration is closed.");
+});
+
+test("staff can open waitlist promotion from the synced waitlist channel", async () => {
+  let organizationContext: string | null = null;
+  let stateArgs: unknown[] | null = null;
+  let sentPayload: any = null;
+  let commandDeleted = false;
+  let previousDeleted = false;
+  const previousConfirmation = {
+    author: { id: "bot-1" },
+    content: "REJECT Waitlist promotion is closed.",
+    pinned: false,
+    delete: async () => {
+      previousDeleted = true;
+    },
+  };
+  const message = {
+    author: {
+      id: "staff-1",
+      username: "staff",
+      globalName: "Staff",
+      bot: false,
+      tag: "staff",
+    },
+    content: "%open-waitlist",
+    guild: { id: "guild-1" },
+    channel: {
+      id: "waitlist-channel",
+      messages: {
+        fetch: async () =>
+          new Collection([
+            [previousConfirmation.content, previousConfirmation],
+          ]),
+      },
+      send: async (payload: any) => {
+        sentPayload = payload;
+      },
+    },
+    member: {
+      permissions: { has: () => true },
+      roles: {
+        cache: {
+          has: () => false,
+          some: () => false,
+        },
+      },
+    },
+    client: { user: { id: "bot-1" } },
+    delete: async () => {
+      commandDeleted = true;
+    },
+    reply: async () => undefined,
+  };
+  const sessionService = {
+    findScrimForWaitlistChannel: async () => ({
+      session: { id: "session-1", name: "Daily Scrim" },
+      accepting: false,
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: {},
+      },
+    }),
+    withOrganization: async (
+      organizationId: string,
+      fn: () => Promise<string>,
+    ) => {
+      organizationContext = organizationId;
+      return fn();
+    },
+    setWaitlistPromotionChannelState: async (...args: unknown[]) => {
+      stateArgs = args;
+      return "CHECK Waitlist promotion is open.";
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(organizationContext, "org-1");
+  assert.ok(stateArgs);
+  assert.equal(stateArgs[1], "session-1");
+  assert.equal(stateArgs[2], "open");
+  assert.equal(commandDeleted, true);
+  assert.equal(previousDeleted, true);
+  assert.equal(sentPayload.content, "CHECK Waitlist promotion is open.");
 });
 
 test("normal users cannot close registration from the registration channel", async () => {
@@ -3702,8 +4964,7 @@ test("automatic result ban missing button previews and confirms no-show bans", a
   });
   assert.match(previewEdit.content, /No-show ban preview/);
   assert.match(previewEdit.content, /Confirm within 60 seconds/);
-  const confirmId =
-    previewEdit.components[0].toJSON().components[0].custom_id;
+  const confirmId = previewEdit.components[0].toJSON().components[0].custom_id;
 
   const confirmHandled = await service.handleButton({
     customId: confirmId,
@@ -3784,10 +5045,7 @@ test("automatic apply with no-shows counts ban candidates without creating bans"
   assert.equal(handled, true);
   assert.match(finalEdit.content, /Ban candidates counted: 1/);
   assert.equal(finalEdit.components.length, 0);
-  assert.equal(
-    service.pendingAutoResults.has("123456789012345693"),
-    false,
-  );
+  assert.equal(service.pendingAutoResults.has("123456789012345693"), false);
 });
 
 test("automatic result apply replaces stale MVP and top fragger widget posts", async () => {
@@ -4288,6 +5546,7 @@ test("automatic final result posts match and overall widgets to results by defau
         { name: "overall-ranking.png", buffer: Buffer.from([2]) },
         { name: "overall-top-mvp.png", buffer: Buffer.from([3]) },
         { name: "overall-top-fraggers.png", buffer: Buffer.from([4]) },
+        { name: "match-schedule.png", buffer: Buffer.from([5]) },
       ],
     }),
     resetSessionResultSystem: async () => {
@@ -4366,26 +5625,305 @@ test("automatic final result posts match and overall widgets to results by defau
   const reviewButtons = finalBanReviewPost.components[0]
     .toJSON()
     .components.map((component: any) => component.label);
-  assert.deepEqual(reviewButtons, [
-    "Edit Selection",
-    "Apply Bans",
-    "Cancel",
-  ]);
+  assert.deepEqual(reviewButtons, ["Edit Selection", "Apply Bans", "Cancel"]);
   assert.equal(managerPost, null);
-  assert.equal(
-    resultsPosts[0].content,
-    "Public match results",
-  );
-  assert.equal(
-    resultsPosts[1].content,
-    "Public overall results",
-  );
+  assert.equal(resultsPosts[0].content, "Public match results");
+  assert.equal(resultsPosts[1].content, "Public overall results");
   assert.equal(resultsPosts[0].files.length, 4);
-  assert.equal(resultsPosts[1].files.length, 3);
+  assert.equal(resultsPosts[1].files.length, 4);
   assert.deepEqual(
     resultsPosts[1].files.map((file: { name?: string }) => file.name),
-    ["overall-ranking.png", "overall-top-mvp.png", "overall-top-fraggers.png"],
+    [
+      "overall-ranking.png",
+      "overall-top-mvp.png",
+      "overall-top-fraggers.png",
+      "match-schedule.png",
+    ],
   );
+});
+
+test("automatic final result applies configured no-show rules before reset", async () => {
+  let finalEdit: any = null;
+  let applyNoShowOpts: any = null;
+  let autoBanInput: any = null;
+  let finalBanReviewPosted = false;
+  const operationOrder: string[] = [];
+  const resultsPosts: any[] = [];
+  const banPosts: any[] = [];
+  const message = {
+    id: "123456789012345684",
+    author: {
+      id: "staff-1",
+      username: "staff",
+      globalName: "Staff",
+      bot: false,
+      tag: "staff",
+    },
+    content: "G2",
+    guild: { id: "guild-1" },
+    channel: { id: "screenshots-channel" },
+    member: {
+      permissions: { has: () => true },
+      roles: {
+        cache: {
+          has: () => false,
+          some: () => false,
+        },
+      },
+    },
+    mentions: {
+      users: new Map(),
+      channels: { first: () => null },
+    },
+    attachments: {
+      find: () => ({
+        url: "https://cdn.discordapp.com/result.png",
+        name: "result.png",
+        contentType: "image/png",
+      }),
+    },
+    client: { user: { id: "bot-1" } },
+    reactions: {
+      resolve: () => ({
+        users: { remove: async () => undefined },
+      }),
+    },
+    react: async () => undefined,
+    reply: async () => ({
+      edit: async () => undefined,
+    }),
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1" },
+      channelKind: "screenshots",
+      config: {
+        managerChannelId: "manager-channel",
+        resultsChannelId: "results-channel",
+        bansChannelId: "bans-channel",
+        manageRoleIds: [],
+        organizationId: "org-1",
+        emojis: {
+          banDefaultReason: "No-show",
+          noShowBanRules: JSON.stringify([
+            {
+              enabled: true,
+              misses: 1,
+              durationDays: 3,
+              scope: "SESSION",
+              reason: "Missed {misses} match(es) in {session}",
+            },
+          ]),
+        },
+      },
+    }),
+    previewAutomaticResultScreenshot: async () => ({
+      sessionId: "session-1",
+      matchId: "match-2",
+      matchLabel: "Match 2",
+      imageUrl: "https://cdn.discordapp.com/result.png",
+      mode: "results",
+      content: "Automatic result preview\nMatch: Match 2",
+      canApply: true,
+      preview: {
+        matchId: "match-2",
+        preview: [
+          {
+            position: 1,
+            tag: "DXB",
+            kills: 8,
+            teamId: "team-1",
+            slotId: "slot-1",
+            slotNumber: 3,
+            status: "OK",
+          },
+        ],
+        resolved: [],
+        unresolved: [],
+        ambiguous: [],
+      },
+      slots: [
+        {
+          id: "slot-1",
+          matchId: "match-2",
+          slotNumber: 3,
+          teamId: "team-1",
+          team: { id: "team-1", tag: "DXB" },
+        },
+        {
+          id: "slot-2",
+          matchId: "match-2",
+          slotNumber: 4,
+          teamId: "team-2",
+          team: { id: "team-2", tag: "NS" },
+        },
+      ],
+    }),
+    applyReviewedResults: async (...args: any[]) => {
+      applyNoShowOpts = args[3];
+      return {
+        content: "Match widgets",
+        publicContent: "Public match results",
+        noShowCount: 1,
+        imageFiles: [
+          { name: "match-result.png", buffer: Buffer.from([1]) },
+          { name: "overall-ranking.png", buffer: Buffer.from([2]) },
+        ],
+      };
+    },
+    applyFinalNoShowAutoBansFromDiscord: async (...args: any[]) => {
+      operationOrder.push("apply-auto-no-show-rules");
+      autoBanInput = args;
+      return {
+        ok: true,
+        matchId: "match-2",
+        candidateTeamCount: 1,
+        rulesConfigured: 1,
+        createdTeamBans: 1,
+        createdManagerBans: 1,
+        createdTeamIds: ["team-2"],
+        createdManagerDiscordUserIds: [
+          "123456789012345678",
+          "223456789012345678",
+        ],
+        createdBans: [
+          {
+            teamId: "team-2",
+            teamName: "No Show",
+            teamTag: "NS",
+            scope: "SESSION",
+            reason: "Missed 1 match(es) in Daily Scrim - Missed G1",
+            expiresAt: new Date(
+              Date.now() + 3 * 24 * 60 * 60 * 1000,
+            ).toISOString(),
+            durationDays: 3,
+            missedMatches: ["G1"],
+            managerDiscordUserIds: ["123456789012345678", "223456789012345678"],
+          },
+        ],
+        skippedAlreadyBanned: 0,
+        skippedProtected: 0,
+        skippedNoRule: 0,
+        serverActionDetails: [
+          "Server action: banned role(s) applied to 1/1 linked member(s): Banned.",
+        ],
+      };
+    },
+    previewNoShowTeamBansFromDiscord: async () => {
+      throw new Error("manual no-show review should not be created");
+    },
+    buildFinalResultPost: async () => ({
+      content: "Final widgets",
+      publicContent: "Public overall results",
+      imageFiles: [{ name: "overall-ranking.png", buffer: Buffer.from([2]) }],
+    }),
+    resetSessionResultSystem: async () => {
+      operationOrder.push("reset-result-system");
+      return {
+        sessionId: "session-1",
+        organizationId: "org-1",
+        matchesRemoved: 2,
+        matchIds: ["match-1", "match-2"],
+        reason: "Final result posted",
+        resetAt: new Date().toISOString(),
+      };
+    },
+  };
+  const service = new MessageRegistrationService(sessionService as any);
+  await service.handleMessage(message as any);
+  const pending = (service as any).pendingAutoResults.get(message.id);
+  const missingNoShowRow = pending?.rows.find(
+    (row: any) => row.slotNumber === 4,
+  );
+  assert.equal(missingNoShowRow?.officialPlaceholder, true);
+  assert.deepEqual((service as any).reviewIssues(pending), []);
+
+  const guild = {
+    id: "guild-1",
+    members: {
+      fetch: async (userId: string) =>
+        userId === "123456789012345678" ? { user: { bot: false } } : null,
+    },
+    channels: {
+      fetch: async (channelId: string) => ({
+        isTextBased: () => true,
+        isDMBased: () => false,
+        send: async (payload: any) => {
+          if (channelId === "bans-channel") {
+            banPosts.push(payload);
+          } else {
+            resultsPosts.push(payload);
+          }
+          return payload;
+        },
+      }),
+    },
+  };
+  const handled = await service.handleButton({
+    customId: "result:auto:final:123456789012345684",
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    deferUpdate: async () => undefined,
+    editReply: async (payload: any) => {
+      finalEdit = payload;
+      return payload;
+    },
+    guild,
+    channel: {
+      send: async () => {
+        finalBanReviewPosted = true;
+      },
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(handled, true);
+  assert.equal(applyNoShowOpts.markMissingSlotsNoShow, true);
+  assert.deepEqual(autoBanInput[0], {
+    matchId: "match-2",
+    sessionId: "session-1",
+  });
+  assert.equal(autoBanInput[1], guild);
+  assert.equal(autoBanInput[2].organizationId, "org-1");
+  assert.deepEqual(operationOrder, [
+    "apply-auto-no-show-rules",
+    "reset-result-system",
+  ]);
+  assert.equal(finalBanReviewPosted, false);
+  assert.match(
+    finalEdit.content,
+    /Automatic no-show rules applied: 1 team ban\(s\), 1 manager ban\(s\)\./,
+  );
+  assert.match(
+    finalEdit.content,
+    /Banned teams report posted to <#bans-channel>\./,
+  );
+  assert.match(
+    finalEdit.content,
+    /banned role\(s\) applied to 1\/1 linked member/,
+  );
+  assert.doesNotMatch(finalEdit.content, /No-show ban review posted/);
+  assert.equal(resultsPosts.length, 2);
+  assert.equal(banPosts.length, 1);
+  assert.match(
+    banPosts[0].content,
+    /banned role\(s\) applied to 1\/1 linked member/,
+  );
+  assert.match(banPosts[0].content, /Banned teams:/);
+  assert.match(
+    banPosts[0].content,
+    /No Show \(NS\): managers <@123456789012345678>, Discord ID 223456789012345678; missed G1;/,
+  );
+  assert.match(
+    banPosts[0].content,
+    /reason: Missed 1 match\(es\) in Daily Scrim - Missed G1;/,
+  );
+  assert.deepEqual(banPosts[0].allowedMentions, {
+    parse: [],
+    users: ["123456789012345678"],
+  });
+  assert.doesNotMatch(banPosts[0].content, /<@223456789012345678>/);
 });
 
 test("final no-show ban review applies only selected teams and managers", async () => {
@@ -4589,10 +6127,7 @@ test("final no-show ban review modal removes teams and managers before apply", a
       createdBans: [],
     },
     selectedTeamIds: new Set(["team-1", "team-2"]),
-    selectedManagerIds: new Set([
-      "111111111111111111",
-      "222222222222222222",
-    ]),
+    selectedManagerIds: new Set(["111111111111111111", "222222222222222222"]),
     expiresAt: Date.now() + 60_000,
   });
 
@@ -4778,6 +6313,279 @@ test("automatic result apply blocks auto-skipped rows until staff confirms them"
   assert.equal(applied, false);
   assert.match(replyPayload.content, /row 2 is skipped/i);
   assert.equal(replyPayload.ephemeral, true);
+});
+
+test("automatic result review auto-skips duplicate OCR team rows", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const rows = service.toReviewedRows({
+    preview: {
+      preview: [
+        {
+          position: 1,
+          tag: "DXB",
+          kills: 8,
+          teamId: "team-1",
+          slotId: "slot-1",
+          slotNumber: 3,
+          status: "OK",
+        },
+        {
+          position: 1,
+          tag: "DXB",
+          kills: 3,
+          teamId: "team-1",
+          slotId: "slot-1",
+          slotNumber: 3,
+          status: "OK",
+        },
+        {
+          position: 2,
+          tag: "NXT",
+          kills: 4,
+          teamId: "team-2",
+          slotId: "slot-2",
+          slotNumber: 4,
+          status: "OK",
+        },
+      ],
+    },
+  });
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345686",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows,
+    slots: [
+      {
+        id: "slot-1",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", tag: "DXB" },
+      },
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", tag: "NXT" },
+      },
+    ],
+  };
+
+  assert.equal(rows[0].include, true);
+  assert.equal(rows[1].include, false);
+  assert.equal(rows[1].autoSkipped, true);
+  assert.match(rows[1].autoSkipReason, /duplicate official slot/i);
+  assert.equal(rows[2].include, true);
+  assert.deepEqual(service.reviewIssues(pending), []);
+  assert.match(
+    service.formatAutoResultDashboard(pending),
+    /Auto-skipped duplicates: 1/,
+  );
+  assert.match(service.formatAutoResultDetails(pending), /\[auto-skip\]/);
+  assert.match(service.formatAutoResultDetails(pending), /duplicate team DXB/i);
+});
+
+test("automatic result review adds editable placeholders for official slots missed by OCR", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const rows = service.toReviewedRows({
+    preview: {
+      preview: [
+        {
+          position: 1,
+          tag: "DXB",
+          kills: 8,
+          teamId: "team-1",
+          slotId: "slot-1",
+          slotNumber: 3,
+          status: "OK",
+        },
+      ],
+    },
+    slots: [
+      {
+        id: "slot-1",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", tag: "DXB" },
+      },
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", name: "Next Team", tag: "NXT" },
+      },
+    ],
+  });
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345688",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows,
+    slots: [
+      {
+        id: "slot-1",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", tag: "DXB" },
+      },
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", name: "Next Team", tag: "NXT" },
+      },
+    ],
+  };
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].officialPlaceholder, true);
+  assert.equal(rows[1].include, false);
+  assert.equal(rows[1].slotNumber, 4);
+  assert.match(service.reviewedRowLabel(rows[1], 1), /P\? NXT S4 0k missing/);
+  assert.deepEqual(service.reviewIssues(pending), []);
+  assert.match(
+    service.formatAutoResultDashboard(pending),
+    /Ban-count candidates: 1/,
+  );
+  assert.match(
+    service.formatAutoResultDetails(pending),
+    /\[skip\] 2\) P\? NXT slot 4 - 0 kills/,
+  );
+});
+
+test("automatic result review removes stale official placeholders once the slot is applied", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345689",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 1,
+        tag: "H2",
+        kills: 3,
+        teamId: "team-h2",
+        slotId: "slot-h2",
+        slotNumber: 6,
+        status: "OK",
+        include: true,
+      },
+      {
+        position: 20,
+        tag: "H2",
+        kills: 0,
+        teamId: "team-h2",
+        slotId: "slot-h2",
+        slotNumber: 6,
+        status: "UNRESOLVED",
+        reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
+        include: false,
+        officialPlaceholder: true,
+      },
+      {
+        position: 21,
+        tag: "FM",
+        kills: 0,
+        teamId: "team-fm",
+        slotId: "slot-fm",
+        slotNumber: 10,
+        status: "UNRESOLVED",
+        reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
+        include: false,
+        officialPlaceholder: true,
+      },
+    ],
+    slots: [
+      {
+        id: "slot-h2",
+        matchId: "match-1",
+        slotNumber: 6,
+        teamId: "team-h2",
+        team: { id: "team-h2", name: "H2 ESPORT", tag: "H2" },
+      },
+      {
+        id: "slot-fm",
+        matchId: "match-1",
+        slotNumber: 10,
+        teamId: "team-fm",
+        team: { id: "team-fm", name: "Future Millioners", tag: "FM" },
+      },
+    ],
+  };
+
+  const dashboard = service.formatAutoResultDashboard(pending);
+
+  assert.equal(pending.rows.length, 2);
+  assert.deepEqual(
+    pending.rows.map((row: any) => row.slotNumber),
+    [6, 10],
+  );
+  assert.deepEqual(service.reviewIssues(pending), []);
+  assert.match(dashboard, /Missing official slots: 1/);
+  assert.match(dashboard, /Ban-count candidates: 1/);
+  assert.match(dashboard, /Rows: 1 apply \/ 0 skipped/);
+  assert.match(dashboard, /Missing official review rows: 1/);
+  assert.doesNotMatch(dashboard, /H2 ESPORT/);
+});
+
+test("automatic result review describes unreadable kills on matched rows", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345687",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 9,
+        tag: "AG",
+        kills: 0,
+        teamId: "team-ag",
+        slotId: "slot-23",
+        slotNumber: 23,
+        status: "UNRESOLVED",
+        reason: "OCR_KILLS_UNREADABLE",
+        include: false,
+      },
+      {
+        position: 10,
+        tag: "FNC",
+        kills: 2,
+        teamId: "team-fnc",
+        slotId: "slot-6",
+        slotNumber: 6,
+        status: "OK",
+        include: true,
+      },
+    ],
+    slots: [],
+  };
+
+  assert.deepEqual(service.reviewIssues(pending), [
+    "row 1 has unreadable kills for AG slot 23. Edit kills or confirm skip.",
+    "Missing placement row(s): 1, 2, 3, 4, 5, 6, 7, 8, 9. Edit a skipped OCR row, use Add Row, or resend the complete result screenshots before applying.",
+  ]);
+  assert.doesNotMatch(
+    service.formatAutoResultDashboard(pending),
+    /row 1 is skipped/i,
+  );
 });
 
 test("automatic result apply blocks missing placement rows", async () => {
@@ -5005,4 +6813,132 @@ test("automatic result add row maps official slot to reviewed row", () => {
     { name: "Player One", kills: 3 },
     { name: "Player Two", kills: 2 },
   ]);
+});
+
+test("automatic result review lists official slots missing from applied OCR rows", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345685",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 1,
+        tag: "DXB",
+        kills: 8,
+        teamId: "team-1",
+        slotId: "slot-3",
+        slotNumber: 3,
+        status: "OK",
+        include: true,
+      },
+      {
+        position: 2,
+        tag: "MISS",
+        kills: 4,
+        teamId: null,
+        slotId: null,
+        slotNumber: null,
+        status: "UNRESOLVED",
+        reason: "TEAM_TAG_NOT_FOUND",
+        include: false,
+      },
+    ],
+    slots: [
+      {
+        id: "slot-3",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", name: "Dubai", tag: "DXB" },
+      },
+      {
+        id: "slot-16",
+        matchId: "match-1",
+        slotNumber: 16,
+        teamId: "team-16",
+        team: { id: "team-16", name: "Kinetic Hub", tag: "KH" },
+      },
+      {
+        id: "slot-17",
+        matchId: "match-1",
+        slotNumber: 17,
+        teamId: null,
+        team: null,
+      },
+    ],
+  };
+
+  const dashboard = service.formatAutoResultDashboard(pending);
+  assert.match(dashboard, /Missing official slots: 1/);
+  assert.match(dashboard, /Slot 16 KH - Kinetic Hub/);
+  assert.doesNotMatch(dashboard, /Slot 17/);
+
+  const details = service.formatAutoResultDetails(pending);
+  assert.match(
+    details,
+    /Missing official slots \/ not applied from OCR \(1\):/,
+  );
+  assert.match(details, /- Slot 16 KH - Kinetic Hub/);
+  assert.doesNotMatch(details, /Slot 17/);
+});
+
+test("automatic result review paginates every skipped row and missing official slot", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const rows = Array.from({ length: 30 }, (_, index) => {
+    const number = index + 1;
+    return {
+      position: number,
+      tag: `T${number}`,
+      kills: 0,
+      teamId: null,
+      slotId: null,
+      slotNumber: null,
+      status: "UNRESOLVED",
+      reason: "TEAM_TAG_NOT_FOUND",
+      include: false,
+    };
+  });
+  const slots = Array.from({ length: 30 }, (_, index) => {
+    const number = index + 1;
+    return {
+      id: `slot-${number}`,
+      matchId: "match-1",
+      slotNumber: number,
+      teamId: `team-${number}`,
+      team: { id: `team-${number}`, name: `Team ${number}`, tag: `T${number}` },
+    };
+  });
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345685",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows,
+    slots,
+  };
+
+  const pageCount = service.autoResultDetailPageCount(pending);
+  assert.ok(pageCount > 1);
+
+  const combined = Array.from({ length: pageCount }, (_, page) =>
+    service.formatAutoResultDetails(pending, page),
+  ).join("\n");
+
+  assert.match(combined, /\[skip\] 30\) P30 T30 no slot - 0 kills/);
+  assert.match(combined, /- Slot 30 T30 - Team 30/);
+  assert.doesNotMatch(combined, /\+\d+ more/);
+  assert.doesNotMatch(combined, /more rows/);
+  assert.doesNotMatch(combined, /Output truncated/);
+
+  const components = service.autoResultPreviewComponents(pending, 0);
+  assert.match(
+    components[0].toJSON().components[2].custom_id,
+    /result:auto:preview-page:123456789012345685:1/,
+  );
 });

@@ -1,0 +1,8 @@
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Check disk usage hourly and log/alert when thresholds are crossed.
+15 * * * * root cd /opt/arenzyra && /bin/sh scripts/production-maintenance.sh --check-only >> /var/log/arenzyra-maintenance.log 2>&1
+
+# Run safe cleanup daily: bounded Docker build cache plus old deploy backups.
+20 3 * * * root cd /opt/arenzyra && /bin/sh scripts/production-maintenance.sh >> /var/log/arenzyra-maintenance.log 2>&1

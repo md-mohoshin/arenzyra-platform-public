@@ -783,6 +783,16 @@ function normalizeTransportTeams(teams, players) {
           record.memberNum ??
           record.playerNum,
       ) ?? teamPlayers.length;
+    const placement = toNumber(
+      record.placement ??
+        record.Placement ??
+        record.placementIndex ??
+        record.PlacementIndex ??
+        record.position ??
+        record.Position ??
+        record.rank ??
+        record.Rank,
+    );
     const eliminatedFlag = normalizeBooleanValue(record.eliminated);
     normalizedTeams.push({
       teamId,
@@ -790,6 +800,7 @@ function normalizeTransportTeams(teams, players) {
       teamNo,
       teamName,
       teamTag,
+      placement: placement === null ? null : Math.max(1, Math.trunc(placement)),
       alivePlayers: Math.max(0, Math.trunc(alivePlayers)),
       totalPlayers: Math.max(0, Math.trunc(totalPlayers)),
       eliminated:

@@ -37,12 +37,32 @@ const RESULT_OR_LIFECYCLE_FIELDS = new Set([
   "winnerteamid",
 ]);
 
+const TEAM_COLLECTION_KEYS = new Set(["teams", "teaminfolist", "teamlist"]);
+
+const LIVE_TEAM_PLACEMENT_FIELDS = new Set([
+  "placement",
+  "placementindex",
+  "position",
+  "rank",
+]);
+
+function isLiveTeamPlacementField(segments, normalizedField) {
+  if (!LIVE_TEAM_PLACEMENT_FIELDS.has(normalizedField)) {
+    return false;
+  }
+
+  const root = normalizeFieldName(segments[0] || "");
+  return TEAM_COLLECTION_KEYS.has(root);
+}
+
 function sanitizeObserverTelemetryPayload(payload) {
   const strippedFields = [];
 
-  const sanitize = (value, path) => {
+  const sanitize = (value, path, segments) => {
     if (Array.isArray(value)) {
-      return value.map((entry, index) => sanitize(entry, `${path}[${index}]`));
+      return value.map((entry, index) =>
+        sanitize(entry, `${path}[${index}]`, segments),
+      );
     }
 
     const record = asRecord(value);
@@ -54,17 +74,20 @@ function sanitizeObserverTelemetryPayload(payload) {
     for (const [key, nested] of Object.entries(record)) {
       const normalized = normalizeFieldName(key);
       const fieldPath = path ? `${path}.${key}` : key;
-      if (RESULT_OR_LIFECYCLE_FIELDS.has(normalized)) {
+      if (
+        RESULT_OR_LIFECYCLE_FIELDS.has(normalized) &&
+        !isLiveTeamPlacementField(segments, normalized)
+      ) {
         strippedFields.push(fieldPath);
         continue;
       }
-      clone[key] = sanitize(nested, fieldPath);
+      clone[key] = sanitize(nested, fieldPath, [...segments, key]);
     }
     return clone;
   };
 
   return {
-    sanitizedPayload: sanitize(payload, ""),
+    sanitizedPayload: sanitize(payload, "", []),
     strippedFields: strippedFields.sort((left, right) => left.localeCompare(right)),
   };
 }

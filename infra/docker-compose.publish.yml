@@ -94,6 +94,8 @@ services:
       DISCORD_REDIRECT_URI: "${DISCORD_REDIRECT_URI:-}"
       DISCORD_INSTALL_STATE_SECRET: "${DISCORD_INSTALL_STATE_SECRET:-}"
       DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_IMPORT_POLLING: "${TELEGRAM_IMPORT_POLLING:-false}"
       YOUTUBE_CLIENT_ID: "${YOUTUBE_CLIENT_ID:-}"
       YOUTUBE_CLIENT_SECRET: "${YOUTUBE_CLIENT_SECRET:-}"
       YOUTUBE_REDIRECT_URI: "${YOUTUBE_REDIRECT_URI:-}"
@@ -107,10 +109,16 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_TTS_MODEL: "${OPENAI_TTS_MODEL:-gpt-4o-mini-tts}"
       OPENAI_VISION_MODEL: "${OPENAI_VISION_MODEL:-gpt-4.1-mini}"
-      OPENAI_VISION_DETAIL: "${OPENAI_VISION_DETAIL:-high}"
+      OPENAI_VISION_DETAIL: "${OPENAI_VISION_DETAIL:-auto}"
       OPENAI_VISION_PREPROCESS: "${OPENAI_VISION_PREPROCESS:-true}"
       OPENAI_VISION_MAX_IMAGE_EDGE: "${OPENAI_VISION_MAX_IMAGE_EDGE:-2048}"
       OPENAI_VISION_IMAGE_QUALITY: "${OPENAI_VISION_IMAGE_QUALITY:-90}"
+      OPENAI_VISION_ENHANCED_VARIANTS: "${OPENAI_VISION_ENHANCED_VARIANTS:-true}"
+      OPENAI_VISION_MAX_IMAGE_VARIANTS: "${OPENAI_VISION_MAX_IMAGE_VARIANTS:-2}"
+      OPENAI_VISION_ROW_CROPS: "${OPENAI_VISION_ROW_CROPS:-0}"
+      OPENAI_VISION_CACHE: "${OPENAI_VISION_CACHE:-true}"
+      OPENAI_VISION_CACHE_TTL_SECONDS: "${OPENAI_VISION_CACHE_TTL_SECONDS:-604800}"
+      OCR_BASIC_FIRST: "${OCR_BASIC_FIRST:-true}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -213,6 +221,9 @@ services:
     restart: unless-stopped
 
   discord-bot:
+    # The Discord gateway bot must be a single production truth. Keep this
+    # local publish service opt-in so deploys cannot start a second bot.
+    profiles: ["discord-bot"]
     build:
       context: ..
       dockerfile: apps/discord-bot/Dockerfile
@@ -220,8 +231,11 @@ services:
       - ../apps/discord-bot/.env
     environment:
       NODE_ENV: production
+      ARENZYRA_DISCORD_BOT_INSTANCE: "${ARENZYRA_DISCORD_BOT_INSTANCE:-}"
       ARENZYRA_API_BASE_URL: "http://api:3000"
       DISCORD_BOT_TOKEN: "${DISCORD_BOT_TOKEN:-}"
+      DISCORD_CLIENT_ID: "${DISCORD_CLIENT_ID:-}"
+      DISCORD_MESSAGE_CONTENT_INTENT: "${DISCORD_MESSAGE_CONTENT_INTENT:-true}"
     volumes:
       - ../apps/discord-bot/.env:/repo/apps/discord-bot/.env
     depends_on:

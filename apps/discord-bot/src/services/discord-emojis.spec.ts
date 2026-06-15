@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  autoRegistrationWindow,
+  parseAutoRegistrationConfig,
   registrationWindow,
   registrationWindowForSession,
   registrationMessageText,
   registrationMessageTitle,
+  playConfirmationWindow,
   registrationWindowStatusText,
   registrationWindowStatusTextForSession,
   slotListMarker,
   slotListMessageMode,
+  waitlistMessageMode,
   waitlistPromotionWindow,
   waitlistPromotionWindowForSession,
 } from "./discord-emojis";
@@ -166,13 +170,92 @@ test("waitlist promotion is closed by default and opens only during its schedule
   );
 });
 
-test("waitlist promotion manual state overrides the weekly schedule", () => {
+test("temporary waitlist promotion auto-open expires at the stored timestamp", () => {
+  const openWindow = waitlistPromotionWindow(
+    {
+      waitlistPromotionAutoOpenUntil: "2026-05-04T10:45:00.000Z",
+    },
+    new Date("2026-05-04T10:30:00.000Z"),
+  );
+  assert.equal(openWindow.allowsAction, true);
+  assert.equal(openWindow.closesAt?.toISOString(), "2026-05-04T10:45:00.000Z");
+
+  assert.equal(
+    waitlistPromotionWindow(
+      {
+        waitlistPromotionAutoOpenUntil: "2026-05-04T10:45:00.000Z",
+      },
+      new Date("2026-05-04T10:46:00.000Z"),
+    ).allowsAction,
+    false,
+  );
+});
+
+test("confirmation waitlist grace reopens a closed confirmation window until expiry", () => {
+  const schedule = JSON.stringify({
+    monday: {
+      enabled: true,
+      open: "09:00",
+      close: "10:00",
+      waitlistStart: "",
+    },
+  });
+  const openWindow = playConfirmationWindow(
+    {
+      playConfirmationWeeklySchedule: schedule,
+      playConfirmationTimeZone: "UTC",
+      playConfirmationWaitlistGraceUntil: "2026-05-04T10:45:00.000Z",
+    },
+    new Date("2026-05-04T10:30:00.000Z"),
+  );
+  assert.equal(openWindow.allowsAction, true);
+  assert.equal(openWindow.state, "open");
+  assert.equal(openWindow.closesAt?.toISOString(), "2026-05-04T10:45:00.000Z");
+
+  const expiredWindow = playConfirmationWindow(
+    {
+      playConfirmationWeeklySchedule: schedule,
+      playConfirmationTimeZone: "UTC",
+      playConfirmationWaitlistGraceUntil: "2026-05-04T10:45:00.000Z",
+    },
+    new Date("2026-05-04T10:46:00.000Z"),
+  );
+  assert.equal(expiredWindow.allowsAction, false);
+  assert.equal(expiredWindow.state, "closed");
+});
+
+test("weekly waitlist promotion schedule overrides manual state", () => {
   assert.equal(
     waitlistPromotionWindow(
       {
         waitlistPromotionWeeklySchedule: weeklySchedule,
         waitlistPromotionTimeZone: "UTC",
         waitlistPromotionManualState: "open",
+      },
+      new Date("2026-05-04T15:00:00.000Z"),
+    ).allowsAction,
+    false,
+  );
+  assert.equal(
+    waitlistPromotionWindow(
+      {
+        waitlistPromotionWeeklySchedule: weeklySchedule,
+        waitlistPromotionTimeZone: "UTC",
+        waitlistPromotionManualState: "closed",
+      },
+      new Date("2026-05-04T10:30:00.000Z"),
+    ).allowsAction,
+    true,
+  );
+});
+
+test("staff waitlist promotion schedule override takes priority", () => {
+  assert.equal(
+    waitlistPromotionWindow(
+      {
+        waitlistPromotionWeeklySchedule: weeklySchedule,
+        waitlistPromotionTimeZone: "UTC",
+        waitlistPromotionScheduleOverrideState: "open",
       },
       new Date("2026-05-04T15:00:00.000Z"),
     ).allowsAction,
@@ -183,7 +266,7 @@ test("waitlist promotion manual state overrides the weekly schedule", () => {
       {
         waitlistPromotionWeeklySchedule: weeklySchedule,
         waitlistPromotionTimeZone: "UTC",
-        waitlistPromotionManualState: "closed",
+        waitlistPromotionScheduleOverrideState: "closed",
       },
       new Date("2026-05-04T10:30:00.000Z"),
     ).allowsAction,
@@ -343,6 +426,67 @@ test("slot list message mode defaults to embed and supports plain text", () => {
   assert.equal(
     slotListMessageMode({ slotListMessageMode: "unknown" }),
     "embed",
+  );
+});
+
+test("waitlist message mode defaults to embed and supports plain text", () => {
+  assert.equal(waitlistMessageMode({}), "embed");
+  assert.equal(waitlistMessageMode({ waitlistMessageMode: "plain" }), "plain");
+  assert.equal(
+    waitlistMessageMode({ waitlistMessageMode: "unknown" }),
+    "embed",
+  );
+});
+
+test("auto registration config normalizes placement, fallback, and limits", () => {
+  const config = parseAutoRegistrationConfig({
+    autoRegistrationEnabled: "true",
+    autoRegistrationRoleId: "123456789012345678",
+    autoRegistrationRoleName: "Auto Teams",
+    autoRegistrationPlacement: "vip",
+    autoRegistrationWaitlistFallback: "false",
+    autoRegistrationMaxTeams: "250",
+    autoRegistrationLastRunKey: "run-1",
+  });
+
+  assert.equal(config.enabled, true);
+  assert.equal(config.roleId, "123456789012345678");
+  assert.equal(config.roleName, "Auto Teams");
+  assert.equal(config.placement, "vip");
+  assert.equal(config.waitlistFallback, false);
+  assert.equal(config.maxTeams, 100);
+  assert.equal(config.lastRunKey, "run-1");
+});
+
+test("auto registration opens only during an enabled role schedule", () => {
+  const schedule = JSON.stringify({
+    monday: { enabled: true, open: "10:00", close: "12:00" },
+  });
+  const config = {
+    autoRegistrationEnabled: "true",
+    autoRegistrationRoleId: "123456789012345678",
+    autoRegistrationWeeklySchedule: schedule,
+    autoRegistrationTimeZone: "UTC",
+  };
+
+  const openWindow = autoRegistrationWindow(
+    config,
+    new Date("2026-05-04T10:30:00.000Z"),
+  );
+  assert.equal(openWindow.allowsAction, true);
+  assert.equal(openWindow.opensAt?.toISOString(), "2026-05-04T10:00:00.000Z");
+
+  assert.equal(
+    autoRegistrationWindow(config, new Date("2026-05-04T12:30:00.000Z"))
+      .allowsAction,
+    false,
+  );
+  assert.equal(
+    autoRegistrationWindow(
+      { ...config, autoRegistrationEnabled: "false" },
+      new Date("2026-05-04T10:30:00.000Z"),
+    ).allowsAction,
+    false,
   );
 });
 

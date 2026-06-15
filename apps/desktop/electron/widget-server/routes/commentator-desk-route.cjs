@@ -257,6 +257,84 @@ function buildTeamRows(players) {
   });
 }
 
+function classifyDistanceEngagement(distanceMeters, firingCount, knockedCount) {
+  const distance = Math.max(0, Math.round(toFiniteNumber(distanceMeters) ?? 0));
+  const firing = Math.max(0, Math.round(toFiniteNumber(firingCount) ?? 0));
+  const knocked = Math.max(0, Math.round(toFiniteNumber(knockedCount) ?? 0));
+
+  if (knocked > 0 && firing > 0) {
+    return {
+      state: "trade",
+      label: "Trade",
+      priority: 5,
+      summary: `${knocked} knocked / ${firing} firing`,
+      tone: "fight",
+    };
+  }
+
+  if (knocked > 0) {
+    return {
+      state: "knock",
+      label: "Knock",
+      priority: 4,
+      summary: `${knocked} knocked`,
+      tone: "fight",
+    };
+  }
+
+  if ((firing >= 2 && distance <= 280) || (firing > 0 && distance <= 160)) {
+    return {
+      state: "fight",
+      label: "Fight",
+      priority: 3,
+      summary: `${firing} firing`,
+      tone: "fight",
+    };
+  }
+
+  if (firing > 0 && distance <= 450) {
+    return {
+      state: "shots",
+      label: "Shots",
+      priority: 2,
+      summary: `${firing} firing`,
+      tone: "shots",
+    };
+  }
+
+  if (distance <= 80) {
+    return {
+      state: "contact",
+      label: "Close",
+      priority: 1,
+      summary: "Contact range",
+      tone: "hot",
+    };
+  }
+
+  return {
+    state: "none",
+    label: null,
+    priority: 0,
+    summary: null,
+    tone:
+      distance <= 160
+        ? "close"
+        : distance <= 280
+          ? "watch"
+          : "wide",
+  };
+}
+
+function compareDistancePairs(left, right) {
+  const leftPriority = toFiniteNumber(left?.engagementPriority) ?? 0;
+  const rightPriority = toFiniteNumber(right?.engagementPriority) ?? 0;
+  if (rightPriority !== leftPriority) {
+    return rightPriority - leftPriority;
+  }
+  return left.distanceMeters - right.distanceMeters;
+}
+
 function buildDistancePairs(players) {
   const groups = new Map();
   for (const player of players) {
@@ -271,6 +349,7 @@ function buildDistancePairs(players) {
         slot: player.teamSlot,
         activePlayers: 0,
         knockedPlayers: 0,
+        firingPlayers: 0,
         players: [],
       };
       groups.set(player.teamKey, group);
@@ -278,6 +357,9 @@ function buildDistancePairs(players) {
     group.activePlayers += 1;
     if (player.knocked === true) {
       group.knockedPlayers += 1;
+    }
+    if (player.isFiring === true && player.alive !== false) {
+      group.firingPlayers += 1;
     }
     group.players.push(player);
   }
@@ -308,6 +390,9 @@ function buildDistancePairs(players) {
       }
 
       const distanceMeters = Math.max(0, Math.round(minDistance / 100));
+      const knockedCount = left.knockedPlayers + right.knockedPlayers;
+      const firingCount = left.firingPlayers + right.firingPlayers;
+      const engagement = classifyDistanceEngagement(distanceMeters, firingCount, knockedCount);
       rows.push({
         key: `${left.key}:${right.key}`,
         leftLabel: left.label,
@@ -319,23 +404,19 @@ function buildDistancePairs(players) {
         rightPlayerName: rightPlayer?.playerName || null,
         leftActive: left.activePlayers,
         rightActive: right.activePlayers,
-        knockedCount: left.knockedPlayers + right.knockedPlayers,
-        firingCount:
-          (leftPlayer?.isFiring === true ? 1 : 0) + (rightPlayer?.isFiring === true ? 1 : 0),
+        knockedCount,
+        firingCount,
         distanceMeters,
-        tone:
-          distanceMeters <= 80
-            ? "hot"
-            : distanceMeters <= 160
-              ? "close"
-              : distanceMeters <= 280
-                ? "watch"
-                : "wide",
+        tone: engagement.tone,
+        engagementState: engagement.state,
+        engagementLabel: engagement.label,
+        engagementSummary: engagement.summary,
+        engagementPriority: engagement.priority,
       });
     }
   }
 
-  return rows.sort((left, right) => left.distanceMeters - right.distanceMeters).slice(0, 10);
+  return rows.sort(compareDistancePairs).slice(0, 10);
 }
 
 function buildSplitRows(players) {
@@ -438,6 +519,19 @@ function buildCues(snapshot, teams, distancePairs, splitRows) {
     });
   }
 
+  const engagedPair = distancePairs.find((pair) => (pair.engagementPriority ?? 0) >= 3);
+  if (!fight && engagedPair) {
+    cues.push({
+      tone: "fight",
+      label: engagedPair.engagementLabel || "Fight",
+      line: `${engagedPair.slotMatchup || formatSlotMatchup(
+        engagedPair.leftSlot,
+        engagedPair.rightSlot,
+      )} at ${engagedPair.distanceMeters}m`,
+      meta: engagedPair.engagementSummary || "Shots near contact range",
+    });
+  }
+
   const alert = Array.isArray(production?.activeAlerts) ? production.activeAlerts[0] : null;
   if (alert) {
     cues.push({
@@ -472,13 +566,17 @@ function buildCues(snapshot, teams, distancePairs, splitRows) {
     });
   }
 
-  const hotPair = distancePairs.find((pair) => pair.distanceMeters <= 160);
+  const hotPair =
+    distancePairs.find((pair) => (pair.engagementPriority ?? 0) >= 2) ||
+    distancePairs.find((pair) => pair.distanceMeters <= 160);
   if (hotPair) {
     cues.push({
       tone: "distance",
       label: "Distance",
       line: `${hotPair.slotMatchup || formatSlotMatchup(hotPair.leftSlot, hotPair.rightSlot)} at ${hotPair.distanceMeters}m`,
-      meta: hotPair.knockedCount > 0 ? "Knock pressure active" : "Contact range",
+      meta:
+        hotPair.engagementSummary ||
+        (hotPair.knockedCount > 0 ? "Knock pressure active" : "Contact range"),
     });
   }
 
@@ -611,6 +709,8 @@ function registerCommentatorDeskRoute(app, { engine, getAccess }) {
 
   app.get("/obs/commentator-desk", (req, res) => {
     const requestedMapKey = readRequestedMapKey(req);
+    const transparentWindow =
+      req.query?.transparent === "1" || req.query?.pinned === "1";
     const bootstrap = {
       requestedMapKey,
       mapFrameUrl: buildMapFrameUrl(requestedMapKey),
@@ -623,14 +723,14 @@ function registerCommentatorDeskRoute(app, { engine, getAccess }) {
     };
 
     res.type("html").send(`<!DOCTYPE html>
-<html lang="en">
+<html lang="en"${transparentWindow ? ' class="commentator-desk-window-root"' : ""}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Arenzyra Commentator Desk</title>
     <link rel="stylesheet" href="/obs/static/commentator-desk-widget.css?v=commentator-desk-v1" />
   </head>
-  <body>
+  <body${transparentWindow ? ' class="commentator-desk-window-body"' : ""}>
     <main class="commentator-desk" id="commentator-desk" data-status="loading">
       <section class="map-pane" aria-label="Live map">
         <iframe id="map-frame" title="Live map" data-src="${escapeHtml(

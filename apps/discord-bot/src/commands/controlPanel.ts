@@ -18,7 +18,14 @@ export const controlPanelCommand = {
         .addChoices(
           { name: 'Teams', value: 'teams' },
           { name: 'Staff', value: 'staff' },
+          { name: 'Session Manage', value: 'manage' },
+          { name: 'Result Control', value: 'result' },
         ),
+    )
+    .addStringOption((option) =>
+      option
+        .setName('session-id')
+        .setDescription('Optional session ID for the session manage panel'),
     ),
   async execute(
     interaction: ChatInputCommandInteraction,

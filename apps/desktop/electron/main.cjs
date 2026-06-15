@@ -427,6 +427,9 @@ let quittingAfterCleanup = false;
 let mainWindow = null;
 let pendingSyncCommand = null;
 let windowLoaded = false;
+let commentatorDeskWindow = null;
+let commentatorDeskWindowClickThrough = false;
+let commentatorDeskWindowUrl = null;
 let widgetServer = null;
 let pendingWidgetTeamBranding = null;
 let cachedAiCasterAccess = null;
@@ -744,50 +747,7 @@ const bootstrapService = createBootstrapService({
     {
       name: "START_WIDGET_SERVER",
       run: async () => {
-        if (!widgetServer) {
-          widgetServer = startWidgetsServer({
-            port: Number(process.env.ARENZYRA_WIDGET_PORT || 5510),
-            host: resolveWidgetServerHost({
-              isPackaged: app.isPackaged,
-              env: process.env,
-            }),
-            enableDebugRoutes: isDev,
-            enableOperatorRoutes: shouldEnableWidgetMutationRoutes({
-              isPackaged: app.isPackaged,
-              env: process.env,
-            }),
-            teamAssetsRoot: TEAM_ASSETS_DIR,
-            playerAssetsRoot: PLAYER_ASSETS_DIR,
-            resolveApiBase: () => normalizeBaseUrl(),
-            getObserverBaseUrl: () => getShadowTelemetryBaseUrl(),
-            shouldPollDirectObserver: () =>
-              shouldPollDirectObserverForWidgets(),
-            getForcedMapKey: () => productionModeState.selectedMapKey,
-            getCurrentMatchContext: () => getCurrentWidgetMatchContext(),
-            requestPlayerPhotoRefresh: (matchId) =>
-              requestPlayerPhotoCacheRefresh(matchId),
-            logger: logger.child("widgets"),
-          });
-        }
-
-        if (typeof widgetServer?.whenReady === "function") {
-          await widgetServer.whenReady();
-        }
-        if (pendingWidgetTeamBranding) {
-          publishTeamBrandingToWidgetServer(pendingWidgetTeamBranding);
-        }
-        await refreshAiCasterAccess(getStoredSession(), {
-          throwOnError: false,
-        });
-        await refreshCommentatorDeskAccess(getStoredSession(), {
-          throwOnError: false,
-        });
-        await refreshWidgetHotkeyControlApproval(getStoredSession(), {
-          throwOnError: false,
-        });
-        widgetHotkeyControl.sync("widget-server-started");
-
-        const widgetStatus = getWidgetServerStatusView();
+        const widgetStatus = await ensureWidgetServerReady();
         return {
           meta: {
             running: widgetStatus.running,
@@ -1854,6 +1814,7 @@ const EXPLICIT_WIDGET_APPROVAL_KEYS = new Set([
   COMMENTATOR_DESK_WIDGET_KEY,
   HOTKEY_CONTROL_APPROVAL_KEY,
   "map",
+  "next-zone-update-kinetic-hud",
   "next-zone-update-pro-sidebar",
 ]);
 
@@ -2259,6 +2220,252 @@ function getWidgetServerStatusView() {
     localBaseUrl,
     networkBaseUrl,
   };
+}
+
+async function ensureWidgetServerReady() {
+  const isFirstStart = !widgetServer;
+  if (!widgetServer) {
+    widgetServer = startWidgetsServer({
+      port: Number(process.env.ARENZYRA_WIDGET_PORT || 5510),
+      host: resolveWidgetServerHost({
+        isPackaged: app.isPackaged,
+        env: process.env,
+      }),
+      enableDebugRoutes: isDev,
+      enableOperatorRoutes: shouldEnableWidgetMutationRoutes({
+        isPackaged: app.isPackaged,
+        env: process.env,
+      }),
+      teamAssetsRoot: TEAM_ASSETS_DIR,
+      playerAssetsRoot: PLAYER_ASSETS_DIR,
+      resolveApiBase: () => normalizeBaseUrl(),
+      getObserverBaseUrl: () => getShadowTelemetryBaseUrl(),
+      shouldPollDirectObserver: () => shouldPollDirectObserverForWidgets(),
+      getForcedMapKey: () => productionModeState.selectedMapKey,
+      getCurrentMatchContext: () => getCurrentWidgetMatchContext(),
+      requestPlayerPhotoRefresh: (matchId) =>
+        requestPlayerPhotoCacheRefresh(matchId),
+      logger: logger.child("widgets"),
+    });
+  }
+
+  if (typeof widgetServer?.whenReady === "function") {
+    await widgetServer.whenReady();
+  }
+  if (pendingWidgetTeamBranding) {
+    publishTeamBrandingToWidgetServer(pendingWidgetTeamBranding);
+  }
+  if (isFirstStart) {
+    await refreshAiCasterAccess(getStoredSession(), {
+      throwOnError: false,
+    });
+    await refreshCommentatorDeskAccess(getStoredSession(), {
+      throwOnError: false,
+    });
+    await refreshWidgetHotkeyControlApproval(getStoredSession(), {
+      throwOnError: false,
+    });
+    widgetHotkeyControl.sync("widget-server-ready");
+  }
+
+  return getWidgetServerStatusView();
+}
+
+function buildPinnedCommentatorDeskUrl(widgetStatus, payload = {}) {
+  const baseUrl =
+    widgetStatus?.localBaseUrl || widgetStatus?.baseUrl || "http://localhost:5510";
+  const url = new URL("/obs/commentator-desk", `${baseUrl}/`);
+  url.searchParams.set("transparent", "1");
+  url.searchParams.set("pinned", "1");
+
+  const mapKey = String(payload?.mapKey || "").trim();
+  if (mapKey) {
+    url.searchParams.set("map", mapKey);
+  }
+
+  return url.toString();
+}
+
+function isAllowedPinnedCommentatorDeskUrl(urlValue) {
+  try {
+    const parsed = new URL(String(urlValue || ""));
+    const status = getWidgetServerStatusView();
+    return (
+      parsed.protocol === "http:" &&
+      isLoopbackHostname(parsed.hostname) &&
+      Number(parsed.port || "80") === Number(status.port || 5510) &&
+      parsed.pathname === "/obs/commentator-desk"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getPinnedCommentatorDeskWindowStatus() {
+  const win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+  if (!win) {
+    return {
+      open: false,
+      visible: false,
+      clickThrough: commentatorDeskWindowClickThrough,
+      alwaysOnTop: false,
+      transparent: true,
+      url: null,
+    };
+  }
+
+  return {
+    open: true,
+    visible: win.isVisible(),
+    clickThrough: commentatorDeskWindowClickThrough,
+    alwaysOnTop: win.isAlwaysOnTop(),
+    transparent: true,
+    url: commentatorDeskWindowUrl,
+  };
+}
+
+function applyPinnedCommentatorDeskClickThrough(clickThrough) {
+  assertLauncherAccess();
+  commentatorDeskWindowClickThrough = clickThrough === true;
+  const win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+  if (!win) {
+    return getPinnedCommentatorDeskWindowStatus();
+  }
+
+  win.setIgnoreMouseEvents(commentatorDeskWindowClickThrough, {
+    forward: true,
+  });
+  if (typeof win.setFocusable === "function") {
+    win.setFocusable(!commentatorDeskWindowClickThrough);
+  }
+  if (commentatorDeskWindowClickThrough) {
+    win.showInactive();
+  } else {
+    win.focus();
+  }
+  return getPinnedCommentatorDeskWindowStatus();
+}
+
+async function openPinnedCommentatorDeskWindow(payload = {}) {
+  assertLauncherAccess();
+  const widgetStatus = await ensureWidgetServerReady();
+  if (widgetStatus.running !== true || !widgetStatus.port) {
+    throw new Error("Local widget server is unavailable.");
+  }
+
+  const nextUrl = buildPinnedCommentatorDeskUrl(widgetStatus, payload);
+  let win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+
+  if (!win) {
+    win = new BrowserWindow({
+      width: 1260,
+      height: 720,
+      minWidth: 860,
+      minHeight: 480,
+      frame: false,
+      transparent: true,
+      backgroundColor: "#00000000",
+      hasShadow: false,
+      resizable: true,
+      movable: true,
+      show: false,
+      skipTaskbar: false,
+      alwaysOnTop: true,
+      title: "Arenzyra Commentator Desk",
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        devTools: isDev,
+      },
+    });
+    commentatorDeskWindow = win;
+
+    win.setAlwaysOnTop(true, "screen-saver");
+    if (typeof win.setVisibleOnAllWorkspaces === "function") {
+      win.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+      });
+    }
+
+    win.webContents.session.setPermissionRequestHandler(
+      (_webContents, permission, callback) => {
+        logWarn("[commentator-desk-window] blocked permission request", {
+          permission,
+        });
+        callback(false);
+      },
+    );
+
+    win.webContents.setWindowOpenHandler((details) => {
+      openValidatedExternalUrl(details?.url, "commentator-desk-window-open");
+      return { action: "deny" };
+    });
+
+    win.webContents.on("will-navigate", (event, url) => {
+      if (isAllowedPinnedCommentatorDeskUrl(url)) {
+        return;
+      }
+      event.preventDefault();
+      logWarn("[commentator-desk-window] blocked navigation", { url });
+    });
+
+    win.webContents.on(
+      "before-input-event",
+      (_event, input) => {
+        if (input?.key === "Escape" && input.type === "keyDown") {
+          win.close();
+        }
+      },
+    );
+
+    win.on("closed", () => {
+      if (commentatorDeskWindow === win) {
+        commentatorDeskWindow = null;
+        commentatorDeskWindowUrl = null;
+      }
+    });
+  }
+
+  commentatorDeskWindowUrl = nextUrl;
+  await win.loadURL(nextUrl);
+  win.setAlwaysOnTop(true, "screen-saver");
+  applyPinnedCommentatorDeskClickThrough(payload?.clickThrough === true);
+  if (commentatorDeskWindowClickThrough) {
+    win.showInactive();
+  } else {
+    win.show();
+    win.focus();
+  }
+  if (typeof win.moveTop === "function") {
+    win.moveTop();
+  }
+
+  return getPinnedCommentatorDeskWindowStatus();
+}
+
+function closePinnedCommentatorDeskWindow() {
+  assertLauncherAccess();
+  const win =
+    commentatorDeskWindow && !commentatorDeskWindow.isDestroyed()
+      ? commentatorDeskWindow
+      : null;
+  if (win) {
+    win.close();
+  }
+  commentatorDeskWindow = null;
+  commentatorDeskWindowUrl = null;
+  return getPinnedCommentatorDeskWindowStatus();
 }
 
 function buildFallbackAssetStatusView() {
@@ -7348,6 +7555,25 @@ if (singleInstanceLock) {
       getWidgetServerStatusView(),
     );
 
+    ipcMain.handle("launcher:getPinnedCommentatorDeskWindow", () =>
+      getPinnedCommentatorDeskWindowStatus(),
+    );
+
+    ipcMain.handle(
+      "launcher:openPinnedCommentatorDeskWindow",
+      async (_event, payload) => openPinnedCommentatorDeskWindow(payload),
+    );
+
+    ipcMain.handle("launcher:closePinnedCommentatorDeskWindow", () =>
+      closePinnedCommentatorDeskWindow(),
+    );
+
+    ipcMain.handle(
+      "launcher:setPinnedCommentatorDeskClickThrough",
+      (_event, payload) =>
+        applyPinnedCommentatorDeskClickThrough(payload?.clickThrough === true),
+    );
+
     ipcMain.handle("launcher:getAssetStatus", () => getAssetStatusView());
 
     ipcMain.handle("launcher:getHealthStatus", () => healthService.getStatus());
@@ -7578,7 +7804,7 @@ if (singleInstanceLock) {
     consumeProtocolArguments(process.argv);
 
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      if (!mainWindow) {
         createWindow();
       }
     });
@@ -7598,6 +7824,7 @@ app.on("before-quit", (event) => {
     .then(() => endLauncherSession({ clearAuth: clearAuthOnQuit }))
     .finally(async () => {
       try {
+        closePinnedCommentatorDeskWindow();
         widgetHotkeyControl.shutdown();
         await widgetServer?.stop();
       } catch (error) {

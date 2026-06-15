@@ -1,5 +1,5 @@
 {
-  "name": "match-state-service",
+  "name": "arenzyra-match-state-service",
   "version": "1.0.0",
   "description": "Legacy service that polls the Flask shadow receiver and exposes REST/WebSocket match state for old snapshot-driven workflows.",
   "license": "MIT",

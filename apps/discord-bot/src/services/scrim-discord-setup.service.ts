@@ -10,7 +10,9 @@ import {
   Message,
   MessageType,
   MessageReaction,
+  OverwriteType,
   PermissionFlagsBits,
+  type PermissionOverwriteOptions,
   Role,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
@@ -40,6 +42,7 @@ import {
   playConfirmationWindowStatusText,
   playStatusRowEmoji,
   playStatusRowStyle,
+  parseRoleAccessGroups,
   registrationMessageEnabled,
   registrationMessageDisplayMode,
   registrationMessageText,
@@ -47,8 +50,11 @@ import {
   registrationWindowForSession,
   registrationWindowStatusTextForSession,
   resolveDiscordEmoji,
+  roleAccessGroupWindow,
+  roleAccessWindow,
   slotListMessageMode,
   slotListMarker,
+  waitlistMessageMode,
   waitlistPromotionWindowForSession,
 } from "./discord-emojis";
 import {
@@ -84,6 +90,37 @@ const STAFF_ROLE_NAMES = [
 const WAITLIST_CONTROL_PAGE_SIZE = 25;
 const REGISTRATION_CONTROL_CLEANUP_SCAN_LIMIT = 300;
 const DISCORD_MESSAGE_CONTENT_LIMIT = 2000;
+const BOT_CONTROLLED_MEMBER_DENY_PERMISSIONS = [
+  PermissionFlagsBits.AddReactions,
+  PermissionFlagsBits.CreatePublicThreads,
+  PermissionFlagsBits.CreatePrivateThreads,
+  PermissionFlagsBits.SendMessagesInThreads,
+];
+const BOT_CONTROLLED_BOT_ALLOW_PERMISSIONS = [
+  PermissionFlagsBits.ViewChannel,
+  PermissionFlagsBits.ReadMessageHistory,
+  PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.EmbedLinks,
+  PermissionFlagsBits.AttachFiles,
+  PermissionFlagsBits.AddReactions,
+  PermissionFlagsBits.CreatePublicThreads,
+  PermissionFlagsBits.CreatePrivateThreads,
+  PermissionFlagsBits.SendMessagesInThreads,
+  PermissionFlagsBits.ManageMessages,
+];
+const BOT_CONTROLLED_MEMBER_DENY_OPTIONS: PermissionOverwriteOptions = {
+  AddReactions: false,
+  CreatePublicThreads: false,
+  CreatePrivateThreads: false,
+  SendMessagesInThreads: false,
+};
+const BOT_CONTROLLED_STAFF_ALLOW_OPTIONS: PermissionOverwriteOptions = {
+  AddReactions: true,
+  CreatePublicThreads: true,
+  CreatePrivateThreads: true,
+  SendMessagesInThreads: true,
+};
+type BotControlledSendMessagesMode = "allow" | "deny" | null;
 
 type ScrimChannelKind =
   | "registration"
@@ -169,18 +206,18 @@ export type ScrimDiscordSetup = {
   bansChannelName: string;
   logChannelId: string;
   logChannelName: string;
-  slotRoleId: string;
-  slotRoleName: string;
-  staffRoleId: string;
-  staffRoleName: string;
-  waitlistRoleId: string;
-  waitlistRoleName: string;
-  idpRoleId: string;
-  idpRoleName: string;
+  slotRoleId: string | null;
+  slotRoleName: string | null;
+  staffRoleId: string | null;
+  staffRoleName: string | null;
+  waitlistRoleId: string | null;
+  waitlistRoleName: string | null;
+  idpRoleId: string | null;
+  idpRoleName: string | null;
   legacyIdpRoleId?: string;
   legacyIdpRoleName?: string;
-  bannedRoleId: string;
-  bannedRoleName: string;
+  bannedRoleId: string | null;
+  bannedRoleName: string | null;
 };
 
 export type ScrimDiscordManagedMessageIds = {
@@ -272,7 +309,15 @@ function useExistingChannels(config?: SessionDiscordConfigResponse | null) {
 function manageChannelPermissions(
   config?: SessionDiscordConfigResponse | null,
 ) {
-  return configBoolean(config, "discordManageChannelPermissions", false);
+  return configBoolean(
+    config,
+    "discordManageChannelPermissions",
+    configBoolean(config, "discordManageExistingChannels", false),
+  );
+}
+
+function autoCreateRoles(config?: SessionDiscordConfigResponse | null) {
+  return configBoolean(config, "discordAutoCreateRoles", false);
 }
 
 function safeChannelName(name: string) {
@@ -328,6 +373,16 @@ function publicRegistrationOpen(
   now = new Date(),
 ) {
   return registrationWindowForSession(session, config, now).allowsAction;
+}
+
+function sessionStatusAllowsRegistrationAccess(
+  session: Pick<SessionResponse, "status">,
+) {
+  return (
+    session.status === "DRAFT" ||
+    session.status === "OPEN" ||
+    session.status === "CHECKIN"
+  );
 }
 
 function activeRegistration(registration: SessionRegistrationResponse) {
@@ -421,6 +476,33 @@ function allowedMentionsForRenderedMentions(
     ),
   ).slice(0, 100);
   return users.length > 0 ? { parse: [], users } : { parse: [] };
+}
+
+function mentionMirrorContent(content: string) {
+  const userIds = Array.from(
+    new Set(
+      Array.from(content.matchAll(/<@!?(\d{17,20})>/g))
+        .map((match) => match[1])
+        .filter((userId): userId is string => Boolean(userId)),
+    ),
+  ).slice(0, 100);
+  if (userIds.length === 0) {
+    return null;
+  }
+
+  const mentions: string[] = [];
+  let mirrored = "Managers:";
+  for (const userId of userIds) {
+    const mention = `<@${userId}>`;
+    const next = `${mirrored} ${mention}`;
+    if (next.length > 2000) {
+      break;
+    }
+    mirrored = next;
+    mentions.push(mention);
+  }
+
+  return mentions.length > 0 ? mirrored : null;
 }
 
 function formatPlayStatusRow(
@@ -558,8 +640,18 @@ export class ScrimDiscordSetupService {
     await guild.channels.fetch();
     await guild.roles.fetch();
 
-    const staffRole = await this.ensureStaffRole(guild, config);
-    const roles = await this.ensureSessionRoles(guild, session, config);
+    const allowRoleCreate = autoCreateRoles(config);
+    const staffRole = await this.ensureStaffRole(
+      guild,
+      config,
+      allowRoleCreate,
+    );
+    const roles = await this.ensureSessionRoles(
+      guild,
+      session,
+      config,
+      allowRoleCreate,
+    );
     const category = await this.ensureCategory(guild, session, config);
     const staffRoles = this.staffRoles(guild, config, staffRole);
     const preserveExistingChannels = useExistingChannels(config);
@@ -586,7 +678,7 @@ export class ScrimDiscordSetupService {
       "slot-list",
       configuredOrDefaultChannelName(config?.slotListChannelName, "slot-list"),
       config?.slotListChannelId,
-      this.protectedOverwrites(guild, staffRoles, roles.slotRole),
+      this.protectedOverwrites(guild, staffRoles, roles.slotRole, true),
       preserveExistingChannels,
       manageExistingChannelPermissions,
     );
@@ -597,7 +689,7 @@ export class ScrimDiscordSetupService {
       "waitlist",
       configuredOrDefaultChannelName(config?.waitlistChannelName, "waitlist"),
       config?.waitlistChannelId,
-      this.protectedOverwrites(guild, staffRoles, roles.waitlistRole),
+      this.protectedOverwrites(guild, staffRoles, roles.waitlistRole, true),
       preserveExistingChannels,
       manageExistingChannelPermissions,
     );
@@ -726,18 +818,18 @@ export class ScrimDiscordSetupService {
       bansChannelName: bansChannel.name,
       logChannelId: logChannel.id,
       logChannelName: logChannel.name,
-      slotRoleId: roles.slotRole.id,
-      slotRoleName: roles.slotRole.name,
-      staffRoleId: staffRole.id,
-      staffRoleName: staffRole.name,
-      waitlistRoleId: roles.waitlistRole.id,
-      waitlistRoleName: roles.waitlistRole.name,
-      idpRoleId: roles.idpRole.id,
-      idpRoleName: roles.idpRole.name,
+      slotRoleId: roles.slotRole?.id ?? null,
+      slotRoleName: roles.slotRole?.name ?? null,
+      staffRoleId: staffRole?.id ?? null,
+      staffRoleName: staffRole?.name ?? null,
+      waitlistRoleId: roles.waitlistRole?.id ?? null,
+      waitlistRoleName: roles.waitlistRole?.name ?? null,
+      idpRoleId: roles.idpRole?.id ?? null,
+      idpRoleName: roles.idpRole?.name ?? null,
       legacyIdpRoleId: roles.legacyIdpRole?.id,
       legacyIdpRoleName: roles.legacyIdpRole?.name,
-      bannedRoleId: roles.bannedRole.id,
-      bannedRoleName: roles.bannedRole.name,
+      bannedRoleId: roles.bannedRole?.id ?? null,
+      bannedRoleName: roles.bannedRole?.name ?? null,
     };
   }
 
@@ -882,7 +974,7 @@ export class ScrimDiscordSetupService {
       renderOpts,
       this.buildPlayConfirmationRows(session, config),
     );
-    const waitlistEmbed = this.buildWaitlistEmbed(
+    const waitlistPayload = this.buildWaitlistPayload(
       session,
       registrations,
       config,
@@ -910,11 +1002,12 @@ export class ScrimDiscordSetupService {
     if (confirmationMessage) {
       await this.syncPlayConfirmationReactions(confirmationMessage, config);
     }
-    const waitlistMessage = await this.upsertPinnedEmbed(
+    const waitlistMessage = await this.upsertPinnedMessage(
       waitlistChannel,
       managedMessageId(config, "managedWaitlistMessageId"),
       marker(session.id, "waitlist"),
-      waitlistEmbed,
+      waitlistPayload,
+      (message) => this.managedListMessageMatches(message, "waitlist"),
     );
     await this.cleanupStaleManagedListMessages(
       slotListChannel,
@@ -1042,7 +1135,7 @@ export class ScrimDiscordSetupService {
       renderOpts,
       this.buildPlayConfirmationRows(session, config),
     );
-    const waitlistEmbed = this.buildWaitlistEmbed(
+    const waitlistPayload = this.buildWaitlistPayload(
       session,
       registrations,
       config,
@@ -1065,11 +1158,12 @@ export class ScrimDiscordSetupService {
     if (confirmationMessage) {
       await this.syncPlayConfirmationReactions(confirmationMessage, config);
     }
-    const waitlistMessage = await this.upsertPinnedEmbed(
+    const waitlistMessage = await this.upsertPinnedMessage(
       waitlistChannel,
       managedMessageId(config, "managedWaitlistMessageId"),
       marker(session.id, "waitlist"),
-      waitlistEmbed,
+      waitlistPayload,
+      (message) => this.managedListMessageMatches(message, "waitlist"),
     );
     await this.cleanupStaleManagedListMessages(
       slotListChannel,
@@ -1103,15 +1197,30 @@ export class ScrimDiscordSetupService {
       setup.registrationChannelId,
     );
     const staffRoles = this.staffRoles(guild, config, null);
-    await registrationChannel.permissionOverwrites
-      .set(this.registrationOverwrites(guild, staffRoles, session, config))
-      .catch((error) => {
-        console.warn(
-          `Registration channel permission refresh failed for ${session.id}: ${String(
-            error,
-          )}`,
-        );
-      });
+    const overwrites = this.registrationOverwrites(
+      guild,
+      staffRoles,
+      session,
+      config,
+    );
+    if (manageChannelPermissions(config)) {
+      await registrationChannel.permissionOverwrites
+        .set(overwrites)
+        .catch((error) => {
+          console.warn(
+            `Registration channel permission refresh failed for ${session.id}: ${String(
+              error,
+            )}`,
+          );
+        });
+    } else {
+      await this.applyBotControlledPermissionPatch(
+        guild,
+        registrationChannel,
+        "registration",
+        overwrites,
+      );
+    }
     return this.upsertRegistrationPanel(registrationChannel, session, config);
   }
 
@@ -1321,17 +1430,39 @@ export class ScrimDiscordSetupService {
         : null;
     }
 
-    if (/^[A-Za-z0-9_:-]+$/.test(emoji)) {
-      return null;
+    return this.isUnicodeButtonEmoji(emoji) ? emoji : null;
+  }
+
+  private isUnicodeButtonEmoji(value: string) {
+    if (value.length > 32) {
+      return false;
     }
 
-    return emoji;
+    const segments = Array.from(
+      new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value),
+    );
+    if (segments.length !== 1 || segments[0]?.segment !== value) {
+      return false;
+    }
+
+    if (
+      !/[\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Regional_Indicator}]/u.test(
+        value,
+      )
+    ) {
+      return false;
+    }
+
+    return /^[\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Emoji_Modifier}\p{Regional_Indicator}\uFE0E\uFE0F\u200D\u20E3]+$/u.test(
+      value,
+    );
   }
 
   private async ensureSessionRoles(
     guild: Guild,
     session: Pick<SessionResponse, "id" | "name">,
     config?: SessionDiscordConfigResponse | null,
+    allowCreate = false,
   ) {
     const slotRole = await this.ensureRole(
       guild,
@@ -1340,6 +1471,7 @@ export class ScrimDiscordSetupService {
       0x2563eb,
       config?.slotRoleId,
       config?.slotRoleName,
+      allowCreate,
     );
     const waitlistRole = await this.ensureRole(
       guild,
@@ -1348,6 +1480,7 @@ export class ScrimDiscordSetupService {
       0xf59e0b,
       config?.waitlistRoleId,
       config?.waitlistRoleName,
+      allowCreate,
     );
     const legacyIdpRole = await this.findLegacyIdpRole(
       guild,
@@ -1362,6 +1495,7 @@ export class ScrimDiscordSetupService {
       0xdc2626,
       config?.bannedRoleId,
       config?.bannedRoleName,
+      allowCreate,
     );
 
     return {
@@ -1376,7 +1510,8 @@ export class ScrimDiscordSetupService {
   private async ensureStaffRole(
     guild: Guild,
     config?: SessionDiscordConfigResponse | null,
-  ): Promise<Role> {
+    allowCreate = false,
+  ): Promise<Role | null> {
     const configuredManageRole = this.firstConfiguredManageRole(guild, config);
     if (configuredManageRole) {
       return configuredManageRole;
@@ -1412,6 +1547,10 @@ export class ScrimDiscordSetupService {
       return existing;
     }
 
+    if (!allowCreate) {
+      return null;
+    }
+
     return guild.roles.create({
       name: desiredName,
       color: 0x0891b2,
@@ -1427,7 +1566,8 @@ export class ScrimDiscordSetupService {
     color: number,
     configuredId?: string | null,
     configuredName?: string | null,
-  ): Promise<Role> {
+    allowCreate = false,
+  ): Promise<Role | null> {
     if (configuredId) {
       const configured = await guild.roles
         .fetch(configuredId)
@@ -1451,6 +1591,10 @@ export class ScrimDiscordSetupService {
       return existing;
     }
 
+    if (!allowCreate) {
+      return null;
+    }
+
     return guild.roles.create({
       name: trimRoleName(`Arenzyra ${kind} ${shortSessionId(session.id)}`),
       color,
@@ -1463,30 +1607,30 @@ export class ScrimDiscordSetupService {
     guild: Guild,
     session: Pick<SessionResponse, "id" | "name">,
     config: SessionDiscordConfigResponse | null | undefined,
-    slotRole: Role,
+    slotRole: Role | null,
   ): Promise<Role | null> {
     const configuredId = config?.idpRoleId?.trim();
-    if (configuredId && configuredId !== slotRole.id) {
+    if (configuredId && configuredId !== slotRole?.id) {
       const configured = await guild.roles
         .fetch(configuredId)
         .catch(() => null);
-      if (configured && configured.id !== slotRole.id) {
+      if (configured && configured.id !== slotRole?.id) {
         return configured;
       }
     }
 
     const configuredName = config?.idpRoleName?.trim();
-    if (configuredName && configuredName !== slotRole.name) {
+    if (configuredName && configuredName !== slotRole?.name) {
       const byName = guild.roles.cache.find(
         (role) => role.name === configuredName,
       );
-      if (byName && byName.id !== slotRole.id) {
+      if (byName && byName.id !== slotRole?.id) {
         return byName;
       }
     }
 
     const legacy = this.findSessionRole(guild, session.id, "IDP");
-    return legacy && legacy.id !== slotRole.id ? legacy : null;
+    return legacy && legacy.id !== slotRole?.id ? legacy : null;
   }
 
   private findSessionRole(
@@ -1517,6 +1661,78 @@ export class ScrimDiscordSetupService {
           .filter(Boolean),
       ),
     ];
+  }
+
+  private configuredRegistrationAccessRoleIds(
+    config?: SessionDiscordConfigResponse | null,
+  ) {
+    return [
+      ...new Set(
+        [
+          ...this.configuredRegistrationRestrictionRoleIds(config),
+          config?.earlyAccessRoleId ?? "",
+          config?.vipAccessRoleId ?? "",
+          ...parseRoleAccessGroups(config).map((group) => group.roleId),
+        ]
+          .map((roleId) => roleId.trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  private configuredRegistrationRestrictionRoleIds(
+    config?: SessionDiscordConfigResponse | null,
+  ) {
+    return [
+      ...new Set(
+        [
+          ...(config?.registrationRoleIds ?? []),
+          ...(config?.specialRegistrationRoleIds ?? []),
+          ...(config?.vipRoleIds ?? []),
+        ]
+          .map((roleId) => roleId.trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+
+  private registrationAccessRoleCanSend(
+    roleId: string,
+    session: Pick<SessionResponse, "status">,
+    config: SessionDiscordConfigResponse | null | undefined,
+    publicCanSend: boolean,
+  ) {
+    const restrictionRoleIds = new Set(
+      this.configuredRegistrationRestrictionRoleIds(config),
+    );
+    if (
+      publicCanSend &&
+      (restrictionRoleIds.size === 0 || restrictionRoleIds.has(roleId))
+    ) {
+      return true;
+    }
+    if (!config || !sessionStatusAllowsRegistrationAccess(session)) {
+      return false;
+    }
+
+    if (
+      roleId === config.earlyAccessRoleId?.trim() &&
+      roleAccessWindow(config, "earlyAccess").allowsAction
+    ) {
+      return true;
+    }
+    if (
+      roleId === config.vipAccessRoleId?.trim() &&
+      roleAccessWindow(config, "vipAccess").allowsAction
+    ) {
+      return true;
+    }
+
+    return parseRoleAccessGroups(config).some(
+      (group) =>
+        group.roleId === roleId &&
+        roleAccessGroupWindow(group, config).allowsAction,
+    );
   }
 
   private firstConfiguredManageRole(
@@ -1594,10 +1810,16 @@ export class ScrimDiscordSetupService {
     const desiredName = safeChannelName(name);
     if (configuredId) {
       const configured = await guild.channels
-        .fetch(configuredId)
+        .fetch(configuredId, { force: true })
         .catch(() => null);
       if (configured?.type === ChannelType.GuildText) {
         if (preserveExistingChannels) {
+          await this.applyBotControlledPermissionPatch(
+            guild,
+            configured,
+            kind,
+            permissionOverwrites,
+          );
           return configured;
         }
         const editPayload: Parameters<TextChannel["edit"]>[0] = {
@@ -1608,6 +1830,14 @@ export class ScrimDiscordSetupService {
           editPayload.permissionOverwrites = permissionOverwrites;
         }
         await configured.edit(editPayload);
+        if (!manageExistingChannelPermissions) {
+          await this.applyBotControlledPermissionPatch(
+            guild,
+            configured,
+            kind,
+            permissionOverwrites,
+          );
+        }
         return configured;
       }
     }
@@ -1615,6 +1845,12 @@ export class ScrimDiscordSetupService {
     const existing = this.findTextChannel(guild, sessionId, kind);
     if (existing) {
       if (preserveExistingChannels) {
+        await this.applyBotControlledPermissionPatch(
+          guild,
+          existing,
+          kind,
+          permissionOverwrites,
+        );
         return existing;
       }
       const editPayload: Parameters<TextChannel["edit"]>[0] = {
@@ -1626,6 +1862,14 @@ export class ScrimDiscordSetupService {
         editPayload.permissionOverwrites = permissionOverwrites;
       }
       await existing.edit(editPayload);
+      if (!manageExistingChannelPermissions) {
+        await this.applyBotControlledPermissionPatch(
+          guild,
+          existing,
+          kind,
+          permissionOverwrites,
+        );
+      }
       return existing;
     }
 
@@ -1637,6 +1881,12 @@ export class ScrimDiscordSetupService {
     ) as TextChannel | undefined;
     if (byNameInCategory) {
       if (preserveExistingChannels) {
+        await this.applyBotControlledPermissionPatch(
+          guild,
+          byNameInCategory,
+          kind,
+          permissionOverwrites,
+        );
         return byNameInCategory;
       }
       const editPayload: Parameters<TextChannel["edit"]>[0] = {
@@ -1648,6 +1898,14 @@ export class ScrimDiscordSetupService {
         editPayload.permissionOverwrites = permissionOverwrites;
       }
       await byNameInCategory.edit(editPayload);
+      if (!manageExistingChannelPermissions) {
+        await this.applyBotControlledPermissionPatch(
+          guild,
+          byNameInCategory,
+          kind,
+          permissionOverwrites,
+        );
+      }
       return byNameInCategory;
     }
 
@@ -1659,6 +1917,248 @@ export class ScrimDiscordSetupService {
       permissionOverwrites,
       reason: `Arenzyra ${kind} channel for session ${sessionId}`,
     });
+  }
+
+  private isBotControlledCleanChannel(kind: ScrimChannelKind) {
+    return (
+      kind === "registration" || kind === "slot-list" || kind === "waitlist"
+    );
+  }
+
+  private async applyBotControlledPermissionPatch(
+    guild: Guild,
+    channel: TextChannel,
+    kind: ScrimChannelKind,
+    desiredOverwrites: Array<{
+      id: string;
+      allow?: bigint[];
+      deny?: bigint[];
+    }>,
+  ) {
+    if (!this.isBotControlledCleanChannel(kind)) {
+      return;
+    }
+
+    const permissionOverwrites = channel.permissionOverwrites;
+    if (typeof permissionOverwrites?.edit !== "function") {
+      return;
+    }
+
+    const botUserId =
+      guild.client?.user?.id ?? guild.members?.me?.id ?? null;
+    const staffRoleIds = new Set(
+      desiredOverwrites
+        .filter((overwrite) =>
+          overwrite.id !== botUserId &&
+          overwrite.allow?.includes(PermissionFlagsBits.ManageMessages),
+        )
+        .map((overwrite) => overwrite.id),
+    );
+    const desiredOverwriteById = new Map(
+      desiredOverwrites.map((overwrite) => [overwrite.id, overwrite]),
+    );
+    const denyRoleIds = new Set<string>([guild.roles.everyone.id]);
+
+    for (const overwrite of desiredOverwrites) {
+      if (
+        overwrite.id !== botUserId &&
+        !staffRoleIds.has(overwrite.id) &&
+        overwrite.id !== guild.roles.everyone.id
+      ) {
+        denyRoleIds.add(overwrite.id);
+      }
+    }
+
+    for (const overwrite of permissionOverwrites.cache?.values?.() ?? []) {
+      if (
+        overwrite.type === OverwriteType.Role &&
+        !staffRoleIds.has(overwrite.id)
+      ) {
+        denyRoleIds.add(overwrite.id);
+      }
+    }
+
+    const controlsSendMessages = kind === "registration";
+    const reason = controlsSendMessages
+      ? "Arenzyra registration access permission lock"
+      : `Arenzyra ${kind} reaction/thread permission lock`;
+    for (const roleId of denyRoleIds) {
+      const existing = permissionOverwrites.cache?.get(roleId);
+      const sendMessagesMode = controlsSendMessages
+        ? (this.desiredSendMessagesMode(desiredOverwriteById.get(roleId)) ??
+          "deny")
+        : null;
+      const denyPermissions = [
+        ...BOT_CONTROLLED_MEMBER_DENY_PERMISSIONS,
+        ...(sendMessagesMode === "deny"
+          ? [PermissionFlagsBits.SendMessages]
+          : []),
+      ];
+      const allowPermissions =
+        sendMessagesMode === "allow"
+          ? [PermissionFlagsBits.SendMessages]
+          : [];
+      if (
+        existing &&
+        this.permissionOverwriteMatches(
+          existing,
+          allowPermissions,
+          denyPermissions,
+        )
+      ) {
+        continue;
+      }
+      await permissionOverwrites
+        .edit(
+          roleId,
+          this.botControlledMemberPatchOptions(sendMessagesMode),
+          {
+            type: OverwriteType.Role,
+            reason,
+          },
+        )
+        .catch((error) => {
+          console.warn(
+            `Bot-controlled permission lock failed for ${kind} role=${roleId}: ${String(
+              error,
+            )}`,
+          );
+        });
+    }
+
+    for (const roleId of staffRoleIds) {
+      const existing = permissionOverwrites.cache?.get(roleId);
+      const allowPermissions = [
+        ...BOT_CONTROLLED_MEMBER_DENY_PERMISSIONS,
+        ...(controlsSendMessages ? [PermissionFlagsBits.SendMessages] : []),
+      ];
+      if (
+        existing &&
+        this.permissionOverwriteHasAllow(existing, allowPermissions)
+      ) {
+        continue;
+      }
+      await permissionOverwrites
+        .edit(
+          roleId,
+          this.botControlledAllowPatchOptions(controlsSendMessages),
+          {
+            type: OverwriteType.Role,
+            reason,
+          },
+        )
+        .catch((error) => {
+          console.warn(
+            `Bot-controlled staff permission lock failed for ${kind} role=${roleId}: ${String(
+              error,
+            )}`,
+          );
+        });
+    }
+
+    if (botUserId) {
+      const existing = permissionOverwrites.cache?.get(botUserId);
+      const allowPermissions = [
+        ...BOT_CONTROLLED_MEMBER_DENY_PERMISSIONS,
+        ...(controlsSendMessages ? [PermissionFlagsBits.SendMessages] : []),
+      ];
+      if (
+        !existing ||
+        !this.permissionOverwriteHasAllow(existing, allowPermissions)
+      ) {
+        await permissionOverwrites
+          .edit(
+            botUserId,
+            this.botControlledAllowPatchOptions(controlsSendMessages),
+            {
+              type: OverwriteType.Member,
+              reason,
+            },
+          )
+          .catch((error) => {
+            console.warn(
+              `Bot-controlled bot permission lock failed for ${kind}: ${String(
+                error,
+              )}`,
+            );
+          });
+      }
+    }
+  }
+
+  private desiredSendMessagesMode(overwrite?: {
+    allow?: bigint[];
+    deny?: bigint[];
+  }): BotControlledSendMessagesMode {
+    if (overwrite?.allow?.includes(PermissionFlagsBits.SendMessages)) {
+      return "allow";
+    }
+    if (overwrite?.deny?.includes(PermissionFlagsBits.SendMessages)) {
+      return "deny";
+    }
+    return null;
+  }
+
+  private botControlledMemberPatchOptions(
+    sendMessagesMode: BotControlledSendMessagesMode,
+  ): PermissionOverwriteOptions {
+    const options: PermissionOverwriteOptions = {
+      ...BOT_CONTROLLED_MEMBER_DENY_OPTIONS,
+    };
+    if (sendMessagesMode === "allow") {
+      options.SendMessages = true;
+    } else if (sendMessagesMode === "deny") {
+      options.SendMessages = false;
+    }
+    return options;
+  }
+
+  private botControlledAllowPatchOptions(
+    includeSendMessages: boolean,
+  ): PermissionOverwriteOptions {
+    return includeSendMessages
+      ? { ...BOT_CONTROLLED_STAFF_ALLOW_OPTIONS, SendMessages: true }
+      : BOT_CONTROLLED_STAFF_ALLOW_OPTIONS;
+  }
+
+  private permissionOverwriteHasDeny(
+    overwrite: {
+      allow: { has(permission: bigint): boolean };
+      deny: { has(permission: bigint): boolean };
+    },
+    permissions: bigint[],
+  ) {
+    return permissions.every(
+      (permission) =>
+        overwrite.deny.has(permission) && !overwrite.allow.has(permission),
+    );
+  }
+
+  private permissionOverwriteHasAllow(
+    overwrite: {
+      allow: { has(permission: bigint): boolean };
+      deny: { has(permission: bigint): boolean };
+    },
+    permissions: bigint[],
+  ) {
+    return permissions.every(
+      (permission) =>
+        overwrite.allow.has(permission) && !overwrite.deny.has(permission),
+    );
+  }
+
+  private permissionOverwriteMatches(
+    overwrite: {
+      allow: { has(permission: bigint): boolean };
+      deny: { has(permission: bigint): boolean };
+    },
+    allowPermissions: bigint[],
+    denyPermissions: bigint[],
+  ) {
+    return (
+      this.permissionOverwriteHasAllow(overwrite, allowPermissions) &&
+      this.permissionOverwriteHasDeny(overwrite, denyPermissions)
+    );
   }
 
   private findTextChannel(
@@ -1679,7 +2179,7 @@ export class ScrimDiscordSetupService {
     guild: Guild,
     channelId: string,
   ): Promise<TextChannel> {
-    const channel = await guild.channels.fetch(channelId);
+    const channel = await guild.channels.fetch(channelId, { force: true });
     if (!channel || channel.type !== ChannelType.GuildText) {
       throw new Error("Configured Arenzyra channel was not found.");
     }
@@ -1705,10 +2205,11 @@ export class ScrimDiscordSetupService {
     return guild.roles.cache.filter(
       (role) =>
         configuredRoleIds.has(role.id) ||
-        (!hasExplicitManageRoles && STAFF_ROLE_NAMES.includes(role.name)) ||
-        role.permissions.has(PermissionFlagsBits.Administrator) ||
-        role.permissions.has(PermissionFlagsBits.ManageGuild) ||
-        role.permissions.has(PermissionFlagsBits.ManageChannels),
+        (!hasExplicitManageRoles &&
+          (STAFF_ROLE_NAMES.includes(role.name) ||
+            role.permissions.has(PermissionFlagsBits.Administrator) ||
+            role.permissions.has(PermissionFlagsBits.ManageGuild) ||
+            role.permissions.has(PermissionFlagsBits.ManageChannels))),
     );
   }
 
@@ -1721,19 +2222,55 @@ export class ScrimDiscordSetupService {
     >,
     config?: SessionDiscordConfigResponse | null,
   ) {
-    const canSend = publicRegistrationOpen(session, config);
-    return [
+    const publicCanSend = publicRegistrationOpen(session, config);
+    const configuredAccessRoleIds =
+      this.configuredRegistrationAccessRoleIds(config);
+    const restrictToRegistrationRoles =
+      this.configuredRegistrationRestrictionRoleIds(config).length > 0;
+    const staffRoleIds = new Set([...staffRoles.keys()]);
+    const accessRoleOverwrites = configuredAccessRoleIds
+      .filter((roleId) => !staffRoleIds.has(roleId))
+      .map((roleId) => guild.roles.cache.get(roleId))
+      .filter((role): role is Role => Boolean(role))
+      .map((role) => {
+        const canSend = this.registrationAccessRoleCanSend(
+          role.id,
+          session,
+          config,
+          publicCanSend,
+        );
+        return {
+          id: role.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.ReadMessageHistory,
+            ...(canSend ? [PermissionFlagsBits.SendMessages] : []),
+          ],
+          deny: this.botControlledMemberDeny(
+            canSend ? [] : [PermissionFlagsBits.SendMessages],
+          ),
+        };
+      });
+
+    return this.withBotControlledBotOverwrite(guild, [
       {
         id: guild.roles.everyone.id,
         allow: [
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.ReadMessageHistory,
-          ...(canSend ? [PermissionFlagsBits.SendMessages] : []),
+          ...(publicCanSend && !restrictToRegistrationRoles
+            ? [PermissionFlagsBits.SendMessages]
+            : []),
         ],
-        deny: canSend ? [] : [PermissionFlagsBits.SendMessages],
+        deny: this.botControlledMemberDeny(
+          publicCanSend && !restrictToRegistrationRoles
+            ? []
+            : [PermissionFlagsBits.SendMessages],
+        ),
       },
+      ...accessRoleOverwrites,
       ...this.staffOverwrites(staffRoles),
-    ];
+    ]);
   }
 
   private async syncWaitlistPromotionChannelState(
@@ -1744,19 +2281,34 @@ export class ScrimDiscordSetupService {
     registrations: SessionRegistrationResponse[],
     config?: SessionDiscordConfigResponse | null,
   ) {
+    const waitlistRoleId = setup.waitlistRoleId?.trim();
+    const staffRoles = this.staffRoles(guild, config, null);
+    const accessRole = waitlistRoleId
+      ? guild.roles.cache.get(waitlistRoleId) ??
+        (await guild.roles.fetch(waitlistRoleId).catch(() => null))
+      : null;
+    const canSend = waitlistPromotionOpen(session, registrations, config);
+    const overwrites = accessRole
+      ? this.waitlistPromotionOverwrites(guild, staffRoles, accessRole, canSend)
+      : this.withBotControlledBotOverwrite(
+          guild,
+          this.staffOnlyOverwrites(guild, staffRoles),
+        );
+
     if (!manageChannelPermissions(config)) {
+      await this.applyBotControlledPermissionPatch(
+        guild,
+        channel,
+        "waitlist",
+        overwrites,
+      );
       return;
     }
 
-    const accessRole =
-      guild.roles.cache.get(setup.waitlistRoleId) ??
-      (await guild.roles.fetch(setup.waitlistRoleId).catch(() => null));
     if (!accessRole) {
       return;
     }
 
-    const staffRoles = this.staffRoles(guild, config, null);
-    const canSend = waitlistPromotionOpen(session, registrations, config);
     const signature = [
       guild.id,
       channel.id,
@@ -1770,7 +2322,7 @@ export class ScrimDiscordSetupService {
     }
 
     await channel.permissionOverwrites.set(
-      this.waitlistPromotionOverwrites(guild, staffRoles, accessRole, canSend),
+      overwrites,
       "Arenzyra waitlist promotion channel state sync",
     );
     this.waitlistChannelPermissionSignatures.set(key, signature);
@@ -1796,12 +2348,22 @@ export class ScrimDiscordSetupService {
   private protectedOverwrites(
     guild: Guild,
     staffRoles: Map<string, Role>,
-    accessRole: Role,
+    accessRole: Role | null,
+    botControlled = false,
   ) {
-    return [
+    if (!accessRole) {
+      const overwrites = this.staffOnlyOverwrites(guild, staffRoles);
+      return botControlled
+        ? this.withBotControlledBotOverwrite(guild, overwrites)
+        : overwrites;
+    }
+
+    const overwrites = [
       {
         id: guild.roles.everyone.id,
-        deny: [PermissionFlagsBits.ViewChannel],
+        deny: botControlled
+          ? this.botControlledMemberDeny([PermissionFlagsBits.ViewChannel])
+          : [PermissionFlagsBits.ViewChannel],
       },
       {
         id: accessRole.id,
@@ -1809,22 +2371,34 @@ export class ScrimDiscordSetupService {
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.ReadMessageHistory,
         ],
-        deny: [PermissionFlagsBits.SendMessages],
+        deny: botControlled
+          ? this.botControlledMemberDeny([PermissionFlagsBits.SendMessages])
+          : [PermissionFlagsBits.SendMessages],
       },
       ...this.staffOverwrites(staffRoles),
     ];
+    return botControlled
+      ? this.withBotControlledBotOverwrite(guild, overwrites)
+      : overwrites;
   }
 
   private waitlistPromotionOverwrites(
     guild: Guild,
     staffRoles: Map<string, Role>,
-    accessRole: Role,
+    accessRole: Role | null,
     canSend: boolean,
   ) {
-    return [
+    if (!accessRole) {
+      return this.withBotControlledBotOverwrite(
+        guild,
+        this.staffOnlyOverwrites(guild, staffRoles),
+      );
+    }
+
+    return this.withBotControlledBotOverwrite(guild, [
       {
         id: guild.roles.everyone.id,
-        deny: [PermissionFlagsBits.ViewChannel],
+        deny: this.botControlledMemberDeny([PermissionFlagsBits.ViewChannel]),
       },
       {
         id: accessRole.id,
@@ -1833,19 +2407,21 @@ export class ScrimDiscordSetupService {
           PermissionFlagsBits.ReadMessageHistory,
           ...(canSend ? [PermissionFlagsBits.SendMessages] : []),
         ],
-        deny: canSend ? [] : [PermissionFlagsBits.SendMessages],
+        deny: this.botControlledMemberDeny(
+          canSend ? [] : [PermissionFlagsBits.SendMessages],
+        ),
       },
       ...this.staffOverwrites(staffRoles),
-    ];
+    ]);
   }
 
   private roleWritableOverwrites(
     guild: Guild,
     staffRoles: Map<string, Role>,
-    accessRoles: Role[],
+    accessRoles: Array<Role | null | undefined>,
   ) {
     const seenRoleIds = new Set<string>();
-    const uniqueAccessRoles = accessRoles.filter((role) => {
+    const uniqueAccessRoles = accessRoles.filter((role): role is Role => {
       if (!role?.id || seenRoleIds.has(role.id)) {
         return false;
       }
@@ -1904,8 +2480,40 @@ export class ScrimDiscordSetupService {
         PermissionFlagsBits.ReadMessageHistory,
         PermissionFlagsBits.SendMessages,
         PermissionFlagsBits.ManageMessages,
+        PermissionFlagsBits.AddReactions,
+        PermissionFlagsBits.CreatePublicThreads,
+        PermissionFlagsBits.CreatePrivateThreads,
+        PermissionFlagsBits.SendMessagesInThreads,
       ],
     }));
+  }
+
+  private botControlledMemberDeny(extraDeny: bigint[] = []) {
+    return [...extraDeny, ...BOT_CONTROLLED_MEMBER_DENY_PERMISSIONS];
+  }
+
+  private withBotControlledBotOverwrite<
+    T extends {
+      id: string;
+      allow?: bigint[];
+      deny?: bigint[];
+    },
+  >(guild: Guild, overwrites: T[]) {
+    const botUserId =
+      guild.client?.user?.id ?? guild.members?.me?.id ?? null;
+    if (
+      !botUserId ||
+      overwrites.some((overwrite) => overwrite.id === botUserId)
+    ) {
+      return overwrites;
+    }
+    return [
+      ...overwrites,
+      {
+        id: botUserId,
+        allow: BOT_CONTROLLED_BOT_ALLOW_PERMISSIONS,
+      },
+    ];
   }
 
   private async upsertRegistrationPanel(
@@ -3475,19 +4083,22 @@ export class ScrimDiscordSetupService {
     }
 
     const embed = new EmbedBuilder()
-      .setColor(0x2563eb)
+      .setColor(0x232323)
       .setTitle(view.title)
       .setDescription(view.description)
       .setTimestamp(new Date());
     for (const field of view.fields) {
       embed.addFields(field);
     }
+    const mirroredContent = mentionMirrorContent(plainContent);
 
     return {
-      content: null,
+      content: mirroredContent,
       embeds: [embed],
       components: safeComponents,
-      allowedMentions,
+      allowedMentions: mirroredContent
+        ? allowedMentionsForRenderedMentions(mirroredContent)
+        : { parse: [] },
     };
   }
 
@@ -3727,12 +4338,12 @@ export class ScrimDiscordSetupService {
     };
   }
 
-  private buildWaitlistEmbed(
+  private buildWaitlistPayload(
     session: SessionResponse,
     registrations: SessionRegistrationResponse[],
     config?: SessionDiscordConfigResponse | null,
     opts: SlotListRenderOptions = {},
-  ) {
+  ): ManagedMessagePayload {
     const waitlist = registrations
       .filter(
         (registration) =>
@@ -3745,7 +4356,9 @@ export class ScrimDiscordSetupService {
           (left.waitlistPosition ?? Number.MAX_SAFE_INTEGER) -
           (right.waitlistPosition ?? Number.MAX_SAFE_INTEGER),
       );
-    const lines =
+    const buildLines = (
+      rowOptions: { hideLogo?: boolean; shortenName?: boolean } = {},
+    ) =>
       waitlist.length > 0
         ? waitlist.map(
             (registration) =>
@@ -3755,16 +4368,46 @@ export class ScrimDiscordSetupService {
                 opts.teamLogoEmojiByTeamId?.get(registration.teamId) ??
                   opts.defaultTeamLogoEmoji,
                 registrationPlayStatus(registration),
+                rowOptions,
               )}`,
           )
         : [`${resolveDiscordEmoji("empty", config)} None`];
+    const title = `${resolveDiscordEmoji("waitlist", config)} Waitlist (${waitlist.length})`;
+    const renderPlainContent = (lines: string[]) =>
+      [`**${title}**`, lines.join("\n")].join("\n\n");
 
-    return new EmbedBuilder()
+    if (waitlistMessageMode(config) === "plain") {
+      let content = renderPlainContent(buildLines());
+      if (content.length > DISCORD_MESSAGE_CONTENT_LIMIT) {
+        content = renderPlainContent(buildLines({ hideLogo: true }));
+      }
+      if (content.length > DISCORD_MESSAGE_CONTENT_LIMIT) {
+        content = renderPlainContent(
+          buildLines({ hideLogo: true, shortenName: true }),
+        );
+      }
+      content = limitDiscordMessageContent(content);
+      return {
+        content,
+        embeds: [],
+        allowedMentions: allowedMentionsForRenderedMentions(content),
+      };
+    }
+
+    const waitlistDescription = buildLines().join("\n");
+    const embed = new EmbedBuilder()
       .setColor(0xf59e0b)
-      .setTitle(
-        `${resolveDiscordEmoji("waitlist", config)} Waitlist (${waitlist.length})`,
-      )
-      .setDescription(lines.join("\n"))
+      .setTitle(title)
+      .setDescription(waitlistDescription)
       .setTimestamp(new Date());
+    const mirroredContent = mentionMirrorContent(waitlistDescription);
+
+    return {
+      content: mirroredContent,
+      embeds: [embed],
+      allowedMentions: mirroredContent
+        ? allowedMentionsForRenderedMentions(mirroredContent)
+        : { parse: [] },
+    };
   }
 }

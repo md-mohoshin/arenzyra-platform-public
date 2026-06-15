@@ -3,6 +3,7 @@ import { getErrorMessage, launcherApi } from "../api/api-client";
 import type {
   AiCasterAccessState,
   AiCasterSettings,
+  PinnedCommentatorDeskWindowStatus,
   WidgetCatalogState,
   WidgetHotkeyControlConfig,
   WidgetHotkeyControlSelection,
@@ -28,6 +29,8 @@ const COMMENTATOR_DESK_WIDGET_ID = "commentator_desk";
 const COMMENTATOR_DESK_WIDGET_KEY = "commentator-desk";
 const NEXT_ZONE_PRO_WIDGET_ID = "next_zone_update_pro_sidebar";
 const NEXT_ZONE_PRO_WIDGET_KEY = "next-zone-update-pro-sidebar";
+const NEXT_ZONE_KINETIC_WIDGET_ID = "next_zone_update_kinetic_hud";
+const NEXT_ZONE_KINETIC_WIDGET_KEY = "next-zone-update-kinetic-hud";
 const HOTKEY_CONTROL_APPROVAL_KEY = "feature.widget-hotkey-control";
 const APPROVAL_ONLY_WIDGET_KEYS = [
   LIVE_MAP_WIDGET_KEY,
@@ -139,6 +142,13 @@ const HOTKEY_WIDGET_OPTIONS: WidgetHotkeyControlSelection[] = [
     label: "Next Zone Pro Sidebar",
     enabled: false,
     direction: "right",
+  },
+  {
+    id: "next-zone-update-kinetic-hud",
+    widgetKey: "next-zone-update-kinetic-hud",
+    label: "Next Zone Kinetic HUD",
+    enabled: false,
+    direction: "up",
   },
   {
     id: "match-results",
@@ -304,6 +314,12 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   const [aiCasterPreviewing, setAiCasterPreviewing] = useState<
     "play-by-play" | "analyst" | null
   >(null);
+  const [pinnedDeskStatus, setPinnedDeskStatus] =
+    useState<PinnedCommentatorDeskWindowStatus | null>(null);
+  const [pinnedDeskError, setPinnedDeskError] = useState<string | null>(null);
+  const [pinnedDeskBusy, setPinnedDeskBusy] = useState<
+    "open" | "close" | "click-through" | null
+  >(null);
   const [hotkeyControl, setHotkeyControl] =
     useState<WidgetHotkeyControlStatus | null>(null);
   const [hotkeyDraft, setHotkeyDraft] = useState<WidgetHotkeyControlConfig>(
@@ -326,12 +342,16 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     widgetCatalog?.items?.[COMMENTATOR_DESK_WIDGET_KEY] ?? null;
   const nextZoneProCatalogState =
     widgetCatalog?.items?.[NEXT_ZONE_PRO_WIDGET_KEY] ?? null;
+  const nextZoneKineticCatalogState =
+    widgetCatalog?.items?.[NEXT_ZONE_KINETIC_WIDGET_KEY] ?? null;
   const hotkeyControlCatalogState =
     widgetCatalog?.items?.[HOTKEY_CONTROL_APPROVAL_KEY] ?? null;
   const liveMapApproved = liveMapCatalogState?.approved === true;
   const commentatorDeskApproved =
     commentatorDeskCatalogState?.approved === true;
   const nextZoneProApproved = nextZoneProCatalogState?.approved === true;
+  const nextZoneKineticApproved =
+    nextZoneKineticCatalogState?.approved === true;
   const hotkeyControlApproved = hotkeyControlCatalogState?.approved === true;
   const aiCasterApproved = aiCasterAccess?.approved === true;
   const availableWidgets = useMemo(
@@ -349,12 +369,16 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
         if (widget.id === NEXT_ZONE_PRO_WIDGET_ID) {
           return nextZoneProApproved;
         }
+        if (widget.id === NEXT_ZONE_KINETIC_WIDGET_ID) {
+          return nextZoneKineticApproved;
+        }
         return true;
       }),
     [
       aiCasterApproved,
       commentatorDeskApproved,
       liveMapApproved,
+      nextZoneKineticApproved,
       nextZoneProApproved,
     ],
   );
@@ -495,6 +519,35 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   useEffect(() => {
     let cancelled = false;
 
+    const loadPinnedDesk = async () => {
+      try {
+        const status = await launcherApi.getPinnedCommentatorDeskWindow();
+        if (cancelled) {
+          return;
+        }
+        setPinnedDeskStatus(status);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setPinnedDeskError(getErrorMessage(error));
+      }
+    };
+
+    void loadPinnedDesk();
+    const timer = window.setInterval(() => {
+      void loadPinnedDesk();
+    }, WIDGET_SERVER_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     const loadServer = async (showLoading: boolean) => {
       if (showLoading) {
         setServerLoading(true);
@@ -573,6 +626,9 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     copyError ||
     serverError ||
     (selectedWidget?.id === "ai_caster" ? aiCasterError : null) ||
+    (selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID
+      ? pinnedDeskError
+      : null) ||
     (selectedWidget?.routeKind === "permanent" &&
     selectedPermanentState?.message
       ? selectedPermanentState.message
@@ -581,7 +637,7 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
       ? catalogError
       : null);
   const noteTone =
-    copyError || serverError || catalogError || aiCasterError
+    copyError || serverError || catalogError || aiCasterError || pinnedDeskError
       ? "danger"
       : "neutral";
 
@@ -595,6 +651,48 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
       setCopyError(null);
     } catch (error) {
       setCopyError(getErrorMessage(error));
+    }
+  };
+
+  const openPinnedCommentatorDesk = async () => {
+    setPinnedDeskBusy("open");
+    try {
+      const status = await launcherApi.openPinnedCommentatorDeskWindow({
+        clickThrough: pinnedDeskStatus?.clickThrough === true,
+      });
+      setPinnedDeskStatus(status);
+      setPinnedDeskError(null);
+    } catch (error) {
+      setPinnedDeskError(getErrorMessage(error));
+    } finally {
+      setPinnedDeskBusy(null);
+    }
+  };
+
+  const closePinnedCommentatorDesk = async () => {
+    setPinnedDeskBusy("close");
+    try {
+      const status = await launcherApi.closePinnedCommentatorDeskWindow();
+      setPinnedDeskStatus(status);
+      setPinnedDeskError(null);
+    } catch (error) {
+      setPinnedDeskError(getErrorMessage(error));
+    } finally {
+      setPinnedDeskBusy(null);
+    }
+  };
+
+  const setPinnedCommentatorDeskClickThrough = async (clickThrough: boolean) => {
+    setPinnedDeskBusy("click-through");
+    try {
+      const status =
+        await launcherApi.setPinnedCommentatorDeskClickThrough(clickThrough);
+      setPinnedDeskStatus(status);
+      setPinnedDeskError(null);
+    } catch (error) {
+      setPinnedDeskError(getErrorMessage(error));
+    } finally {
+      setPinnedDeskBusy(null);
     }
   };
 
@@ -743,6 +841,12 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   const hotkeyEnabledCount = hotkeyDraft.widgets.filter(
     (widget) => widget.enabled,
   ).length;
+  const pinnedDeskOpen = pinnedDeskStatus?.open === true;
+  const pinnedDeskClickThrough = pinnedDeskStatus?.clickThrough === true;
+  const pinnedDeskCanOpen =
+    selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID &&
+    widgetServer?.running === true &&
+    selectedCanBuildUrl;
 
   const previewAiCasterVoice = async (
     role: "play-by-play" | "analyst",
@@ -1020,6 +1124,64 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
                   onClick={resetHotkeyDraft}
                 >
                   Reset
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID ? (
+            <div className="widgets-minimal__settings">
+              <div className="widgets-minimal__settings-row">
+                <div>
+                  <span className="widgets-minimal__kicker">Pinned Window</span>
+                  <strong>
+                    {pinnedDeskOpen
+                      ? pinnedDeskClickThrough
+                        ? "Transparent and click-through"
+                        : "Transparent and movable"
+                      : "Closed"}
+                  </strong>
+                </div>
+                <div className="widgets-minimal__settings-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!pinnedDeskCanOpen || pinnedDeskBusy !== null}
+                    onClick={() => {
+                      void openPinnedCommentatorDesk();
+                    }}
+                  >
+                    {pinnedDeskBusy === "open" ? "Opening..." : "Open Pinned Desk"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!pinnedDeskOpen || pinnedDeskBusy !== null}
+                    onClick={() => {
+                      void closePinnedCommentatorDesk();
+                    }}
+                  >
+                    {pinnedDeskBusy === "close" ? "Closing..." : "Close"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="widgets-minimal__settings-actions widgets-minimal__settings-actions--footer">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={!pinnedDeskOpen || pinnedDeskBusy !== null}
+                  onClick={() => {
+                    void setPinnedCommentatorDeskClickThrough(
+                      !pinnedDeskClickThrough,
+                    );
+                  }}
+                >
+                  {pinnedDeskBusy === "click-through"
+                    ? "Updating..."
+                    : pinnedDeskClickThrough
+                      ? "Disable click-through"
+                      : "Enable click-through"}
                 </button>
               </div>
             </div>

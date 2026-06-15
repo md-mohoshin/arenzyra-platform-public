@@ -31,7 +31,7 @@ test("direct observer transport uses current team payload only and strips result
   assert.deepEqual(payload.teams, []);
 });
 
-test("direct observer transport strips forbidden nested lifecycle and result fields before POST", () => {
+test("direct observer transport preserves live team rank and strips forbidden nested lifecycle and result fields before POST", () => {
   const transport = createDirectObserverTransportState();
 
   transport.ingestPlayerList({
@@ -56,6 +56,7 @@ test("direct observer transport strips forbidden nested lifecycle and result fie
         teamNo: 3,
         teamName: "Team Three",
         rank: 1,
+        placement: 1,
         finalPlacement: 1,
       },
     ],
@@ -78,7 +79,8 @@ test("direct observer transport strips forbidden nested lifecycle and result fie
   assert.equal(payload.players[0].teamNo, 3);
   assert.equal(payload.players[0].placement, undefined);
   assert.equal(payload.players[0].matchStatus, undefined);
-  assert.equal(payload.teams[0].rank, undefined);
+  assert.equal(payload.teams[0].rank, 1);
+  assert.equal(payload.teams[0].placement, 1);
   assert.equal(payload.teams[0].finalPlacement, undefined);
   assert.equal(payload.kills[0].winner, undefined);
   assert.equal(payload.kills[0].isFinished, undefined);

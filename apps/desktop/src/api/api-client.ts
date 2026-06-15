@@ -15,6 +15,7 @@ import type {
   LauncherLogEntry,
   ObserverCommandActionResponse,
   ObserverCommandCenterSnapshot,
+  PinnedCommentatorDeskWindowStatus,
   LauncherLiveMatch,
   MatchControlSnapshot,
   ObserverFeedStatus,
@@ -375,6 +376,37 @@ export const launcherApi = {
 
   getWidgetServerStatus() {
     return invoke<WidgetServerStatus>("launcher:getWidgetServerStatus");
+  },
+
+  getPinnedCommentatorDeskWindow() {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:getPinnedCommentatorDeskWindow",
+    );
+  },
+
+  openPinnedCommentatorDeskWindow(payload?: {
+    clickThrough?: boolean;
+    mapKey?: string | null;
+  }) {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:openPinnedCommentatorDeskWindow",
+      payload,
+    );
+  },
+
+  closePinnedCommentatorDeskWindow() {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:closePinnedCommentatorDeskWindow",
+    );
+  },
+
+  setPinnedCommentatorDeskClickThrough(clickThrough: boolean) {
+    return invoke<PinnedCommentatorDeskWindowStatus>(
+      "launcher:setPinnedCommentatorDeskClickThrough",
+      {
+        clickThrough,
+      },
+    );
   },
 
   getWidgetCatalogState(

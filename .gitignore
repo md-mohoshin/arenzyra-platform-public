@@ -70,6 +70,8 @@ yarn-error.log*
 .tmp/
 _cleanup-archive/
 deploy-artifacts/
+deploy-backups/
+backups/
 logs/
 
 # Root-level scratch artifacts

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChannelType, Collection, MessageType } from "discord.js";
+import {
+  ChannelType,
+  Collection,
+  MessageType,
+  OverwriteType,
+  PermissionFlagsBits,
+} from "discord.js";
 import { ScrimDiscordSetupService } from "./scrim-discord-setup.service";
 
 function setupPayload() {
@@ -98,6 +104,7 @@ test("registration manage buttons keep clean labels when custom emojis are unava
         waitlist: "🕘",
         vip: "<:4bsVIP23:1502057342014066849>",
         reject: "<:beoNO:1425255906437890052>",
+        ban: "??",
         team: "🦉",
       },
     } as any,
@@ -126,6 +133,10 @@ test("registration manage buttons keep clean labels when custom emojis are unava
   assert.deepEqual(
     banButtons.map((button: any) => button.custom_id),
     ["cardban:d:session-1:team-1", "cardban:p:session-1:team-1"],
+  );
+  assert.deepEqual(
+    banButtons.map((button: any) => button.emoji),
+    [undefined, undefined],
   );
 });
 
@@ -225,6 +236,364 @@ test("configured existing channel is not edited while preserving existing channe
   assert.equal(result, channel);
   assert.equal(editCount, 0);
   assert.equal(createCount, 0);
+});
+
+test("preserved bot-controlled channels only patch reaction and thread bits", async () => {
+  const service = new ScrimDiscordSetupService() as any;
+  let editCount = 0;
+  const permissionEdits: any[] = [];
+  const permissionCache = new Collection<string, any>([
+    [
+      "guild-1",
+      {
+        id: "guild-1",
+        type: OverwriteType.Role,
+        allow: { has: () => false },
+        deny: { has: () => false },
+      },
+    ],
+    [
+      "extra-role",
+      {
+        id: "extra-role",
+        type: OverwriteType.Role,
+        allow: {
+          has: (permission: bigint) =>
+            permission === PermissionFlagsBits.AddReactions,
+        },
+        deny: { has: () => false },
+      },
+    ],
+    [
+      "staff-role",
+      {
+        id: "staff-role",
+        type: OverwriteType.Role,
+        allow: { has: () => false },
+        deny: { has: () => false },
+      },
+    ],
+  ]);
+  const channel = {
+    id: "mapped-slot-list",
+    type: ChannelType.GuildText,
+    name: "custom-slot-list",
+    parentId: "original-category",
+    topic: "original topic",
+    permissionOverwrites: {
+      cache: permissionCache,
+      edit: async (target: string, options: unknown, overwriteOptions: any) => {
+        permissionEdits.push({
+          target,
+          options,
+          type: overwriteOptions?.type,
+          reason: overwriteOptions?.reason,
+        });
+        return channel;
+      },
+    },
+    edit: async () => {
+      editCount += 1;
+      throw new Error("existing channel should not be edited");
+    },
+  };
+
+  const result = await service.ensureTextChannel(
+    {
+      client: { user: { id: "bot-user" } },
+      members: { me: { id: "bot-user" } },
+      roles: {
+        everyone: { id: "guild-1" },
+        cache: new Collection(),
+      },
+      channels: {
+        cache: new Collection(),
+        fetch: async (channelId: string) =>
+          channelId === channel.id ? channel : null,
+        create: async () => {
+          throw new Error("existing channel should not be recreated");
+        },
+      },
+    },
+    "new-category",
+    "session-1",
+    "slot-list",
+    "slot-list",
+    channel.id,
+    [
+      {
+        id: "guild-1",
+        deny: [PermissionFlagsBits.ViewChannel],
+      },
+      {
+        id: "slot-role",
+        deny: [PermissionFlagsBits.SendMessages],
+      },
+      {
+        id: "staff-role",
+        allow: [PermissionFlagsBits.ManageMessages],
+      },
+    ],
+    true,
+    false,
+  );
+
+  assert.equal(result, channel);
+  assert.equal(editCount, 0);
+  assert.deepEqual(
+    permissionEdits.map((entry) => entry.target).sort(),
+    ["bot-user", "extra-role", "guild-1", "slot-role", "staff-role"],
+  );
+  const everyoneEdit = permissionEdits.find(
+    (entry) => entry.target === "guild-1",
+  );
+  assert.equal(everyoneEdit.type, OverwriteType.Role);
+  assert.deepEqual(everyoneEdit.options, {
+    AddReactions: false,
+    CreatePublicThreads: false,
+    CreatePrivateThreads: false,
+    SendMessagesInThreads: false,
+  });
+  const staffEdit = permissionEdits.find(
+    (entry) => entry.target === "staff-role",
+  );
+  assert.equal(staffEdit.type, OverwriteType.Role);
+  assert.deepEqual(staffEdit.options, {
+    AddReactions: true,
+    CreatePublicThreads: true,
+    CreatePrivateThreads: true,
+    SendMessagesInThreads: true,
+  });
+  const botEdit = permissionEdits.find((entry) => entry.target === "bot-user");
+  assert.equal(botEdit.type, OverwriteType.Member);
+  assert.match(botEdit.reason, /slot-list reaction\/thread permission lock/);
+});
+
+test("preserved registration channels patch send access without rewriting metadata", async () => {
+  const service = new ScrimDiscordSetupService() as any;
+  let editCount = 0;
+  const permissionEdits: any[] = [];
+  const permissionCache = new Collection<string, any>([
+    [
+      "guild-1",
+      {
+        id: "guild-1",
+        type: OverwriteType.Role,
+        allow: {
+          has: (permission: bigint) =>
+            permission === PermissionFlagsBits.SendMessages,
+        },
+        deny: { has: () => false },
+      },
+    ],
+    [
+      "registration-role",
+      {
+        id: "registration-role",
+        type: OverwriteType.Role,
+        allow: {
+          has: (permission: bigint) =>
+            permission === PermissionFlagsBits.SendMessages,
+        },
+        deny: { has: () => false },
+      },
+    ],
+    [
+      "extra-role",
+      {
+        id: "extra-role",
+        type: OverwriteType.Role,
+        allow: {
+          has: (permission: bigint) =>
+            permission === PermissionFlagsBits.SendMessages,
+        },
+        deny: { has: () => false },
+      },
+    ],
+    [
+      "staff-role",
+      {
+        id: "staff-role",
+        type: OverwriteType.Role,
+        allow: { has: () => false },
+        deny: { has: () => false },
+      },
+    ],
+  ]);
+  const channel = {
+    id: "mapped-registration",
+    type: ChannelType.GuildText,
+    name: "custom-registration",
+    parentId: "original-category",
+    topic: "original topic",
+    permissionOverwrites: {
+      cache: permissionCache,
+      edit: async (target: string, options: unknown, overwriteOptions: any) => {
+        permissionEdits.push({
+          target,
+          options,
+          type: overwriteOptions?.type,
+          reason: overwriteOptions?.reason,
+        });
+        return channel;
+      },
+    },
+    edit: async () => {
+      editCount += 1;
+      throw new Error("existing channel should not be edited");
+    },
+  };
+
+  const result = await service.ensureTextChannel(
+    {
+      client: { user: { id: "bot-user" } },
+      members: { me: { id: "bot-user" } },
+      roles: {
+        everyone: { id: "guild-1" },
+        cache: new Collection(),
+      },
+      channels: {
+        cache: new Collection(),
+        fetch: async (channelId: string) =>
+          channelId === channel.id ? channel : null,
+        create: async () => {
+          throw new Error("existing channel should not be recreated");
+        },
+      },
+    },
+    "new-category",
+    "session-1",
+    "registration",
+    "registration",
+    channel.id,
+    [
+      {
+        id: "guild-1",
+        deny: [PermissionFlagsBits.SendMessages],
+      },
+      {
+        id: "registration-role",
+        allow: [PermissionFlagsBits.SendMessages],
+      },
+      {
+        id: "staff-role",
+        allow: [
+          PermissionFlagsBits.ManageMessages,
+          PermissionFlagsBits.SendMessages,
+        ],
+      },
+    ],
+    true,
+    false,
+  );
+
+  assert.equal(result, channel);
+  assert.equal(editCount, 0);
+  assert.deepEqual(
+    permissionEdits.map((entry) => entry.target).sort(),
+    [
+      "bot-user",
+      "extra-role",
+      "guild-1",
+      "registration-role",
+      "staff-role",
+    ],
+  );
+  const everyoneEdit = permissionEdits.find(
+    (entry) => entry.target === "guild-1",
+  );
+  assert.deepEqual(everyoneEdit.options, {
+    AddReactions: false,
+    CreatePublicThreads: false,
+    CreatePrivateThreads: false,
+    SendMessagesInThreads: false,
+    SendMessages: false,
+  });
+  const registrationRoleEdit = permissionEdits.find(
+    (entry) => entry.target === "registration-role",
+  );
+  assert.deepEqual(registrationRoleEdit.options, {
+    AddReactions: false,
+    CreatePublicThreads: false,
+    CreatePrivateThreads: false,
+    SendMessagesInThreads: false,
+    SendMessages: true,
+  });
+  const extraRoleEdit = permissionEdits.find(
+    (entry) => entry.target === "extra-role",
+  );
+  assert.deepEqual(extraRoleEdit.options, {
+    AddReactions: false,
+    CreatePublicThreads: false,
+    CreatePrivateThreads: false,
+    SendMessagesInThreads: false,
+    SendMessages: false,
+  });
+  const staffEdit = permissionEdits.find(
+    (entry) => entry.target === "staff-role",
+  );
+  assert.deepEqual(staffEdit.options, {
+    AddReactions: true,
+    CreatePublicThreads: true,
+    CreatePrivateThreads: true,
+    SendMessagesInThreads: true,
+    SendMessages: true,
+  });
+  const botEdit = permissionEdits.find((entry) => entry.target === "bot-user");
+  assert.equal(botEdit.type, OverwriteType.Member);
+  assert.deepEqual(botEdit.options, {
+    AddReactions: true,
+    CreatePublicThreads: true,
+    CreatePrivateThreads: true,
+    SendMessagesInThreads: true,
+    SendMessages: true,
+  });
+  assert.match(botEdit.reason, /registration access permission lock/);
+});
+
+test("explicit manage roles define staff access without broad permission fallback", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const guild = {
+    roles: {
+      cache: new Collection<string, any>([
+        [
+          "manage-role",
+          {
+            id: "manage-role",
+            name: "Configured Manager",
+            permissions: { has: () => false },
+          },
+        ],
+        [
+          "admin-role",
+          {
+            id: "admin-role",
+            name: "Broad Admin",
+            permissions: {
+              has: (permission: bigint) =>
+                permission === PermissionFlagsBits.Administrator,
+            },
+          },
+        ],
+        [
+          "named-staff-role",
+          {
+            id: "named-staff-role",
+            name: "Arenzyra Staff",
+            permissions: { has: () => false },
+          },
+        ],
+      ]),
+    },
+  };
+
+  const staffRoles = service.staffRoles(
+    guild,
+    { manageRoleIds: ["manage-role"] },
+    null,
+  );
+
+  assert.deepEqual([...staffRoles.keys()], ["manage-role"]);
 });
 
 test("slot-list sync reuses an existing plain bot message when saved id is stale", async () => {
@@ -391,6 +760,341 @@ test("existing channel sync can explicitly rewrite permission overwrites", async
     parent: "category-1",
     topic: "arenzyra-session=session-1;kind=registration",
     permissionOverwrites,
+  });
+});
+
+test("registration channel overwrites restrict sending to configured registration roles", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const accessRole = { id: "access-role", name: "16 Scrim" };
+  const staffRole = { id: "staff-role", name: "Staff" };
+  const guild = {
+    roles: {
+      everyone: { id: "guild-1" },
+      cache: new Collection([
+        [accessRole.id, accessRole],
+        [staffRole.id, staffRole],
+      ]),
+    },
+  };
+  const overwrites = service.registrationOverwrites(
+    guild,
+    new Map([[staffRole.id, staffRole]]),
+    sessionPayload(),
+    {
+      registrationRoleIds: [accessRole.id, staffRole.id],
+      specialRegistrationRoleIds: [],
+      vipRoleIds: [],
+    },
+  );
+
+  assert.deepEqual(overwrites[0], {
+    id: "guild-1",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+    ],
+    deny: [
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+  assert.deepEqual(overwrites[1], {
+    id: "access-role",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.SendMessages,
+    ],
+    deny: [
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+  assert.deepEqual(overwrites[2], {
+    id: "staff-role",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.ManageMessages,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+});
+
+test("registration channel overwrites allow an open early access role while public registration is closed", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const normalRole = { id: "normal-role", name: "20 Scrim" };
+  const earlyRole = { id: "early-role", name: "Fast Track" };
+  const staffRole = { id: "staff-role", name: "Staff" };
+  const guild = {
+    roles: {
+      everyone: { id: "guild-1" },
+      cache: new Collection([
+        [normalRole.id, normalRole],
+        [earlyRole.id, earlyRole],
+        [staffRole.id, staffRole],
+      ]),
+    },
+  };
+
+  const overwrites = service.registrationOverwrites(
+    guild,
+    new Map([[staffRole.id, staffRole]]),
+    {
+      ...sessionPayload(),
+      registrationOpenAt: "2999-01-01T00:00:00.000Z",
+    },
+    {
+      earlyAccessRoleId: earlyRole.id,
+      vipAccessRoleId: null,
+      registrationRoleIds: [normalRole.id],
+      specialRegistrationRoleIds: [],
+      vipRoleIds: [],
+      emojis: {
+        earlyAccessEnabled: "true",
+        earlyAccessOpensAt: "2000-01-01T00:00:00.000Z",
+        earlyAccessClosesAt: "2999-01-01T00:00:00.000Z",
+      },
+    },
+  );
+
+  const byId = new Map(overwrites.map((overwrite: any) => [overwrite.id, overwrite]));
+  assert.deepEqual(byId.get("guild-1"), {
+    id: "guild-1",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+    ],
+    deny: [
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+  assert.deepEqual(byId.get("normal-role"), {
+    id: "normal-role",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+    ],
+    deny: [
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+  assert.deepEqual(byId.get("early-role"), {
+    id: "early-role",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.SendMessages,
+    ],
+    deny: [
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+});
+
+test("registration channel overwrites do not treat inactive access roles as normal registration roles", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const normalRole = { id: "normal-role", name: "20 Scrim" };
+  const vipRole = { id: "vip-role", name: "VIP" };
+  const staffRole = { id: "staff-role", name: "Staff" };
+  const guild = {
+    roles: {
+      everyone: { id: "guild-1" },
+      cache: new Collection([
+        [normalRole.id, normalRole],
+        [vipRole.id, vipRole],
+        [staffRole.id, staffRole],
+      ]),
+    },
+  };
+
+  const overwrites = service.registrationOverwrites(
+    guild,
+    new Map([[staffRole.id, staffRole]]),
+    sessionPayload(),
+    {
+      earlyAccessRoleId: null,
+      vipAccessRoleId: vipRole.id,
+      registrationRoleIds: [normalRole.id],
+      specialRegistrationRoleIds: [],
+      vipRoleIds: [],
+      emojis: {
+        vipAccessEnabled: "false",
+      },
+    },
+  );
+
+  const byId = new Map(
+    overwrites.map((overwrite: any) => [overwrite.id, overwrite]),
+  );
+  assert.deepEqual(byId.get("normal-role"), {
+    id: "normal-role",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.SendMessages,
+    ],
+    deny: [
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+  assert.deepEqual(byId.get("vip-role"), {
+    id: "vip-role",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+    ],
+    deny: [
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+});
+
+test("registration channel stays public when only organization VIP access role is configured", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const vipRole = { id: "vip-role", name: "VIP" };
+  const staffRole = { id: "staff-role", name: "Staff" };
+  const guild = {
+    roles: {
+      everyone: { id: "guild-1" },
+      cache: new Collection([
+        [vipRole.id, vipRole],
+        [staffRole.id, staffRole],
+      ]),
+    },
+  };
+
+  const overwrites = service.registrationOverwrites(
+    guild,
+    new Map([[staffRole.id, staffRole]]),
+    sessionPayload(),
+    {
+      earlyAccessRoleId: null,
+      vipAccessRoleId: vipRole.id,
+      registrationRoleIds: [],
+      specialRegistrationRoleIds: [],
+      vipRoleIds: [],
+      emojis: {
+        vipAccessEnabled: "false",
+      },
+    },
+  );
+
+  const byId = new Map(overwrites.map((overwrite: any) => [overwrite.id, overwrite]));
+  assert.deepEqual(byId.get("guild-1"), {
+    id: "guild-1",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.SendMessages,
+    ],
+    deny: [
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+  assert.deepEqual(byId.get("vip-role"), {
+    id: "vip-role",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.SendMessages,
+    ],
+    deny: [
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+    ],
+  });
+});
+
+test("bot-controlled channel overwrites block member reactions and threads", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const accessRole = { id: "slot-role", name: "Slot" };
+  const staffRole = { id: "staff-role", name: "Staff" };
+  const guild = {
+    client: { user: { id: "bot-user" } },
+    members: { me: { id: "bot-user" } },
+    roles: {
+      everyone: { id: "guild-1" },
+      cache: new Collection([
+        [accessRole.id, accessRole],
+        [staffRole.id, staffRole],
+      ]),
+    },
+  };
+
+  const overwrites = service.protectedOverwrites(
+    guild,
+    new Map([[staffRole.id, staffRole]]),
+    accessRole,
+    true,
+  );
+
+  assert.deepEqual(overwrites[0].deny, [
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.AddReactions,
+    PermissionFlagsBits.CreatePublicThreads,
+    PermissionFlagsBits.CreatePrivateThreads,
+    PermissionFlagsBits.SendMessagesInThreads,
+  ]);
+  assert.deepEqual(overwrites[1].deny, [
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.AddReactions,
+    PermissionFlagsBits.CreatePublicThreads,
+    PermissionFlagsBits.CreatePrivateThreads,
+    PermissionFlagsBits.SendMessagesInThreads,
+  ]);
+  assert.ok(
+    overwrites[2].allow.includes(PermissionFlagsBits.AddReactions),
+  );
+  assert.ok(
+    overwrites[2].allow.includes(PermissionFlagsBits.CreatePublicThreads),
+  );
+  assert.deepEqual(overwrites[3], {
+    id: "bot-user",
+    allow: [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+      PermissionFlagsBits.AttachFiles,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+      PermissionFlagsBits.ManageMessages,
+    ],
   });
 });
 
@@ -620,6 +1324,48 @@ test("long plain slot lists use compact rows before Discord truncation", () => {
   assert.match(payload.content, /\.\.\./);
 });
 
+test("waitlist message defaults to embed", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const payload = service.buildWaitlistPayload(
+    sessionPayload(),
+    [registrationPayload()],
+    {
+      enabled: true,
+      emojis: {
+        waitlist: "WAIT",
+        empty: "EMPTY",
+      },
+    },
+  );
+
+  assert.equal(payload.content, null);
+  assert.equal(payload.embeds.length, 1);
+  const embed = payload.embeds[0].toJSON();
+  assert.equal(embed.title, "WAIT Waitlist (1)");
+  assert.match(embed.description ?? "", /CLSX/);
+});
+
+test("waitlist message can render as plain text", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const payload = service.buildWaitlistPayload(
+    sessionPayload(),
+    [registrationPayload()],
+    {
+      enabled: true,
+      emojis: {
+        waitlistMessageMode: "plain",
+        waitlist: "WAIT",
+        empty: "EMPTY",
+      },
+    },
+  );
+
+  assert.ok(payload.content);
+  assert.equal(payload.embeds.length, 0);
+  assert.match(payload.content, /\*\*WAIT Waitlist \(1\)\*\*/);
+  assert.match(payload.content, /CLSX/);
+});
+
 test("slot list logo resolver creates per-team emojis for saved logos", async () => {
   const service = new ScrimDiscordSetupService() as any;
   service.fetchEmojiImage = async () => Buffer.from([1, 2, 3]);
@@ -826,10 +1572,39 @@ test("slot list shows all active manager mentions after play confirmation", () =
     embed.description ?? "",
     /\[CLSX\] CLSX <@111111111111111111> <@222222222222222222>/,
   );
+  assert.equal(
+    payload.content,
+    "Managers: <@111111111111111111> <@222222222222222222>",
+  );
   assert.deepEqual(payload.allowedMentions?.users, [
     "111111111111111111",
     "222222222222222222",
   ]);
+});
+
+test("waitlist embed mirrors manager mentions in content for Discord parsing", () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const payload = service.buildWaitlistPayload(
+    sessionPayload(),
+    [registrationPayload()],
+    {
+      enabled: true,
+      emojis: {
+        waitlist: "WAIT",
+        empty: "EMPTY",
+      },
+    },
+    {
+      managerMentionByTeamId: new Map([
+        ["team-1", "<@333333333333333333>"],
+      ]),
+    },
+  );
+
+  const embed = payload.embeds[0].toJSON();
+  assert.match(embed.description ?? "", /<@333333333333333333>/);
+  assert.equal(payload.content, "Managers: <@333333333333333333>");
+  assert.deepEqual(payload.allowedMentions?.users, ["333333333333333333"]);
 });
 
 test("managed message edit skips unchanged parsed mention content", async () => {
@@ -979,6 +1754,72 @@ test("configured server staff role is reused without creating or renaming fallba
   assert.equal(role.id, "server-staff-role");
   assert.equal(created, false);
   assert.equal(edited, false);
+});
+
+test("missing Discord roles are not created unless auto-create is enabled", async () => {
+  const service = new ScrimDiscordSetupService() as any;
+  const createdRoles: string[] = [];
+  const guild = {
+    roles: {
+      cache: new Collection(),
+      fetch: async (roleId?: string) =>
+        roleId ? (guild.roles.cache.get(roleId) ?? null) : guild.roles.cache,
+      create: async (payload: { name: string }) => {
+        createdRoles.push(payload.name);
+        const role = {
+          id: `created-${createdRoles.length}`,
+          name: payload.name,
+          permissions: { has: () => false },
+        };
+        guild.roles.cache.set(role.id, role);
+        return role;
+      },
+    },
+  };
+
+  const staffRole = await service.ensureStaffRole(guild, {
+    emojis: { staffRoleName: "Arenzyra Staff" },
+  });
+  const roles = await service.ensureSessionRoles(
+    guild,
+    sessionPayload(),
+    { emojis: {} },
+    false,
+  );
+
+  assert.equal(staffRole, null);
+  assert.equal(roles.slotRole, null);
+  assert.equal(roles.waitlistRole, null);
+  assert.equal(roles.bannedRole, null);
+  assert.deepEqual(createdRoles, []);
+
+  const createdStaffRole = await service.ensureStaffRole(
+    guild,
+    {
+      emojis: { staffRoleName: "Arenzyra Staff" },
+    },
+    true,
+  );
+  const createdSessionRoles = await service.ensureSessionRoles(
+    guild,
+    sessionPayload(),
+    { emojis: {} },
+    true,
+  );
+
+  assert.equal(createdStaffRole.name, "Arenzyra Staff");
+  assert.equal(createdSessionRoles.slotRole.name, "Arenzyra Slot session-");
+  assert.equal(
+    createdSessionRoles.waitlistRole.name,
+    "Arenzyra Waitlist session-",
+  );
+  assert.equal(createdSessionRoles.bannedRole.name, "Arenzyra Banned session-");
+  assert.deepEqual(createdRoles, [
+    "Arenzyra Staff",
+    "Arenzyra Slot session-",
+    "Arenzyra Waitlist session-",
+    "Arenzyra Banned session-",
+  ]);
 });
 
 test("waitlist control panel uses a select menu for current waitlist teams", () => {

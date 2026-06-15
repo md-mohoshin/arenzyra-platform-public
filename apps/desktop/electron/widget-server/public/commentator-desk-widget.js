@@ -40,6 +40,101 @@
     return `<div class="empty">${escapeHtml(message)}</div>`;
   }
 
+  function toNumber(value, fallback = 0) {
+    const numeric =
+      typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    return Number.isFinite(numeric) ? numeric : fallback;
+  }
+
+  function inferDistanceEngagement(row) {
+    const distance = Math.max(0, Math.round(toNumber(row?.distanceMeters, 0)));
+    const firing = Math.max(0, Math.round(toNumber(row?.firingCount, 0)));
+    const knocked = Math.max(0, Math.round(toNumber(row?.knockedCount, 0)));
+
+    if (row?.engagementState) {
+      return {
+        distance,
+        state: row.engagementState,
+        label: row.engagementLabel || null,
+        priority: toNumber(row.engagementPriority, 0),
+        summary: row.engagementSummary || null,
+      };
+    }
+
+    if (knocked > 0 && firing > 0) {
+      return {
+        distance,
+        state: "trade",
+        label: "Trade",
+        priority: 5,
+        summary: `${knocked} knocked / ${firing} firing`,
+      };
+    }
+    if (knocked > 0) {
+      return {
+        distance,
+        state: "knock",
+        label: "Knock",
+        priority: 4,
+        summary: `${knocked} knocked`,
+      };
+    }
+    if ((firing >= 2 && distance <= 280) || (firing > 0 && distance <= 160)) {
+      return {
+        distance,
+        state: "fight",
+        label: "Fight",
+        priority: 3,
+        summary: `${firing} firing`,
+      };
+    }
+    if (firing > 0 && distance <= 450) {
+      return {
+        distance,
+        state: "shots",
+        label: "Shots",
+        priority: 2,
+        summary: `${firing} firing`,
+      };
+    }
+    if (distance <= 80) {
+      return {
+        distance,
+        state: "contact",
+        label: "Close",
+        priority: 1,
+        summary: "Contact range",
+      };
+    }
+    return {
+      distance,
+      state: "none",
+      label: null,
+      priority: 0,
+      summary: null,
+    };
+  }
+
+  function compareDistanceEntries(left, right) {
+    if (right.engagement.priority !== left.engagement.priority) {
+      return right.engagement.priority - left.engagement.priority;
+    }
+    return left.engagement.distance - right.engagement.distance;
+  }
+
+  function buildDistanceStatus(row, engagement, players) {
+    if (engagement.summary) {
+      return `${engagement.summary} - ${players}`;
+    }
+    if (row.knockedCount > 0) {
+      return `${row.knockedCount} knocked`;
+    }
+    if (row.firingCount > 0) {
+      return `${row.firingCount} firing`;
+    }
+    return players;
+  }
+
   function formatUpdatedAt(value) {
     const numeric = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(numeric)) {
@@ -129,24 +224,31 @@
     const rows = Array.isArray(distancePairs) ? distancePairs : [];
     distanceList.innerHTML = rows.length
       ? rows
+          .map((row) => ({
+            row,
+            engagement: inferDistanceEngagement(row),
+          }))
+          .sort(compareDistanceEntries)
           .slice(0, 8)
-          .map((row) => {
+          .map(({ row, engagement }) => {
             const players =
               row.leftPlayerName && row.rightPlayerName
                 ? `${row.leftPlayerName} / ${row.rightPlayerName}`
                 : `${row.leftActive || 0} alive / ${row.rightActive || 0} alive`;
-            const status =
-              row.knockedCount > 0
-                ? `${row.knockedCount} knocked`
-                : row.firingCount > 0
-                  ? `${row.firingCount} firing`
-                  : players;
+            const status = buildDistanceStatus(row, engagement, players);
             return `
-              <div class="distance-row" data-tone="${attr(row.tone || "wide")}">
+              <div class="distance-row" data-tone="${attr(
+                row.tone || "wide",
+              )}" data-alert="${attr(engagement.state)}">
                 <div class="distance-copy">
                   <div class="distance-main">${escapeHtml(row.slotMatchup || "Slot ? vs Slot ?")}</div>
                   <div class="distance-sub">${escapeHtml(status)}</div>
                 </div>
+                ${
+                  engagement.label
+                    ? `<div class="distance-alert">${escapeHtml(engagement.label)}</div>`
+                    : ""
+                }
                 <div class="distance-value">${escapeHtml(row.distanceMeters || 0)}m</div>
               </div>
             `;

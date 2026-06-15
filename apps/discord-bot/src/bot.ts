@@ -5,6 +5,7 @@ import {
   Partials,
   REST,
   Routes,
+  type AutocompleteInteraction,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
@@ -34,6 +35,7 @@ import { ticketCloseCommand } from "./commands/ticketClose";
 import { ticketPanelCommand } from "./commands/ticketPanel";
 import { controlPanelCommand } from "./commands/controlPanel";
 import { banControlCommand } from "./commands/banControl";
+import { resultControlCommand } from "./commands/resultControl";
 import { playButtonsCommand } from "./commands/playButtons";
 import { waitlistControlCommand } from "./commands/waitlistControl";
 import { arenzyraDoctorCommand } from "./commands/arenzyraDoctor";
@@ -41,12 +43,15 @@ import { scheduleEventCommand } from "./commands/scheduleEvent";
 import { captainPanelCommand } from "./commands/captainPanel";
 import { liveCenterCommand } from "./commands/liveCenter";
 import { sessionAuditCommand } from "./commands/sessionAudit";
+import { productionSetupCommand } from "./commands/productionSetup";
+import { productionPinsCommand } from "./commands/productionPins";
 import { contextBanManagerCommand } from "./commands/contextBanManager";
 import { DiscordSessionService } from "./services/session.service";
 import { TicketService } from "./services/ticket.service";
 import { ControlPanelService } from "./services/control-panel.service";
 import { MessageRegistrationService } from "./services/message-registration.service";
 import { OfficialPricingPromoService } from "./services/official-pricing-promo.service";
+import { DiscordOnboardingService } from "./services/onboarding.service";
 import { toFriendlyApiError } from "./api/api-client";
 
 type CommandServices = {
@@ -60,6 +65,10 @@ type SlashCommand = {
     name: string;
     toJSON(): object;
   };
+  autocomplete?(
+    interaction: AutocompleteInteraction,
+    services: CommandServices,
+  ): Promise<void>;
   execute(
     interaction: ChatInputCommandInteraction,
     services: CommandServices,
@@ -100,6 +109,7 @@ const commands: SlashCommand[] = [
   ticketPanelCommand,
   controlPanelCommand,
   banControlCommand,
+  resultControlCommand,
   playButtonsCommand,
   waitlistControlCommand,
   arenzyraDoctorCommand,
@@ -107,6 +117,8 @@ const commands: SlashCommand[] = [
   captainPanelCommand,
   liveCenterCommand,
   sessionAuditCommand,
+  productionSetupCommand,
+  productionPinsCommand,
 ];
 const contextMenuCommands: MessageContextMenuCommand[] = [
   contextBanManagerCommand,
@@ -130,8 +142,10 @@ const ticketService = new TicketService();
 const controlPanelService = new ControlPanelService(sessionService);
 const messageRegistrationService = new MessageRegistrationService(
   sessionService,
+  controlPanelService,
 );
 const officialPricingPromoService = new OfficialPricingPromoService();
+const onboardingService = new DiscordOnboardingService();
 const DISCORD_LOGIN_TIMEOUT_MS = 30_000;
 const DISCORD_LOGIN_RETRY_MS = 10_000;
 
@@ -301,6 +315,25 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
     console.error(`Command ${interaction.commandName} failed:`, error);
 
     await safeInteractionErrorReply(interaction, message);
+  }
+}
+
+async function handleAutocomplete(interaction: AutocompleteInteraction) {
+  const command = commandsByName.get(interaction.commandName);
+  if (!command?.autocomplete) {
+    await interaction.respond([]).catch(() => undefined);
+    return;
+  }
+
+  try {
+    await command.autocomplete(interaction, {
+      sessionService,
+      ticketService,
+      controlPanelService,
+    });
+  } catch (error) {
+    console.error(`Autocomplete ${interaction.commandName} failed:`, error);
+    await interaction.respond([]).catch(() => undefined);
   }
 }
 
@@ -480,7 +513,10 @@ async function handleMessageUpdate(
       ? await message.fetch().catch(() => null)
       : message;
     if (hydrated) {
-      await sessionService.cleanupStaleManagedBotMessage(hydrated);
+      if (await sessionService.cleanupStaleManagedBotMessage(hydrated)) {
+        return;
+      }
+      await messageRegistrationService.handleMessage(hydrated);
     }
   } catch (error) {
     console.error("Discord message cleanup after update failed:", error);
@@ -507,6 +543,18 @@ async function handleGuildDelete(guild: Guild) {
   } catch (error) {
     console.warn(
       `[DiscordGuild] failed to mark removed guild=${guild.id} name="${guild.name}": ${String(
+        error,
+      )}`,
+    );
+  }
+}
+
+async function handleGuildCreate(guild: Guild) {
+  try {
+    await onboardingService.ensureGuildOnboarding(guild);
+  } catch (error) {
+    console.warn(
+      `[DiscordGuild] failed to sync onboarding guild=${guild.id} name="${guild.name}": ${String(
         error,
       )}`,
     );
@@ -547,11 +595,17 @@ async function bootstrap() {
     console.log(`Discord bot ready as ${readyClient.user.tag}`);
     sessionService.startConfirmationWindowRefresh(readyClient);
     sessionService.startActiveDiscordSessionReconciler(readyClient);
+    sessionService.startExpiredBanRoleCleanup(readyClient);
     officialPricingPromoService.start(readyClient);
+    onboardingService.start(readyClient);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
+      if (interaction.isAutocomplete()) {
+        await handleAutocomplete(interaction);
+        return;
+      }
       if (interaction.isChatInputCommand()) {
         await handleCommand(interaction);
         return;
@@ -579,6 +633,7 @@ async function bootstrap() {
   client.on(Events.MessageCreate, handleMessage);
   client.on(Events.MessageUpdate, handleMessageUpdate);
   client.on(Events.MessageReactionAdd, handleReactionAdd);
+  client.on(Events.GuildCreate, handleGuildCreate);
   client.on(Events.GuildDelete, handleGuildDelete);
 
   for (;;) {

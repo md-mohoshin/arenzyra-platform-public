@@ -598,6 +598,15 @@ export type WidgetServerStatus = {
   networkBaseUrl?: string | null;
 };
 
+export type PinnedCommentatorDeskWindowStatus = {
+  open: boolean;
+  visible: boolean;
+  clickThrough: boolean;
+  alwaysOnTop: boolean;
+  transparent: boolean;
+  url: string | null;
+};
+
 export type LauncherMapAssetStatus = {
   key: string;
   label: string;

@@ -11,6 +11,7 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   type Attachment,
+  type Guild,
   type GuildTextBasedChannel,
   type GuildMember,
   type Message,
@@ -23,11 +24,15 @@ import {
   type User,
 } from "discord.js";
 import type {
+  ApplyNoShowAutoBansResponse,
   MatchSlotResponse,
   NoShowTeamBanResponse,
   PlayerPhotoUpload,
+  ResolvedProductionDiscordChannelResponse,
   SessionDiscordConfigResponse,
   SessionResultResetResponse,
+  SyncOldDiscordPlayerPhotosResponse,
+  SyncOldDiscordLogosResponse,
   TeamLogoUpload,
 } from "../api/api-client";
 import { toFriendlyApiError } from "../api/api-client";
@@ -44,19 +49,31 @@ import type {
   ResultSummaryConfigPatch,
   ReviewedResultRow,
 } from "./session.service";
+import type { ControlPanelService } from "./control-panel.service";
 import { configuredDiscordEmoji } from "./discord-emojis";
 
 const REGISTER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%register\b/i;
 const ARENZYRA_SESSION_TOPIC_PATTERN =
   /(?:^|[;\s])arenzyra-session=[0-9a-f-]{36}(?:$|[;\s])/i;
+const ARENZYRA_PRODUCTION_TOPIC_PATTERN =
+  /(?:^|[;\s])arenzyra-production=[^;\s]+;(?:set=production-\d{1,2};)?kind=(?:slots|logos|player-photos|idp|logs|control)(?:$|[;\s])/i;
 const START_CHANNEL_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%start\s*$/i;
 const STOP_CHANNEL_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%stop\s*$/i;
+const IDP_DM_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%dm\s+(on|off)\s*$/i;
 const OPEN_REGISTRATION_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?!open\s*$/i;
 const CLOSE_REGISTRATION_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?!(?:close|closed)\s*$/i;
+const OPEN_WAITLIST_COMMAND_PATTERN =
+  /^(?:<@!?\d+>\s*)?[!%]open(?:-|\s+)waitlist\s*$/i;
+const CLOSE_WAITLIST_COMMAND_PATTERN =
+  /^(?:<@!?\d+>\s*)?[!%](?:close|closed)(?:-|\s+)waitlist\s*$/i;
 const ADD_MANAGER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%manager\b/i;
 const REMOVE_MANAGER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%remove\b/i;
 const LOGO_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%logo\b/i;
+const SYNC_OLD_LOGOS_COMMAND_PATTERN =
+  /^(?:<@!?\d+>\s*)?%sync-old-logos(?:\s+(\d{1,4}))?\s*$/i;
+const SYNC_OLD_PLAYER_PHOTOS_COMMAND_PATTERN =
+  /^(?:<@!?\d+>\s*)?%sync-old-photos(?:\s+(\d{1,4}))?\s*$/i;
 const PLAYER_PHOTO_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%photo\b/i;
 const CLEAN_ALL_SLOTS_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?%clean(?:-|\s+)all(?:-|\s+)slots\b/i;
@@ -66,12 +83,16 @@ const CLEAN_SCRIM_ROLES_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?%clean(?:-|\s+)scrim(?:-|\s+)roles(?:\s+(all|strip))?\s*$/i;
 const CLEAN_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%clean(?:\s+slot)?\s+(\d+)\b/i;
 const CLEAN_CHANNEL_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%clean-channel\b/i;
+const DELETE_PRODUCTION_SET_COMMAND_PATTERN =
+  /^(?:<@!?\d+>\s*)?%delete-\(?\s*(?:set|production)[-\s]*(\d{1,2})\s*\)?\s*$/i;
 const BAN_MISSING_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?%(?:ban(?:-|\s+)(?:missing|no[-\s]?shows?)|ban-missing|ban-no-shows?)\b/i;
 const BAN_TEAM_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%(?:ban-team|team-ban)\b/i;
 const UNBAN_TEAM_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?%(?:unban-team|team-unban)\b/i;
+const UNBAN_MANAGER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%unban(?:\s|$)/i;
 const BAN_LIST_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%(?:ban-list|team-bans)\b/i;
+const BAN_FLOW_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%ban\b/i;
 const RESULT_SUMMARY_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%result-summary\b/i;
 const CONFIRM_SLOT_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?%(?:confirm|cofirrm)(?:\s+slot)?\s+(\d+)\s*$/i;
@@ -83,6 +104,8 @@ const DISCORD_USER_MENTION_CAPTURE_PATTERN = /<@!?(\d{17,22})>/g;
 const RESULT_GAME_CODE_PATTERN =
   /(?:^|[\s,;:])(?:game|match|round|g|m)\s*(?:(?:no|num|number)\.?\s*)?[-#]?\s*(\d{1,3})(?=$|[\s,;:!.?()\-])/i;
 const MAX_LOGO_BYTES = 8 * 1024 * 1024;
+const DEFAULT_SYNC_OLD_LOGOS_LIMIT = 100;
+const MAX_SYNC_OLD_LOGOS_LIMIT = 500;
 const CLEAN_CONFIRMATION_DELETE_DELAY_MS = 2000;
 const CONFIRM_SLOT_REPLY_DELETE_DELAY_MS = 5000;
 const REGISTRATION_CHANNEL_WARNING_DELETE_DELAY_MS = 2000;
@@ -95,8 +118,10 @@ const CLEAN_CHANNEL_MAX_LIMIT = 1_000;
 const DISCORD_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const SLOT_STATUS_REPLY_COOLDOWN_MS = 15_000;
 const RESULT_WIDGET_ATTACHMENT_PATTERN =
-  /^(?:match-result|overall-ranking|top-mvp|top-fraggers|overall-top-mvp|overall-top-fraggers)\.png$/i;
+  /^(?:match-result|overall-ranking|top-mvp|top-fraggers|overall-top-mvp|overall-top-fraggers|match-schedule)\.png$/i;
 const RESULT_WIDGET_UNMARKED_CLEANUP_WINDOW_MS = 6 * 60 * 60 * 1000;
+const AUTO_RESULT_DETAIL_PAGE_MAX_CHARS = 1650;
+const AUTO_RESULT_DETAIL_LINE_MAX_CHARS = 320;
 const REGISTER_PROCESSING_REACTION = "\u23F3";
 const REGISTER_SUCCESS_REACTION = "\u2705";
 const REGISTER_WAITLIST_REACTION = "\u{1F552}";
@@ -105,6 +130,8 @@ const REGISTER_REJECT_REACTION = "\u274C";
 const ALLOWED_LOGO_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const REGISTRATION_STATE_CONFIRMATION_PATTERN =
   /Registration is (?:open|closed)\./i;
+const WAITLIST_PROMOTION_STATE_CONFIRMATION_PATTERN =
+  /Waitlist promotion is (?:open|closed)/i;
 const CHANNEL_ACTIVITY_STATE_CONFIRMATION_PATTERN =
   /Arenzyra bot is now (?:active|paused) in this channel\./i;
 const IMAGE_EXTENSIONS: Record<string, string> = {
@@ -116,6 +143,17 @@ const AUTO_RESULT_PENDING_TTL_MS = 2 * 60 * 60 * 1000;
 const AUTO_RESULT_BUTTON_PREFIX = "result:auto:";
 const AUTO_NO_SHOW_BAN_CONFIRMATION_MS = 60_000;
 const FINAL_NO_SHOW_BAN_REVIEW_MS = 15 * 60_000;
+const MANUAL_BAN_FLOW_PREFIX = "banflow:";
+const MANUAL_BAN_FLOW_TTL_MS = 5 * 60_000;
+const IDP_DM_REPLY_BUTTON_PREFIX = "idpdm:reply:";
+const IDP_DM_REPLY_MODAL_PREFIX = "idpdm:modal:";
+const IDP_DM_REPLY_INPUT_ID = "idpdm_reply";
+const IDP_DM_FORWARD_SEND_DELAY_MS = 250;
+const IDP_DM_FORWARD_MAX_CONTENT_LENGTH = 1700;
+const IDP_DM_CHANNEL_CACHE_TTL_MS = 30_000;
+const DISCORD_ID_PATTERN = /^\d{17,22}$/;
+const DISCORD_MESSAGE_ID_PATTERN = /^\d{10,25}$/;
+const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/i;
 const STAFF_ROLE_NAMES = [
   "[OWNER]",
   "Arenzyra Admin",
@@ -161,11 +199,25 @@ type ParsedPlayerPhotoMessage = {
   teamName: string | null;
   playerName: string | null;
 };
+type DiscordMessageProofLogOptions = {
+  action: string;
+  config: SessionDiscordConfigResponse | null | undefined;
+  session?: { id: string; name?: string | null } | null;
+  status?: string | null;
+  reason: string;
+  team?: { name?: string | null; tag?: string | null } | null;
+  extraDetails?: string | string[] | null;
+  color?: number;
+};
 type MessageLogoSource = {
   url: string;
   attachmentId?: string | null;
   filename?: string | null;
   contentType?: string | null;
+};
+type ParsedProductionLogoMessage = {
+  teamName: string;
+  tag: string | null;
 };
 type CleanChannelMode = "safe" | "all";
 type ParsedCleanChannelCommand = {
@@ -177,6 +229,12 @@ type ParsedCleanChannelCommand = {
 type CleanChannelResolvedSession = Awaited<
   ReturnType<DiscordSessionService["findScrimForDiscordChannel"]>
 >;
+type DiscordSessionChannelResolution = NonNullable<CleanChannelResolvedSession>;
+type IdpDmReplyTarget = {
+  sessionId: string;
+  sourceMessageId: string;
+  managerDiscordUserId: string;
+};
 type CleanChannelConfirmation = {
   confirmed: boolean;
   prompt: Message | null;
@@ -203,6 +261,7 @@ type PauseControlResolvedSession = {
 };
 type ParsedBanOptions = {
   scope: "TEAM" | "SESSION" | "MATCH" | null;
+  sessionSelectors: string[];
   matchNumbers: number[];
   allMatches: boolean;
   serverAction: DiscordTeamBanServerAction | null;
@@ -251,6 +310,16 @@ type PendingFinalNoShowBanReview = {
   expiresAt: number;
   processing?: boolean;
 };
+type PendingManualBanFlow = {
+  userId: string;
+  sessionId: string;
+  sessionName: string | null;
+  sourceChannelId: string | null;
+  promptMessageId: string | null;
+  config: SessionDiscordConfigResponse;
+  command: DiscordTeamBanCommand;
+  expiresAt: number;
+};
 
 function limitDiscordContent(content: string) {
   if (content.length <= 1900) {
@@ -269,20 +338,94 @@ export class MessageRegistrationService {
     string,
     PendingFinalNoShowBanReview
   >();
+  private readonly pendingManualBanFlows = new Map<
+    string,
+    PendingManualBanFlow
+  >();
   private readonly slotStatusReplyCooldowns = new Map<string, number>();
   private readonly processingRegistrationMessageIds = new Set<string>();
   private readonly pendingDestructiveActions = new Map<
     string,
     PendingDestructiveAction
   >();
+  private readonly idpDmChannelCache = new Map<
+    string,
+    { expiresAt: number; resolved: DiscordSessionChannelResolution | null }
+  >();
 
-  constructor(private readonly sessionService: DiscordSessionService) {}
+  constructor(
+    private readonly sessionService: DiscordSessionService,
+    private readonly controlPanelService?: ControlPanelService,
+  ) {}
 
   private channelTopic(
     channel: Message["channel"] | GuildTextBasedChannel | null | undefined,
   ) {
     const topic = (channel as { topic?: unknown } | null | undefined)?.topic;
     return typeof topic === "string" ? topic : null;
+  }
+
+  private idpDmChannelCacheKey(guildId: string, channelId: string) {
+    return `${guildId}:${channelId}`;
+  }
+
+  private idpDmEnabled(
+    config: SessionDiscordConfigResponse | null | undefined,
+  ) {
+    return config?.emojis?.idpDmForwardingEnabled === "true";
+  }
+
+  private async resolveIdpDmChannel(
+    message: Message,
+    { refresh = false }: { refresh?: boolean } = {},
+  ): Promise<DiscordSessionChannelResolution | null> {
+    if (!message.guild) {
+      return null;
+    }
+
+    const key = this.idpDmChannelCacheKey(message.guild.id, message.channel.id);
+    const cached = this.idpDmChannelCache.get(key);
+    if (!refresh && cached && cached.expiresAt > Date.now()) {
+      return cached.resolved;
+    }
+
+    const resolver = (
+      this.sessionService as unknown as {
+        findScrimForDiscordChannel?: DiscordSessionService["findScrimForDiscordChannel"];
+      }
+    ).findScrimForDiscordChannel;
+    if (typeof resolver !== "function") {
+      return null;
+    }
+
+    const resolved = await resolver
+      .call(
+        this.sessionService,
+        message.guild.id,
+        message.channel.id,
+        this.channelTopic(message.channel),
+      )
+      .catch(() => null);
+    const idpResolved =
+      resolved?.channelKind === "idp"
+        ? (resolved as DiscordSessionChannelResolution)
+        : null;
+    this.idpDmChannelCache.set(key, {
+      resolved: idpResolved,
+      expiresAt: Date.now() + IDP_DM_CHANNEL_CACHE_TTL_MS,
+    });
+    return idpResolved;
+  }
+
+  private rememberIdpDmChannel(
+    guildId: string,
+    channelId: string,
+    resolved: DiscordSessionChannelResolution,
+  ) {
+    this.idpDmChannelCache.set(this.idpDmChannelCacheKey(guildId, channelId), {
+      resolved,
+      expiresAt: Date.now() + IDP_DM_CHANNEL_CACHE_TTL_MS,
+    });
   }
 
   private async shouldIgnoreUnknownSessionTopic(message: Message) {
@@ -305,6 +448,562 @@ export class MessageRegistrationService {
     console.warn(
       `[DiscordGuard] ignoring message in unknown Arenzyra session channel=${message.channel.id} guild=${message.guild.id}`,
     );
+    return true;
+  }
+
+  private contentLooksLikeProductionSlotList(content: string) {
+    const slotLikeLines = content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) =>
+        /^(?:[-*]\s*)?(?:slot\s*)?#?\d{1,3}\s*(?:[.)\]:-]|\s+-\s+|\s+)\S/i.test(
+          line,
+        ),
+      );
+    return slotLikeLines.length >= 2;
+  }
+
+  private contentLooksLikeProductionPlainTeamList(content: string) {
+    const teamLikeLines = content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => this.cleanProductionPlainTeamProbeLine(line))
+      .filter(
+        (line) =>
+          line !== null &&
+          line.length <= 120 &&
+          !/^[%!/]/.test(line) &&
+          !/^https?:\/\//i.test(line) &&
+          !/^(?:slot\s*list|slots?|teams?|team\s*name|vip\b|\d+\s*\/\s*\d+)/i.test(
+            line,
+          ),
+      );
+    return teamLikeLines.length >= 2;
+  }
+
+  private cleanProductionPlainTeamProbeLine(line: string) {
+    const stripped = line
+      .replace(/\*\*/g, "")
+      .replace(/^_+|_+$/g, "")
+      .replace(/^[-*]\s+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!stripped || /^#{2,}\s+\S/.test(stripped)) return null;
+
+    const prefixMatch =
+      /^(?:(?:fix|slot|team)\s*)?#?0*(\d{1,3})\s*(?:[.)\]:-]|\s+-\s+|\s+)\s*(.+)$/i.exec(
+        stripped,
+      ) ??
+      /^(?:fix\s*)?vip(?:\s*#?0*\d{1,3})?\s*(?:[.)\]:-]|\s+-\s+|\s+)\s*(.+)$/i.exec(
+        stripped,
+      );
+    const label = (prefixMatch?.[2] ?? prefixMatch?.[1] ?? stripped).trim();
+    const normalized = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+    if (
+      !normalized ||
+      [
+        "empty",
+        "open",
+        "available",
+        "free",
+        "vacant",
+        "tbd",
+        "none",
+        "no team",
+      ].some(
+        (emptyLabel) =>
+          normalized === emptyLabel || normalized.startsWith(`${emptyLabel} `),
+      )
+    ) {
+      return null;
+    }
+    return label;
+  }
+
+  private messageCanTriggerProductionDiscord(
+    message: Message,
+    content: string,
+  ) {
+    if (!message.guild) return false;
+    const topic = this.channelTopic(message.channel);
+    return (
+      (topic ? ARENZYRA_PRODUCTION_TOPIC_PATTERN.test(topic) : false) ||
+      CLEAN_CHANNEL_COMMAND_PATTERN.test(content) ||
+      DELETE_PRODUCTION_SET_COMMAND_PATTERN.test(content) ||
+      LOGO_COMMAND_PATTERN.test(content) ||
+      PLAYER_PHOTO_COMMAND_PATTERN.test(content) ||
+      this.contentLooksLikeProductionSlotList(content)
+    );
+  }
+
+  private async resolveProductionDiscordContext(
+    message: Message,
+    content: string,
+  ): Promise<ResolvedProductionDiscordChannelResponse | null> {
+    if (
+      !message.guild ||
+      !this.messageCanTriggerProductionDiscord(message, content)
+    ) {
+      return null;
+    }
+    const resolver = (
+      this.sessionService as unknown as {
+        resolveProductionDiscordChannel?: DiscordSessionService["resolveProductionDiscordChannel"];
+      }
+    ).resolveProductionDiscordChannel;
+    if (typeof resolver !== "function") {
+      return null;
+    }
+    return resolver.call(
+      this.sessionService,
+      message.guild.id,
+      message.channel.id,
+    );
+  }
+
+  private canUseProductionCleanChannel(message: Message) {
+    const permissions = message.member?.permissions;
+    return Boolean(
+      permissions?.has(PermissionFlagsBits.Administrator) ||
+      permissions?.has(PermissionFlagsBits.ManageGuild) ||
+      permissions?.has(PermissionFlagsBits.ManageChannels) ||
+      permissions?.has(PermissionFlagsBits.ManageMessages),
+    );
+  }
+
+  private productionCleanSummary(
+    count: number,
+    channelId: string,
+    parsed: ParsedCleanChannelCommand,
+    resolved: ResolvedProductionDiscordChannelResponse,
+  ) {
+    return [
+      `Clean preview for <#${channelId}> (${resolved.setName} ${resolved.channelKind})`,
+      `Mode: ${parsed.mode}`,
+      `Checked limit: ${parsed.limit}`,
+      `Messages selected: ${count}`,
+      "Pinned and Arenzyra managed messages are protected.",
+    ].join("\n");
+  }
+
+  private async logProductionCleanChannelResult(
+    message: Message,
+    targetChannel: GuildTextBasedChannel,
+    resolved: ResolvedProductionDiscordChannelResponse,
+    parsed: ParsedCleanChannelCommand,
+    result: { deleted: number; failed: number },
+  ) {
+    const logChannelId = resolved.set.logsChannelId;
+    if (!message.guild || !logChannelId || logChannelId === targetChannel.id) {
+      return;
+    }
+    const logChannel = await message.guild.channels
+      .fetch(logChannelId)
+      .catch(() => null);
+    if (!logChannel || !logChannel.isTextBased() || logChannel.isDMBased()) {
+      return;
+    }
+    await logChannel.send({
+      content: [
+        "Production channel cleaned",
+        `Actor: ${message.author.tag} (${message.author.id})`,
+        `Target: <#${targetChannel.id}>`,
+        `Mode: ${parsed.mode}`,
+        `Deleted: ${result.deleted}`,
+        `Failed: ${result.failed}`,
+      ].join("\n"),
+      allowedMentions: { parse: [] },
+    });
+  }
+
+  private parseProductionSetDeleteCommand(content: string) {
+    const match = DELETE_PRODUCTION_SET_COMMAND_PATTERN.exec(content.trim());
+    const index = Number(match?.[1]);
+    return Number.isInteger(index) && index >= 1 && index <= 20 ? index : null;
+  }
+
+  private async handleProductionDeleteSetMessage(
+    message: Message,
+    resolved: ResolvedProductionDiscordChannelResponse,
+    setIndex: number,
+  ) {
+    if (!message.guild) {
+      await message.reply("Use `%delete-(set-1)` inside the Discord server.");
+      return true;
+    }
+    if (!this.canUseProductionCleanChannel(message)) {
+      await message.reply("Only server staff can delete a production set.");
+      return true;
+    }
+
+    const targetSet = resolved.config.sets.find(
+      (set) => set.index === setIndex,
+    );
+    if (!targetSet) {
+      await message.reply(`Production set set-${setIndex} was not found.`);
+      return true;
+    }
+
+    const targetChannels = [
+      targetSet.slotsChannelId,
+      targetSet.logosChannelId,
+      targetSet.playerPhotosChannelId,
+      targetSet.idpChannelId,
+      targetSet.logsChannelId,
+      targetSet.controlChannelId,
+    ].filter((id): id is string => Boolean(id));
+    const summary = [
+      `Delete production set set-${targetSet.index}.`,
+      `Stored key: ${targetSet.key}`,
+      `Linked event: ${targetSet.eventName ?? targetSet.eventId ?? "Not linked"}`,
+      `Channels: ${
+        targetChannels.length > 0
+          ? targetChannels.map((id) => `<#${id}>`).join(", ")
+          : "none"
+      }`,
+      targetSet.productionRoleId
+        ? `Role: <@&${targetSet.productionRoleId}>`
+        : "Role: none",
+      "This removes the Discord category/channels/role and removes this set from Arenzyra production config. It does not delete the Arenzyra event.",
+    ].join("\n");
+
+    const confirmation = await this.confirmDestructiveAction(message, {
+      actionId: `production-set-${targetSet.index}`,
+      summary,
+      confirmLabel: `Delete set-${targetSet.index}`,
+      runningText: `Deleting set-${targetSet.index}. This channel may disappear if it belongs to that set.`,
+      cancelledText: `Delete set-${targetSet.index} cancelled.`,
+      timeoutText: `Delete set-${targetSet.index} confirmation timed out.`,
+    });
+    if (!confirmation.confirmed) return true;
+
+    try {
+      const result = await this.sessionService.deleteProductionDiscordSet({
+        guild: message.guild,
+        organizationId: resolved.organizationId,
+        set: targetSet,
+        commandChannelId: message.channel.id,
+      });
+      await confirmation.prompt
+        ?.edit({ content: result, components: [] })
+        .catch(() => undefined);
+    } catch (error) {
+      await confirmation.prompt
+        ?.edit({
+          content: toFriendlyApiError(error),
+          components: [],
+        })
+        .catch(() => undefined);
+    }
+    return true;
+  }
+
+  private async handleProductionCleanChannelMessage(
+    message: Message,
+    resolved: ResolvedProductionDiscordChannelResponse,
+  ) {
+    if (!message.guild) {
+      await message.reply("Use `%clean-channel` inside the Discord server.");
+      return true;
+    }
+    if (!this.canUseProductionCleanChannel(message)) {
+      await message.reply("Only server staff can clean a production channel.");
+      return true;
+    }
+
+    const parsed = this.parseCleanChannelCommand(message);
+    const targetChannel =
+      parsed.channelId && parsed.channelId !== message.channel.id
+        ? await message.guild.channels.fetch(parsed.channelId).catch(() => null)
+        : message.channel;
+    if (
+      !targetChannel ||
+      !targetChannel.isTextBased() ||
+      targetChannel.isDMBased()
+    ) {
+      await message.reply("Choose a server text channel to clean.");
+      return true;
+    }
+
+    const textChannel = targetChannel as GuildTextBasedChannel;
+    const targetResolved =
+      textChannel.id === message.channel.id
+        ? resolved
+        : await this.sessionService.resolveProductionDiscordChannel(
+            message.guild.id,
+            textChannel.id,
+          );
+    if (
+      !targetResolved ||
+      targetResolved.organizationId !== resolved.organizationId
+    ) {
+      await message.reply("Choose one of this production setup's channels.");
+      return true;
+    }
+
+    const targets = await this.collectCleanChannelTargets(
+      textChannel,
+      parsed.limit,
+      new Set(),
+    );
+    const summary = this.productionCleanSummary(
+      targets.length,
+      textChannel.id,
+      parsed,
+      targetResolved,
+    );
+    if (parsed.dryRun) {
+      await message.reply(
+        `${summary}\nDry run only. Add \`confirm\` to delete.`,
+      );
+      return true;
+    }
+    if (targets.length === 0) {
+      await message.reply(`${summary}\nNothing to delete.`);
+      return true;
+    }
+
+    const confirmation = await this.confirmCleanChannel(message, summary);
+    if (!confirmation.confirmed) return true;
+
+    const result = await this.deleteCleanChannelTargets(targets);
+    await confirmation.prompt?.delete().catch(() => undefined);
+    const replyChannel = message.channel as GuildTextBasedChannel;
+    const reply = await replyChannel.send({
+      content: `Cleaned <#${textChannel.id}>: deleted ${result.deleted}/${targets.length} message(s).`,
+      allowedMentions: { parse: [] },
+    });
+    await this.logProductionCleanChannelResult(
+      message,
+      textChannel,
+      targetResolved,
+      parsed,
+      result,
+    );
+    setTimeout(() => {
+      void reply.delete().catch(() => undefined);
+    }, CLEAN_CONFIRMATION_DELETE_DELAY_MS).unref?.();
+    return true;
+  }
+
+  private async handleProductionSlotsMessage(
+    message: Message,
+    resolved: ResolvedProductionDiscordChannelResponse,
+  ) {
+    if (resolved.channelKind !== "slots") {
+      return true;
+    }
+    if (
+      !this.contentLooksLikeProductionSlotList(message.content) &&
+      !this.contentLooksLikeProductionPlainTeamList(message.content)
+    ) {
+      return true;
+    }
+    await this.react(message, REGISTER_PROCESSING_REACTION);
+    try {
+      const result = await this.sessionService.importProductionDiscordSlots({
+        organizationId: resolved.organizationId,
+        guildId: resolved.guildId,
+        setKey: resolved.setKey,
+        sourceChannelId: message.channel.id,
+        sourceMessageId: message.id,
+        content: message.content,
+      });
+      await this.finishRegisterReaction(message, REGISTER_SUCCESS_REACTION);
+      const autoSync = result.autoSyncedEvent;
+      const syncSummary = autoSync
+        ? [
+            "",
+            `Synced event: ${autoSync.sessionName}`,
+            `Event teams updated: ${autoSync.importedTeams}`,
+            `Removed stale teams: ${autoSync.removedTeams}`,
+            `Matches synced: ${autoSync.syncedMatches.length}`,
+          ].join("\n")
+        : result.eventId
+          ? "\nLinked event was not updated because it is not currently open for production sync."
+          : "\nNo event is linked to this production set, so the slot list was saved only.";
+      await message.reply({
+        content: `Imported ${result.importedTeams} production team(s) from ${result.parsedSlotRows} slot row(s) into ${result.setName}.${syncSummary}`,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+      await message.reply({
+        content: toFriendlyApiError(error),
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
+  private parseProductionLogoMessage(
+    message: Message,
+  ): ParsedProductionLogoMessage {
+    const content = message.content.replace(/https?:\/\/\S+/gi, " ");
+    const lines = content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const commandLine =
+      lines[0]?.replace(LOGO_COMMAND_PATTERN, "").trim() ?? "";
+    const commandFields = commandLine.includes("|")
+      ? commandLine
+          .split("|")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      : commandLine
+        ? [commandLine]
+        : [];
+    const fields = [...commandFields, ...lines.slice(1)]
+      .map((line) => line.trim())
+      .filter(Boolean);
+    let teamName = fields[0]?.replace(/^"|"$/g, "").trim() ?? "";
+    let tag = fields[1]?.replace(/^"|"$/g, "").trim() || null;
+
+    const bracket = /^\[([^\]]{1,15})\]\s+(.+)$/.exec(teamName);
+    if (bracket && !tag) {
+      tag = bracket[1].trim();
+      teamName = bracket[2].trim();
+    }
+
+    if (!teamName) {
+      throw new Error(
+        "Use `%logo Team Name | TAG` or `%logo` on one line followed by team name and tag.",
+      );
+    }
+    return { teamName, tag };
+  }
+
+  private async handleProductionLogoMessage(
+    message: Message,
+    resolved: ResolvedProductionDiscordChannelResponse,
+  ) {
+    if (resolved.channelKind !== "logos") {
+      return true;
+    }
+    if (!LOGO_COMMAND_PATTERN.test(message.content.trim())) {
+      return true;
+    }
+    await this.react(message, REGISTER_PROCESSING_REACTION);
+    try {
+      const parsed = this.parseProductionLogoMessage(message);
+      const logoSource = this.findLogoSource(message);
+      const logoUpload = await this.loadLogoUpload(logoSource?.url ?? null);
+      if (!logoUpload) {
+        throw new Error(this.logoUsageMessage());
+      }
+      const upserted = await this.sessionService.upsertProductionDiscordTeam({
+        organizationId: resolved.organizationId,
+        guildId: resolved.guildId,
+        sourceChannelId: message.channel.id,
+        sourceMessageId: message.id,
+        name: parsed.teamName,
+        tag: parsed.tag,
+      });
+      const uploaded = await this.sessionService.uploadProductionTeamLogo(
+        resolved.organizationId,
+        upserted.team.id,
+        logoUpload,
+      );
+      await this.finishRegisterReaction(message, REGISTER_SUCCESS_REACTION);
+      const tagLabel = upserted.team.tag ? ` (${upserted.team.tag})` : "";
+      await message.reply({
+        content: `Logo saved for ${upserted.team.name}${tagLabel}. It will be used in production results and widgets.`,
+        allowedMentions: { parse: [] },
+      });
+      void uploaded;
+    } catch (error) {
+      await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+      await message.reply({
+        content: toFriendlyApiError(error),
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
+  private async handleProductionPlayerPhotoMessage(
+    message: Message,
+    resolved: ResolvedProductionDiscordChannelResponse,
+  ) {
+    if (resolved.channelKind !== "player-photos") {
+      return true;
+    }
+    if (!PLAYER_PHOTO_COMMAND_PATTERN.test(message.content.trim())) {
+      return true;
+    }
+    await this.react(message, REGISTER_PROCESSING_REACTION);
+    try {
+      const parsed = this.parsePlayerPhotoMessage(message, "SCRIM");
+      if (!parsed.teamName || !parsed.playerName) {
+        throw new Error(
+          this.playerPhotoUsageMessage({ registrationMode: "SCRIM" }),
+        );
+      }
+      const photoSource = this.findLogoSource(message, "Player photo");
+      const photoUpload = await this.loadPlayerPhotoUpload(
+        photoSource?.url ?? null,
+      );
+      if (!photoUpload) {
+        throw new Error(
+          this.playerPhotoUsageMessage({ registrationMode: "SCRIM" }),
+        );
+      }
+      const uploaded = await this.sessionService.uploadProductionPlayerPhoto(
+        resolved.organizationId,
+        {
+          uid: parsed.uid,
+          teamName: parsed.teamName,
+          playerName: parsed.playerName,
+        },
+        photoUpload,
+      );
+      await this.finishRegisterReaction(message, REGISTER_SUCCESS_REACTION);
+      const teamLabel = uploaded.team ? ` for ${uploaded.team.name}` : "";
+      await message.reply({
+        content: `Player photo saved for ${uploaded.playerName} (${uploaded.uid})${teamLabel}. It will update current and future widgets by player ID.`,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+      await message.reply({
+        content: toFriendlyApiError(error),
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
+  private async handleProductionDiscordMessage(
+    message: Message,
+    resolved: ResolvedProductionDiscordChannelResponse,
+  ): Promise<boolean> {
+    const content = message.content.trim();
+    const deleteSetIndex = this.parseProductionSetDeleteCommand(content);
+    if (deleteSetIndex) {
+      return this.handleProductionDeleteSetMessage(
+        message,
+        resolved,
+        deleteSetIndex,
+      );
+    }
+    if (CLEAN_CHANNEL_COMMAND_PATTERN.test(content)) {
+      return this.handleProductionCleanChannelMessage(message, resolved);
+    }
+    if (resolved.channelKind === "slots") {
+      return this.handleProductionSlotsMessage(message, resolved);
+    }
+    if (resolved.channelKind === "logos") {
+      return this.handleProductionLogoMessage(message, resolved);
+    }
+    if (resolved.channelKind === "player-photos") {
+      return this.handleProductionPlayerPhotoMessage(message, resolved);
+    }
     return true;
   }
 
@@ -332,6 +1031,91 @@ export class MessageRegistrationService {
     await logger.call(this.sessionService, ...args);
   }
 
+  private proofMessageLink(message: Message) {
+    const directUrl = (message as { url?: string | null }).url?.trim();
+    if (directUrl) {
+      return directUrl;
+    }
+    return message.guild?.id
+      ? `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id}`
+      : null;
+  }
+
+  private proofAttachmentLines(message: Message) {
+    const attachments = Array.from(message.attachments?.values?.() ?? []);
+    const lines = attachments.slice(0, 5).map((attachment, index) => {
+      const name = attachment.name?.trim() || attachment.id || "attachment";
+      const url = attachment.url?.trim();
+      return `${index + 1}. ${name}${url ? ` - ${url}` : ""}`;
+    });
+    if (attachments.length > lines.length) {
+      lines.push(`...and ${attachments.length - lines.length} more`);
+    }
+    return lines;
+  }
+
+  private proofLogDetails(
+    message: Message,
+    extraDetails?: string | string[] | null,
+  ) {
+    const link = this.proofMessageLink(message);
+    const content = (message.content ?? "").trim();
+    const attachments = this.proofAttachmentLines(message);
+    const details = [
+      `Original message ID: ${message.id}`,
+      link ? `Original message link: ${link}` : "",
+      attachments.length > 0
+        ? ["Attachments:", ...attachments].join("\n")
+        : "Attachments: none",
+      `Original content:\n${content || "(no text content)"}`,
+    ];
+    if (Array.isArray(extraDetails)) {
+      details.push(...extraDetails.filter(Boolean));
+    } else if (extraDetails) {
+      details.push(extraDetails);
+    }
+    return details.filter(Boolean);
+  }
+
+  private async logDiscordMessageProof(
+    message: Message,
+    opts: DiscordMessageProofLogOptions,
+  ) {
+    if (!message.guild || !opts.config?.logChannelId) {
+      return;
+    }
+    await this.sendDiscordActionLog(message.guild, opts.config, {
+      action: opts.action,
+      actorDiscordId: message.author.id,
+      actorLabel: message.author.tag ?? message.author.username,
+      sourceChannelId: message.channel.id,
+      sessionId: opts.session?.id ?? opts.config.sessionId,
+      sessionName: opts.session?.name ?? null,
+      team: opts.team,
+      status: opts.status,
+      reason: opts.reason,
+      details: this.proofLogDetails(message, opts.extraDetails),
+      color: opts.color ?? 0xef4444,
+    }).catch((error) => {
+      console.warn(`Discord proof log failed: ${String(error)}`);
+    });
+  }
+
+  private looksLikeRejectResponse(
+    content: string,
+    config?: SessionDiscordConfigResponse | null,
+  ) {
+    const trimmed = content.trim();
+    const rejectMarkers = [
+      REGISTER_REJECT_REACTION,
+      this.registrationRejectReaction(config),
+      configuredDiscordEmoji("reject", "reject", config),
+    ].filter(
+      (value, index, values) => value && values.indexOf(value) === index,
+    );
+    return rejectMarkers.some((marker) => trimmed.startsWith(marker));
+  }
+
   private withOrganization<T>(
     organizationId: string | null | undefined,
     fn: () => Promise<T>,
@@ -345,6 +1129,61 @@ export class MessageRegistrationService {
     return sessionService.withOrganization
       ? sessionService.withOrganization(organizationId, fn)
       : fn();
+  }
+
+  private async userHasCustomRoleRegistrationAccess(
+    requesterDiscordId: string,
+    guild: Message["guild"],
+    config: SessionDiscordConfigResponse,
+    placement: "normal" | "vip",
+  ) {
+    const checker = (
+      this.sessionService as unknown as {
+        userHasCustomRoleRegistrationAccess?: DiscordSessionService["userHasCustomRoleRegistrationAccess"];
+      }
+    ).userHasCustomRoleRegistrationAccess;
+    if (typeof checker !== "function") {
+      return false;
+    }
+    return checker.call(
+      this.sessionService,
+      requesterDiscordId,
+      guild,
+      config,
+      placement,
+    );
+  }
+
+  private async userHasEarlyAccessRegistrationAccess(
+    requesterDiscordId: string,
+    guild: Message["guild"],
+    config: SessionDiscordConfigResponse,
+  ) {
+    const checker = (
+      this.sessionService as unknown as {
+        userHasEarlyAccessRegistrationAccess?: DiscordSessionService["userHasEarlyAccessRegistrationAccess"];
+      }
+    ).userHasEarlyAccessRegistrationAccess;
+    if (typeof checker !== "function") {
+      return false;
+    }
+    return checker.call(this.sessionService, requesterDiscordId, guild, config);
+  }
+
+  private async userHasVipRegistrationAccess(
+    requesterDiscordId: string,
+    guild: Message["guild"],
+    config: SessionDiscordConfigResponse,
+  ) {
+    const checker = (
+      this.sessionService as unknown as {
+        userHasVipRegistrationAccess?: DiscordSessionService["userHasVipRegistrationAccess"];
+      }
+    ).userHasVipRegistrationAccess;
+    if (typeof checker !== "function") {
+      return false;
+    }
+    return checker.call(this.sessionService, requesterDiscordId, guild, config);
   }
 
   private async replyWithAutoDelete(
@@ -393,6 +1232,58 @@ export class MessageRegistrationService {
     return users.length > 0 ? { parse: [], users } : { parse: [] };
   }
 
+  private plainDiscordUserLabel(discordUserId: string | null | undefined) {
+    const cleanDiscordUserId = discordUserId?.trim();
+    return cleanDiscordUserId
+      ? `Discord ID ${cleanDiscordUserId}`
+      : "Discord user";
+  }
+
+  private discordUserBanLabel(
+    discordUserId: string | null | undefined,
+    mentionableUserIds: Set<string>,
+  ) {
+    const cleanDiscordUserId = discordUserId?.trim();
+    if (cleanDiscordUserId && mentionableUserIds.has(cleanDiscordUserId)) {
+      return `<@${cleanDiscordUserId}>`;
+    }
+    return this.plainDiscordUserLabel(discordUserId);
+  }
+
+  private async validatedGuildUserMentionIds(
+    guild: Guild | null | undefined,
+    discordUserIds: readonly (string | null | undefined)[],
+  ) {
+    const cleanDiscordUserIds = Array.from(
+      new Set(
+        discordUserIds
+          .map((discordUserId) => discordUserId?.trim())
+          .filter(
+            (discordUserId): discordUserId is string =>
+              typeof discordUserId === "string" &&
+              /^\d{15,25}$/.test(discordUserId),
+          ),
+      ),
+    ).slice(0, 100);
+    const mentionableUserIds = new Set<string>();
+    if (!guild?.members?.fetch) {
+      return mentionableUserIds;
+    }
+
+    await Promise.all(
+      cleanDiscordUserIds.map(async (discordUserId) => {
+        const member = await guild.members
+          .fetch(discordUserId)
+          .catch(() => null);
+        if (member && member.user?.bot !== true) {
+          mentionableUserIds.add(discordUserId);
+        }
+      }),
+    );
+
+    return mentionableUserIds;
+  }
+
   private async sendChannelMessageWithAutoDelete(
     message: Message,
     content: string,
@@ -438,6 +1329,12 @@ export class MessageRegistrationService {
     return REGISTRATION_STATE_CONFIRMATION_PATTERN.test(content ?? "");
   }
 
+  private isWaitlistPromotionStateConfirmation(
+    content: string | null | undefined,
+  ) {
+    return WAITLIST_PROMOTION_STATE_CONFIRMATION_PATTERN.test(content ?? "");
+  }
+
   private isChannelActivityStateConfirmation(
     content: string | null | undefined,
   ) {
@@ -459,6 +1356,29 @@ export class MessageRegistrationService {
           entry.author.id === botUserId &&
           !entry.pinned &&
           this.isRegistrationStateConfirmation(entry.content),
+      );
+      for (const oldMessage of oldConfirmations?.values() ?? []) {
+        await oldMessage.delete().catch(() => undefined);
+      }
+    }
+    await this.sendChannelMessage(message, content);
+  }
+
+  private async replaceWaitlistPromotionStateConfirmation(
+    message: Message,
+    content: string,
+  ) {
+    const channel = message.channel as GuildTextBasedChannel;
+    const botUserId = message.client.user?.id ?? null;
+    if (botUserId && channel.messages?.fetch) {
+      const messages = await channel.messages
+        .fetch({ limit: 50 })
+        .catch(() => null);
+      const oldConfirmations = messages?.filter(
+        (entry) =>
+          entry.author.id === botUserId &&
+          !entry.pinned &&
+          this.isWaitlistPromotionStateConfirmation(entry.content),
       );
       for (const oldMessage of oldConfirmations?.values() ?? []) {
         await oldMessage.delete().catch(() => undefined);
@@ -587,11 +1507,16 @@ export class MessageRegistrationService {
     return (
       BAN_MISSING_COMMAND_PATTERN.test(content) ||
       BAN_TEAM_COMMAND_PATTERN.test(content) ||
+      BAN_FLOW_COMMAND_PATTERN.test(content) ||
+      IDP_DM_COMMAND_PATTERN.test(content) ||
+      OPEN_WAITLIST_COMMAND_PATTERN.test(content) ||
+      CLOSE_WAITLIST_COMMAND_PATTERN.test(content) ||
       OPEN_REGISTRATION_COMMAND_PATTERN.test(content) ||
       CLOSE_REGISTRATION_COMMAND_PATTERN.test(content) ||
       ADD_MANAGER_COMMAND_PATTERN.test(content) ||
       REMOVE_MANAGER_COMMAND_PATTERN.test(content) ||
       UNBAN_TEAM_COMMAND_PATTERN.test(content) ||
+      UNBAN_MANAGER_COMMAND_PATTERN.test(content) ||
       BAN_LIST_COMMAND_PATTERN.test(content) ||
       RESULT_SUMMARY_COMMAND_PATTERN.test(content) ||
       CONFIRM_SLOT_COMMAND_PATTERN.test(content) ||
@@ -638,6 +1563,14 @@ export class MessageRegistrationService {
     }
 
     const content = message.content.trim();
+    const productionResolved = await this.resolveProductionDiscordContext(
+      message,
+      content,
+    );
+    if (productionResolved) {
+      return this.handleProductionDiscordMessage(message, productionResolved);
+    }
+
     if (STOP_CHANNEL_COMMAND_PATTERN.test(content)) {
       return this.handleChannelActivityStateMessage(message, true);
     }
@@ -660,6 +1593,18 @@ export class MessageRegistrationService {
 
     if (canTriggerBotActivity && (await this.isMessageChannelPaused(message))) {
       return true;
+    }
+
+    if (IDP_DM_COMMAND_PATTERN.test(content)) {
+      return this.handleIdpDmStateCommandMessage(message);
+    }
+
+    if (OPEN_WAITLIST_COMMAND_PATTERN.test(content)) {
+      return this.handleWaitlistPromotionStateMessage(message, "open");
+    }
+
+    if (CLOSE_WAITLIST_COMMAND_PATTERN.test(content)) {
+      return this.handleWaitlistPromotionStateMessage(message, "closed");
     }
 
     if (OPEN_REGISTRATION_COMMAND_PATTERN.test(content)) {
@@ -690,8 +1635,16 @@ export class MessageRegistrationService {
       return this.handleUnbanTeamMessage(message);
     }
 
+    if (UNBAN_MANAGER_COMMAND_PATTERN.test(content)) {
+      return this.handleUnbanManagerMessage(message);
+    }
+
     if (BAN_LIST_COMMAND_PATTERN.test(content)) {
       return this.handleBanListMessage(message);
+    }
+
+    if (BAN_FLOW_COMMAND_PATTERN.test(content)) {
+      return this.handleBanFlowMessage(message);
     }
 
     if (RESULT_SUMMARY_COMMAND_PATTERN.test(content)) {
@@ -704,6 +1657,14 @@ export class MessageRegistrationService {
 
     if (SLOT_STATUS_COMMAND_PATTERN.test(content)) {
       return this.handleSlotStatusCommandMessage(message);
+    }
+
+    if (SYNC_OLD_LOGOS_COMMAND_PATTERN.test(content)) {
+      return this.handleSyncOldLogosMessage(message);
+    }
+
+    if (SYNC_OLD_PLAYER_PHOTOS_COMMAND_PATTERN.test(content)) {
+      return this.handleSyncOldPlayerPhotosMessage(message);
     }
 
     if (LOGO_COMMAND_PATTERN.test(content)) {
@@ -769,7 +1730,382 @@ export class MessageRegistrationService {
       return this.handleFreeSlotStatusQueryMessage(message);
     }
 
+    const idpDmForwarded = await this.handleIdpDmForwardMessage(message);
+    if (idpDmForwarded) {
+      return true;
+    }
+
     return false;
+  }
+
+  private parseIdpDmCommand(content: string): "on" | "off" | null {
+    const match = IDP_DM_COMMAND_PATTERN.exec(content.trim());
+    const value = match?.[1]?.toLowerCase();
+    return value === "on" || value === "off" ? value : null;
+  }
+
+  private async handleIdpDmStateCommandMessage(
+    message: Message,
+  ): Promise<boolean> {
+    if (!message.guild) {
+      await message.reply(
+        "Use `%dm on` or `%dm off` inside the synced IDP channel.",
+      );
+      return true;
+    }
+
+    const desiredState = this.parseIdpDmCommand(message.content);
+    if (!desiredState) {
+      return false;
+    }
+
+    const resolved = await this.resolveIdpDmChannel(message, { refresh: true });
+    if (!resolved) {
+      await this.replyWithAutoDelete(
+        message,
+        "Use `%dm on` or `%dm off` inside the synced IDP channel.",
+        6_000,
+      );
+      return true;
+    }
+
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      await this.replyWithAutoDelete(
+        message,
+        "Only session staff can change IDP DM forwarding.",
+        6_000,
+      );
+      await this.logDiscordMessageProof(message, {
+        action: "IDP DM command rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "User does not have session staff access.",
+      });
+      return true;
+    }
+
+    const enabled = desiredState === "on";
+    const updatedConfig = await this.sessionService.setIdpDmForwardingEnabled(
+      resolved.session.id,
+      enabled,
+    );
+    this.rememberIdpDmChannel(message.guild.id, message.channel.id, {
+      ...resolved,
+      config: updatedConfig,
+    });
+
+    await this.sendChannelMessage(
+      message,
+      `${enabled ? this.registrationReaction("registrationSuccessReaction", "check", updatedConfig) : this.registrationRejectReaction(updatedConfig)} IDP DM forwarding is now ${enabled ? "on" : "off"} for ${resolved.session.name}.`,
+    );
+    await this.sendDiscordActionLog(message.guild, updatedConfig, {
+      action: "IDP DM forwarding changed",
+      actorDiscordId: message.author.id,
+      actorLabel: message.author.tag ?? message.author.username,
+      sourceChannelId: message.channel.id,
+      sessionId: resolved.session.id,
+      sessionName: resolved.session.name,
+      status: enabled ? "enabled" : "disabled",
+      details: `Command: %dm ${desiredState}`,
+      color: enabled ? 0x22c55e : 0xf97316,
+    }).catch((error) => {
+      console.warn(`IDP DM state log failed: ${String(error)}`);
+    });
+    return true;
+  }
+
+  private messageHasIdpForwardableContent(message: Message) {
+    return (
+      Boolean(message.content?.trim()) ||
+      (message.attachments?.size ?? 0) > 0 ||
+      (message.embeds?.length ?? 0) > 0
+    );
+  }
+
+  private idpDmReplyButtonId(
+    sessionId: string,
+    sourceMessageId: string,
+    managerDiscordUserId: string,
+  ) {
+    return `${IDP_DM_REPLY_BUTTON_PREFIX}${sessionId}:${sourceMessageId}:${managerDiscordUserId}`;
+  }
+
+  private idpDmReplyModalId(target: IdpDmReplyTarget) {
+    return `${IDP_DM_REPLY_MODAL_PREFIX}${target.sessionId}:${target.sourceMessageId}:${target.managerDiscordUserId}`;
+  }
+
+  private parseIdpDmReplyTarget(
+    customId: string,
+    prefix: string,
+  ): IdpDmReplyTarget | null {
+    if (!customId.startsWith(prefix)) {
+      return null;
+    }
+    const [sessionId, sourceMessageId, managerDiscordUserId] = customId
+      .slice(prefix.length)
+      .split(":");
+    if (
+      !SESSION_ID_PATTERN.test(sessionId ?? "") ||
+      !DISCORD_MESSAGE_ID_PATTERN.test(sourceMessageId ?? "") ||
+      !DISCORD_ID_PATTERN.test(managerDiscordUserId ?? "")
+    ) {
+      return null;
+    }
+    return { sessionId, sourceMessageId, managerDiscordUserId };
+  }
+
+  private parseIdpDmReplyButtonId(customId: string) {
+    return this.parseIdpDmReplyTarget(customId, IDP_DM_REPLY_BUTTON_PREFIX);
+  }
+
+  private parseIdpDmReplyModalId(customId: string) {
+    return this.parseIdpDmReplyTarget(customId, IDP_DM_REPLY_MODAL_PREFIX);
+  }
+
+  private idpDmForwardBody(message: Message, sessionName: string) {
+    const lines = [`**IDP update: ${sessionName}**`];
+    const content = message.content?.trim();
+    if (content) {
+      lines.push("", content);
+    }
+
+    const attachments = Array.from(message.attachments?.values?.() ?? []);
+    if (attachments.length > 0) {
+      lines.push("", "**Attachments**");
+      for (const attachment of attachments.slice(0, 5)) {
+        const name = attachment.name?.trim() || attachment.id || "attachment";
+        const url = attachment.url?.trim();
+        lines.push(url ? `- ${name}: ${url}` : `- ${name}`);
+      }
+      if (attachments.length > 5) {
+        lines.push(`- ...and ${attachments.length - 5} more`);
+      }
+    }
+
+    const body = lines.join("\n").trim();
+    if (body.length <= IDP_DM_FORWARD_MAX_CONTENT_LENGTH) {
+      return body;
+    }
+    return `${body.slice(0, IDP_DM_FORWARD_MAX_CONTENT_LENGTH - 38).trimEnd()}\n\nMessage truncated. Check the IDP channel.`;
+  }
+
+  private idpDmReplyComponents(
+    sessionId: string,
+    sourceMessageId: string,
+    managerDiscordUserId: string,
+  ) {
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            this.idpDmReplyButtonId(
+              sessionId,
+              sourceMessageId,
+              managerDiscordUserId,
+            ),
+          )
+          .setLabel("Reply")
+          .setStyle(ButtonStyle.Primary),
+      ),
+    ];
+  }
+
+  private async sleep(ms: number) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async handleIdpDmForwardMessage(message: Message): Promise<boolean> {
+    const content = message.content.trim();
+    if (
+      !message.guild ||
+      !this.messageHasIdpForwardableContent(message) ||
+      IDP_DM_COMMAND_PATTERN.test(content) ||
+      /^[%!/]/.test(content)
+    ) {
+      return false;
+    }
+
+    const resolved = await this.resolveIdpDmChannel(message);
+    if (!resolved || !this.idpDmEnabled(resolved.config)) {
+      return false;
+    }
+
+    if (await this.isMessageChannelPaused(message)) {
+      return false;
+    }
+
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      return false;
+    }
+
+    const recipients =
+      await this.sessionService.listRegisteredSlotManagerDiscordIds(
+        resolved.session.id,
+      );
+    const body = this.idpDmForwardBody(message, resolved.session.name);
+    let sent = 0;
+    const failed: string[] = [];
+
+    for (const managerDiscordUserId of recipients) {
+      const user = await message.client.users
+        .fetch(managerDiscordUserId)
+        .catch(() => null);
+      if (!user) {
+        failed.push(managerDiscordUserId);
+        continue;
+      }
+      const delivered = await user
+        .send({
+          content: body,
+          components: this.idpDmReplyComponents(
+            resolved.session.id,
+            message.id,
+            managerDiscordUserId,
+          ),
+          allowedMentions: { parse: [] },
+        })
+        .then(() => true)
+        .catch(() => false);
+      if (delivered) {
+        sent += 1;
+      } else {
+        failed.push(managerDiscordUserId);
+      }
+      if (IDP_DM_FORWARD_SEND_DELAY_MS > 0) {
+        await this.sleep(IDP_DM_FORWARD_SEND_DELAY_MS);
+      }
+    }
+
+    await this.sendDiscordActionLog(message.guild, resolved.config, {
+      action: "IDP message forwarded by DM",
+      actorDiscordId: message.author.id,
+      actorLabel: message.author.tag ?? message.author.username,
+      sourceChannelId: message.channel.id,
+      sessionId: resolved.session.id,
+      sessionName: resolved.session.name,
+      status: `${sent}/${recipients.length} delivered`,
+      details: [
+        `Source message ID: ${message.id}`,
+        failed.length ? `Failed manager IDs: ${failed.join(", ")}` : "",
+      ],
+      color: failed.length ? 0xf59e0b : 0x22c55e,
+    }).catch((error) => {
+      console.warn(`IDP DM forwarding log failed: ${String(error)}`);
+    });
+    return true;
+  }
+
+  private async handleIdpDmReplyButton(
+    interaction: ButtonInteraction,
+    target: IdpDmReplyTarget,
+  ) {
+    if (interaction.user.id !== target.managerDiscordUserId) {
+      await interaction.reply({
+        content:
+          "This reply button is only for the manager who received this DM.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(this.idpDmReplyModalId(target))
+      .setTitle("Reply to manager chat")
+      .addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(
+          new TextInputBuilder()
+            .setCustomId(IDP_DM_REPLY_INPUT_ID)
+            .setLabel("Reply")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setMaxLength(1000),
+        ),
+      );
+    await interaction.showModal(modal);
+    return true;
+  }
+
+  private async handleIdpDmReplyModal(
+    interaction: ModalSubmitInteraction,
+    target: IdpDmReplyTarget,
+  ) {
+    if (interaction.user.id !== target.managerDiscordUserId) {
+      await interaction.reply({
+        content:
+          "This reply form is only for the manager who received this DM.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    const replyText = interaction.fields
+      .getTextInputValue(IDP_DM_REPLY_INPUT_ID)
+      .trim();
+    if (!replyText) {
+      await interaction.reply({
+        content: "Write a reply before sending.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    const context = await this.sessionService.getSessionDiscordContext(
+      target.sessionId,
+    );
+    const guildId = context.config.guildId?.trim();
+    const managerChannelId = context.config.managerChannelId?.trim();
+    if (!guildId || !managerChannelId) {
+      await interaction.reply({
+        content: "Manager channel is not configured for this session.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    const guild = await interaction.client.guilds
+      .fetch(guildId)
+      .catch(() => null);
+    const channel = managerChannelId
+      ? await guild?.channels.fetch(managerChannelId).catch(() => null)
+      : null;
+    if (!guild || !channel || !channel.isTextBased()) {
+      await interaction.reply({
+        content: "Manager channel is not available right now.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    const member = await guild.members
+      .fetch(target.managerDiscordUserId)
+      .catch(() => null);
+    const managerName =
+      member?.displayName ||
+      interaction.user.globalName ||
+      interaction.user.username ||
+      target.managerDiscordUserId;
+    const content = limitDiscordContent(
+      [
+        "**IDP reply**",
+        `Manager: <@${target.managerDiscordUserId}> (${managerName})`,
+        "",
+        replyText,
+      ].join("\n"),
+    );
+
+    await (channel as GuildTextBasedChannel).send({
+      content,
+      allowedMentions: {
+        parse: [],
+        users: [target.managerDiscordUserId],
+      },
+    });
+    await interaction.reply({
+      content: "Reply sent to the manager channel.",
+      ephemeral: true,
+    });
+    return true;
   }
 
   private async handleRegistrationStateMessage(
@@ -800,6 +2136,13 @@ export class MessageRegistrationService {
     await message.delete().catch(() => undefined);
 
     if (!this.hasStaffAccess(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected and deleted",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can open or close registration.",
+      });
       await this.sendChannelMessageWithAutoDelete(
         message,
         "Only Arenzyra staff can open or close registration.",
@@ -824,6 +2167,68 @@ export class MessageRegistrationService {
         ),
     );
     await this.replaceRegistrationStateConfirmation(message, result);
+    return true;
+  }
+
+  private async handleWaitlistPromotionStateMessage(
+    message: Message,
+    state: "open" | "closed",
+  ): Promise<boolean> {
+    if (!message.guild) {
+      await message.reply(
+        "Use this command inside the synced waitlist channel.",
+      );
+      return true;
+    }
+
+    const resolved = await this.sessionService.findScrimForWaitlistChannel(
+      message.guild.id,
+      message.channel.id,
+      this.channelTopic(message.channel),
+    );
+    if (!resolved) {
+      await this.replyWithAutoDelete(
+        message,
+        "This command only works inside a synced waitlist channel.",
+        REGISTRATION_CHANNEL_WARNING_DELETE_DELAY_MS,
+      );
+      return true;
+    }
+
+    await message.delete().catch(() => undefined);
+
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected and deleted",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can open or close waitlist promotion.",
+      });
+      await this.sendChannelMessageWithAutoDelete(
+        message,
+        "Only Arenzyra staff can open or close waitlist promotion.",
+        REGISTRATION_CHANNEL_WARNING_DELETE_DELAY_MS,
+      );
+      return true;
+    }
+
+    const result = await this.withOrganization(
+      resolved.config.organizationId,
+      () =>
+        this.sessionService.setWaitlistPromotionChannelState(
+          message.guild!,
+          resolved.session.id,
+          state,
+          {
+            actorDiscordId: message.author.id,
+            actorLabel: message.author.tag,
+            sourceChannelId: message.channel.id,
+            sessionName: resolved.session.name,
+          },
+        ),
+    );
+    await this.replaceWaitlistPromotionStateConfirmation(message, result);
     return true;
   }
 
@@ -854,6 +2259,13 @@ export class MessageRegistrationService {
     await message.delete().catch(() => undefined);
 
     if (!this.hasStaffAccess(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected and deleted",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can change free-slot status replies.",
+      });
       await this.sendChannelMessageWithAutoDelete(
         message,
         "Only Arenzyra staff can change free-slot status replies.",
@@ -1021,15 +2433,40 @@ export class MessageRegistrationService {
                 },
               ),
       );
+      if (this.looksLikeRejectResponse(result, resolved.config)) {
+        await this.logDiscordMessageProof(message, {
+          action: "Command rejected and deleted",
+          config: resolved.config,
+          session: resolved.session,
+          status:
+            action === "add"
+              ? "manager add rejected"
+              : "manager remove rejected",
+          reason: result,
+        });
+      }
       await this.sendChannelMessage(message, result);
     } catch (error) {
       const details = error instanceof Error ? error.message : String(error);
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected and deleted",
+        config: resolved.config,
+        session: resolved.session,
+        status:
+          action === "add" ? "manager add rejected" : "manager remove rejected",
+        reason: details,
+      });
       await this.sendChannelMessageWithAutoDelete(message, details, 8_000);
     }
     return true;
   }
 
   async handleButton(interaction: ButtonInteraction): Promise<boolean> {
+    const idpDmReply = this.parseIdpDmReplyButtonId(interaction.customId);
+    if (idpDmReply) {
+      return this.handleIdpDmReplyButton(interaction, idpDmReply);
+    }
+
     if (interaction.customId.startsWith("destructive:")) {
       return this.handleDestructiveActionButton(interaction);
     }
@@ -1084,8 +2521,18 @@ export class MessageRegistrationService {
 
     if (parsed.action === "preview") {
       await interaction.reply({
-        content: this.formatAutoResultDetails(pending),
+        content: this.formatAutoResultDetails(pending, 0),
         ephemeral: true,
+        components: this.autoResultPreviewComponents(pending, 0),
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (parsed.action === "preview-page") {
+      await interaction.update({
+        content: this.formatAutoResultDetails(pending, parsed.page),
+        components: this.autoResultPreviewComponents(pending, parsed.page),
         allowedMentions: { parse: [] },
       });
       return true;
@@ -1185,7 +2632,7 @@ export class MessageRegistrationService {
           const overallResultChannelId = this.overallResultPostChannelId(
             pending.config,
           );
-          const postedManager = await this.postResultToConfiguredChannel(
+          const postedManagerResult = await this.postResultToConfiguredChannel(
             interaction,
             matchResultChannelId,
             appliedResult,
@@ -1195,6 +2642,7 @@ export class MessageRegistrationService {
               widgetGroup: "match",
             },
           );
+          const postedManager = postedManagerResult.posted;
 
           let postedResults = false;
           if (parsed.action === "final") {
@@ -1202,21 +2650,41 @@ export class MessageRegistrationService {
               pending.matchId,
               pending.config,
             );
-            postedResults = await this.postResultToConfiguredChannel(
-              interaction,
-              overallResultChannelId,
-              finalResult,
-              {
-                matchId: pending.matchId,
-                replacePreviousWidgets: true,
-                widgetGroup: "final",
-              },
-            );
+            const postedResultsResult =
+              await this.postResultToConfiguredChannel(
+                interaction,
+                overallResultChannelId,
+                finalResult,
+                {
+                  matchId: pending.matchId,
+                  replacePreviousWidgets: true,
+                  widgetGroup: "final",
+                },
+              );
+            postedResults = postedResultsResult.posted;
+            if (
+              postedResultsResult.channelId &&
+              postedResultsResult.messageId
+            ) {
+              await this.sessionService
+                .rememberFinalResultPost(
+                  pending.sessionId,
+                  postedResultsResult.channelId,
+                  postedResultsResult.messageId,
+                )
+                .catch((error) => {
+                  console.warn(
+                    `Final result post memory failed session=${pending.sessionId}: ${String(
+                      error,
+                    )}`,
+                  );
+                });
+            }
           }
 
           let finalBanReview: { status: string } | null = null;
           if (parsed.action === "final" && postedResults) {
-            finalBanReview = await this.createFinalNoShowBanReview(
+            finalBanReview = await this.applyFinalNoShowAutoBansOrCreateReview(
               interaction,
               pending,
             );
@@ -1263,6 +2731,18 @@ export class MessageRegistrationService {
       pending.completed = true;
       pending.processing = false;
       this.pendingAutoResults.delete(parsed.sourceMessageId);
+      const resultControlPanelStatus = await this.controlPanelService
+        ?.postOrUpdateResultControlPanel(interaction.guild, pending.sessionId, {
+          organizationId: pending.config.organizationId,
+        })
+        .catch((error) => {
+          console.warn(
+            `Result control panel update failed session=${pending.sessionId}: ${String(
+              error,
+            )}`,
+          );
+          return null;
+        });
       const completionComponents: Array<ActionRowBuilder<ButtonBuilder>> = [];
       const statusLines = [
         result.content,
@@ -1271,6 +2751,15 @@ export class MessageRegistrationService {
           ? `Match widgets posted to <#${matchResultChannelId}>.`
           : "Match widgets could not be posted to the configured match result channel.",
       ];
+      if (resultControlPanelStatus?.channelId) {
+        statusLines.push(
+          resultControlPanelStatus.updated
+            ? `Result control panel updated in <#${resultControlPanelStatus.channelId}>.`
+            : resultControlPanelStatus.posted
+              ? `Result control panel posted in <#${resultControlPanelStatus.channelId}>.`
+              : `Result control panel target checked: <#${resultControlPanelStatus.channelId}>.`,
+        );
+      }
 
       if (parsed.action === "final") {
         statusLines.push(
@@ -1396,17 +2885,21 @@ export class MessageRegistrationService {
       replacePreviousWidgets?: boolean;
       widgetGroup?: "match" | "final";
     } = {},
-  ): Promise<boolean> {
+  ): Promise<{
+    posted: boolean;
+    channelId: string | null;
+    messageId: string | null;
+  }> {
     const targetId = this.configuredChannelId(channelId);
     if (!targetId || !interaction.guild) {
-      return false;
+      return { posted: false, channelId: targetId, messageId: null };
     }
 
     const channel = await interaction.guild.channels
       .fetch(targetId)
       .catch(() => null);
     if (!channel || !("send" in channel)) {
-      return false;
+      return { posted: false, channelId: targetId, messageId: null };
     }
 
     const sent = await (channel as GuildTextBasedChannel).send({
@@ -1426,7 +2919,11 @@ export class MessageRegistrationService {
         opts.widgetGroup,
       );
     }
-    return true;
+    return {
+      posted: true,
+      channelId: targetId,
+      messageId: (sent as { id?: string | null }).id ?? null,
+    };
   }
 
   private resultWidgetAttachmentName(attachment: unknown): string | null {
@@ -1456,7 +2953,9 @@ export class MessageRegistrationService {
         return /^(match-result|top-mvp|top-fraggers)\.png$/i.test(name);
       }
       if (widgetGroup === "final") {
-        return /^overall-top-(mvp|fraggers)\.png$/i.test(name);
+        return /^(overall-ranking|overall-top-(mvp|fraggers)|match-schedule)\.png$/i.test(
+          name,
+        );
       }
       return true;
     });
@@ -1578,7 +3077,7 @@ export class MessageRegistrationService {
     if (!customId.startsWith(AUTO_RESULT_BUTTON_PREFIX)) {
       return null;
     }
-    const [, , action, sourceMessageId] = customId.split(":");
+    const [, , action, sourceMessageId, rawPage] = customId.split(":");
     if (
       (action !== "apply" &&
         action !== "apply-noshow" &&
@@ -1587,14 +3086,23 @@ export class MessageRegistrationService {
         action !== "cancel" &&
         action !== "final" &&
         action !== "preview" &&
+        action !== "preview-page" &&
         action !== "refresh") ||
       !/^\d{10,25}$/.test(sourceMessageId ?? "")
+    ) {
+      return null;
+    }
+    const page = rawPage === undefined ? 0 : Number(rawPage);
+    if (
+      action === "preview-page" &&
+      (!Number.isInteger(page) || page < 0 || page > 99)
     ) {
       return null;
     }
     return {
       action,
       sourceMessageId,
+      page: action === "preview-page" ? page : 0,
     };
   }
 
@@ -1614,9 +3122,10 @@ export class MessageRegistrationService {
     return { action, token };
   }
 
-  private parseFinalNoShowBanReviewButtonId(
-    customId: string,
-  ): { action: "final-ban-edit" | "final-ban-apply" | "final-ban-cancel"; token: string } | null {
+  private parseFinalNoShowBanReviewButtonId(customId: string): {
+    action: "final-ban-edit" | "final-ban-apply" | "final-ban-cancel";
+    token: string;
+  } | null {
     if (!customId.startsWith(AUTO_RESULT_BUTTON_PREFIX)) {
       return null;
     }
@@ -1655,11 +3164,7 @@ export class MessageRegistrationService {
       return { action: "add" as const, sourceMessageId };
     }
     const rowIndex = Number(rawIndex);
-    if (
-      action !== "modal" ||
-      !Number.isInteger(rowIndex) ||
-      rowIndex < 0
-    ) {
+    if (action !== "modal" || !Number.isInteger(rowIndex) || rowIndex < 0) {
       return null;
     }
     return { action: "edit" as const, sourceMessageId, rowIndex };
@@ -1682,6 +3187,13 @@ export class MessageRegistrationService {
   async handleStringSelectMenu(
     interaction: StringSelectMenuInteraction,
   ): Promise<boolean> {
+    const manualBanDuration = this.parseManualBanDurationSelectId(
+      interaction.customId,
+    );
+    if (manualBanDuration) {
+      return this.handleManualBanDurationSelect(interaction, manualBanDuration);
+    }
+
     const parsed = this.parseAutoResultSelectId(interaction.customId);
     if (!parsed) {
       return false;
@@ -1724,6 +3236,23 @@ export class MessageRegistrationService {
   async handleModalSubmit(
     interaction: ModalSubmitInteraction,
   ): Promise<boolean> {
+    const idpDmReply = this.parseIdpDmReplyModalId(interaction.customId);
+    if (idpDmReply) {
+      return this.handleIdpDmReplyModal(interaction, idpDmReply);
+    }
+
+    const manualBanReason = this.parseManualBanReasonModalId(
+      interaction.customId,
+    );
+    if (manualBanReason) {
+      return this.handleManualBanReasonModal(interaction, manualBanReason);
+    }
+
+    const manualBanDays = this.parseManualBanDaysModalId(interaction.customId);
+    if (manualBanDays) {
+      return this.handleManualBanDaysModal(interaction, manualBanDays);
+    }
+
     const finalBanReview = this.parseFinalNoShowBanReviewModalId(
       interaction.customId,
     );
@@ -1905,6 +3434,14 @@ export class MessageRegistrationService {
         return "multiple teams matched this row";
       case "TEAM_EVIDENCE_NOT_MATCHED":
         return "team evidence did not match slots";
+      case "OCR_POSITION_UNREADABLE":
+        return "OCR could not read placement";
+      case "OCR_KILLS_UNREADABLE":
+        return "OCR could not read kills";
+      case "OCR_ROW_NEEDS_REVIEW":
+        return "OCR row needs review";
+      case "OFFICIAL_SLOT_MISSING_FROM_OCR":
+        return "official slot was not detected by OCR";
       case "MATCH_SLOT_NOT_FOUND":
         return "match slot not found";
       case "MATCH_SLOT_HAS_NO_TEAM":
@@ -1917,12 +3454,183 @@ export class MessageRegistrationService {
   private toReviewedRows(
     preview: AutomaticResultPreviewResponse,
   ): ReviewedResultRow[] {
-    return (preview.preview?.preview ?? []).map((entry) => ({
-      ...entry,
-      include: entry.status === "OK",
-      ocrTag: entry.tag,
-      ocrPlayerNames: entry.playerNames ?? [],
-    }));
+    const seenSlots = new Map<string, ReviewedResultRow>();
+    const seenTeams = new Map<string, ReviewedResultRow>();
+    const rows: ReviewedResultRow[] = [];
+    const representedSlotIds = new Set<string>();
+    const representedTeamIds = new Set<string>();
+    const representedSlotNumbers = new Set<number>();
+
+    for (const entry of preview.preview?.preview ?? []) {
+      let include = entry.status === "OK";
+      const duplicateReasons: string[] = [];
+
+      if (include && entry.slotId) {
+        const owner = seenSlots.get(entry.slotId);
+        if (owner) {
+          duplicateReasons.push(
+            `duplicate official slot ${owner.slotNumber ?? entry.slotNumber ?? "unknown"}`,
+          );
+        }
+      }
+
+      if (include && entry.teamId) {
+        const owner = seenTeams.get(entry.teamId);
+        if (owner) {
+          duplicateReasons.push(
+            `duplicate team ${owner.tag || owner.teamName || entry.tag}`,
+          );
+        }
+      }
+
+      if (duplicateReasons.length > 0) {
+        include = false;
+      }
+
+      const row: ReviewedResultRow = {
+        ...entry,
+        include,
+        ...(duplicateReasons.length
+          ? {
+              autoSkipped: true,
+              autoSkipReason: duplicateReasons.join("; "),
+            }
+          : {}),
+        ocrTag: entry.ocrTag ?? entry.tag,
+        ocrPlayerNames: entry.playerNames ?? [],
+      };
+
+      if (row.slotId) {
+        representedSlotIds.add(row.slotId);
+      }
+      if (row.teamId) {
+        representedTeamIds.add(row.teamId);
+      }
+      if ((row.slotId || row.teamId) && Number.isInteger(row.slotNumber)) {
+        representedSlotNumbers.add(row.slotNumber as number);
+      }
+
+      if (row.include) {
+        if (row.slotId) {
+          seenSlots.set(row.slotId, row);
+        }
+        if (row.teamId) {
+          seenTeams.set(row.teamId, row);
+        }
+      }
+
+      rows.push(row);
+    }
+
+    rows.push(
+      ...this.missingOfficialSlotPlaceholders(preview, {
+        representedSlotIds,
+        representedTeamIds,
+        representedSlotNumbers,
+        startingPosition: this.nextPlaceholderPosition(rows),
+      }),
+    );
+    this.sortReviewedRows(rows);
+
+    return rows;
+  }
+
+  private reconcileOfficialPlaceholderRows(
+    pending: Pick<AutoResultPending, "rows">,
+  ) {
+    const appliedSlotIds = new Set<string>();
+    const appliedTeamIds = new Set<string>();
+    const appliedSlotNumbers = new Set<number>();
+
+    for (const row of pending.rows) {
+      if (!row.include) {
+        continue;
+      }
+      if (row.officialPlaceholder) {
+        row.officialPlaceholder = false;
+      }
+      if (row.slotId) {
+        appliedSlotIds.add(row.slotId);
+      }
+      if (row.teamId) {
+        appliedTeamIds.add(row.teamId);
+      }
+      if (Number.isInteger(row.slotNumber)) {
+        appliedSlotNumbers.add(row.slotNumber as number);
+      }
+    }
+
+    for (let index = pending.rows.length - 1; index >= 0; index -= 1) {
+      const row = pending.rows[index];
+      if (!row.officialPlaceholder || row.include) {
+        continue;
+      }
+      const represented =
+        (row.slotId && appliedSlotIds.has(row.slotId)) ||
+        (row.teamId && appliedTeamIds.has(row.teamId)) ||
+        (Number.isInteger(row.slotNumber) &&
+          appliedSlotNumbers.has(row.slotNumber as number));
+      if (represented) {
+        pending.rows.splice(index, 1);
+      }
+    }
+  }
+
+  private nextPlaceholderPosition(rows: ReviewedResultRow[]) {
+    const positions = rows
+      .map((row) => row.position)
+      .filter((position) => Number.isInteger(position) && position > 0);
+    return positions.length ? Math.max(...positions) + 1 : 1;
+  }
+
+  private missingOfficialSlotPlaceholders(
+    preview: AutomaticResultPreviewResponse,
+    represented: {
+      representedSlotIds: Set<string>;
+      representedTeamIds: Set<string>;
+      representedSlotNumbers: Set<number>;
+      startingPosition: number;
+    },
+  ): ReviewedResultRow[] {
+    let position = represented.startingPosition;
+    return (preview.slots ?? [])
+      .filter((slot) => {
+        if (!slot.teamId) {
+          return false;
+        }
+        if (represented.representedSlotIds.has(slot.id)) {
+          return false;
+        }
+        if (represented.representedTeamIds.has(slot.teamId)) {
+          return false;
+        }
+        return !represented.representedSlotNumbers.has(slot.slotNumber);
+      })
+      .sort((left, right) => left.slotNumber - right.slotNumber)
+      .map((slot) => {
+        const tag =
+          slot.team?.tag?.trim() ||
+          slot.team?.name?.trim() ||
+          `S${slot.slotNumber}`;
+        const row: ReviewedResultRow = {
+          position: position++,
+          tag,
+          kills: 0,
+          players: [],
+          playerNames: [],
+          teamName: slot.team?.name?.trim() || null,
+          teamId: slot.teamId,
+          slotId: slot.id,
+          slotNumber: slot.slotNumber,
+          status: "UNRESOLVED",
+          reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
+          include: false,
+          officialPlaceholder: true,
+          ocrPlayerNames: [],
+          confidence: 0,
+        };
+        return row;
+      });
   }
 
   private truncateOptionText(value: string, maxLength: number) {
@@ -1933,24 +3641,51 @@ export class MessageRegistrationService {
 
   private reviewedRowLabel(row: ReviewedResultRow, index: number) {
     const slot = row.slotNumber ? `S${row.slotNumber}` : "no slot";
-    const status = row.include ? "apply" : "skip";
+    const status = row.include
+      ? "apply"
+      : row.autoSkipped
+        ? "auto-skip"
+        : row.officialPlaceholder && !row.edited
+          ? "missing"
+          : "skip";
+    const position =
+      row.officialPlaceholder && !row.edited ? "P?" : `P${row.position}`;
     const edited = row.edited ? " edited" : "";
     return this.truncateOptionText(
-      `${index + 1}. P${row.position} ${row.tag} ${slot} ${row.kills}k ${status}${edited}`,
+      `${index + 1}. ${position} ${row.tag} ${slot} ${row.kills}k ${status}${edited}`,
       100,
     );
   }
 
   private reviewedRowLine(row: ReviewedResultRow, index: number) {
-    const mark = row.include ? "[apply]" : "[skip]";
+    const mark = row.include
+      ? "[apply]"
+      : row.autoSkipped
+        ? "[auto-skip]"
+        : "[skip]";
     const slot = row.slotNumber ? `slot ${row.slotNumber}` : "no slot";
     const players = this.playerKillsSummary(row.players);
     const reason =
-      row.reason && row.status !== "OK"
-        ? ` (${this.reasonLabel(row.reason)})`
+      row.autoSkipped && row.autoSkipReason
+        ? ` (${row.autoSkipReason})`
+        : row.reason && row.status !== "OK"
+          ? ` (${this.reasonLabel(row.reason)})`
+          : "";
+    const position =
+      row.officialPlaceholder && !row.edited ? "P?" : `P${row.position}`;
+    const ocrTag =
+      row.ocrTag &&
+      row.ocrTag.trim() &&
+      row.ocrTag.trim().toLowerCase() !== row.tag.trim().toLowerCase()
+        ? ` | OCR ${row.ocrTag.trim()}`
+        : "";
+    const evidence = row.matchEvidence ? ` | ${row.matchEvidence}` : "";
+    const confidence =
+      typeof row.confidence === "number" && Number.isFinite(row.confidence)
+        ? ` | conf ${Math.round(Math.max(0, Math.min(1, row.confidence)) * 100)}%`
         : "";
     const edited = row.edited ? " edited" : "";
-    return `${mark} ${index + 1}) P${row.position} ${row.tag} ${slot} - ${row.kills} kills${players}${edited}${reason}`;
+    return `${mark} ${index + 1}) ${position} ${row.tag} ${slot} - ${row.kills} kills${players}${ocrTag}${evidence}${confidence}${edited}${reason}`;
   }
 
   private reviewRowDisplay(row: ReviewedResultRow) {
@@ -1961,7 +3696,25 @@ export class MessageRegistrationService {
     return `${tag} ${slot}`;
   }
 
+  private skippedReviewIssue(row: ReviewedResultRow, label: string) {
+    const hasMappedSlot = Boolean(row.teamId && row.slotId);
+    if (row.officialPlaceholder && !row.edited) {
+      return `${label} is missing from OCR for ${this.reviewRowDisplay(row)}. Edit placement/kills or confirm skip.`;
+    }
+    if (hasMappedSlot && row.reason === "OCR_KILLS_UNREADABLE") {
+      return `${label} has unreadable kills for ${this.reviewRowDisplay(row)}. Edit kills or confirm skip.`;
+    }
+    if (hasMappedSlot && row.reason === "OCR_POSITION_UNREADABLE") {
+      return `${label} has unreadable placement for ${this.reviewRowDisplay(row)}. Edit placement or confirm skip.`;
+    }
+    if (row.status === "AMBIGUOUS") {
+      return `${label} matched multiple teams. Edit it to choose a slot or confirm skip.`;
+    }
+    return `${label} is skipped. Edit it to map a slot or confirm skip.`;
+  }
+
   private reviewIssues(pending: AutoResultPending) {
+    this.reconcileOfficialPlaceholderRows(pending);
     const issues: string[] = [];
     const included = pending.rows.filter((row) => row.include);
     if (!included.length) {
@@ -1976,10 +3729,11 @@ export class MessageRegistrationService {
     for (const [index, row] of pending.rows.entries()) {
       const label = `row ${index + 1}`;
       if (!row.include) {
-        if (!row.edited) {
-          issues.push(
-            `${label} is skipped. Edit it to map a slot or confirm skip.`,
-          );
+        if (row.officialPlaceholder) {
+          continue;
+        }
+        if (!row.edited && !row.autoSkipped) {
+          issues.push(this.skippedReviewIssue(row, label));
         }
         continue;
       }
@@ -2096,15 +3850,124 @@ export class MessageRegistrationService {
     });
   }
 
-  private noShowCandidateSlots(pending: AutoResultPending) {
+  private missingOfficialSlots(
+    pending: Pick<AutoResultPending, "rows" | "slots">,
+  ) {
     const appliedSlotNumbers = new Set(
       pending.rows
         .filter((row) => row.include && Number.isInteger(row.slotNumber))
         .map((row) => row.slotNumber as number),
     );
-    return pending.slots.filter(
-      (slot) => slot.teamId && !appliedSlotNumbers.has(slot.slotNumber),
+    return pending.slots
+      .filter((slot) => slot.teamId && !appliedSlotNumbers.has(slot.slotNumber))
+      .sort((left, right) => left.slotNumber - right.slotNumber);
+  }
+
+  private officialSlotLabel(slot: MatchSlotResponse) {
+    const tag = slot.team?.tag?.trim() ?? "";
+    const name = slot.team?.name?.trim() ?? "";
+    const teamLabel =
+      tag && name && tag.toLowerCase() !== name.toLowerCase()
+        ? `${tag} - ${name}`
+        : tag || name || "unknown team";
+    return `Slot ${slot.slotNumber} ${teamLabel}`;
+  }
+
+  private officialSlotSummary(slots: MatchSlotResponse[], limit = 8) {
+    const visible = slots
+      .slice(0, limit)
+      .map((slot) => this.officialSlotLabel(slot))
+      .join(", ");
+    const remaining = slots.length - limit;
+    return remaining > 0 ? `${visible}, +${remaining} more` : visible;
+  }
+
+  private officialSlotLines(slots: MatchSlotResponse[], limit = 12) {
+    const lines = slots
+      .slice(0, limit)
+      .map((slot) => `- ${this.officialSlotLabel(slot)}`);
+    const remaining = slots.length - limit;
+    if (remaining > 0) {
+      lines.push(`- +${remaining} more`);
+    }
+    return lines;
+  }
+
+  private autoResultDetailBodyLines(pending: AutoResultPending) {
+    this.reconcileOfficialPlaceholderRows(pending);
+    const issues = this.reviewIssues(pending);
+    const missingOfficialSlots = this.missingOfficialSlots(pending);
+    const lines = [
+      issues.length > 0 ? "Fix before apply:" : "Ready to apply.",
+      ...issues.map((issue) => `- ${issue}`),
+      "",
+      `OCR rows (${pending.rows.length}):`,
+      ...(pending.rows.length
+        ? pending.rows.map((row, index) => this.reviewedRowLine(row, index))
+        : ["- No OCR rows found."]),
+    ];
+
+    if (missingOfficialSlots.length > 0) {
+      lines.push(
+        "",
+        `Missing official slots / not applied from OCR (${missingOfficialSlots.length}):`,
+        ...missingOfficialSlots.map(
+          (slot) => `- ${this.officialSlotLabel(slot)}`,
+        ),
+      );
+    }
+
+    return lines.map((line) =>
+      this.truncateOptionText(line, AUTO_RESULT_DETAIL_LINE_MAX_CHARS),
     );
+  }
+
+  private paginateAutoResultDetailLines(lines: string[]) {
+    const pages: string[][] = [];
+    let current: string[] = [];
+    let currentLength = 0;
+
+    for (const line of lines) {
+      const nextLength = currentLength + line.length + (current.length ? 1 : 0);
+      if (
+        current.length > 0 &&
+        nextLength > AUTO_RESULT_DETAIL_PAGE_MAX_CHARS
+      ) {
+        pages.push(current);
+        current = [line];
+        currentLength = line.length;
+        continue;
+      }
+      current.push(line);
+      currentLength = nextLength;
+    }
+
+    if (current.length > 0 || pages.length === 0) {
+      pages.push(current);
+    }
+    return pages;
+  }
+
+  private autoResultDetailPages(pending: AutoResultPending) {
+    return this.paginateAutoResultDetailLines(
+      this.autoResultDetailBodyLines(pending),
+    );
+  }
+
+  private autoResultDetailPageIndex(
+    pending: AutoResultPending,
+    requestedPage: number,
+  ) {
+    const pageCount = this.autoResultDetailPages(pending).length;
+    return Math.max(0, Math.min(pageCount - 1, requestedPage));
+  }
+
+  private autoResultDetailPageCount(pending: AutoResultPending) {
+    return this.autoResultDetailPages(pending).length;
+  }
+
+  private noShowCandidateSlots(pending: AutoResultPending) {
+    return this.missingOfficialSlots(pending);
   }
 
   private configuredNoShowBanScope(
@@ -2117,6 +3980,261 @@ export class MessageRegistrationService {
       return normalized;
     }
     return "SESSION";
+  }
+
+  private hasEnabledNoShowAutoRules(config: SessionDiscordConfigResponse) {
+    const raw = config.emojis?.noShowBanRules;
+    if (!raw) {
+      return false;
+    }
+    const parsed =
+      typeof raw === "string"
+        ? (() => {
+            try {
+              return JSON.parse(raw) as unknown;
+            } catch {
+              return null;
+            }
+          })()
+        : raw;
+    return Array.isArray(parsed)
+      ? parsed.some(
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            (entry as { enabled?: unknown }).enabled === true,
+        )
+      : false;
+  }
+
+  private formatFinalNoShowAutoBanStatus(
+    response: ApplyNoShowAutoBansResponse,
+    report?: { posted: boolean; channelId: string | null },
+  ) {
+    const skipped =
+      response.skippedAlreadyBanned +
+      response.skippedProtected +
+      response.skippedNoRule;
+    const lines = [
+      `Automatic no-show rules applied: ${response.createdTeamBans} team ban(s), ${response.createdManagerBans} manager ban(s).`,
+      `No-show candidates: ${response.candidateTeamCount}. Rules configured: ${response.rulesConfigured}.`,
+    ];
+    if ((response.createdBans ?? []).length > 0) {
+      if (report?.posted && report.channelId) {
+        lines.push(`Banned teams report posted to <#${report.channelId}>.`);
+      } else if (report?.channelId) {
+        lines.push(
+          `Banned teams report could not be posted to <#${report.channelId}>.`,
+        );
+      } else {
+        lines.push(
+          "Banned teams report not posted: bans channel is not configured.",
+        );
+      }
+    }
+    if (response.serverActionDetails?.length) {
+      lines.push(...response.serverActionDetails);
+    }
+    if (skipped > 0) {
+      lines.push(
+        `Skipped: ${response.skippedAlreadyBanned} already banned, ${response.skippedProtected} protected, ${response.skippedNoRule} without matching rule.`,
+      );
+    }
+    return lines.join("\n");
+  }
+
+  private formatFinalNoShowAutoBanLines(
+    response: ApplyNoShowAutoBansResponse,
+    mentionableManagerIds = new Set<string>(),
+  ) {
+    const created = response.createdBans ?? [];
+    if (!created.length) {
+      return [];
+    }
+    return created.slice(0, 12).map((ban) => {
+      const label =
+        ban.teamName?.trim() ||
+        ban.teamTag?.trim() ||
+        (ban.teamId ? `Team ${ban.teamId.slice(0, 8)}` : "Team");
+      const tag =
+        ban.teamTag?.trim() && ban.teamTag.trim() !== label
+          ? ` (${ban.teamTag.trim()})`
+          : "";
+      const managers = ban.managerDiscordUserIds?.length
+        ? ban.managerDiscordUserIds
+            .slice(0, 3)
+            .map((discordUserId) =>
+              this.discordUserBanLabel(discordUserId, mentionableManagerIds),
+            )
+            .join(", ")
+        : "none";
+      const missed = ban.missedMatches?.length
+        ? ban.missedMatches.join(", ")
+        : "match";
+      const duration = ban.durationDays
+        ? `${ban.durationDays} day(s)`
+        : ban.expiresAt
+          ? `until ${new Date(ban.expiresAt).toLocaleString()}`
+          : "permanent";
+      return `- ${label}${tag}: managers ${managers}; missed ${missed}; reason: ${ban.reason}; duration: ${duration}`;
+    });
+  }
+
+  private formatFinalNoShowAutoBanReport(
+    pending: AutoResultPending,
+    response: ApplyNoShowAutoBansResponse,
+    mentionableManagerIds = new Set<string>(),
+  ) {
+    const skipped =
+      response.skippedAlreadyBanned +
+      response.skippedProtected +
+      response.skippedNoRule;
+    const lines = [
+      "Automatic no-show rules applied",
+      `Match: ${pending.matchLabel}`,
+      `Team bans: ${response.createdTeamBans}`,
+      `Manager bans: ${response.createdManagerBans}`,
+      `No-show candidates: ${response.candidateTeamCount}`,
+      `Rules configured: ${response.rulesConfigured}`,
+    ];
+    if (response.serverActionDetails?.length) {
+      lines.push(...response.serverActionDetails);
+    }
+    if (skipped > 0) {
+      lines.push(
+        `Skipped: ${response.skippedAlreadyBanned} already banned, ${response.skippedProtected} protected, ${response.skippedNoRule} without matching rule.`,
+      );
+    }
+    const createdBanLines = this.formatFinalNoShowAutoBanLines(
+      response,
+      mentionableManagerIds,
+    );
+    if (createdBanLines.length > 0) {
+      lines.push("", "Banned teams:", ...createdBanLines);
+    }
+    return limitDiscordContent(lines.join("\n"));
+  }
+
+  private async postFinalNoShowAutoBanReport(
+    interaction: ButtonInteraction,
+    pending: AutoResultPending,
+    response: ApplyNoShowAutoBansResponse,
+  ) {
+    const channelId = pending.config.bansChannelId?.trim() || null;
+    if (
+      !interaction.guild ||
+      !channelId ||
+      !(response.createdBans ?? []).length
+    ) {
+      return { posted: false, channelId };
+    }
+
+    try {
+      const channel = await interaction.guild.channels
+        .fetch(channelId)
+        .catch(() => null);
+      if (!channel?.isTextBased() || channel.isDMBased()) {
+        return { posted: false, channelId };
+      }
+      const mentionableManagerIds = await this.validatedGuildUserMentionIds(
+        interaction.guild,
+        (response.createdBans ?? []).flatMap(
+          (ban) => ban.managerDiscordUserIds ?? [],
+        ),
+      );
+      const content = this.formatFinalNoShowAutoBanReport(
+        pending,
+        response,
+        mentionableManagerIds,
+      );
+      await (channel as GuildTextBasedChannel).send({
+        content,
+        allowedMentions: this.allowedUserMentionsFromContent(content),
+      });
+      return { posted: true, channelId };
+    } catch (error) {
+      console.warn(
+        `Final no-show auto-ban report failed session=${pending.sessionId} channel=${channelId}: ${String(
+          error,
+        )}`,
+      );
+      return { posted: false, channelId };
+    }
+  }
+
+  private async logFinalNoShowAutoBans(
+    interaction: ButtonInteraction,
+    pending: AutoResultPending,
+    response: ApplyNoShowAutoBansResponse,
+  ) {
+    await this.sendDiscordActionLog(interaction.guild, pending.config, {
+      action: "Automatic no-show rules applied",
+      actorDiscordId: interaction.user?.id ?? null,
+      actorLabel: interaction.user?.tag ?? null,
+      sourceChannelId: interaction.channelId,
+      sessionId: pending.sessionId,
+      status: `${response.createdTeamBans} team ban(s), ${response.createdManagerBans} manager ban(s)`,
+      details: [
+        `Match: ${pending.matchLabel}`,
+        `Candidates: ${response.candidateTeamCount}`,
+        `Rules configured: ${response.rulesConfigured}`,
+        `Already banned: ${response.skippedAlreadyBanned}`,
+        `Protected: ${response.skippedProtected}`,
+        `No matching rule: ${response.skippedNoRule}`,
+        ...(response.serverActionDetails ?? []),
+        ...this.formatFinalNoShowAutoBanLines(response),
+      ],
+      color: response.createdTeamBans > 0 ? 0xef4444 : 0xf59e0b,
+    });
+  }
+
+  private async applyFinalNoShowAutoBansOrCreateReview(
+    interaction: ButtonInteraction,
+    pending: AutoResultPending,
+  ) {
+    if (!this.hasEnabledNoShowAutoRules(pending.config)) {
+      return this.createFinalNoShowBanReview(interaction, pending);
+    }
+
+    try {
+      const response =
+        await this.sessionService.applyFinalNoShowAutoBansFromDiscord(
+          {
+            matchId: pending.matchId,
+            sessionId: pending.sessionId,
+          },
+          interaction.guild,
+          pending.config,
+        );
+
+      if (response.rulesConfigured <= 0) {
+        return this.createFinalNoShowBanReview(interaction, pending);
+      }
+
+      const report = await this.postFinalNoShowAutoBanReport(
+        interaction,
+        pending,
+        response,
+      );
+      await this.logFinalNoShowAutoBans(interaction, pending, response);
+      return {
+        posted: false,
+        status: this.formatFinalNoShowAutoBanStatus(response, report),
+      };
+    } catch (error) {
+      const failure =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Automatic no-show rules failed.";
+      const review = await this.createFinalNoShowBanReview(
+        interaction,
+        pending,
+      );
+      return {
+        posted: review.posted,
+        status: `Automatic no-show rules failed: ${failure}\n${review.status}`,
+      };
+    }
   }
 
   private configuredBanDurationDays(config: SessionDiscordConfigResponse) {
@@ -2251,9 +4369,7 @@ export class MessageRegistrationService {
     return entries;
   }
 
-  private selectedFinalNoShowManagerIds(
-    review: PendingFinalNoShowBanReview,
-  ) {
+  private selectedFinalNoShowManagerIds(review: PendingFinalNoShowBanReview) {
     const available = new Set(
       this.finalNoShowManagerEntries(review).map(
         (entry) => entry.manager.discordUserId,
@@ -2377,7 +4493,9 @@ export class MessageRegistrationService {
       .filter((value): value is string => Boolean(value))
       .join(",");
     const selectedManagerNumbers = this.finalNoShowManagerEntries(review)
-      .filter((entry) => review.selectedManagerIds.has(entry.manager.discordUserId))
+      .filter((entry) =>
+        review.selectedManagerIds.has(entry.manager.discordUserId),
+      )
       .map((entry) => String(entry.index))
       .join(",");
     return new ModalBuilder()
@@ -2601,8 +4719,7 @@ export class MessageRegistrationService {
             {
               ...review.command,
               teamIds,
-              managerDiscordUserIds:
-                this.selectedFinalNoShowManagerIds(review),
+              managerDiscordUserIds: this.selectedFinalNoShowManagerIds(review),
             },
             interaction.guild,
             {
@@ -2731,9 +4848,8 @@ export class MessageRegistrationService {
       ReturnType<DiscordSessionService["previewNoShowTeamBansFromDiscord"]>
     >;
     try {
-      preview = await this.withOrganization(
-        pending.config.organizationId,
-        () => this.sessionService.previewNoShowTeamBansFromDiscord(command),
+      preview = await this.withOrganization(pending.config.organizationId, () =>
+        this.sessionService.previewNoShowTeamBansFromDiscord(command),
       );
     } catch (error) {
       await interaction.editReply({
@@ -2792,7 +4908,8 @@ export class MessageRegistrationService {
 
     if (pending.userId !== interaction.user.id) {
       await interaction.reply({
-        content: "Only the staff member who opened this confirmation can use it.",
+        content:
+          "Only the staff member who opened this confirmation can use it.",
         ephemeral: true,
       });
       return true;
@@ -2886,10 +5003,20 @@ export class MessageRegistrationService {
   }
 
   private formatAutoResultDashboard(pending: AutoResultPending) {
+    this.reconcileOfficialPlaceholderRows(pending);
     const includedCount = pending.rows.filter((row) => row.include).length;
-    const skippedCount = pending.rows.length - includedCount;
+    const skippedCount = pending.rows.filter(
+      (row) => !row.include && !row.officialPlaceholder,
+    ).length;
+    const autoSkippedCount = pending.rows.filter(
+      (row) => row.autoSkipped,
+    ).length;
+    const missingPlaceholderCount = pending.rows.filter(
+      (row) => !row.include && row.officialPlaceholder,
+    ).length;
     const issues = this.reviewIssues(pending);
-    const noShowCandidates = this.noShowCandidateSlots(pending);
+    const missingOfficialSlots = this.missingOfficialSlots(pending);
+    const noShowCandidates = missingOfficialSlots;
     const lines = [
       "Result Review Panel",
       `Manage ${pending.matchLabel}`,
@@ -2907,14 +5034,25 @@ export class MessageRegistrationService {
         ? `Images: ${pending.imageUrls.length}`
         : null,
       "Slot source: official scrim slot list",
+      `Missing official slots: ${missingOfficialSlots.length}`,
+      missingOfficialSlots.length
+        ? this.officialSlotSummary(missingOfficialSlots, 6)
+        : null,
+      missingOfficialSlots.length
+        ? "Preview details lists every missing official slot across pages."
+        : null,
       `Ban-count candidates: ${noShowCandidates.length}`,
       `Rows: ${includedCount} apply / ${skippedCount} skipped`,
+      missingPlaceholderCount
+        ? `Missing official review rows: ${missingPlaceholderCount}`
+        : null,
+      autoSkippedCount ? `Auto-skipped duplicates: ${autoSkippedCount}` : null,
       "",
       "1 Preview details",
       "2 Apply result",
       "3 Apply + Ban Count",
       "4 Final result",
-      "Final result opens a separate no-show ban review before bans are created.",
+      "Final result applies enabled no-show rules, or opens a review when no rules are enabled.",
       "Clear cancels this review. Refresh rechecks the current edits.",
       "",
       "Use the menu to edit a row when a blocker is shown.",
@@ -2922,21 +5060,62 @@ export class MessageRegistrationService {
     return limitDiscordContent(lines.join("\n"));
   }
 
-  private formatAutoResultDetails(pending: AutoResultPending) {
-    const issues = this.reviewIssues(pending);
+  private formatAutoResultDetails(
+    pending: AutoResultPending,
+    requestedPage = 0,
+  ) {
+    const pages = this.autoResultDetailPages(pending);
+    const pageIndex = Math.max(0, Math.min(pages.length - 1, requestedPage));
     const lines = [
       `Preview details for ${pending.matchLabel}`,
-      issues.length > 0 ? "Fix before apply:" : "Ready to apply.",
-      ...issues.slice(0, 5).map((issue) => `- ${issue}`),
+      pages.length > 1 ? `Page ${pageIndex + 1}/${pages.length}` : null,
       "",
-      ...pending.rows
-        .slice(0, 18)
-        .map((row, index) => this.reviewedRowLine(row, index)),
-    ];
-    if (pending.rows.length > 18) {
-      lines.push(`...${pending.rows.length - 18} more rows`);
-    }
+      ...pages[pageIndex],
+    ].filter((line): line is string => line !== null);
     return limitDiscordContent(lines.join("\n"));
+  }
+
+  private autoResultPreviewComponents(
+    pending: AutoResultPending,
+    requestedPage: number,
+  ) {
+    const pageCount = this.autoResultDetailPageCount(pending);
+    if (pageCount <= 1) {
+      return [];
+    }
+
+    const pageIndex = this.autoResultDetailPageIndex(pending, requestedPage);
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `${AUTO_RESULT_BUTTON_PREFIX}preview-page:${pending.sourceMessageId}:${Math.max(
+              0,
+              pageIndex - 1,
+            )}`,
+          )
+          .setLabel("Back")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(pageIndex <= 0),
+        new ButtonBuilder()
+          .setCustomId(
+            `${AUTO_RESULT_BUTTON_PREFIX}preview-page:${pending.sourceMessageId}:${pageIndex}`,
+          )
+          .setLabel(`Page ${pageIndex + 1}/${pageCount}`)
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true),
+        new ButtonBuilder()
+          .setCustomId(
+            `${AUTO_RESULT_BUTTON_PREFIX}preview-page:${pending.sourceMessageId}:${Math.min(
+              pageCount - 1,
+              pageIndex + 1,
+            )}`,
+          )
+          .setLabel("Next")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(pageIndex >= pageCount - 1),
+      ),
+    ];
   }
 
   private playerKillsSummary(
@@ -2978,6 +5157,7 @@ export class MessageRegistrationService {
   }
 
   private autoResultComponents(pending: AutoResultPending) {
+    this.reconcileOfficialPlaceholderRows(pending);
     if (!pending.rows.length) {
       return [];
     }
@@ -3004,7 +5184,7 @@ export class MessageRegistrationService {
             .setCustomId(
               `${AUTO_RESULT_BUTTON_PREFIX}edit:${pending.sourceMessageId}`,
             )
-            .setPlaceholder("Edit or skip an OCR row")
+            .setPlaceholder("Edit OCR or missing official row")
             .addOptions(options),
         ),
       );
@@ -3119,7 +5299,7 @@ export class MessageRegistrationService {
             .setRequired(false)
             .setMaxLength(1000)
             .setPlaceholder("Player One=5\nPlayer Two=3")
-          .setValue(this.formatPlayerKillsInput(row.players)),
+            .setValue(this.formatPlayerKillsInput(row.players)),
         ),
       );
   }
@@ -3316,11 +5496,16 @@ export class MessageRegistrationService {
     }
 
     const slotInput = this.modalTextValue(interaction, "slot").trim();
+    const {
+      autoSkipped: _autoSkipped,
+      autoSkipReason: _autoSkipReason,
+      ...currentWithoutAutoSkip
+    } = current;
     if (!include) {
       return {
         ok: true,
         row: {
-          ...current,
+          ...currentWithoutAutoSkip,
           include: false,
           position: position.value,
           kills: kills.value,
@@ -3367,7 +5552,7 @@ export class MessageRegistrationService {
     return {
       ok: true,
       row: {
-        ...current,
+        ...currentWithoutAutoSkip,
         include: true,
         edited: true,
         position: position.value,
@@ -3382,6 +5567,7 @@ export class MessageRegistrationService {
         teamName: slot?.team?.name?.trim() || current.teamName || null,
         status: "OK",
         reason: undefined,
+        officialPlaceholder: false,
       },
     };
   }
@@ -3598,6 +5784,13 @@ export class MessageRegistrationService {
     }
 
     if (!this.hasStaffAccess(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Screenshot rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can submit result screenshots here.",
+      });
       await message.reply({
         content: "Only Arenzyra staff can submit result screenshots here.",
         allowedMentions: { parse: [] },
@@ -3608,13 +5801,10 @@ export class MessageRegistrationService {
     const matchNumber = this.parseResultGameCode(message.content);
     if (!matchNumber) {
       await this.react(message, REGISTER_REJECT_REACTION);
-      await this.sendDiscordActionLog(message.guild, resolved.config, {
+      await this.logDiscordMessageProof(message, {
         action: "OCR screenshot rejected",
-        actorDiscordId: message.author.id,
-        actorLabel: message.author.tag,
-        sourceChannelId: message.channel.id,
-        sessionId: resolved.session.id,
-        sessionName: resolved.session.name,
+        config: resolved.config,
+        session: resolved.session,
         status: "missing game code",
         reason: "Screenshot message did not include G1, match 1, M1, etc.",
         color: 0xef4444,
@@ -3770,13 +5960,10 @@ export class MessageRegistrationService {
         })
         .catch(() => undefined);
       await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
-      await this.sendDiscordActionLog(message.guild, resolved.config, {
+      await this.logDiscordMessageProof(message, {
         action: "OCR screenshot failed",
-        actorDiscordId: message.author.id,
-        actorLabel: message.author.tag,
-        sourceChannelId: message.channel.id,
-        sessionId: resolved.session.id,
-        sessionName: resolved.session.name,
+        config: resolved.config,
+        session: resolved.session,
         status: `G${matchNumber}`,
         reason,
         color: 0xef4444,
@@ -3785,8 +5972,193 @@ export class MessageRegistrationService {
     }
   }
 
+  private syncOldLogosLimit(message: Message) {
+    const match = SYNC_OLD_LOGOS_COMMAND_PATTERN.exec(message.content.trim());
+    const parsed = Number(match?.[1] ?? "");
+    if (!Number.isFinite(parsed)) {
+      return DEFAULT_SYNC_OLD_LOGOS_LIMIT;
+    }
+    return Math.min(MAX_SYNC_OLD_LOGOS_LIMIT, Math.max(1, Math.trunc(parsed)));
+  }
+
+  private syncOldPlayerPhotosLimit(message: Message) {
+    const match = SYNC_OLD_PLAYER_PHOTOS_COMMAND_PATTERN.exec(
+      message.content.trim(),
+    );
+    const parsed = Number(match?.[1] ?? "");
+    if (!Number.isFinite(parsed)) {
+      return DEFAULT_SYNC_OLD_LOGOS_LIMIT;
+    }
+    return Math.min(MAX_SYNC_OLD_LOGOS_LIMIT, Math.max(1, Math.trunc(parsed)));
+  }
+
+  private formatSyncOldLogosResult(result: SyncOldDiscordLogosResponse) {
+    const lines = [
+      `${REGISTER_SUCCESS_REACTION} Older logo sync finished.`,
+      `Scanned: ${result.scanned}`,
+      `Matched %logo: ${result.matched}`,
+      `Saved to teams: ${result.saved}`,
+      `Saved as pending: ${result.pending}`,
+      `Backfilled active teams: ${result.backfilled}`,
+      `Skipped: ${result.skipped}`,
+      `Failed: ${result.failed}`,
+    ];
+    if (result.failed > 0 && result.failures.length > 0) {
+      lines.push(`First failure: ${result.failures[0].reason}`);
+    }
+    return lines.join("\n");
+  }
+
+  private formatSyncOldPlayerPhotosResult(
+    result: SyncOldDiscordPlayerPhotosResponse,
+  ) {
+    const lines = [
+      `${REGISTER_SUCCESS_REACTION} Older player photo sync finished.`,
+      `Scanned: ${result.scanned}`,
+      `Matched %photo: ${result.matched}`,
+      `Saved: ${result.saved}`,
+      `Skipped: ${result.skipped}`,
+      `Failed: ${result.failed}`,
+    ];
+    if (result.failed > 0 && result.failures.length > 0) {
+      lines.push(`First failure: ${result.failures[0].reason}`);
+    }
+    return lines.join("\n");
+  }
+
+  private async handleSyncOldLogosMessage(message: Message): Promise<boolean> {
+    await this.react(message, REGISTER_PROCESSING_REACTION);
+
+    if (!message.guild) {
+      await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+      await message.reply({
+        content: "Use `%sync-old-logos` inside a synced server logo channel.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    try {
+      const resolved = await this.sessionService.findScrimForLogoChannel(
+        message.guild.id,
+        message.channel.id,
+        this.channelTopic(message.channel),
+      );
+      if (!resolved) {
+        await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+        await message.reply({
+          content: "This command only works inside a synced logo channel.",
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      }
+      if (!this.hasStaffAccess(message, resolved.config)) {
+        await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+        await message.reply({
+          content: "Only staff can sync older logo history.",
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      }
+
+      const result = await this.sessionService.syncOldDiscordLogos({
+        sessionId: resolved.session.id,
+        organizationId: resolved.config.organizationId,
+        channelId: message.channel.id,
+        limit: this.syncOldLogosLimit(message),
+      });
+      await this.finishRegisterReaction(message, REGISTER_SUCCESS_REACTION);
+      await message.reply({
+        content: this.formatSyncOldLogosResult(result),
+        allowedMentions: { parse: [] },
+      });
+      this.sessionService.queueVisibleDiscordScrimRefresh(
+        message.guild,
+        resolved.session.id,
+        resolved.config,
+      );
+      return true;
+    } catch (error) {
+      await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+      await message.reply({
+        content: toFriendlyApiError(error),
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+  }
+
+  private async handleSyncOldPlayerPhotosMessage(
+    message: Message,
+  ): Promise<boolean> {
+    await this.react(message, REGISTER_PROCESSING_REACTION);
+
+    if (!message.guild) {
+      await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+      await message.reply({
+        content: "Use `%sync-old-photos` inside a synced player photo channel.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    try {
+      const resolved = await this.sessionService.findScrimForPlayerPhotoChannel(
+        message.guild.id,
+        message.channel.id,
+        this.channelTopic(message.channel),
+      );
+      if (!resolved) {
+        await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+        await message.reply({
+          content:
+            "This command only works inside a synced player photo channel.",
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      }
+      if (!this.hasStaffAccess(message, resolved.config)) {
+        await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+        await message.reply({
+          content: "Only staff can sync older player photo history.",
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      }
+
+      const result = await this.sessionService.syncOldDiscordPlayerPhotos({
+        sessionId: resolved.session.id,
+        organizationId: resolved.config.organizationId,
+        channelId: message.channel.id,
+        limit: this.syncOldPlayerPhotosLimit(message),
+      });
+      await this.finishRegisterReaction(message, REGISTER_SUCCESS_REACTION);
+      await message.reply({
+        content: this.formatSyncOldPlayerPhotosResult(result),
+        allowedMentions: { parse: [] },
+      });
+      this.sessionService.queueVisibleDiscordScrimRefresh(
+        message.guild,
+        resolved.session.id,
+        resolved.config,
+      );
+      return true;
+    } catch (error) {
+      await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
+      await message.reply({
+        content: toFriendlyApiError(error),
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+  }
+
   private async handleLogoMessage(message: Message): Promise<boolean> {
     await this.react(message, REGISTER_PROCESSING_REACTION);
+    let proofContext: {
+      session: { id: string; name: string };
+      config: SessionDiscordConfigResponse;
+    } | null = null;
 
     if (!message.guild) {
       await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
@@ -3812,6 +6184,10 @@ export class MessageRegistrationService {
         });
         return true;
       }
+      proofContext = {
+        session: resolved.session,
+        config: resolved.config,
+      };
 
       const parsed = this.parseLogoMessage(message);
       const logoSource = this.findLogoSource(message);
@@ -3834,9 +6210,7 @@ export class MessageRegistrationService {
             logoUpload,
             resolved.config,
             pendingSource,
-            resolved.organizationLogoChannel
-              ? { savePendingToActiveGuildSessions: { guildId: guild.id } }
-              : undefined,
+            { savePendingToActiveGuildSessions: { guildId: guild.id } },
           ),
       );
       await this.finishRegisterReaction(message, REGISTER_SUCCESS_REACTION);
@@ -3844,9 +6218,8 @@ export class MessageRegistrationService {
         content: reply,
         allowedMentions: { parse: [] },
       });
-      this.sessionService.queueVisibleDiscordScrimRefresh(
+      await this.sessionService.queueVisibleDiscordScrimRefreshForActiveGuildSessions(
         message.guild,
-        resolved.session.id,
         resolved.config,
       );
       await this.sendDiscordActionLog(message.guild, resolved.config, {
@@ -3868,6 +6241,15 @@ export class MessageRegistrationService {
         error instanceof Error && error.message.trim()
           ? error.message.trim()
           : "Logo sync failed. Please check the format and image.";
+      if (proofContext) {
+        await this.logDiscordMessageProof(message, {
+          action: "Team logo rejected",
+          config: proofContext.config,
+          session: proofContext.session,
+          status: "rejected",
+          reason,
+        });
+      }
       await message
         .reply({
           content: reason,
@@ -3880,6 +6262,10 @@ export class MessageRegistrationService {
 
   private async handlePlayerPhotoMessage(message: Message): Promise<boolean> {
     await this.react(message, REGISTER_PROCESSING_REACTION);
+    let proofContext: {
+      session: { id: string; name: string };
+      config: SessionDiscordConfigResponse;
+    } | null = null;
 
     if (!message.guild) {
       await this.finishRegisterReaction(message, REGISTER_REJECT_REACTION);
@@ -3906,6 +6292,10 @@ export class MessageRegistrationService {
         });
         return true;
       }
+      proofContext = {
+        session: resolved.session,
+        config: resolved.config,
+      };
 
       const parsed = this.parsePlayerPhotoMessage(
         message,
@@ -3957,6 +6347,15 @@ export class MessageRegistrationService {
         error instanceof Error && error.message.trim()
           ? error.message.trim()
           : "Player photo sync failed. Please check the format and image.";
+      if (proofContext) {
+        await this.logDiscordMessageProof(message, {
+          action: "Player photo rejected",
+          config: proofContext.config,
+          session: proofContext.session,
+          status: "rejected",
+          reason,
+        });
+      }
       await message
         .reply({
           content: reason,
@@ -3990,6 +6389,13 @@ export class MessageRegistrationService {
       return true;
     }
     if (!this.hasStaffAccess(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can edit result summary settings.",
+      });
       await message.reply({
         content: "Only Arenzyra staff can edit result summary settings.",
         allowedMentions: { parse: [] },
@@ -4051,6 +6457,12 @@ export class MessageRegistrationService {
     const match = CONFIRM_SLOT_COMMAND_PATTERN.exec(message.content.trim());
     const slotNumber = Number.parseInt(match?.[1] ?? "", 10);
     if (!Number.isInteger(slotNumber) || slotNumber < 1) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected and deleted",
+        config: null,
+        status: "invalid slot",
+        reason: "Confirm command did not include a valid slot number.",
+      });
       await this.replyWithNoMentionAutoDelete(
         message,
         "Use `%confirm 22` with the slot number from the slot list.",
@@ -4066,6 +6478,13 @@ export class MessageRegistrationService {
       this.channelTopic(message.channel),
     );
     if (!resolved) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected and deleted",
+        config: null,
+        status: "unknown session channel",
+        reason:
+          "Confirm command was not sent inside a configured scrim channel.",
+      });
       await this.replyWithNoMentionAutoDelete(
         message,
         "Use `%confirm 22` inside a configured scrim Discord channel.",
@@ -4093,12 +6512,28 @@ export class MessageRegistrationService {
             },
           ),
       );
+      if (this.looksLikeRejectResponse(result, resolved.config)) {
+        await this.logDiscordMessageProof(message, {
+          action: "Command rejected and deleted",
+          config: resolved.config,
+          session: resolved.session,
+          status: "slot confirmation rejected",
+          reason: result,
+        });
+      }
       await this.replyWithNoMentionAutoDelete(
         message,
         result,
         CONFIRM_SLOT_REPLY_DELETE_DELAY_MS,
       );
     } catch (error) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected and deleted",
+        config: resolved.config,
+        session: resolved.session,
+        status: "slot confirmation rejected",
+        reason: toFriendlyApiError(error),
+      });
       await this.replyWithNoMentionAutoDelete(
         message,
         toFriendlyApiError(error),
@@ -4125,7 +6560,22 @@ export class MessageRegistrationService {
       return true;
     }
 
-    const parsed = this.parseBanCommand(message, BAN_TEAM_COMMAND_PATTERN);
+    let parsed: ParsedBanOptions;
+    let target: DiscordTeamBanTarget;
+    try {
+      parsed = this.parseBanCommand(message, BAN_TEAM_COMMAND_PATTERN);
+      target = this.resolveTeamBanTarget(message, parsed.remaining);
+    } catch (error) {
+      await message.reply({
+        content:
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Use `%ban-team team/tag @manager + reason`.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
     const scope =
       parsed.scope ??
       (parsed.matchNumbers.length || parsed.allMatches
@@ -4134,34 +6584,249 @@ export class MessageRegistrationService {
           ? "SESSION"
           : "TEAM");
     const command: DiscordTeamBanCommand = {
-      target: this.resolveBanTarget(message, parsed.remaining),
+      target,
       scope,
       sessionId: resolved?.session.id ?? null,
+      ...(parsed.sessionSelectors.length
+        ? { sessionSelectors: parsed.sessionSelectors }
+        : {}),
       matchNumbers: parsed.matchNumbers,
       allMatches: parsed.allMatches,
       serverAction: parsed.serverAction,
       days: parsed.days,
       reason: parsed.reason,
+      note: `Created from Discord %ban-team command: ${message.url ?? message.id}`,
     };
 
-    const reply = resolved
-      ? await this.withOrganization(resolved.config.organizationId, () =>
+    if (parsed.days !== null) {
+      const reply = resolved
+        ? await this.withOrganization(resolved.config.organizationId, () =>
+            this.sessionService.createTeamBanFromDiscord(
+              command,
+              message.guild,
+              {
+                actorDiscordId: message.author.id,
+                actorLabel: message.author.tag,
+                sourceChannelId: message.channel.id,
+                sessionName: resolved.session.name,
+              },
+            ),
+          )
+        : await this.sessionService.createTeamBanFromDiscord(
+            command,
+            message.guild,
+            {
+              actorDiscordId: message.author.id,
+              actorLabel: message.author.tag,
+              sourceChannelId: message.channel.id,
+            },
+          );
+      await message.reply({ content: reply, allowedMentions: { parse: [] } });
+      return true;
+    }
+
+    if (!resolved) {
+      await message.reply({
+        content:
+          "Use `%ban-team` inside a configured scrim Discord channel for the duration picker, or add `days=3` for a direct timed ban.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const token = this.storePendingManualBanFlow({
+      userId: message.author.id,
+      sessionId: resolved.session.id,
+      sessionName: resolved.session.name ?? null,
+      sourceChannelId: message.channel.id,
+      promptMessageId: null,
+      config: resolved.config,
+      command,
+      expiresAt: Date.now() + MANUAL_BAN_FLOW_TTL_MS,
+    });
+    const prompt = await message.reply({
+      content: this.manualBanFlowPrompt(command, resolved.session.name),
+      components: [this.manualBanDurationSelectRow(token)],
+      allowedMentions: { parse: [] },
+    });
+    const pending = this.pendingManualBanFlows.get(token);
+    if (pending) {
+      pending.promptMessageId = prompt.id;
+    }
+    return true;
+  }
+
+  private async handleBanFlowMessage(message: Message): Promise<boolean> {
+    if (!message.guild) {
+      await message.reply("Use `%ban` inside the Discord server.");
+      return true;
+    }
+
+    const resolved = await this.sessionService.findScrimForDiscordChannel(
+      message.guild.id,
+      message.channel.id,
+      this.channelTopic(message.channel),
+    );
+    if (!resolved) {
+      await message.reply({
+        content: "Use `%ban` inside a configured scrim Discord channel.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      await message.reply({
+        content: "Only Arenzyra staff can ban managers.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    let parsed: ParsedBanOptions;
+    let target: DiscordTeamBanTarget;
+    try {
+      parsed = this.parseBanCommand(message, BAN_FLOW_COMMAND_PATTERN);
+      target = this.resolveBanTarget(message, parsed.remaining);
+    } catch (error) {
+      await message.reply({
+        content:
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Use `%ban team/tag @manager + reason`.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const scope =
+      parsed.scope ??
+      (parsed.matchNumbers.length || parsed.allMatches ? "MATCH" : "SESSION");
+    const command: DiscordTeamBanCommand = {
+      target,
+      scope,
+      sessionId: resolved.session.id,
+      ...(parsed.sessionSelectors.length
+        ? { sessionSelectors: parsed.sessionSelectors }
+        : {}),
+      matchNumbers: parsed.matchNumbers,
+      allMatches: parsed.allMatches,
+      serverAction: parsed.serverAction,
+      days: parsed.days,
+      reason:
+        parsed.reason ||
+        resolved.config.emojis?.banDefaultReason ||
+        "Manual Discord ban",
+      note: `Created from Discord %ban command: ${message.url ?? message.id}`,
+    };
+
+    if (parsed.days !== null) {
+      const reply = await this.withOrganization(
+        resolved.config.organizationId,
+        () =>
           this.sessionService.createTeamBanFromDiscord(command, message.guild, {
             actorDiscordId: message.author.id,
             actorLabel: message.author.tag,
             sourceChannelId: message.channel.id,
             sessionName: resolved.session.name,
           }),
-        )
-      : await this.sessionService.createTeamBanFromDiscord(
-          command,
-          message.guild,
-          {
-            actorDiscordId: message.author.id,
-            actorLabel: message.author.tag,
-            sourceChannelId: message.channel.id,
-          },
-        );
+      );
+      await message.reply({ content: reply, allowedMentions: { parse: [] } });
+      return true;
+    }
+
+    const token = this.storePendingManualBanFlow({
+      userId: message.author.id,
+      sessionId: resolved.session.id,
+      sessionName: resolved.session.name ?? null,
+      sourceChannelId: message.channel.id,
+      promptMessageId: null,
+      config: resolved.config,
+      command,
+      expiresAt: Date.now() + MANUAL_BAN_FLOW_TTL_MS,
+    });
+    const prompt = await message.reply({
+      content: this.manualBanFlowPrompt(command, resolved.session.name),
+      components: [this.manualBanDurationSelectRow(token)],
+      allowedMentions: { parse: [] },
+    });
+    const pending = this.pendingManualBanFlows.get(token);
+    if (pending) {
+      pending.promptMessageId = prompt.id;
+    }
+    return true;
+  }
+
+  private async handleUnbanManagerMessage(message: Message): Promise<boolean> {
+    if (!message.guild) {
+      await message.reply("Use `%unban @manager` inside the Discord server.");
+      return true;
+    }
+
+    const resolved = await this.sessionService.findScrimForDiscordChannel(
+      message.guild.id,
+      message.channel.id,
+      this.channelTopic(message.channel),
+    );
+    if (!resolved) {
+      await message.reply({
+        content:
+          "Use `%unban @manager` inside a configured scrim Discord channel.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      await message.reply({
+        content: "Only Arenzyra staff can unban managers.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const botUserId = message.client.user?.id ?? null;
+    const managers = Array.from(message.mentions.users.values()).filter(
+      (user) => user.id !== botUserId,
+    );
+    if (managers.length !== 1) {
+      await message.reply({
+        content: "Use `%unban @manager` with exactly one manager mention.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const parsed = this.parseBanCommand(message, UNBAN_MANAGER_COMMAND_PATTERN);
+    const manager = managers[0];
+    if (!manager) {
+      await message.reply({
+        content: "Use `%unban @manager` with exactly one manager mention.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const command: DiscordTeamUnbanCommand = {
+      target: { kind: "manager", discordUserId: manager.id },
+      scope: parsed.scope,
+      sessionId: resolved.session.id,
+      ...(parsed.sessionSelectors.length
+        ? { sessionSelectors: parsed.sessionSelectors }
+        : {}),
+      matchNumbers: parsed.matchNumbers,
+      allMatches: parsed.allMatches,
+      reason: parsed.reason,
+    };
+
+    const reply = await this.withOrganization(
+      resolved.config.organizationId,
+      () =>
+        this.sessionService.revokeTeamBansFromDiscord(command, message.guild, {
+          actorDiscordId: message.author.id,
+          actorLabel: message.author.tag,
+          sourceChannelId: message.channel.id,
+          sessionName: resolved.session.name,
+        }),
+    );
     await message.reply({ content: reply, allowedMentions: { parse: [] } });
     return true;
   }
@@ -4318,9 +6983,12 @@ export class MessageRegistrationService {
 
     const parsed = this.parseBanCommand(message, UNBAN_TEAM_COMMAND_PATTERN);
     const command: DiscordTeamUnbanCommand = {
-      target: this.resolveBanTarget(message, parsed.remaining),
+      target: this.resolveTeamBanTarget(message, parsed.remaining),
       scope: parsed.scope,
       sessionId: resolved?.session.id ?? null,
+      ...(parsed.sessionSelectors.length
+        ? { sessionSelectors: parsed.sessionSelectors }
+        : {}),
       matchNumbers: parsed.matchNumbers,
       allMatches: parsed.allMatches,
       reason: parsed.reason,
@@ -4377,6 +7045,400 @@ export class MessageRegistrationService {
     return true;
   }
 
+  private manualBanTargetLabel(target: DiscordTeamBanTarget) {
+    if (target.kind === "manager") {
+      return `<@${target.discordUserId}>`;
+    }
+    if (target.kind === "team-id") {
+      return target.label?.trim() || `Team ${target.teamId}`;
+    }
+    return target.query;
+  }
+
+  private manualBanFlowPrompt(
+    command: DiscordTeamBanCommand,
+    sessionName: string | null | undefined,
+  ) {
+    return limitDiscordContent(
+      [
+        command.target.kind === "manager"
+          ? "Manager ban prepared."
+          : "Team ban prepared.",
+        sessionName ? `Session: ${sessionName}` : null,
+        `Target: ${this.manualBanTargetLabel(command.target)}`,
+        `Scope: ${command.scope}`,
+        command.sessionSelectors?.length
+          ? `Selected sessions: ${command.sessionSelectors.join(", ")}`
+          : null,
+        `Reason: ${command.reason?.trim() || "Manual Discord ban"}`,
+        "",
+        "Choose the ban duration.",
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n"),
+    );
+  }
+
+  private manualBanDurationSelectRow(token: string) {
+    return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`${MANUAL_BAN_FLOW_PREFIX}duration:${token}`)
+        .setPlaceholder("Choose ban duration")
+        .addOptions(
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Ban for days")
+            .setDescription("Ask how many days before applying the ban.")
+            .setValue("days"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Permanent ban")
+            .setDescription("Apply until an admin removes the ban.")
+            .setValue("permanent"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Cancel")
+            .setDescription("Do not apply this ban.")
+            .setValue("cancel"),
+        ),
+    );
+  }
+
+  private storePendingManualBanFlow(pending: PendingManualBanFlow) {
+    const token = `${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    this.pendingManualBanFlows.set(token, pending);
+    setTimeout(() => {
+      this.pendingManualBanFlows.delete(token);
+    }, MANUAL_BAN_FLOW_TTL_MS).unref?.();
+    return token;
+  }
+
+  private prunePendingManualBanFlows() {
+    const now = Date.now();
+    for (const [token, pending] of this.pendingManualBanFlows) {
+      if (pending.expiresAt <= now) {
+        this.pendingManualBanFlows.delete(token);
+      }
+    }
+  }
+
+  private parseManualBanDurationSelectId(customId: string) {
+    if (!customId.startsWith(MANUAL_BAN_FLOW_PREFIX)) {
+      return null;
+    }
+    const [, action, token] = customId.split(":");
+    if (action !== "duration" || !/^[a-z0-9-]{8,40}$/i.test(token ?? "")) {
+      return null;
+    }
+    return { token };
+  }
+
+  private parseManualBanDaysModalId(customId: string) {
+    if (!customId.startsWith(MANUAL_BAN_FLOW_PREFIX)) {
+      return null;
+    }
+    const [, action, token] = customId.split(":");
+    if (action !== "days" || !/^[a-z0-9-]{8,40}$/i.test(token ?? "")) {
+      return null;
+    }
+    return { token };
+  }
+
+  private parseManualBanReasonModalId(customId: string) {
+    if (!customId.startsWith(MANUAL_BAN_FLOW_PREFIX)) {
+      return null;
+    }
+    const [, action, token] = customId.split(":");
+    if (action !== "reason" || !/^[a-z0-9-]{8,40}$/i.test(token ?? "")) {
+      return null;
+    }
+    return { token };
+  }
+
+  private manualBanReasonModal(token: string, pending: PendingManualBanFlow) {
+    const modal = new ModalBuilder()
+      .setCustomId(`${MANUAL_BAN_FLOW_PREFIX}reason:${token}`)
+      .setTitle("Permanent Ban Reason");
+    const reasonInput = new TextInputBuilder()
+      .setCustomId("reason")
+      .setLabel("Reason")
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder(
+        pending.config.emojis?.banDefaultReason || "Manual Discord ban",
+      )
+      .setRequired(true)
+      .setMaxLength(300);
+    if (pending.command.reason?.trim()) {
+      reasonInput.setValue(pending.command.reason.trim());
+    }
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
+    );
+    return modal;
+  }
+
+  private manualBanDaysModal(token: string, pending: PendingManualBanFlow) {
+    const modal = new ModalBuilder()
+      .setCustomId(`${MANUAL_BAN_FLOW_PREFIX}days:${token}`)
+      .setTitle("Ban Duration");
+    const daysInput = new TextInputBuilder()
+      .setCustomId("days")
+      .setLabel("How many days?")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("Example: 3")
+      .setRequired(true)
+      .setMaxLength(3);
+    const defaultDays = pending.config.emojis?.banDefaultDurationDays?.trim();
+    if (defaultDays && /^\d{1,3}$/.test(defaultDays)) {
+      daysInput.setValue(defaultDays);
+    }
+    const reasonInput = new TextInputBuilder()
+      .setCustomId("reason")
+      .setLabel("Reason")
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder("Manual Discord ban")
+      .setRequired(false)
+      .setMaxLength(300);
+    if (pending.command.reason?.trim()) {
+      reasonInput.setValue(pending.command.reason.trim());
+    }
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(daysInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
+    );
+    return modal;
+  }
+
+  private async createPendingManualBan(
+    interaction: StringSelectMenuInteraction | ModalSubmitInteraction,
+    pending: PendingManualBanFlow,
+    patch: Pick<DiscordTeamBanCommand, "days" | "reason">,
+  ) {
+    if (!interaction.guild) {
+      throw new Error("Run this ban action inside the Discord server.");
+    }
+    const command: DiscordTeamBanCommand = {
+      ...pending.command,
+      days: patch.days,
+      reason:
+        patch.reason?.trim() ||
+        pending.command.reason?.trim() ||
+        pending.config.emojis?.banDefaultReason ||
+        "Manual Discord ban",
+    };
+    return this.withOrganization(pending.config.organizationId, () =>
+      this.sessionService.createTeamBanFromDiscord(command, interaction.guild, {
+        actorDiscordId: interaction.user.id,
+        actorLabel: interaction.user.tag,
+        sourceChannelId: pending.sourceChannelId,
+        sessionName: pending.sessionName ?? undefined,
+      }),
+    );
+  }
+
+  private async editManualBanPrompt(
+    interaction: StringSelectMenuInteraction | ModalSubmitInteraction,
+    pending: PendingManualBanFlow,
+    content: string,
+  ) {
+    if (!pending.promptMessageId) {
+      return;
+    }
+    const channel = interaction.channel as
+      | {
+          messages?: {
+            fetch?: (messageId: string) => Promise<Message | null>;
+          };
+        }
+      | null
+      | undefined;
+    const prompt = await channel?.messages
+      ?.fetch?.(pending.promptMessageId)
+      .catch(() => null);
+    await prompt
+      ?.edit({
+        content: limitDiscordContent(content),
+        components: [],
+        allowedMentions: { parse: [] },
+      })
+      .catch(() => undefined);
+  }
+
+  private async handleManualBanDurationSelect(
+    interaction: StringSelectMenuInteraction,
+    parsed: { token: string },
+  ): Promise<boolean> {
+    this.prunePendingManualBanFlows();
+    const pending = this.pendingManualBanFlows.get(parsed.token);
+    if (!pending) {
+      await interaction.update({
+        content: "This ban request expired. Send `%ban` again.",
+        components: [],
+      });
+      return true;
+    }
+    if (pending.userId !== interaction.user.id) {
+      await interaction.reply({
+        content: "Only the staff member who started this ban can finish it.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (!this.hasInteractionStaffAccess(interaction, pending.config)) {
+      await interaction.reply({
+        content: "Only Arenzyra staff can finish this ban.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    const choice = interaction.values[0];
+    if (choice === "cancel") {
+      this.pendingManualBanFlows.delete(parsed.token);
+      await interaction.update({
+        content: "Ban cancelled.",
+        components: [],
+      });
+      return true;
+    }
+    if (choice === "days") {
+      await interaction.showModal(
+        this.manualBanDaysModal(parsed.token, pending),
+      );
+      return true;
+    }
+    if (choice !== "permanent") {
+      await interaction.reply({
+        content: "Unknown ban duration.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    await interaction.showModal(
+      this.manualBanReasonModal(parsed.token, pending),
+    );
+    return true;
+  }
+
+  private async handleManualBanReasonModal(
+    interaction: ModalSubmitInteraction,
+    parsed: { token: string },
+  ): Promise<boolean> {
+    this.prunePendingManualBanFlows();
+    const pending = this.pendingManualBanFlows.get(parsed.token);
+    if (!pending) {
+      await interaction.reply({
+        content: "This ban request expired. Send `%ban` again.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (pending.userId !== interaction.user.id) {
+      await interaction.reply({
+        content: "Only the staff member who started this ban can finish it.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (!this.hasInteractionStaffAccess(interaction, pending.config)) {
+      await interaction.reply({
+        content: "Only Arenzyra staff can finish this ban.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    this.pendingManualBanFlows.delete(parsed.token);
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const content = await this.createPendingManualBan(interaction, pending, {
+        days: null,
+        reason: this.modalTextValue(interaction, "reason"),
+      });
+      await this.editManualBanPrompt(interaction, pending, content);
+      await interaction.editReply({
+        content: limitDiscordContent(content),
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      const content =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Ban failed.";
+      await this.editManualBanPrompt(interaction, pending, content);
+      await interaction.editReply({
+        content,
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
+  private async handleManualBanDaysModal(
+    interaction: ModalSubmitInteraction,
+    parsed: { token: string },
+  ): Promise<boolean> {
+    this.prunePendingManualBanFlows();
+    const pending = this.pendingManualBanFlows.get(parsed.token);
+    if (!pending) {
+      await interaction.reply({
+        content: "This ban request expired. Send `%ban` again.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (pending.userId !== interaction.user.id) {
+      await interaction.reply({
+        content: "Only the staff member who started this ban can finish it.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (!this.hasInteractionStaffAccess(interaction, pending.config)) {
+      await interaction.reply({
+        content: "Only Arenzyra staff can finish this ban.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    let days: number;
+    try {
+      days = this.parseBanDays(this.modalTextValue(interaction, "days"));
+    } catch (error) {
+      await interaction.reply({
+        content: error instanceof Error ? error.message : String(error),
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    this.pendingManualBanFlows.delete(parsed.token);
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const content = await this.createPendingManualBan(interaction, pending, {
+        days,
+        reason: this.modalTextValue(interaction, "reason"),
+      });
+      await this.editManualBanPrompt(interaction, pending, content);
+      await interaction.editReply({
+        content: limitDiscordContent(content),
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      const content =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Ban failed.";
+      await this.editManualBanPrompt(interaction, pending, content);
+      await interaction.editReply({
+        content,
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
   private parseBanCommand(
     message: Message,
     commandPattern: RegExp,
@@ -4390,14 +7452,22 @@ export class MessageRegistrationService {
       reason = reasonMatch[1].trim() || null;
       remaining = remaining.slice(0, reasonMatch.index).trim();
     }
+    if (!reason) {
+      const plusReasonMatch = /\s+\+\s*([\s\S]+)$/i.exec(remaining);
+      if (plusReasonMatch) {
+        reason = plusReasonMatch[1].trim() || null;
+        remaining = remaining.slice(0, plusReasonMatch.index).trim();
+      }
+    }
 
     let scope: ParsedBanOptions["scope"] = null;
     let days: number | null = null;
     const matchNumbers: number[] = [];
+    let sessionSelectors: string[] = [];
     let allMatches = false;
     let serverAction: DiscordTeamBanServerAction | null = null;
     const optionPattern =
-      /\b(scope|days|duration|match|matches|server|action)=(?:"([^"]+)"|([^\s]+))/gi;
+      /\b(scope|days|duration|match|matches|sessions|sessionids?|server|action)=(?:"([^"]+)"|([^\s]+))/gi;
     remaining = remaining
       .replace(
         optionPattern,
@@ -4413,6 +7483,17 @@ export class MessageRegistrationService {
           }
           if (normalizedKey === "days" || normalizedKey === "duration") {
             days = this.parseBanDays(value);
+            return "";
+          }
+          if (
+            normalizedKey === "sessions" ||
+            normalizedKey === "sessionid" ||
+            normalizedKey === "sessionids"
+          ) {
+            sessionSelectors = this.parseBanSessionSelectors(value);
+            if (sessionSelectors.length) {
+              scope = "SESSION";
+            }
             return "";
           }
           if (normalizedKey === "server" || normalizedKey === "action") {
@@ -4440,6 +7521,7 @@ export class MessageRegistrationService {
 
     return {
       scope,
+      sessionSelectors,
       days,
       reason,
       matchNumbers: [...new Set(matchNumbers)],
@@ -4449,14 +7531,33 @@ export class MessageRegistrationService {
     };
   }
 
+  private parseBanSessionSelectors(value: string) {
+    return [
+      ...new Set(
+        value
+          .split(/[;,|]+/g)
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+
   private parseBanScope(
     value: string,
   ): Pick<ParsedBanOptions, "scope" | "allMatches" | "serverAction"> {
     const normalized = value.trim().toLowerCase();
     if (
-      ["team", "team-wide", "teamwide", "all", "global", "everywhere"].includes(
-        normalized,
-      )
+      [
+        "team",
+        "team-wide",
+        "teamwide",
+        "all",
+        "all-sessions",
+        "all-session",
+        "allsessions",
+        "global",
+        "everywhere",
+      ].includes(normalized)
     ) {
       return { scope: "TEAM", allMatches: false, serverAction: null };
     }
@@ -4480,7 +7581,7 @@ export class MessageRegistrationService {
       };
     }
     throw new Error(
-      "Use scope=team, scope=session, scope=match, or scope=server.",
+      'Use scope=all-sessions, scope=session, scope=match, scope=server, or sessions="name1,name2".',
     );
   }
 
@@ -4544,6 +7645,21 @@ export class MessageRegistrationService {
       throw new Error("Add a team name or mention the team manager.");
     }
     return { kind: "team", query };
+  }
+
+  private resolveTeamBanTarget(
+    message: Message,
+    remaining: string,
+  ): DiscordTeamBanTarget {
+    const query = remaining
+      .replace(/<@!?\d+>/g, "")
+      .trim()
+      .replace(/^"|"$/g, "")
+      .trim();
+    if (query) {
+      return { kind: "team", query };
+    }
+    return this.resolveBanTarget(message, remaining);
   }
 
   private async handleNoCommandRegisterMessage(
@@ -4616,6 +7732,15 @@ export class MessageRegistrationService {
             await finishRegistrationReaction(
               this.registrationRejectReaction(resolved.config),
             );
+            await this.logDiscordMessageProof(message, {
+              action: "Waitlist promotion rejected",
+              config: resolved.config,
+              session: resolved.session,
+              status: "invalid placement",
+              reason:
+                "VIP slots do not open waitlist promotion from the waitlist channel.",
+              team: { name: parsed.teamName, tag: parsed.tag },
+            });
             await message.reply({
               content:
                 "Use normal `%register` format in the waitlist channel. VIP slots do not open waitlist promotion.",
@@ -4628,6 +7753,14 @@ export class MessageRegistrationService {
             await finishRegistrationReaction(
               this.registrationRejectReaction(resolved.config),
             );
+            await this.logDiscordMessageProof(message, {
+              action: "Waitlist promotion rejected",
+              config: resolved.config,
+              session: resolved.session,
+              status: "closed",
+              reason: "Waitlist promotion is closed for normal users.",
+              team: { name: parsed.teamName, tag: parsed.tag },
+            });
             await message.reply({
               content:
                 "Waitlist promotion is closed. It opens only during the waitlist schedule and when a normal slot is empty.",
@@ -4672,6 +7805,13 @@ export class MessageRegistrationService {
         error,
         "Waitlist promotion failed. Please check the format and try again.",
       );
+      await this.logDiscordMessageProof(message, {
+        action: "Waitlist promotion rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "rejected",
+        reason,
+      });
       await message
         .reply({
           content: reason,
@@ -4697,6 +7837,7 @@ export class MessageRegistrationService {
 
     await this.react(message, REGISTER_PROCESSING_REACTION);
     let activeConfig: SessionDiscordConfigResponse | null = null;
+    let activeSession: { id: string; name: string } | null = null;
     let finalReactionSent = false;
     const finishRegistrationReaction = async (
       emoji: string,
@@ -4740,12 +7881,20 @@ export class MessageRegistrationService {
         resolved.config.organizationId,
         async () => {
           activeConfig = resolved.config;
+          activeSession = resolved.session;
           const sessionMode = this.registrationMode(resolved.config);
           if (sessionMode !== inputMode) {
             await finishRegistrationReaction(
               this.registrationRejectReaction(resolved.config),
               resolved.config,
             );
+            await this.logDiscordMessageProof(message, {
+              action: "Registration rejected",
+              config: resolved.config,
+              session: resolved.session,
+              status: "wrong format",
+              reason: `Registration format did not match ${sessionMode}.`,
+            });
             await this.replyWithAutoDelete(
               message,
               this.registrationUsageMessage(sessionMode),
@@ -4760,27 +7909,55 @@ export class MessageRegistrationService {
             resolved.config,
           );
           const staffAccess = this.hasStaffAccess(message, resolved.config);
+          const placementAccess = !staffAccess
+            ? await this.userHasCustomRoleRegistrationAccess(
+                message.author.id,
+                message.guild,
+                resolved.config,
+                parsed.placement === "VIP" ? "vip" : "normal",
+              )
+            : false;
+          const customVipAccess =
+            parsed.placement === "VIP" && !staffAccess
+              ? placementAccess
+              : false;
           const vipAccess =
             parsed.placement === "VIP" && !staffAccess
-              ? await this.sessionService.userHasVipRegistrationAccess(
+              ? customVipAccess ||
+                (await this.userHasVipRegistrationAccess(
+                  message.author.id,
+                  message.guild,
+                  resolved.config,
+                ))
+              : false;
+          const activeEarlyAccessRole =
+            !staffAccess && parsed.placement !== "VIP"
+              ? await this.userHasEarlyAccessRegistrationAccess(
                   message.author.id,
                   message.guild,
                   resolved.config,
                 )
               : false;
+          const customEarlyAccess =
+            !resolved.accepting && !staffAccess ? placementAccess : false;
           const earlyAccess =
             !resolved.accepting && !staffAccess
-              ? await this.sessionService.userHasEarlyAccessRegistrationAccess(
-                  message.author.id,
-                  message.guild,
-                  resolved.config,
-                )
+              ? customEarlyAccess || activeEarlyAccessRole
               : false;
           if (parsed.placement === "VIP" && !staffAccess && !vipAccess) {
             await finishRegistrationReaction(
               this.registrationRejectReaction(resolved.config),
               resolved.config,
             );
+            await this.logDiscordMessageProof(message, {
+              action: "Registration rejected",
+              config: resolved.config,
+              session: resolved.session,
+              status: "vip denied",
+              reason:
+                "VIP registration is closed or the user does not have the configured VIP role.",
+              team: { name: parsed.teamName, tag: parsed.tag },
+            });
             await message.reply({
               content:
                 "VIP registration is closed or you do not have the configured VIP role.",
@@ -4799,13 +7976,10 @@ export class MessageRegistrationService {
               this.registrationRejectReaction(resolved.config),
               resolved.config,
             );
-            await this.sendDiscordActionLog(message.guild, resolved.config, {
+            await this.logDiscordMessageProof(message, {
               action: "Registration blocked",
-              actorDiscordId: message.author.id,
-              actorLabel: message.author.tag,
-              sourceChannelId: message.channel.id,
-              sessionId: resolved.session.id,
-              sessionName: resolved.session.name,
+              config: resolved.config,
+              session: resolved.session,
               team: { name: parsed.teamName, tag: parsed.tag },
               status: "closed",
               reason: "Registration is closed for normal users",
@@ -4830,6 +8004,7 @@ export class MessageRegistrationService {
           const registrationOptions: {
             requesterDiscordId: string;
             registrationWindowBypass?: boolean;
+            registrationRoleBypass?: boolean;
             tournamentRosterJson?: Record<string, unknown>;
             logoSource?: DiscordTeamLogoSource | null;
             audit?: {
@@ -4841,6 +8016,8 @@ export class MessageRegistrationService {
           } = {
             requesterDiscordId: message.author.id,
             registrationWindowBypass: earlyAccess || vipAccess,
+            registrationRoleBypass:
+              placementAccess || activeEarlyAccessRole || vipAccess,
           };
           if (this.canSendDiscordActionLog()) {
             registrationOptions.audit = {
@@ -4910,12 +8087,21 @@ export class MessageRegistrationService {
         error,
         "Registration failed. Please check the format and try again.",
       );
-      await message
-        .reply({
-          content: reason,
-          allowedMentions: { parse: [] },
-        })
-        .catch(() => undefined);
+      await this.logDiscordMessageProof(message, {
+        action: "Registration rejected",
+        config: activeConfig,
+        session: activeSession,
+        status: this.isBanRegistrationError(error) ? "banned" : "rejected",
+        reason,
+      });
+      if (!this.shouldSuppressRegistrationRejectReply(error)) {
+        await message
+          .reply({
+            content: reason,
+            allowedMentions: { parse: [] },
+          })
+          .catch(() => undefined);
+      }
       return true;
     }
   }
@@ -4948,6 +8134,14 @@ export class MessageRegistrationService {
     );
   }
 
+  private shouldSuppressRegistrationRejectReply(error: unknown) {
+    const friendly = toFriendlyApiError(error).toLowerCase();
+    return (
+      friendly.includes("you are blocked from registering") ||
+      friendly.includes("one of the mentioned players is blocked from this")
+    );
+  }
+
   private async handleCleanChannelMessage(message: Message): Promise<boolean> {
     if (!message.guild) {
       await message.reply("Use `%clean-channel` inside the Discord server.");
@@ -4975,6 +8169,15 @@ export class MessageRegistrationService {
       this.channelTopic(textChannel),
     );
     if (!this.canUseCleanChannelCommand(message, resolved?.config ?? null)) {
+      if (resolved) {
+        await this.logDiscordMessageProof(message, {
+          action: "Command rejected",
+          config: resolved.config,
+          session: resolved.session,
+          status: "permission denied",
+          reason: "Only Arenzyra staff can clean a channel.",
+        });
+      }
       await message.reply("Only Arenzyra staff can clean a channel.");
       return true;
     }
@@ -5050,6 +8253,13 @@ export class MessageRegistrationService {
     }
 
     if (!this.canUseCleanCommand(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can clean slots.",
+      });
       await message.reply("Only Arenzyra staff can clean slots.");
       return true;
     }
@@ -5115,6 +8325,13 @@ export class MessageRegistrationService {
     }
 
     if (!this.canUseCleanCommand(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can clean the waitlist.",
+      });
       await message.reply("Only Arenzyra staff can clean the waitlist.");
       return true;
     }
@@ -5179,6 +8396,13 @@ export class MessageRegistrationService {
     }
 
     if (!this.canUseCleanCommand(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can clean scrim roles.",
+      });
       await message.reply("Only Arenzyra staff can clean scrim roles.");
       return true;
     }
@@ -5263,6 +8487,13 @@ export class MessageRegistrationService {
     }
 
     if (!this.canUseCleanCommand(message, resolved.config)) {
+      await this.logDiscordMessageProof(message, {
+        action: "Command rejected",
+        config: resolved.config,
+        session: resolved.session,
+        status: "permission denied",
+        reason: "Only Arenzyra staff can clean a slot.",
+      });
       await message.reply("Only Arenzyra staff can clean a slot.");
       return true;
     }
@@ -5942,9 +9173,15 @@ export class MessageRegistrationService {
         "waitlist",
         config,
       ),
-      this.registrationReaction("registrationWarningReaction", "warning", config),
+      this.registrationReaction(
+        "registrationWarningReaction",
+        "warning",
+        config,
+      ),
       this.registrationBanReaction(config),
-    ].filter((emoji, index, emojis) => emoji && emojis.indexOf(emoji) === index);
+    ].filter(
+      (emoji, index, emojis) => emoji && emojis.indexOf(emoji) === index,
+    );
   }
 
   private async clearOwnRegistrationStatusReactions(

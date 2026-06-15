@@ -37,6 +37,8 @@ function optionalBooleanEnv(name: string, fallback: boolean): boolean {
 
 export const botConfig = {
   envFilePath,
+  nodeEnv: optionalEnv('NODE_ENV') ?? 'development',
+  discordBotInstance: optionalEnv('ARENZYRA_DISCORD_BOT_INSTANCE'),
   discordToken: requireAnyEnv('DISCORD_BOT_TOKEN', 'DISCORD_TOKEN'),
   discordClientId: requireEnv('DISCORD_CLIENT_ID'),
   discordGuildId: optionalEnv('DISCORD_GUILD_ID'),
@@ -54,6 +56,21 @@ export const botConfig = {
   apiOrganizationId: optionalEnv('ARENZYRA_API_ORGANIZATION_ID'),
   apiUserAgent: 'Arenzyra Discord Bot',
 } as const;
+
+if (
+  botConfig.nodeEnv === 'production' &&
+  botConfig.discordBotInstance !== 'production'
+) {
+  throw new Error(
+    'Refusing to start the production Discord bot without ARENZYRA_DISCORD_BOT_INSTANCE=production. Set this only on the single approved production host.',
+  );
+}
+
+if (botConfig.nodeEnv === 'production' && !botConfig.messageContentIntent) {
+  throw new Error(
+    'Refusing to start the production Discord bot without DISCORD_MESSAGE_CONTENT_INTENT=true. Text commands such as %register require Discord Message Content intent.',
+  );
+}
 
 if (
   !botConfig.apiServiceToken &&
