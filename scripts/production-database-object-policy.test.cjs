@@ -26,6 +26,26 @@ function readPolicy() {
   return JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 }
 
+const studioFunctionTriggerMigration =
+  "20260809200000_studio_widget_release_foundation/migration.sql";
+const studioFunctionTriggerMigrationSha256 =
+  "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b";
+
+test("Studio function and trigger policy binds the exact forward migration", () => {
+  const policy = readPolicy();
+  assert.equal(
+    policy.sourceDigests.apiFunctionTriggerMigrationSha256,
+    studioFunctionTriggerMigrationSha256,
+  );
+  for (const item of [...policy.apiFunctions, ...policy.apiTriggers]) {
+    assert.equal(item.sourceMigration, studioFunctionTriggerMigration);
+    assert.equal(
+      item.sourceMigrationSha256,
+      studioFunctionTriggerMigrationSha256,
+    );
+  }
+});
+
 test("committed object policy exactly matches every reviewed repository object", () => {
   const { policy, counts } = loadPolicy({ manifestPath, repositoryRoot });
   assert.equal(counts.apiTables, 146);

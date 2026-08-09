@@ -47,6 +47,7 @@ const FUNCTION_POLICY_KEYS = Object.freeze([
   "rows",
   "sourceSha256",
   "sourceMigration",
+  "sourceMigrationSha256",
 ]);
 const TRIGGER_POLICY_KEYS = Object.freeze([
   "name",
@@ -63,6 +64,7 @@ const TRIGGER_POLICY_KEYS = Object.freeze([
   "arguments",
   "condition",
   "sourceMigration",
+  "sourceMigrationSha256",
 ]);
 const FUNCTION_DEFAULTS = Object.freeze({
   ownerProfile: "api",
@@ -185,6 +187,12 @@ function validatedFunctionPolicies(value) {
     }
     validatedMigrationSource(item.sourceMigration, `${label}.sourceMigration`);
     if (
+      typeof item.sourceMigrationSha256 !== "string" ||
+      !SHA256.test(item.sourceMigrationSha256)
+    ) {
+      fail(`${label}.sourceMigrationSha256 must be a lowercase SHA-256 digest`);
+    }
+    if (
       typeof item.sourceSha256 !== "string" ||
       !SHA256.test(item.sourceSha256)
     ) {
@@ -199,7 +207,10 @@ function validatedTriggerPolicies(value, functionPolicies, apiRuntimeTables) {
   const functions = new Map(
     functionPolicies.map((item) => [
       `${item.name}(${item.identityArguments})`,
-      item.sourceMigration,
+      {
+        sourceMigration: item.sourceMigration,
+        sourceMigrationSha256: item.sourceMigrationSha256,
+      },
     ]),
   );
   const runtimeTables = new Set(apiRuntimeTables);
@@ -231,6 +242,12 @@ function validatedTriggerPolicies(value, functionPolicies, apiRuntimeTables) {
     assertExactValue(item.level, "ROW", `${label}.level`);
     assertExactValue(item.condition, null, `${label}.condition`);
     validatedMigrationSource(item.sourceMigration, `${label}.sourceMigration`);
+    if (
+      typeof item.sourceMigrationSha256 !== "string" ||
+      !SHA256.test(item.sourceMigrationSha256)
+    ) {
+      fail(`${label}.sourceMigrationSha256 must be a lowercase SHA-256 digest`);
+    }
     if (!Array.isArray(item.arguments) || item.arguments.length !== 0) {
       fail(`${label}.arguments must be empty`);
     }
@@ -258,8 +275,13 @@ function validatedTriggerPolicies(value, functionPolicies, apiRuntimeTables) {
     }
     assertExactValue(
       item.sourceMigration,
-      functions.get(functionIdentity),
+      functions.get(functionIdentity).sourceMigration,
       `${label}.sourceMigration`,
+    );
+    assertExactValue(
+      item.sourceMigrationSha256,
+      functions.get(functionIdentity).sourceMigrationSha256,
+      `${label}.sourceMigrationSha256`,
     );
     referencedFunctions.add(functionIdentity);
     return {
@@ -416,6 +438,7 @@ function parseApiFunctionPolicies(sources) {
         language: match[5].toLowerCase(),
         sourceSha256: sha256(match[4]),
         sourceMigration,
+        sourceMigrationSha256: sha256(source),
       };
       const identity = `${policy.name}(${policy.identityArguments})`;
       if (identities.has(identity)) {
@@ -487,6 +510,7 @@ function parseApiTriggerPolicies(sources) {
         arguments: [],
         condition: null,
         sourceMigration,
+        sourceMigrationSha256: sha256(source),
       };
       const identity = `${policy.tableName}.${policy.name}`;
       if (identities.has(identity)) {
@@ -697,6 +721,20 @@ function checkRepository(policy, repositoryRoot) {
   ]);
   if (functionTriggerSources.size !== 1) {
     fail("API functions and triggers must bind one reviewed migration source");
+  }
+  const functionTriggerSourceDigests = new Set([
+    ...policy.apiFunctions.map((item) => item.sourceMigrationSha256),
+    ...policy.apiTriggers.map((item) => item.sourceMigrationSha256),
+  ]);
+  if (
+    functionTriggerSourceDigests.size !== 1 ||
+    !functionTriggerSourceDigests.has(
+      policy.sourceDigests.apiFunctionTriggerMigrationSha256,
+    )
+  ) {
+    fail(
+      "API functions and triggers must bind the reviewed migration source digest",
+    );
   }
   const functionTriggerSource = [...functionTriggerSources][0];
   const functionTriggerMigrationPath = path.resolve(

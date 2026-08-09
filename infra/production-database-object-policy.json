@@ -673,7 +673,8 @@
       "cost": 100,
       "rows": 0,
       "sourceSha256": "e67ddac3cd5884287f590eedc683da98e736fc416692e1ba961b94ec15f53f76",
-      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+      "sourceMigration": "20260809200000_studio_widget_release_foundation/migration.sql",
+      "sourceMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b"
     },
     {
       "name": "enforceStudioWidgetRevisionReleaseOwner",
@@ -693,7 +694,8 @@
       "cost": 100,
       "rows": 0,
       "sourceSha256": "10827e027f491e7a5bd0d1cedf53090dd056d9605b809fbac01f1a12a52b986e",
-      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+      "sourceMigration": "20260809200000_studio_widget_release_foundation/migration.sql",
+      "sourceMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b"
     }
   ],
   "apiTriggers": [
@@ -711,7 +713,8 @@
       "updateColumns": ["widgetId", "revisionId"],
       "arguments": [],
       "condition": null,
-      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+      "sourceMigration": "20260809200000_studio_widget_release_foundation/migration.sql",
+      "sourceMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b"
     },
     {
       "name": "StudioWidgetRevision_release_widget_owner",
@@ -727,7 +730,8 @@
       "updateColumns": ["widgetId"],
       "arguments": [],
       "condition": null,
-      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+      "sourceMigration": "20260809200000_studio_widget_release_foundation/migration.sql",
+      "sourceMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b"
     }
   ],
   "sequences": []

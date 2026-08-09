@@ -70,9 +70,10 @@ writers waives only old-writer compatibility. It does not accept effects on
 existing data, visibility, sessions, credentials, or external access.
 
 A checksum match is necessary evidence, not release authorization. The
-canonical checkpoint contains the exact 102-migration historical lineage. The
-version-2 safety manifest is intentionally empty only at that checkpoint; it
-does not approve later migrations. Before any forward migration is added, its
+canonical checkpoint contains the exact 102-migration historical lineage plus
+the separately reviewed additive Studio migration. The version-2 safety
+manifest is intentionally empty only for that 103-migration lineage; it does
+not approve later migrations. Before any forward migration is added, its
 contract and data effects must be reviewed and every required classification
 must be added to the manifest. Unclassified destructive or data-impact SQL
 continues to fail closed mechanically.
@@ -163,13 +164,20 @@ release authorization. Prefer `npm run deploy:up` or
 ## Contract and data-impact migrations
 
 The current manifest contains no entries because it is bound to the reconciled
-102-migration checkpoint and not to the discarded future-candidate lineage.
-That empty list is temporary release evidence, not permission to append an
-unreviewed migration. The forthcoming Studio migration is expected to be
-additive. IDP encryption requires controlled-maintenance and data-impact
-classification, and onboarding requires explicit old/new-writer contract
-review. Populate the manifest with their exact final migration names and
-reviewed effects in the same commit that integrates those migrations.
+102-migration history plus the reviewed additive Studio migration, not to the
+discarded future-candidate lineage. That empty list is temporary release
+evidence, not permission to append an unreviewed migration. IDP encryption
+requires controlled-maintenance and data-impact classification, and onboarding
+requires explicit old/new-writer contract review. Populate the manifest with
+their exact final migration names and reviewed effects in the same commit that
+integrates those migrations.
+
+The reviewed additive Studio foundation is
+`20260809200000_studio_widget_release_foundation/migration.sql`, with normalized
+SQL SHA-256
+`3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b`.
+The database object policy binds that exact source on every Studio trigger and
+trigger-function entry; a path or byte change fails repository verification.
 
 Prefer expand/contract: add the replacement shape, deploy dual-compatible code,
 backfill and verify it, then drop the legacy shape in a later release. The
