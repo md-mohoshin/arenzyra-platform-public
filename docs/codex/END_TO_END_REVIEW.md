@@ -37,22 +37,24 @@ and 30-day validation gates are in
 The release work uses three independent Git repositories. Root does not track
 the nested Web repository as content or as a gitlink.
 
-| Tree                                                      | Audited revision                           |                                                                                                                Status at this checkpoint |
-| --------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------: |
-| Root checkpoint before this production-evidence addendum  | `0a53211c989d771200b17a27f2a456e5a20bac27` | pre-commit status is exactly 25 paths: this intended document plus 24 exclusions; after this addendum is committed, 24 exclusions remain |
-| Canonical API worktree (`.worktrees/api-release-lineage`) | `4edafafd28aaf684a78f678adf358b5eaed80238` |                                                   clean; one test-only standings regression was added after runtime checkpoint `a508e97` |
-| Web runtime source/build checkpoint (`apps/arenzyra-web`) | `f2ca9a152e60830ed526fa0b9a784982aba1afeb` |                                                        clean; source, build, and runtime-package evidence below belongs to this revision |
-| Web test-harness checkpoint (`apps/arenzyra-web`)         | `1d37d1096ce8c5323ccdb0938f800c35f6a2029c` |                                                                          clean; only two test files changed after the runtime checkpoint |
+| Tree                                                      | Audited revision                           |                                                                                   Status at this checkpoint |
+| --------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------: |
+| Root checkpoint before the exclusions quarantine          | `45a4e3d893646f9cc27b714b5ec961bdb00c8137` | pre-commit status contains only these two intended evidence documents; after this checkpoint, Root is clean |
+| Canonical API worktree (`.worktrees/api-release-lineage`) | `4edafafd28aaf684a78f678adf358b5eaed80238` |                      clean; one test-only standings regression was added after runtime checkpoint `a508e97` |
+| Web runtime source/build checkpoint (`apps/arenzyra-web`) | `f2ca9a152e60830ed526fa0b9a784982aba1afeb` |                           clean; source, build, and runtime-package evidence below belongs to this revision |
+| Web test-harness checkpoint (`apps/arenzyra-web`)         | `1d37d1096ce8c5323ccdb0938f800c35f6a2029c` |                                             clean; only two test files changed after the runtime checkpoint |
 
 The dirty legacy `apps/api` tree at
 `54dd78c91ac15747c3ded2d1e5c99fd31c8d9b8a` is not release identity. Its
 moving working state must not be substituted for the canonical API revision.
 
-The 24 Root exclusions are three unapproved brand assets (two PNGs and one SVG)
-plus 21 publishing/marketing paths (19 scripts, one JSON file, and one Markdown
-document). They were intentionally not committed. Some can upload or publish
-externally and still contain local-machine paths. The brand assets require
-provenance and visual approval.
+The former 24 Root exclusions were three unapproved brand assets (two PNGs and
+one SVG) plus 21 publishing/marketing paths (19 scripts, one JSON file, and one
+Markdown document). They were not committed or executed. On 2026-08-09, all 24
+were hash-verified into two external quarantine copies; the 21 untracked files
+were moved there and the three tracked assets were restored to their committed
+versions. Recovery details are in
+[`ROOT_EXCLUSIONS_QUARANTINE_20260809.md`](ROOT_EXCLUSIONS_QUARANTINE_20260809.md).
 
 Generated dependencies, build caches, local runtime data, uploads, recordings,
 backups, and binary installers are not source identity. Before remediation, an
@@ -204,8 +206,9 @@ new production inventory.
 
 ## Genuine release blockers
 
-1. Resolve or explicitly retire the 24 excluded Root paths, confirm `ob.js`
-   provenance, and reproduce all revisions from clean checkouts.
+1. Keep the 24 quarantined Root paths outside release input unless individually
+   approved, confirm `ob.js` provenance, and reproduce all revisions from clean
+   checkouts.
 2. Complete the 149 direct and 258 manual API overlays without overwriting
    protected gateway or credential-approval changes. Resolve the passwordless
    application/account-setup/trial and catalog/billing incompatibilities.
