@@ -1,0 +1,122 @@
+{
+  "provider": {
+    "name": "Counter-Strike 2",
+    "appid": 730,
+    "version": 14022,
+    "steamid": "76561190000000000",
+    "timestamp": 1785412800
+  },
+  "map": {
+    "mode": "competitive",
+    "name": "de_mirage",
+    "phase": "live",
+    "round": 12,
+    "num_matches_to_win_series": 2,
+    "current_spectators": 1,
+    "round_wins": {
+      "1": "ct_win_elimination",
+      "2": "t_win_bomb"
+    },
+    "team_ct": {
+      "name": "Blue Example",
+      "score": 7,
+      "consecutive_round_losses": 0,
+      "timeouts_remaining": 3,
+      "matches_won_this_series": 0
+    },
+    "team_t": {
+      "name": "Orange Example",
+      "score": 5,
+      "consecutive_round_losses": 2,
+      "timeouts_remaining": 4,
+      "matches_won_this_series": 0
+    }
+  },
+  "round": {
+    "phase": "live",
+    "bomb": "carried"
+  },
+  "phase_countdowns": {
+    "phase": "live",
+    "phase_ends_in": "71.4"
+  },
+  "bomb": {
+    "state": "carried",
+    "player": "76561190000000002",
+    "position": "121.0, 442.0, 18.0"
+  },
+  "player": {
+    "steamid": "76561190000000001",
+    "name": "Observed Player",
+    "activity": "playing"
+  },
+  "allplayers": {
+    "76561190000000001": {
+      "name": "Observed Player",
+      "team": "CT",
+      "observer_slot": 1,
+      "activity": "playing",
+      "state": {
+        "health": 84,
+        "armor": 67,
+        "helmet": true,
+        "flashed": 0,
+        "smoked": 0,
+        "burning": 0,
+        "money": 1900,
+        "round_kills": 1,
+        "round_killhs": 1,
+        "equip_value": 4700
+      },
+      "match_stats": {
+        "kills": 14,
+        "assists": 3,
+        "deaths": 8,
+        "mvps": 2,
+        "score": 31
+      },
+      "weapons": {
+        "weapon_0": {
+          "name": "weapon_m4a1",
+          "type": "Rifle",
+          "state": "active",
+          "ammo_clip": 19,
+          "ammo_clip_max": 30,
+          "ammo_reserve": 66
+        }
+      }
+    },
+    "76561190000000002": {
+      "name": "Bomb Carrier",
+      "team": "T",
+      "observer_slot": 6,
+      "activity": "playing",
+      "state": {
+        "health": 100,
+        "armor": 100,
+        "helmet": true,
+        "money": 750,
+        "round_kills": 0,
+        "round_killhs": 0,
+        "equip_value": 5100
+      },
+      "match_stats": {
+        "kills": 10,
+        "assists": 5,
+        "deaths": 9,
+        "mvps": 1,
+        "score": 25
+      }
+    }
+  },
+  "auth": {
+    "token": "TEST_TOKEN_REPLACED_BY_THE_TEST_CLIENT_123456"
+  },
+  "previously": {
+    "map": {
+      "team_ct": {
+        "score": 6
+      }
+    }
+  }
+}
