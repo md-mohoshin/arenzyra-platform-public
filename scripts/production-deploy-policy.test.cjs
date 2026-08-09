@@ -1327,6 +1327,7 @@ test("web container context and deployed package exclude local source artifacts"
 
   assert.deepEqual(webPackage.files, expectedFiles);
   for (const ignoredPath of [
+    ".migration-rehearsal-*",
     "apps/arenzyra-web/.arenzyra-build.json",
     "apps/arenzyra-web/next-env.d.ts",
     "apps/arenzyra-web/tsconfig.tsbuildinfo",

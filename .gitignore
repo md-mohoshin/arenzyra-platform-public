@@ -73,6 +73,7 @@ infra/.env.release
 .deploy-safety-backups/
 .deploy-safety-staging/
 .local-backups/
+/.migration-rehearsal-*/
 /.worktrees/
 .tmp/
 /.tmp*/
