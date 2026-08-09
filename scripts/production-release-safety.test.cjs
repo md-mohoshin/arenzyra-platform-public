@@ -25,14 +25,6 @@ const {
   parseCount: parseApplicationRelationCount,
   verifyEmptyProductionTarget,
 } = require("./verify-empty-production-target.cjs");
-const {
-  IDP_ENVELOPE_CONSTRAINT_DEFINITIONS,
-  verifyIdpCredentialStorage,
-} = require("./verify-idp-credential-storage.cjs");
-
-const exactIdpEnvelopeConstraintDefinition =
-  IDP_ENVELOPE_CONSTRAINT_DEFINITIONS.values().next().value;
-
 function fixture(t, migrations) {
   const root = fs.mkdtempSync(
     path.join(os.tmpdir(), "arenzyra-migration-gate-"),
@@ -48,7 +40,7 @@ function fixture(t, migrations) {
 
 function manifestFor(contractNames, dataImpactNames = []) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contractMigrations: contractNames.map((name) => ({
       name,
       requiredWorkflow: "controlled-maintenance",
@@ -63,13 +55,6 @@ function manifestFor(contractNames, dataImpactNames = []) {
       reason:
         "The test migration deliberately changes existing persisted rows.",
     })),
-    idpCredentialStorage: {
-      storageMigration: "idp-storage",
-      envelopePrefix: "v1:",
-      legacyCountRequirement: "zero",
-      backfillMode: "manual-only",
-      oldWriterPolicy: "stop-before-backfill-and-keep-stopped",
-    },
   };
 }
 
@@ -313,71 +298,6 @@ test("an unclassified procedural block cannot pass on an old-writer waiver", (t)
     })),
     [{ name: "procedural", operations: ["procedural-do-block"] }],
   );
-});
-
-test("current FK and comment-only migrations are not classified as row updates", () => {
-  const migrationSql = (name) =>
-    fs.readFileSync(
-      path.join(
-        __dirname,
-        "..",
-        "apps",
-        "api",
-        "prisma",
-        "migrations",
-        name,
-        "migration.sql",
-      ),
-      "utf8",
-    );
-
-  const authPasswordActions = migrationSql(
-    "20260804120000_auth_password_actions",
-  );
-  assert.deepEqual(detectedDataImpactOperations(authPasswordActions), []);
-  assert.deepEqual(detectedContractOperations(authPasswordActions), [
-    "drop-column-not-null",
-  ]);
-
-  assert.deepEqual(
-    detectedDataImpactOperations(
-      migrationSql("20260805030000_conditional_ban_enrollments"),
-    ),
-    [],
-  );
-  assert.deepEqual(
-    detectedDataImpactOperations(migrationSql("20260303_org_default_media")),
-    [],
-  );
-});
-
-test("real repository UPDATE migrations remain mechanically detected", () => {
-  for (const name of [
-    "20260805010000_harden_tournament_invite_lifecycle",
-    "20260805020000_refresh_token_families",
-    "20260805030000_broadcast_capability_lifecycle",
-    "20260805050000_private_assets_and_screenshot_evidence",
-    "20260805070000_widget_capability_lifecycle",
-  ]) {
-    const sql = fs.readFileSync(
-      path.join(
-        __dirname,
-        "..",
-        "apps",
-        "api",
-        "prisma",
-        "migrations",
-        name,
-        "migration.sql",
-      ),
-      "utf8",
-    );
-    assert.equal(
-      detectedDataImpactOperations(sql).includes("update-rows"),
-      true,
-      name,
-    );
-  }
 });
 
 test("contract detection covers nullability, type, and enum replacement forms", () => {
@@ -825,109 +745,29 @@ test("applied database history absent from source fails closed as divergent", (t
   ]);
 });
 
-test("the production manifest is complete and points to real migration directories", () => {
+test("the production manifest is a closed canonical-lineage policy", () => {
   const manifest = loadManifest();
-  assert.deepEqual(
-    manifest.dataImpactMigrations.map(({ name }) => name),
-    [
-      "20260804230000_match_publication_boundary",
-      "20260805010000_harden_tournament_invite_lifecycle",
-      "20260805020000_refresh_token_families",
-      "20260805021000_idp_encrypted_credential_storage",
-      "20260805030000_broadcast_capability_lifecycle",
-      "20260805040000_platform_superadmin_mfa",
-      "20260805050000_private_assets_and_screenshot_evidence",
-      "20260805060000_durable_manual_billing",
-      "20260805070000_widget_capability_lifecycle",
-    ],
-  );
-  assert.equal(
-    manifest.dataImpactMigrations.every(
-      ({ requiredWorkflow, acceptanceRequirement }) =>
-        requiredWorkflow === "controlled-maintenance" &&
-        acceptanceRequirement === "reviewed-controlled-maintenance",
-    ),
-    true,
-  );
-  const result = evaluateMigrationSafety({
-    migrationLedger: appliedMigrationLedger(
-      path.join(__dirname, "..", "apps", "api", "prisma", "migrations"),
-      fs
-        .readdirSync(
-          path.join(__dirname, "..", "apps", "api", "prisma", "migrations"),
-          { withFileTypes: true },
-        )
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort()
-        .filter((name) => name < manifest.contractMigrations[0].name),
-    ),
-    manifest,
+  assert.deepEqual(manifest, {
+    schemaVersion: 2,
+    contractMigrations: [],
+    dataImpactMigrations: [],
   });
-  assert.equal(result.reason, "pending-old-writer-incompatible-migrations");
-  assert.deepEqual(
-    result.pendingContract.map(({ name }) => name),
-    manifest.contractMigrations.map(({ name }) => name),
-  );
 });
 
-test("IDP encrypted-at-rest release verification requires migration, constraint, and zero legacy rows", () => {
-  const manifest = loadManifest();
-  assert.deepEqual(
-    verifyIdpCredentialStorage({
-      envelopeConstraintDefinition: exactIdpEnvelopeConstraintDefinition,
-      envelopeConstraintCount: 1,
-      migrationAppliedCount: 1,
-      legacyScheduleCount: 0,
-      manifest,
+test("legacy candidate-only migration policy fields fail closed", (t) => {
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), "arenzyra-migration-manifest-"),
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const manifestPath = path.join(root, "policy.json");
+  fs.writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      schemaVersion: 2,
+      contractMigrations: [],
+      dataImpactMigrations: [],
+      idpCredentialStorage: { storageMigration: "absent-candidate" },
     }),
-    {
-      ok: true,
-      reason: "legacy-plaintext-count-zero",
-      legacyScheduleCount: 0,
-      envelopePrefix: "v1:",
-    },
   );
-  assert.equal(
-    verifyIdpCredentialStorage({
-      envelopeConstraintDefinition: exactIdpEnvelopeConstraintDefinition,
-      envelopeConstraintCount: 1,
-      migrationAppliedCount: 1,
-      legacyScheduleCount: 2,
-      manifest,
-    }).reason,
-    "legacy-plaintext-idp-schedules-remain",
-  );
-  assert.equal(
-    verifyIdpCredentialStorage({
-      envelopeConstraintDefinition: exactIdpEnvelopeConstraintDefinition,
-      envelopeConstraintCount: 1,
-      migrationAppliedCount: 0,
-      legacyScheduleCount: 0,
-      manifest,
-    }).reason,
-    "idp-storage-migration-not-applied",
-  );
-  for (const envelopeConstraintCount of [0, 2]) {
-    assert.equal(
-      verifyIdpCredentialStorage({
-        envelopeConstraintDefinition: exactIdpEnvelopeConstraintDefinition,
-        envelopeConstraintCount,
-        migrationAppliedCount: 1,
-        legacyScheduleCount: 0,
-        manifest,
-      }).reason,
-      "idp-storage-envelope-constraint-missing",
-    );
-  }
-  assert.equal(
-    verifyIdpCredentialStorage({
-      envelopeConstraintDefinition: `CHECK (true OR ${exactIdpEnvelopeConstraintDefinition})`,
-      envelopeConstraintCount: 1,
-      migrationAppliedCount: 1,
-      legacyScheduleCount: 0,
-      manifest,
-    }).reason,
-    "idp-storage-envelope-constraint-mismatch",
-  );
+  assert.throws(() => loadManifest(manifestPath), /unexpected schema/);
 });

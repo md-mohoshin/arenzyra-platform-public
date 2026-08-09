@@ -20,12 +20,13 @@ const POLICY_KEYS = Object.freeze([
 const DIGEST_KEYS = Object.freeze([
   "apiPrismaSchemaSha256",
   "apiMigrationTreeSha256",
+  "apiFunctionTriggerMigrationSha256",
   "studioMigrationSha256",
 ]);
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
-const REVIEWED_TRIGGER_MIGRATION =
-  "20260713130000_studio_widget_release_foundation/migration.sql";
+const MIGRATION_SOURCE =
+  /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?\/migration\.sql$/;
 const ENUM_POLICY_KEYS = Object.freeze(["name", "labels"]);
 const FUNCTION_POLICY_KEYS = Object.freeze([
   "name",
@@ -79,7 +80,6 @@ const FUNCTION_DEFAULTS = Object.freeze({
   argumentDefaults: 0,
   cost: 100,
   rows: 0,
-  sourceMigration: REVIEWED_TRIGGER_MIGRATION,
 });
 
 function fail(message) {
@@ -161,6 +161,13 @@ function assertExactValue(actual, expected, label) {
   if (actual !== expected) fail(`${label} is not the reviewed value`);
 }
 
+function validatedMigrationSource(value, label) {
+  if (typeof value !== "string" || !MIGRATION_SOURCE.test(value)) {
+    fail(`${label} is not a safe migration source`);
+  }
+  return value;
+}
+
 function validatedFunctionPolicies(value) {
   if (!Array.isArray(value)) fail("apiFunctions must be an array");
   const seen = new Set();
@@ -176,6 +183,7 @@ function validatedFunctionPolicies(value) {
     for (const [key, expected] of Object.entries(FUNCTION_DEFAULTS)) {
       assertExactValue(item[key], expected, `${label}.${key}`);
     }
+    validatedMigrationSource(item.sourceMigration, `${label}.sourceMigration`);
     if (
       typeof item.sourceSha256 !== "string" ||
       !SHA256.test(item.sourceSha256)
@@ -188,8 +196,11 @@ function validatedFunctionPolicies(value) {
 
 function validatedTriggerPolicies(value, functionPolicies, apiRuntimeTables) {
   if (!Array.isArray(value)) fail("apiTriggers must be an array");
-  const functions = new Set(
-    functionPolicies.map((item) => `${item.name}(${item.identityArguments})`),
+  const functions = new Map(
+    functionPolicies.map((item) => [
+      `${item.name}(${item.identityArguments})`,
+      item.sourceMigration,
+    ]),
   );
   const runtimeTables = new Set(apiRuntimeTables);
   const seen = new Set();
@@ -219,11 +230,7 @@ function validatedTriggerPolicies(value, functionPolicies, apiRuntimeTables) {
     assertExactValue(item.timing, "BEFORE", `${label}.timing`);
     assertExactValue(item.level, "ROW", `${label}.level`);
     assertExactValue(item.condition, null, `${label}.condition`);
-    assertExactValue(
-      item.sourceMigration,
-      REVIEWED_TRIGGER_MIGRATION,
-      `${label}.sourceMigration`,
-    );
+    validatedMigrationSource(item.sourceMigration, `${label}.sourceMigration`);
     if (!Array.isArray(item.arguments) || item.arguments.length !== 0) {
       fail(`${label}.arguments must be empty`);
     }
@@ -249,6 +256,11 @@ function validatedTriggerPolicies(value, functionPolicies, apiRuntimeTables) {
     if (!functions.has(functionIdentity)) {
       fail(`${label} references an unclassified function`);
     }
+    assertExactValue(
+      item.sourceMigration,
+      functions.get(functionIdentity),
+      `${label}.sourceMigration`,
+    );
     referencedFunctions.add(functionIdentity);
     return {
       ...item,
@@ -542,6 +554,8 @@ function canonicalPolicy(policy) {
     sourceDigests: {
       apiPrismaSchemaSha256: policy.sourceDigests.apiPrismaSchemaSha256,
       apiMigrationTreeSha256: policy.sourceDigests.apiMigrationTreeSha256,
+      apiFunctionTriggerMigrationSha256:
+        policy.sourceDigests.apiFunctionTriggerMigrationSha256,
       studioMigrationSha256: policy.sourceDigests.studioMigrationSha256,
     },
     apiRuntimeTables: sort(policy.apiRuntimeTables),
@@ -677,6 +691,42 @@ function checkRepository(policy, repositoryRoot) {
     "apiTriggers",
   );
 
+  const functionTriggerSources = new Set([
+    ...policy.apiFunctions.map((item) => item.sourceMigration),
+    ...policy.apiTriggers.map((item) => item.sourceMigration),
+  ]);
+  if (functionTriggerSources.size !== 1) {
+    fail("API functions and triggers must bind one reviewed migration source");
+  }
+  const functionTriggerSource = [...functionTriggerSources][0];
+  const functionTriggerMigrationPath = path.resolve(
+    migrationRoot,
+    ...functionTriggerSource.split("/"),
+  );
+  const relativeFunctionTriggerMigration = path.relative(
+    migrationRoot,
+    functionTriggerMigrationPath,
+  );
+  if (
+    relativeFunctionTriggerMigration === ".." ||
+    relativeFunctionTriggerMigration.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeFunctionTriggerMigration)
+  ) {
+    fail("API function/trigger migration source escapes the migration root");
+  }
+  let functionTriggerMigrationStat;
+  try {
+    functionTriggerMigrationStat = fs.lstatSync(functionTriggerMigrationPath);
+  } catch {
+    fail("API function/trigger migration source is missing");
+  }
+  if (
+    !functionTriggerMigrationStat.isFile() ||
+    functionTriggerMigrationStat.isSymbolicLink()
+  ) {
+    fail("API function/trigger migration source is not a regular file");
+  }
+
   if (/\bautoincrement\s*\(/.test(prismaSource)) {
     fail("Prisma schema contains an unclassified sequence source");
   }
@@ -706,6 +756,9 @@ function checkRepository(policy, repositoryRoot) {
   const observedDigests = {
     apiPrismaSchemaSha256: sha256(prismaSource),
     apiMigrationTreeSha256: migrationTree.digest,
+    apiFunctionTriggerMigrationSha256: sha256(
+      normalizedText(functionTriggerMigrationPath),
+    ),
     studioMigrationSha256: sha256(studioSource),
   };
   for (const key of DIGEST_KEYS) {

@@ -65,48 +65,43 @@ test("routine deploy blocks pending old-writer-incompatible migrations before an
   const manifest = JSON.parse(
     read("infra/production-api-migration-safety.json"),
   );
-  assert.equal(manifest.schemaVersion, 1);
-  assert.deepEqual(
-    manifest.contractMigrations.map(({ name }) => name),
-    [
-      "20260804120000_auth_password_actions",
-      "20260805010000_harden_tournament_invite_lifecycle",
-      "20260805020000_refresh_token_families",
-      "20260805021000_idp_encrypted_credential_storage",
-      "20260805030000_broadcast_capability_lifecycle",
-      "20260805070000_widget_capability_lifecycle",
-    ],
+  assert.deepEqual(manifest, {
+    schemaVersion: 2,
+    contractMigrations: [],
+    dataImpactMigrations: [],
+  });
+  assert.match(
+    read("scripts/verify-production-migration-safety.cjs"),
+    /unclassified-destructive-migrations/,
   );
-  assert.equal(
-    manifest.contractMigrations.every(
-      ({ requiredWorkflow }) => requiredWorkflow === "controlled-maintenance",
-    ),
-    true,
+  assert.match(
+    read("scripts/verify-production-migration-safety.cjs"),
+    /unclassified-data-impact-migrations/,
   );
-  assert.deepEqual(
-    manifest.dataImpactMigrations.map(({ name }) => name),
-    [
-      "20260804230000_match_publication_boundary",
-      "20260805010000_harden_tournament_invite_lifecycle",
-      "20260805020000_refresh_token_families",
-      "20260805021000_idp_encrypted_credential_storage",
-      "20260805030000_broadcast_capability_lifecycle",
-      "20260805040000_platform_superadmin_mfa",
-      "20260805050000_private_assets_and_screenshot_evidence",
-      "20260805060000_durable_manual_billing",
-      "20260805070000_widget_capability_lifecycle",
-    ],
+});
+
+test("full deploy verifies the canonical API image boundary before release mutation", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const imageBoundary = deploy.indexOf(
+    '"${sanitized_environment[@]}" node scripts/verify-production-api-capabilities.cjs',
   );
-  assert.equal(
-    manifest.dataImpactMigrations.every(
-      ({ requiredWorkflow, acceptanceRequirement, impactKind, reason }) =>
-        requiredWorkflow === "controlled-maintenance" &&
-        acceptanceRequirement === "reviewed-controlled-maintenance" &&
-        typeof impactKind === "string" &&
-        reason.length >= 20,
-    ),
-    true,
+  const publishPreflight = deploy.indexOf(
+    "node scripts/preflight-publish.cjs --env infra/.env.publish",
   );
+  const releaseArchiveMutation = deploy.lastIndexOf(
+    "\nverify_release_archive_root\n",
+  );
+  const build = deploy.indexOf('"${compose[@]}" build api media-ai web');
+
+  assert.ok(imageBoundary >= 0);
+  assert.ok(publishPreflight > imageBoundary);
+  assert.ok(releaseArchiveMutation > imageBoundary);
+  assert.ok(build > imageBoundary);
+
+  const adapter = read("scripts/verify-production-api-capabilities.cjs");
+  assert.match(adapter, /verify-runtime-image-boundary\.cjs/);
+  assert.match(adapter, /verifySourceBoundary/);
+  assert.doesNotMatch(adapter, /verify-runtime-capabilities\.cjs/);
 });
 
 test("routine full deploy verifies canonical entitlements before every release mutation", () => {
@@ -185,7 +180,6 @@ test("deploy binds Compose, gates, backup, runtimes, and migrators to one review
     "scripts/production-release-safety-gate.sh",
     "scripts/verify-production-entitlement-invariants.sh",
     "scripts/verify-production-empty-target.sh",
-    "scripts/verify-production-idp-encryption.sh",
     "scripts/production-backup.sh",
   ]) {
     assert.match(
@@ -206,38 +200,8 @@ test("deploy binds Compose, gates, backup, runtimes, and migrators to one review
     compose,
     /STUDIO_MIGRATION_DATABASE_URL: "\$\{STUDIO_MIGRATION_DATABASE_URL:\?REQUIRED/,
   );
-  assert.match(
-    compose,
-    /api-maintenance-idp-read:[\s\S]*?DATABASE_URL: "\$\{MAINTENANCE_READ_DATABASE_URL:\?REQUIRED/,
-  );
-  assert.match(
-    compose,
-    /api-maintenance-idp-apply:[\s\S]*?DATABASE_URL: "\$\{IDP_MAINTENANCE_DATABASE_URL:\?REQUIRED/,
-  );
-  assert.match(
-    compose,
-    /api-maintenance-youtube-read:[\s\S]*?DATABASE_URL: "\$\{MAINTENANCE_READ_DATABASE_URL:\?REQUIRED/,
-  );
-  assert.match(
-    compose,
-    /api-maintenance-youtube-apply:[\s\S]*?DATABASE_URL: "\$\{YOUTUBE_MAINTENANCE_DATABASE_URL:\?REQUIRED/,
-  );
-
-  for (const serviceName of [
-    "api-maintenance-idp-read",
-    "api-maintenance-youtube-read",
-  ]) {
-    const block = compose.match(
-      new RegExp(
-        `\\n  ${serviceName}:\\r?\\n([\\s\\S]*?)(?=\\n  [a-zA-Z0-9_-]+:\\r?\\n|\\nvolumes:\\r?\\n)`,
-      ),
-    )?.[1];
-    assert.ok(block, serviceName);
-    assert.doesNotMatch(
-      block,
-      /IDP_MAINTENANCE_DATABASE_URL|YOUTUBE_MAINTENANCE_DATABASE_URL/,
-    );
-  }
+  assert.doesNotMatch(compose, /api-maintenance-/);
+  assert.doesNotMatch(compose, /dist-maintenance/);
 
   const databaseContainer = read(
     "scripts/verify-production-database-container.sh",
@@ -686,7 +650,6 @@ test("production Docker commands are local-socket and ambient-env bound", () => 
     "scripts/production-restore-drill.sh",
     "scripts/verify-production-entitlement-invariants.sh",
     "scripts/verify-production-empty-target.sh",
-    "scripts/verify-production-idp-encryption.sh",
     "scripts/rollback-production-images.sh",
   ]) {
     assert.match(read(script), /require-local-production-docker\.sh/, script);
@@ -727,7 +690,6 @@ test("production process override guard precedes Node and Git provenance calls",
     "scripts/production-release-safety-gate.sh",
     "scripts/verify-production-empty-target.sh",
     "scripts/verify-production-entitlement-invariants.sh",
-    "scripts/verify-production-idp-encryption.sh",
     "scripts/verify-production-database-roles.sh",
     "scripts/provision-production-database-roles.sh",
     "scripts/production-backup.sh",
@@ -753,7 +715,6 @@ test("production read-only database gates fail within bounded time", () => {
     "scripts/verify-production-database-container.sh",
     "scripts/verify-production-entitlement-invariants.sh",
     "scripts/verify-production-empty-target.sh",
-    "scripts/verify-production-idp-encryption.sh",
   ]) {
     const source = read(script);
     assert.match(source, /PGCONNECT_TIMEOUT=10/, script);
@@ -917,7 +878,7 @@ test("database roles are verified before mutation, after migrations, before cuto
   );
 });
 
-test("full release verifies zero legacy plaintext IDP schedules without running a backfill", () => {
+test("full release remains blocked until the IDP encryption closure is integrated", () => {
   const deploy = read("scripts/deploy-production.sh");
   const releaseArchiveMutation = deploy.lastIndexOf(
     "\nverify_release_archive_root\n",
@@ -927,46 +888,26 @@ test("full release verifies zero legacy plaintext IDP schedules without running 
     "bash scripts/verify-production-idp-encryption.sh",
     initialGatePhase,
   );
-  const health = deploy.lastIndexOf('wait_for_health "${services[@]}"');
-  const idpGate = deploy.lastIndexOf("verify-production-idp-encryption.sh");
-  const verified = deploy.lastIndexOf("DEPLOYMENT VERIFIED");
 
   assert.ok(firstIdpGate >= 0);
   assert.ok(releaseArchiveMutation > firstIdpGate);
-  assert.ok(idpGate > health);
-  assert.ok(verified > idpGate);
   assert.doesNotMatch(
     deploy,
     /idp-credentials:backfill|backfill-idp-credentials/,
   );
 
   const idpGateScript = read("scripts/verify-production-idp-encryption.sh");
-  assert.match(idpGateScript, /roomPassword.*!~.*\^v1:\[A-Za-z0-9_-\]\{16\}/s);
-  assert.match(idpGateScript, /pg_catalog\.pg_constraint/);
-  assert.match(
-    idpGateScript,
-    /DiscordIdpSchedule_roomPassword_v1_envelope_check/,
-  );
-  assert.doesNotMatch(idpGateScript, /pg_catalog\.strpos/);
-  assert.match(idpGateScript, /constraint_record\.conkey/);
-  assert.match(idpGateScript, /constraint_record\.connoinherit/);
-  assert.match(idpGateScript, /pg_catalog\.pg_get_constraintdef\(oid, true\)/);
-  assert.match(idpGateScript, /--constraint-count "\$constraint_count"/);
-  assert.match(
-    idpGateScript,
-    /--constraint-definition-hex "\$constraint_definition_hex"/,
-  );
-  assert.match(idpGateScript, /verify-idp-credential-storage\.cjs/);
+  assert.match(idpGateScript, /IDP ENCRYPTION GATE BLOCKED/);
+  assert.match(idpGateScript, /stores Discord IDP room passwords as plaintext/);
+  assert.match(idpGateScript, /writer-stopped backfill/);
+  assert.match(idpGateScript, /zero-plaintext postcondition/);
+  assert.match(idpGateScript, /exit 75/);
+  assert.doesNotMatch(idpGateScript, /docker\s+(?:compose|run|exec|inspect)/);
 
   const manifest = JSON.parse(
     read("infra/production-api-migration-safety.json"),
   );
-  assert.equal(manifest.idpCredentialStorage.legacyCountRequirement, "zero");
-  assert.equal(manifest.idpCredentialStorage.backfillMode, "manual-only");
-  assert.equal(
-    manifest.idpCredentialStorage.oldWriterPolicy,
-    "stop-before-backfill-and-keep-stopped",
-  );
+  assert.equal(Object.hasOwn(manifest, "idpCredentialStorage"), false);
 });
 
 test("restore drill extracts archives into isolated contained temporary targets", () => {
@@ -1374,10 +1315,7 @@ test("web container context and deployed package exclude local source artifacts"
     /COPY[^\n]*\/repo\/apps\/arenzyra-web\/(?:public|\.next-build|\.arenzyra-build\.json)/,
   );
   assert.match(workspace, /^injectWorkspacePackages:\s*true$/m);
-  assert.match(
-    lockfile,
-    /^\s{2}injectWorkspacePackages:\s*true$/m,
-  );
+  assert.match(lockfile, /^\s{2}injectWorkspacePackages:\s*true$/m);
 });
 
 test("immediate production guard validates the MFA environment before runtime checks", () => {

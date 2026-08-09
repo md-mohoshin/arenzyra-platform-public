@@ -344,15 +344,13 @@ function assertResolvedComposeTargets(compose, env) {
       false,
     ],
   ];
-  for (const [serviceName, envKey] of [
-    ["api-maintenance-idp-read", "MAINTENANCE_READ_DATABASE_URL"],
-    ["api-maintenance-idp-apply", "IDP_MAINTENANCE_DATABASE_URL"],
-    ["api-maintenance-youtube-read", "MAINTENANCE_READ_DATABASE_URL"],
-    ["api-maintenance-youtube-apply", "YOUTUBE_MAINTENANCE_DATABASE_URL"],
-  ]) {
-    if (services[serviceName]) {
-      bindings.push([serviceName, "DATABASE_URL", envKey, false]);
-    }
+  const unsupportedMaintenanceServices = Object.keys(services).filter(
+    (serviceName) => serviceName.startsWith("api-maintenance-"),
+  );
+  if (unsupportedMaintenanceServices.length > 0) {
+    throw new Error(
+      "Resolved Compose advertises unsupported API maintenance services.",
+    );
   }
 
   const postgresDatabase = composeEnvironment(services.postgres).POSTGRES_DB;

@@ -238,24 +238,21 @@ test("resolved Compose database consumers reject alternate routing", () => {
   }
 });
 
-test("resolved Compose binds optional maintenance database consumers", () => {
+test("resolved Compose rejects unsupported API maintenance consumers", () => {
   const env = validEnv();
-  const compose = validCompose(env);
-  compose.services["api-maintenance-idp-read"] = {
-    environment: { DATABASE_URL: env.MAINTENANCE_READ_DATABASE_URL },
-  };
-  compose.services["api-maintenance-idp-apply"] = {
-    environment: { DATABASE_URL: env.IDP_MAINTENANCE_DATABASE_URL },
-  };
-  compose.services["api-maintenance-youtube-read"] = {
-    environment: { DATABASE_URL: env.MAINTENANCE_READ_DATABASE_URL },
-    networks: ["default"],
-  };
-  compose.services["api-maintenance-youtube-apply"] = {
-    environment: { DATABASE_URL: env.YOUTUBE_MAINTENANCE_DATABASE_URL },
-  };
-  assert.doesNotThrow(() => assertResolvedComposeTargets(compose, env));
-  compose.services["api-maintenance-idp-read"].environment.DATABASE_URL =
-    env.IDP_MAINTENANCE_DATABASE_URL;
-  assert.throws(() => assertResolvedComposeTargets(compose, env));
+  for (const serviceName of [
+    "api-maintenance-idp-read",
+    "api-maintenance-idp-apply",
+    "api-maintenance-youtube-read",
+    "api-maintenance-youtube-apply",
+  ]) {
+    const compose = validCompose(env);
+    compose.services[serviceName] = {
+      environment: { DATABASE_URL: env.MAINTENANCE_READ_DATABASE_URL },
+    };
+    assert.throws(
+      () => assertResolvedComposeTargets(compose, env),
+      /unsupported API maintenance services/,
+    );
+  }
 });

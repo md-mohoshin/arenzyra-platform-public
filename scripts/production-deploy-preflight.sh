@@ -7,11 +7,10 @@ MIN_FREE_GIB="${ARENZYRA_DEPLOY_MIN_FREE_GIB:-30}"
 COMPOSE_PROJECT="${ARENZYRA_DEPLOY_COMPOSE_PROJECT:-}"
 PUBLISH_ENV_FILE="${ARENZYRA_DEPLOY_ENV_FILE:-infra/.env.publish}"
 SKIP_HEALTH=0
-ALLOW_STOPPED_API_MAINTENANCE=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health|--allow-stopped-api-maintenance]
+Usage: production-deploy-preflight.sh [--skip-health]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -33,7 +32,10 @@ while [ "$#" -gt 0 ]; do
       SKIP_HEALTH=1
       ;;
     --allow-stopped-api-maintenance)
-      ALLOW_STOPPED_API_MAINTENANCE=1
+      printf '%s\n' \
+        'DEPLOYMENT BLOCKED: API MAINTENANCE IS UNSUPPORTED BY THIS RELEASE.' \
+        'No cleanup or deployment action was performed.' >&2
+      exit 75
       ;;
     -h|--help)
       usage
@@ -58,11 +60,6 @@ block() {
   printf 'No cleanup or deployment action was performed.\n\n' >&2
   exit 75
 }
-
-if [ "$SKIP_HEALTH" -eq 1 ] && [ "$ALLOW_STOPPED_API_MAINTENANCE" -eq 1 ]; then
-  printf '%s\n' '--skip-health and --allow-stopped-api-maintenance are mutually exclusive.' >&2
-  exit 2
-fi
 
 if [ ! -f "$PUBLISH_ENV_FILE" ]; then
   block "PRODUCTION ENVIRONMENT MISSING" \
@@ -163,8 +160,6 @@ else
   fi
 
   unhealthy=()
-  api_container_count=0
-  stopped_api_count=0
   for container_id in "${containers[@]}"; do
     [ -n "$container_id" ] || continue
     if ! state="$(
@@ -177,22 +172,8 @@ else
     fi
     IFS='|' read -r name service status health <<<"$state"
 
-    if [ "$service" = "api" ]; then
-      api_container_count=$((api_container_count + 1))
-    fi
-
     if [ "$status" != "running" ]; then
-      if [ "$ALLOW_STOPPED_API_MAINTENANCE" -eq 1 ] && \
-        [ "$service" = "api" ] && [ "$status" = "exited" ]; then
-        stopped_api_count=$((stopped_api_count + 1))
-        continue
-      fi
       unhealthy+=("${name#/}: status=${status}")
-      continue
-    fi
-
-    if [ "$ALLOW_STOPPED_API_MAINTENANCE" -eq 1 ] && [ "$service" = "api" ]; then
-      unhealthy+=("${name#/}: maintenance_requires_status=exited actual=${status}")
       continue
     fi
 
@@ -209,20 +190,11 @@ else
     esac
   done
 
-  if [ "$ALLOW_STOPPED_API_MAINTENANCE" -eq 1 ] && \
-    { [ "$api_container_count" -ne 1 ] || [ "$stopped_api_count" -ne 1 ]; }; then
-    unhealthy+=("api: maintenance requires exactly one reviewed exited container")
-  fi
-
   if [ "${#unhealthy[@]}" -gt 0 ]; then
     block "EXISTING PRODUCTION SERVICE UNHEALTHY" "${unhealthy[@]}"
   fi
 
-  if [ "$ALLOW_STOPPED_API_MAINTENANCE" -eq 1 ]; then
-    printf '[deploy-preflight] existing_services=%s health=pass maintenance_api=exited\n' "${#containers[@]}"
-  else
-    printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
-  fi
+  printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi
 
 printf 'DEPLOYMENT PREFLIGHT PASSED\n'

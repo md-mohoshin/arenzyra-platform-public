@@ -4,6 +4,7 @@
   "sourceDigests": {
     "apiPrismaSchemaSha256": "a84db28b398b65f468472de15643c588db8bbd1c520027dee4d0010b296a2649",
     "apiMigrationTreeSha256": "a482667e8429080d67d823a83403b295c9b405ddee859c17448bb80b286dd33e",
+    "apiFunctionTriggerMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b",
     "studioMigrationSha256": "efa1fc3bffec6b2ab3d044c10653e01aafee945c3cfcc041d81a206c81fb94bb"
   },
   "apiRuntimeTables": [

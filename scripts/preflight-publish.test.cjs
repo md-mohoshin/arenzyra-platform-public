@@ -10,6 +10,7 @@ const {
   validateLauncherReleaseConfig,
   validateStudioDatabaseTls,
   validateEnvRelationships,
+  validateUnsupportedApiMaintenanceServices,
 } = require("./preflight-publish.cjs");
 
 const repositoryRoot = path.resolve(__dirname, "..");
@@ -58,6 +59,25 @@ test("publish preflight finds sensitive build args without crossing YAML scopes"
     findSensitiveBuildArguments(compose, ["JWT_SECRET", "DATABASE_URL"]),
     ["JWT_SECRET"],
   );
+});
+
+test("publish preflight rejects every unsupported API maintenance surface", () => {
+  for (const compose of [
+    'services:\n  api-maintenance-idp-read:\n    image: "api"\n',
+    'services:\n  task:\n    profiles: ["maintenance"]\n',
+    'services:\n  task:\n    entrypoint: ["node", "dist-maintenance/task.js"]\n',
+  ]) {
+    const errors = [];
+    validateUnsupportedApiMaintenanceServices(compose, errors);
+    assert.equal(errors.length, 1, compose);
+  }
+
+  const errors = [];
+  validateUnsupportedApiMaintenanceServices(
+    'services:\n  api-migrate:\n    profiles: ["migration"]\n',
+    errors,
+  );
+  assert.deepEqual(errors, []);
 });
 
 test("publish preflight rejects sensitive values in Compose labels", () => {

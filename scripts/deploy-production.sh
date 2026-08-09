@@ -654,6 +654,7 @@ deploy_failed() {
   exit "$status"
 }
 
+"${sanitized_environment[@]}" node scripts/verify-production-api-capabilities.cjs
 node scripts/preflight-publish.cjs --env infra/.env.publish
 # Before release metadata, image builds, backups, migrations, or service
 # changes, prove that the current database has no pending contract migration
@@ -663,6 +664,7 @@ if [ "$MODE" = "full" ]; then
   if [ "$FIRST_DEPLOY" -eq 1 ]; then
     bash scripts/production-deploy-preflight.sh --skip-health
     bash scripts/production-release-safety-gate.sh --first-deploy
+    bash scripts/verify-production-idp-encryption.sh
   else
     bash scripts/production-deploy-preflight.sh
     bash scripts/production-release-safety-gate.sh
@@ -671,9 +673,6 @@ if [ "$MODE" = "full" ]; then
     # Aggregate-only and read-only: no organization identifiers or mutable
     # reconciliation are part of a routine release.
     bash scripts/verify-production-entitlement-invariants.sh
-    # If IDP storage has not been migrated or any legacy plaintext remains,
-    # routine deployment must not build or mutate first and fail only afterward.
-    # Controlled maintenance keeps old writers stopped for the manual backfill.
     bash scripts/verify-production-idp-encryption.sh
   fi
 fi
@@ -903,8 +902,6 @@ if [ "$MODE" = "full" ]; then
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/verify-production-database-roles.sh
   bash scripts/verify-production-entitlement-invariants.sh
-  # Defense in depth against a writer or operator reintroducing plaintext after
-  # the pre-build check. No risky backfill is hidden in deployment.
   bash scripts/verify-production-idp-encryption.sh
 fi
 node scripts/verify-publish.cjs --env infra/.env.publish

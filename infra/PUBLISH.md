@@ -69,10 +69,13 @@ it is not a permanent version-number exception. Proving there are no old
 writers waives only old-writer compatibility. It does not accept effects on
 existing data, visibility, sessions, credentials, or external access.
 
-A checksum match is necessary evidence, not release authorization. The current
-15-file candidate migration set remains blocked until its existing release
-lineage and current production ledger have been reconciled and reviewed. Do not
-infer applied state from directory timestamps or the earlier pending-name audit.
+A checksum match is necessary evidence, not release authorization. The
+canonical checkpoint contains the exact 102-migration historical lineage. The
+version-2 safety manifest is intentionally empty only at that checkpoint; it
+does not approve later migrations. Before any forward migration is added, its
+contract and data effects must be reviewed and every required classification
+must be added to the manifest. Unclassified destructive or data-impact SQL
+continues to fail closed mechanically.
 
 For a non-first full deploy, the same pre-mutation phase runs a read-only,
 aggregate-only entitlement query over non-deleted organizations. It reports
@@ -93,12 +96,13 @@ skipped and before backup or migration. Any pre-existing relation, query
 failure, or malformed count blocks the first deploy. The first-deploy flag alone
 never waives data-impact review for an existing database.
 
-For a non-first full deploy, this initial read-only phase also requires the IDP
-storage migration to be finished and the legacy plaintext schedule count to be
-zero. A pending IDP storage migration or nonzero count therefore blocks before
-release metadata, builds, backups, migrations, or replacement services and is
-handled in the controlled-maintenance sequence below. The same zero-count check
-runs again after the new API is healthy as defense in depth.
+The canonical checkpoint still stores Discord IDP room passwords as plaintext.
+Consequently every full deployment, including a first deployment, is
+deliberately blocked before release metadata, builds, backups, migrations, or
+replacement services. This is not resolved by the historical-lineage replay.
+The block may be replaced with a real postcondition verifier only after a
+reviewed forward encryption migration, encrypted runtime writes, a
+writer-stopped backfill, and a zero-plaintext verification are integrated.
 
 The full deploy creates and verifies its encrypted off-host pre-migration
 backup, then immediately repeats `production-deploy-preflight.sh` before the API
@@ -150,7 +154,7 @@ For a custom Discord-bot-only deployment, run `npm run deploy:guard`
 immediately before each build, restart, recreate, or Compose-up. A custom or
 partial change that can replace the API/web writer, alter schema, or change
 database-backed access must also run the migration-safety, entitlement, and IDP
-plaintext-zero gates in the same pre-mutation session. If a classified
+encryption-readiness gates in the same pre-mutation session. If a classified
 contract/data-impact migration is pending, use the separately reviewed
 writer-stopped maintenance procedure below; `deploy:guard` alone is not an API
 release authorization. Prefer `npm run deploy:up` or
@@ -158,47 +162,19 @@ release authorization. Prefer `npm run deploy:up` or
 
 ## Contract and data-impact migrations
 
-The current manifest classifies these migrations as incompatible with an old
-API writer:
+The current manifest contains no entries because it is bound to the reconciled
+102-migration checkpoint and not to the discarded future-candidate lineage.
+That empty list is temporary release evidence, not permission to append an
+unreviewed migration. The forthcoming Studio migration is expected to be
+additive. IDP encryption requires controlled-maintenance and data-impact
+classification, and onboarding requires explicit old/new-writer contract
+review. Populate the manifest with their exact final migration names and
+reviewed effects in the same commit that integrates those migrations.
 
-- `20260804120000_auth_password_actions`
-- `20260805010000_harden_tournament_invite_lifecycle`
-- `20260805020000_refresh_token_families`
-- `20260805021000_idp_encrypted_credential_storage`
-- `20260805030000_broadcast_capability_lifecycle`
-- `20260805070000_widget_capability_lifecycle`
-
-It also classifies these migrations as requiring explicit acceptance of their
-effect on stored data, visibility, authentication, credentials, or external
-access:
-
-- `20260804230000_match_publication_boundary`: existing matches and tournaments
-  become private under the fail-closed publication default.
-- `20260805010000_harden_tournament_invite_lifecycle`: existing invite secrets
-  are hashed and receive `createdAt + 7 days` expiry; this also contains a
-  contract change.
-- `20260805020000_refresh_token_families`: all refresh-token rows are backfilled
-  and indexed, with authentication-session and lock impact.
-- `20260805021000_idp_encrypted_credential_storage`: the schema transition must
-  be followed by the separately gated, manual plaintext-to-envelope workflow.
-- `20260805030000_broadcast_capability_lifecycle`: existing broadcast secrets
-  are hashed and receive a fixed migration-time 180-day expiry; this also
-  contains a contract change.
-- `20260805040000_platform_superadmin_mfa`: existing super-admin refresh
-  sessions lack MFA verification and fail closed under the required policy.
-- `20260805050000_private_assets_and_screenshot_evidence`: legacy OCR source
-  URLs are scrubbed from stored JSON without a reversible replacement.
-- `20260805060000_durable_manual_billing`: the organization default becomes
-  `EXPIRED`, and inconsistent legacy entitlement rows require reviewed manual
-  reconciliation.
-- `20260805070000_widget_capability_lifecycle`: existing widget secrets are
-  hashed and receive a fixed migration-time 180-day expiry; this also contains
-  a contract change.
-
-The preferred future workflow is expand/contract: add the replacement shape,
-deploy dual-compatible code, backfill and verify it, then drop the legacy shape
-in a later release. The migrations above already contain their contract step,
-so a routine zero-downtime deploy intentionally refuses to apply them.
+Prefer expand/contract: add the replacement shape, deploy dual-compatible code,
+backfill and verify it, then drop the legacy shape in a later release. The
+generic SQL scanner remains a second line of defense and blocks unclassified
+contract or data-impact operations; a clean scan does not replace human review.
 
 Applying a pending contract or data-impact migration requires a reviewed
 controlled-maintenance change plan and explicit acceptance of each manifest
@@ -251,55 +227,18 @@ reviewed against the production topology. Every build, restart, recreate, or
 Compose-up in that sheet remains subject to `scripts/production-deploy-preflight.sh`
 and the repository production rules.
 
-Database-writing API utilities must not be launched by loading
-`apps/api/.env` or by pointing a host-side command at production. Use
-`npm run deploy:api-maintenance -- ...` from `/opt/arenzyra`. The wrapper holds
-or verifies the shared production deployment lock, rejects a process env file
-or Compose-project override that differs from `infra/.env.publish`, validates
-the resolved Compose database bindings and physical PostgreSQL target, and runs
-the mandated deployment preflight again immediately before its one-off
-immutable API-image command. It also rejects remote/non-default Docker routing,
-strips ambient Compose and secret interpolation from the command environment,
-requires the local `/var/run/docker.sock`, and selects the already-local image
-from reviewed `infra/.env.release` metadata without building or pulling. Before
-the task starts, it inspects that exact local tag and requires its OCI revision,
-build time, release ID, source digest, and release-source labels to match the
-reviewed manifest. A controlled-maintenance command sheet may select a
-pre-cutover candidate in `.env.release`; the candidate does not have to be the
-currently running release, but its tag and provenance must match exactly. Each
-task runs through a dedicated, network-minimized Compose service that receives
-only its database URL and task-specific encryption settings. Dry-run and scan
-sessions also enforce PostgreSQL transaction-default read-only mode. The
-wrapper verifies the administrator and all seven application roles under the
-inherited lock. IDP and YouTube dry-run/scan services receive only
-`MAINTENANCE_READ_DATABASE_URL`; neither apply URL is present in those
-containers. The shared read role has only database `CONNECT`, schema `USAGE`,
-and column-level `SELECT` on the fields inspected in `DiscordIdpSchedule` and
-`YoutubeChannel`. IDP apply receives only `IDP_MAINTENANCE_DATABASE_URL`, with
-column-level `SELECT` on its identity/context/CAS fields and `UPDATE` only on
-`roomPassword`, `primaryMessage`, `reminders`, and the Prisma-managed
-`updatedAt`. YouTube apply receives only `YOUTUBE_MAINTENANCE_DATABASE_URL`,
-with column-level `SELECT` on `id`, both token envelopes, and `updatedAt`, and
-`UPDATE` only on both token envelopes and `updatedAt`. These roles have no
-table-wide DML, sequence, function, ledger, other-table, schema-create,
-ownership, membership, or grant-option authority.
+The canonical API image has no `dist-maintenance` payload. Publish Compose
+therefore exposes no `maintenance` profile and no IDP-backfill or YouTube-key
+rotation services. `npm run deploy:api-maintenance -- ...` is retained only as
+an explicit compatibility blocker: it exits `75` before Docker, database,
+backup, migration, or service actions. Do not bypass it with a raw Compose or
+host-side command. A future maintenance utility must restore the full reviewed
+lock, immutable-image, clean-environment, backup, least-privilege role, timeout,
+and postcondition contract before its service can be added to Publish Compose.
 
-Every `apply` action automatically creates a fresh encrypted production backup,
-requires its off-host checksum verification, disallows missing required API
-volumes, validates the completion markers and encrypted database artifacts, and
-repeats the production preflight immediately before and after that backup.
-Dry-run and scan actions remain read-only and do not create a backup. The
-wrapper also adds PostgreSQL's `default_transaction_read_only=on` boundary to
-those non-apply sessions. It does not stop writers, apply a schema migration,
-or start replacement services; those remain explicit steps in the reviewed
-command sheet.
-
-The compiled utilities use a 10-second connection timeout, 10-second database
-lock timeout, 120-second server statement timeout, and 130-second client query
-timeout. A timeout exits nonzero and must be investigated; do not weaken the
-limits or treat a partial apply as success. Re-run the read-only inventory and
-the relevant postcondition gate before deciding whether an idempotent retry is
-safe.
+The least-privilege maintenance database roles remain provisioned and verified
+as reserved boundaries; their existence does not mean a runnable maintenance
+utility is shipped or authorized.
 
 ### Entitlement reconciliation
 
@@ -330,50 +269,18 @@ the standard deployment workflow. The detailed billing semantics are in
 
 ### Legacy IDP credential backfill
 
-The IDP storage migration widens the encrypted envelope column but does not
-rewrite data. The new API can read legacy rows and always writes encrypted
-credentials. The old API can still write plaintext, so never run the backfill
-while an old API can execute, and never restart the old API after the backfill.
+The canonical checkpoint writes `DiscordIdpSchedule.roomPassword` in plaintext.
+Its `deploy:verify-idp-encryption` command is intentionally a blocker, not a
+verification success path, and no backfill entrypoint is present in the image.
+Do not describe IDP schedules as encrypted at rest and do not deploy this
+checkpoint.
 
-Run the read-only inventory from the production root using the reviewed
-maintenance wrapper. During the approved writer-stopped window, after the IDP
-storage migration is applied, run the apply form with both the wrapper's
-stopped-writer acknowledgement and the utility's exact confirmation:
-
-```bash
-cd /opt/arenzyra
-npm run deploy:api-maintenance -- idp-credentials dry-run
-npm run deploy:api-maintenance -- idp-credentials apply \
-  --writers-stopped --confirm=BACKFILL_IDP_CREDENTIALS
-npm run deploy:verify-idp-encryption
-```
-
-Review the dry-run candidate count before the explicit apply. Apply fails unless
-the reviewed Compose project has exactly one API container in the `exited`
-state, the entire host has zero running containers labelled as the API service,
-and PostgreSQL reports zero sessions for the reviewed API runtime role. The
-maintenance-only preflight exception still requires every other managed
-container to pass its normal health policy. This is a boundary check, not
-permission to skip the command sheet's verification of every writer in the
-actual topology.
-
-After those checks, apply requires the exact NOT VALID envelope CHECK, then
-re-reads and authenticates every stored envelope in a `SERIALIZABLE`
-transaction. Per-row compare-and-swap updates include the prior `updatedAt`,
-and a final in-transaction re-read requires zero legacy rows before commit; any
-conflict or failed postcondition rolls the entire transaction back. This keeps
-the apply role on exact column grants instead of table-wide UPDATE. Dry-run also
-requires the reviewed encryption key and reports only aggregate invalid,
-encrypted, legacy, and oversized counts—never schedule identifiers. The deploy
-command never runs this backfill. After a successful apply, the wrapper
-automatically reattests the physical target, requires the zero-legacy IDP
-structural gate, and rechecks the database-role contract before it reports
-success. The explicit `deploy:verify-idp-encryption` command above is a useful
-independent recorded recheck. Routine non-first deployment checks that the
-storage migration is finished and the legacy plaintext schedule count is zero
-both before any release mutation and after the new API becomes healthy. Do not
-describe IDP schedules as encrypted at rest until
-`IDP ENCRYPTION GATE PASSED legacy_plaintext_schedules=0` is recorded.
+Closure requires one reviewed forward migration and matching runtime changes,
+classification in `production-api-migration-safety.json`, an isolated replay,
+a writer-stopped backfill with a fresh verified off-host backup, and a bounded
+postcondition proving that no plaintext rows remain. Only then may the blocker
+be replaced with a structural and zero-row verifier and rechecked after the new
+API becomes healthy.
 
 ## Release provenance
 
@@ -419,9 +326,8 @@ env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/r
 
 Deploy commands do not delete files or run maintenance automatically. Scheduled
 host cleanup remains separate from deployment and is invoked explicitly with
-`npm run deploy:maintenance`. Reviewed database-writing API work instead uses
-the separately locked `npm run deploy:api-maintenance -- ...` wrapper described
-above.
+`npm run deploy:maintenance`. Database-writing API maintenance is unsupported
+by this release and its compatibility command blocks before external action.
 
 This command intentionally does not start the local `discord-bot` service. The
 Discord bot should have one production runtime only. If you deliberately need to

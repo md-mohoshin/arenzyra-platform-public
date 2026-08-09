@@ -84,8 +84,13 @@ test("policy parser honors Prisma table mappings and Studio declarations", () =>
 });
 
 test("migration parser seals exact function bodies and trigger wirings", () => {
-  const sourceMigration =
-    "20260713130000_studio_widget_release_foundation/migration.sql";
+  const policy = readPolicy();
+  const sourceMigrations = new Set([
+    ...policy.apiFunctions.map((item) => item.sourceMigration),
+    ...policy.apiTriggers.map((item) => item.sourceMigration),
+  ]);
+  assert.equal(sourceMigrations.size, 1);
+  const sourceMigration = [...sourceMigrations][0];
   const source = fs
     .readFileSync(
       path.join(repositoryRoot, "apps/api/prisma/migrations", sourceMigration),
@@ -96,16 +101,17 @@ test("migration parser seals exact function bodies and trigger wirings", () => {
   const triggers = parseApiTriggerPolicies([{ sourceMigration, source }]);
   assert.equal(functions.length, 2);
   assert.deepEqual(
-    functions.map((item) => item.sourceSha256),
-    [
-      "e67ddac3cd5884287f590eedc683da98e736fc416692e1ba961b94ec15f53f76",
-      "10827e027f491e7a5bd0d1cedf53090dd056d9605b809fbac01f1a12a52b986e",
-    ],
+    functions.map(({ sourceSha256 }) => sourceSha256),
+    policy.apiFunctions.map(({ sourceSha256 }) => sourceSha256),
   );
   assert.deepEqual(triggers[0].events, ["INSERT", "UPDATE"]);
   assert.deepEqual(triggers[0].updateColumns, ["widgetId", "revisionId"]);
   assert.deepEqual(triggers[1].events, ["UPDATE"]);
   assert.deepEqual(triggers[1].updateColumns, ["widgetId"]);
+  assert.match(
+    policy.sourceDigests.apiFunctionTriggerMigrationSha256,
+    /^[a-f0-9]{64}$/,
+  );
 });
 
 test("policy schema is closed and classifications cannot overlap", () => {

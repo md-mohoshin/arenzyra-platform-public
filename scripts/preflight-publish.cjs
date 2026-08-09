@@ -233,6 +233,24 @@ function validateStaticFiles(errors) {
   }
 }
 
+function validateUnsupportedApiMaintenanceServices(compose, errors) {
+  if (/^  api-maintenance-[a-zA-Z0-9_-]+:\s*$/m.test(compose)) {
+    errors.push(
+      "Publish Compose must not advertise API maintenance services that are absent from the canonical image.",
+    );
+  }
+  if (/profiles:\s*\[[^\]]*["']maintenance["']/m.test(compose)) {
+    errors.push(
+      "Publish Compose must not expose the unsupported API maintenance profile.",
+    );
+  }
+  if (/dist-maintenance\//.test(compose)) {
+    errors.push(
+      "Publish Compose must not reference absent dist-maintenance entrypoints.",
+    );
+  }
+}
+
 function validateComposeWiring(errors) {
   const composePath = path.join(repoRoot, "infra/docker-compose.publish.yml");
   const caddyPath = path.join(repoRoot, "infra/Caddyfile");
@@ -250,26 +268,6 @@ function validateComposeWiring(errors) {
       "STUDIO_MIGRATION_DATABASE_URL",
       "STUDIO_MIGRATION_DATABASE_URL",
     ],
-    [
-      "api-maintenance-idp-read",
-      "DATABASE_URL",
-      "MAINTENANCE_READ_DATABASE_URL",
-    ],
-    [
-      "api-maintenance-idp-apply",
-      "DATABASE_URL",
-      "IDP_MAINTENANCE_DATABASE_URL",
-    ],
-    [
-      "api-maintenance-youtube-read",
-      "DATABASE_URL",
-      "MAINTENANCE_READ_DATABASE_URL",
-    ],
-    [
-      "api-maintenance-youtube-apply",
-      "DATABASE_URL",
-      "YOUTUBE_MAINTENANCE_DATABASE_URL",
-    ],
   ];
   for (const [service, serviceKey, envKey] of databaseBindings) {
     const block =
@@ -282,6 +280,7 @@ function validateComposeWiring(errors) {
       errors.push(`Publish ${service} service must receive exactly ${envKey}.`);
     }
   }
+  validateUnsupportedApiMaintenanceServices(compose, errors);
   const webEnvVars = [
     "NEXT_PUBLIC_API_URL",
     "INTERNAL_API_URL",
@@ -1233,7 +1232,9 @@ function validateLauncherReleaseConfig(value, errors) {
     return;
   }
   if (/[\r\n]/.test(input)) {
-    errors.push("ARENZYRA_LAUNCHER_RELEASE_JSON must be compact one-line JSON.");
+    errors.push(
+      "ARENZYRA_LAUNCHER_RELEASE_JSON must be compact one-line JSON.",
+    );
     return;
   }
   if (raw.includes("$") || raw.includes("'")) {
@@ -1363,4 +1364,5 @@ module.exports = {
   validateLauncherReleaseConfig,
   validateStudioDatabaseTls,
   validateEnvRelationships,
+  validateUnsupportedApiMaintenanceServices,
 };

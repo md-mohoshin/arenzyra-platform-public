@@ -149,8 +149,22 @@ function assertUnambiguousMigrationNames(
 
 function loadManifest(manifestPath = defaultManifestPath) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  if (manifest?.schemaVersion !== 1) {
-    throw new Error("Migration-safety manifest schemaVersion must be 1.");
+  if (manifest?.schemaVersion !== 2) {
+    throw new Error("Migration-safety manifest schemaVersion must be 2.");
+  }
+  const manifestFields = Object.keys(manifest).sort();
+  const expectedManifestFields = [
+    "contractMigrations",
+    "dataImpactMigrations",
+    "schemaVersion",
+  ];
+  if (
+    manifestFields.length !== expectedManifestFields.length ||
+    manifestFields.some(
+      (field, index) => field !== expectedManifestFields[index],
+    )
+  ) {
+    throw new Error("Migration-safety manifest has an unexpected schema.");
   }
   if (!Array.isArray(manifest.contractMigrations)) {
     throw new Error(
@@ -232,17 +246,6 @@ function loadManifest(manifestPath = defaultManifestPath) {
         `Data-impact migration ${name} must include an auditable reason.`,
       );
     }
-  }
-
-  const idp = manifest.idpCredentialStorage;
-  assertSafeMigrationName(idp?.storageMigration, "IDP storage migration name");
-  if (
-    idp.envelopePrefix !== "v1:" ||
-    idp.legacyCountRequirement !== "zero" ||
-    idp.backfillMode !== "manual-only" ||
-    idp.oldWriterPolicy !== "stop-before-backfill-and-keep-stopped"
-  ) {
-    throw new Error("IDP credential-storage release policy is incomplete.");
   }
 
   return manifest;
