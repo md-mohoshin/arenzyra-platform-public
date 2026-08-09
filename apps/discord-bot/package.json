@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "ts-node src/bot.ts",
     "start": "node dist/bot.js",
-    "test": "node --test --require ts-node/register --require ./src/test-env.ts src/config-auth.spec.ts src/command-authorization.spec.ts src/component-policy-inventory.spec.ts src/gateway-health.spec.ts src/api/api-request-policy.spec.ts src/security/remote-image.spec.ts src/services/session-ownership.store.spec.ts src/services/session.service.spec.ts src/services/message-registration.service.spec.ts src/services/control-panel.service.spec.ts src/services/scrim-discord-setup.service.spec.ts src/services/discord-emojis.spec.ts src/services/idp-schedule.service.spec.ts src/services/official-pricing-promo.service.spec.ts"
+    "test": "node --test --require ts-node/register --require ./src/test-env.ts src/config-auth.spec.ts src/command-authorization.spec.ts src/component-policy-inventory.spec.ts src/gateway-health.spec.ts src/api/api-request-policy.spec.ts src/security/remote-image.spec.ts src/commands/register.spec.ts src/commands/sessionAdmin.spec.ts src/commands/slot.spec.ts src/commands/teamManager.spec.ts src/services/session-ownership.store.spec.ts src/services/session.service.spec.ts src/services/message-registration.service.spec.ts src/services/control-panel.service.spec.ts src/services/scrim-discord-setup.service.spec.ts src/services/discord-emojis.spec.ts src/services/idp-broadcast.service.spec.ts src/services/idp-schedule.service.spec.ts src/services/media-interaction.service.spec.ts src/services/official-pricing-promo.service.spec.ts"
   },
   "keywords": [],
   "author": "",

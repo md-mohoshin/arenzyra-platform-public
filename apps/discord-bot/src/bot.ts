@@ -20,35 +20,17 @@ import {
   type User,
 } from "discord.js";
 import { botConfig } from "./config";
-import { createScrimCommand } from "./commands/createScrim";
-import { registerTeamCommand } from "./commands/registerTeam";
-import { joinScrimCommand } from "./commands/joinScrim";
-import { leaveScrimCommand } from "./commands/leaveScrim";
-import { listSlotsCommand } from "./commands/listSlots";
-import { changeNameCommand } from "./commands/changeName";
-import { startScrimCommand } from "./commands/startScrim";
-import { standingsCommand } from "./commands/standings";
-import { mapSlotsCommand } from "./commands/mapSlots";
-import { previewResultsCommand } from "./commands/previewResults";
-import { applyResultsCommand } from "./commands/applyResults";
-import { ticketOpenCommand } from "./commands/ticketOpen";
-import { ticketCloseCommand } from "./commands/ticketClose";
-import { ticketPanelCommand } from "./commands/ticketPanel";
-import { controlPanelCommand } from "./commands/controlPanel";
-import { banControlCommand } from "./commands/banControl";
-import { resultControlCommand } from "./commands/resultControl";
-import { playButtonsCommand } from "./commands/playButtons";
-import { waitlistControlCommand } from "./commands/waitlistControl";
-import { arenzyraDoctorCommand } from "./commands/arenzyraDoctor";
-import { scheduleEventCommand } from "./commands/scheduleEvent";
-import { captainPanelCommand } from "./commands/captainPanel";
-import { liveCenterCommand } from "./commands/liveCenter";
-import { sessionAuditCommand } from "./commands/sessionAudit";
-import { productionSetupCommand } from "./commands/productionSetup";
-import { productionPinsCommand } from "./commands/productionPins";
-import { contextBanManagerCommand } from "./commands/contextBanManager";
-import { staffTasksCommand } from "./commands/staffTasks";
-import { idpCommand } from "./commands/idp";
+import {
+  isCommandAuthorizationPolicy,
+  type ApplicationCommandRegistration,
+  type CommandPolicyInteraction,
+  type CommandServices,
+} from "./command-contract";
+import {
+  applicationCommandRegistry,
+  findMessageContextCommandRegistration,
+  findSlashCommandRegistration,
+} from "./command-registry";
 import { DiscordSessionService } from "./services/session.service";
 import { TicketService } from "./services/ticket.service";
 import { ControlPanelService } from "./services/control-panel.service";
@@ -58,48 +40,16 @@ import { DiscordOnboardingService } from "./services/onboarding.service";
 import { toFriendlyApiError } from "./api/api-client";
 import { GatewayHealthMarker } from "./gateway-health";
 import { StaffTaskService } from "./services/staff-task.service";
+import { DiscordIdpBroadcastService } from "./services/idp-broadcast.service";
 import { DiscordIdpScheduleService } from "./services/idp-schedule.service";
+import { DiscordMediaInteractionService } from "./services/media-interaction.service";
 import { DiscordScheduledMessageService } from "./services/discord-scheduled-message.service";
 import {
   componentAuthorizationPolicy,
   componentAuthorizationSessionId,
-  commandAuthorizationSessionId,
-  commandRequiresStaff,
+  interactionIsPausedFailClosed,
+  resolveCommandAuthorizationSession,
 } from "./command-authorization";
-
-type CommandServices = {
-  sessionService: DiscordSessionService;
-  ticketService: TicketService;
-  controlPanelService: ControlPanelService;
-  staffTaskService: StaffTaskService;
-  idpScheduleService: DiscordIdpScheduleService;
-};
-
-type SlashCommand = {
-  data: {
-    name: string;
-    toJSON(): object;
-  };
-  autocomplete?(
-    interaction: AutocompleteInteraction,
-    services: CommandServices,
-  ): Promise<void>;
-  execute(
-    interaction: ChatInputCommandInteraction,
-    services: CommandServices,
-  ): Promise<void>;
-};
-
-type MessageContextMenuCommand = {
-  data: {
-    name: string;
-    toJSON(): object;
-  };
-  execute(
-    interaction: MessageContextMenuCommandInteraction,
-    services: CommandServices,
-  ): Promise<void>;
-};
 
 type ReplyableInteraction =
   | ChatInputCommandInteraction
@@ -108,40 +58,7 @@ type ReplyableInteraction =
   | StringSelectMenuInteraction
   | ModalSubmitInteraction;
 
-const commands: SlashCommand[] = [
-  createScrimCommand,
-  registerTeamCommand,
-  joinScrimCommand,
-  leaveScrimCommand,
-  listSlotsCommand,
-  changeNameCommand,
-  startScrimCommand,
-  standingsCommand,
-  mapSlotsCommand,
-  previewResultsCommand,
-  applyResultsCommand,
-  ticketOpenCommand,
-  ticketCloseCommand,
-  ticketPanelCommand,
-  controlPanelCommand,
-  banControlCommand,
-  resultControlCommand,
-  playButtonsCommand,
-  waitlistControlCommand,
-  arenzyraDoctorCommand,
-  scheduleEventCommand,
-  captainPanelCommand,
-  liveCenterCommand,
-  sessionAuditCommand,
-  productionSetupCommand,
-  productionPinsCommand,
-  staffTasksCommand,
-  idpCommand,
-];
-const contextMenuCommands: MessageContextMenuCommand[] = [
-  contextBanManagerCommand,
-];
-const registeredCommands = [...commands, ...contextMenuCommands];
+type PauseAwareInteraction = ReplyableInteraction | AutocompleteInteraction;
 
 function userFacingError(error: unknown) {
   const message = toFriendlyApiError(error).trim();
@@ -149,12 +66,6 @@ function userFacingError(error: unknown) {
 }
 const SLASH_COMMAND_REGISTRATION_TIMEOUT_MS = 20_000;
 
-const commandsByName = new Map(
-  commands.map((command) => [command.data.name, command]),
-);
-const contextMenuCommandsByName = new Map(
-  contextMenuCommands.map((command) => [command.data.name, command]),
-);
 const sessionService = new DiscordSessionService();
 const ticketService = new TicketService();
 const controlPanelService = new ControlPanelService(sessionService);
@@ -166,7 +77,21 @@ const officialPricingPromoService = new OfficialPricingPromoService();
 const onboardingService = new DiscordOnboardingService();
 const staffTaskService = new StaffTaskService();
 const idpScheduleService = new DiscordIdpScheduleService();
+const idpBroadcastService = new DiscordIdpBroadcastService(sessionService);
+const mediaInteractionService = new DiscordMediaInteractionService(
+  sessionService,
+);
 const scheduledMessageService = new DiscordScheduledMessageService();
+const commandServices: CommandServices = {
+  sessionService,
+  ticketService,
+  controlPanelService,
+  messageRegistrationService,
+  idpBroadcastService,
+  mediaInteractionService,
+  staffTaskService,
+  idpScheduleService,
+};
 const gatewayHealthMarker = new GatewayHealthMarker();
 const DISCORD_LOGIN_TIMEOUT_MS = 30_000;
 const DISCORD_LOGIN_RETRY_MS = 10_000;
@@ -275,29 +200,46 @@ async function disableStalePlayButtonMessage(interaction: ButtonInteraction) {
   });
 }
 
-async function isInteractionChannelPaused(interaction: ReplyableInteraction) {
-  try {
-    return await withTimeout(
-      sessionService.isDiscordChannelPaused(
-        interaction.guildId,
-        interaction.channelId,
+async function isInteractionChannelPaused(interaction: PauseAwareInteraction) {
+  return interactionIsPausedFailClosed(
+    () =>
+      withTimeout(
+        sessionService.isDiscordChannelPaused(
+          interaction.guildId,
+          interaction.channelId,
+        ),
+        INTERACTION_PAUSE_LOOKUP_TIMEOUT_MS,
+        "Discord interaction pause lookup",
       ),
-      INTERACTION_PAUSE_LOOKUP_TIMEOUT_MS,
-      "Discord interaction pause lookup",
-    );
-  } catch (error) {
-    // A pause lookup already fails open. Bound it here as well so a slow API
-    // cannot consume Discord's three-second interaction acknowledgement window.
-    console.warn(
-      `Discord interaction pause lookup timed out guild=${interaction.guildId ?? "unknown"} channel=${interaction.channelId ?? "unknown"}: ${String(error)}`,
-    );
-    return false;
-  }
+    (error) => {
+      console.warn(
+        `Discord interaction pause lookup failed closed guild=${interaction.guildId ?? "unknown"} channel=${interaction.channelId ?? "unknown"}: ${String(error)}`,
+      );
+    },
+  );
+}
+
+function hasClassifiedCommandAuthorization(
+  registration: ApplicationCommandRegistration,
+) {
+  return (
+    isCommandAuthorizationPolicy(registration.authorization.policy) &&
+    typeof registration.authorization.allowedWhilePaused === "function"
+  );
+}
+
+function isCommandAllowedWhilePaused(
+  registration: ApplicationCommandRegistration,
+  interaction: CommandPolicyInteraction,
+) {
+  return registration.authorization.allowedWhilePaused(interaction) === true;
 }
 
 async function registerSlashCommands() {
   const rest = new REST({ version: "10" }).setToken(botConfig.discordToken);
-  const body = registeredCommands.map((command) => command.data.toJSON());
+  const body = applicationCommandRegistry.map((registration) =>
+    registration.command.data.toJSON(),
+  );
 
   if (botConfig.discordGuildId) {
     await rest.put(
@@ -308,7 +250,7 @@ async function registerSlashCommands() {
       { body },
     );
     console.log(
-      `Registered ${registeredCommands.length} guild application commands for guild ${botConfig.discordGuildId}.`,
+      `Registered ${applicationCommandRegistry.length} guild application commands for guild ${botConfig.discordGuildId}.`,
     );
   }
 
@@ -317,40 +259,60 @@ async function registerSlashCommands() {
       body,
     });
     console.log(
-      `Registered ${registeredCommands.length} global application commands.`,
+      `Registered ${applicationCommandRegistry.length} global application commands.`,
     );
   }
 }
 
 async function handleCommand(interaction: ChatInputCommandInteraction) {
-  if (await isInteractionChannelPaused(interaction)) {
+  const registration = findSlashCommandRegistration(interaction.commandName);
+  if (!registration || !hasClassifiedCommandAuthorization(registration)) {
     await safeEphemeralReply(
       interaction,
-      "Arenzyra bot is paused in this channel. Ask staff to send `%start` here.",
+      "This command is unknown or no longer supported.",
     );
     return;
   }
 
-  const command = commandsByName.get(interaction.commandName);
-  if (!command) {
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: "Unknown command",
-        ephemeral: true,
-      });
+  if (
+    !isCommandAllowedWhilePaused(registration, interaction) &&
+    (await isInteractionChannelPaused(interaction))
+  ) {
+    await safeEphemeralReply(
+      interaction,
+      "Arenzyra bot is paused in this channel. Ask staff to use `/session-admin channel-state` with state `Active` here (legacy `%start` also works).",
+    );
+    return;
+  }
+
+  if (registration.authorization.policy === "staff") {
+    const sessionResolution = await resolveCommandAuthorizationSession(
+      registration,
+      interaction,
+      (guildId, channelId, topic) =>
+        withTimeout(
+          sessionService.findConfiguredScrimForDiscordChannel(
+            guildId,
+            channelId,
+            topic,
+          ),
+          INTERACTION_PAUSE_LOOKUP_TIMEOUT_MS,
+          "Discord command session lookup",
+        ),
+    );
+    if (!sessionResolution.allowed) {
+      if (sessionResolution.error) {
+        console.warn(
+          `Discord command session lookup failed closed guild=${interaction.guildId ?? "unknown"} channel=${interaction.channelId ?? "unknown"}: ${String(sessionResolution.error)}`,
+        );
+      }
+      await safeEphemeralReply(interaction, sessionResolution.reason);
+      return;
     }
-    return;
-  }
-
-  if (commandRequiresStaff(interaction.commandName)) {
-    const sessionId = commandAuthorizationSessionId(
-      interaction.commandName,
-      (name) => interaction.options.getString(name),
-    );
     const authorization = await sessionService.authorizeStaffCommand(
       interaction.user.id,
       interaction.guild,
-      sessionId,
+      sessionResolution.sessionId,
     );
     if (!authorization.allowed) {
       await safeEphemeralReply(
@@ -362,13 +324,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
   }
 
   try {
-    await command.execute(interaction, {
-      sessionService,
-      ticketService,
-      controlPanelService,
-      staffTaskService,
-      idpScheduleService,
-    });
+    await registration.command.execute(interaction, commandServices);
   } catch (error) {
     const message = userFacingError(error);
     console.error(`Command ${interaction.commandName} failed:`, error);
@@ -378,27 +334,48 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
 }
 
 async function handleAutocomplete(interaction: AutocompleteInteraction) {
-  const command = commandsByName.get(interaction.commandName);
-  if (!command?.autocomplete) {
+  const registration = findSlashCommandRegistration(interaction.commandName);
+  if (!registration || !hasClassifiedCommandAuthorization(registration)) {
+    await interaction.respond([]).catch(() => undefined);
+    return;
+  }
+  const autocomplete = registration.command.autocomplete;
+  if (!autocomplete) {
     await interaction.respond([]).catch(() => undefined);
     return;
   }
 
-  if (commandRequiresStaff(interaction.commandName)) {
-    let sessionId: string | null = null;
-    try {
-      sessionId = commandAuthorizationSessionId(
-        interaction.commandName,
-        (name) => interaction.options.getString(name),
-      );
-    } catch {
-      // An option can be unavailable while Discord is still building the
-      // focused autocomplete payload. Guild-level staff auth still applies.
+  if (
+    !isCommandAllowedWhilePaused(registration, interaction) &&
+    (await isInteractionChannelPaused(interaction))
+  ) {
+    await interaction.respond([]).catch(() => undefined);
+    return;
+  }
+
+  if (registration.authorization.policy === "staff") {
+    const sessionResolution = await resolveCommandAuthorizationSession(
+      registration,
+      interaction,
+      (guildId, channelId, topic) =>
+        withTimeout(
+          sessionService.findConfiguredScrimForDiscordChannel(
+            guildId,
+            channelId,
+            topic,
+          ),
+          INTERACTION_PAUSE_LOOKUP_TIMEOUT_MS,
+          "Discord command session lookup",
+        ),
+    );
+    if (!sessionResolution.allowed) {
+      await interaction.respond([]).catch(() => undefined);
+      return;
     }
     const authorization = await sessionService.authorizeStaffCommand(
       interaction.user.id,
       interaction.guild,
-      sessionId,
+      sessionResolution.sessionId,
     );
     if (!authorization.allowed) {
       await interaction.respond([]).catch(() => undefined);
@@ -407,13 +384,7 @@ async function handleAutocomplete(interaction: AutocompleteInteraction) {
   }
 
   try {
-    await command.autocomplete(interaction, {
-      sessionService,
-      ticketService,
-      controlPanelService,
-      staffTaskService,
-      idpScheduleService,
-    });
+    await autocomplete(interaction, commandServices);
   } catch (error) {
     console.error(`Autocomplete ${interaction.commandName} failed:`, error);
     await interaction.respond([]).catch(() => undefined);
@@ -423,21 +394,29 @@ async function handleAutocomplete(interaction: AutocompleteInteraction) {
 async function handleMessageContextCommand(
   interaction: MessageContextMenuCommandInteraction,
 ) {
-  if (await isInteractionChannelPaused(interaction)) {
+  const registration = findMessageContextCommandRegistration(
+    interaction.commandName,
+  );
+  if (!registration || !hasClassifiedCommandAuthorization(registration)) {
     await safeEphemeralReply(
       interaction,
-      "Arenzyra bot is paused in this channel. Ask staff to send `%start` here.",
+      "This context action is unknown or no longer supported.",
     );
     return;
   }
 
-  const command = contextMenuCommandsByName.get(interaction.commandName);
-  if (!command) {
-    await safeEphemeralReply(interaction, "Unknown context action");
+  if (
+    !isCommandAllowedWhilePaused(registration, interaction) &&
+    (await isInteractionChannelPaused(interaction))
+  ) {
+    await safeEphemeralReply(
+      interaction,
+      "Arenzyra bot is paused in this channel. Ask staff to use `/session-admin channel-state` with state `Active` here (legacy `%start` also works).",
+    );
     return;
   }
 
-  if (commandRequiresStaff(interaction.commandName)) {
+  if (registration.authorization.policy === "staff") {
     const authorization = await sessionService.authorizeStaffCommand(
       interaction.user.id,
       interaction.guild,
@@ -452,13 +431,7 @@ async function handleMessageContextCommand(
   }
 
   try {
-    await command.execute(interaction, {
-      sessionService,
-      ticketService,
-      controlPanelService,
-      staffTaskService,
-      idpScheduleService,
-    });
+    await registration.command.execute(interaction, commandServices);
   } catch (error) {
     const message = userFacingError(error);
     console.error(`Context action ${interaction.commandName} failed:`, error);
@@ -500,6 +473,13 @@ async function authorizeSensitiveComponent(
 async function handleButton(interaction: ButtonInteraction) {
   try {
     if (!(await authorizeSensitiveComponent(interaction))) return;
+    if (await isInteractionChannelPaused(interaction)) {
+      await safeEphemeralReply(
+        interaction,
+        "Arenzyra bot is paused in this channel. Ask staff to use `/session-admin channel-state` with state `Active` here (legacy `%start` also works).",
+      );
+      return;
+    }
     if (interaction.customId.startsWith("destructive:")) {
       const handled =
         await messageRegistrationService.handleButton(interaction);
@@ -524,14 +504,6 @@ async function handleButton(interaction: ButtonInteraction) {
       if (handled) {
         return;
       }
-    }
-
-    if (await isInteractionChannelPaused(interaction)) {
-      await safeEphemeralReply(
-        interaction,
-        "Arenzyra bot is paused in this channel. Ask staff to send `%start` here.",
-      );
-      return;
     }
 
     if (interaction.customId.startsWith("clean-channel:")) {
@@ -588,7 +560,7 @@ async function handleStringSelectMenu(
     if (await isInteractionChannelPaused(interaction)) {
       await safeEphemeralReply(
         interaction,
-        "Arenzyra bot is paused in this channel. Ask staff to send `%start` here.",
+        "Arenzyra bot is paused in this channel. Ask staff to use `/session-admin channel-state` with state `Active` here (legacy `%start` also works).",
       );
       return;
     }
@@ -614,7 +586,7 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
     if (await isInteractionChannelPaused(interaction)) {
       await safeEphemeralReply(
         interaction,
-        "Arenzyra bot is paused in this channel. Ask staff to send `%start` here.",
+        "Arenzyra bot is paused in this channel. Ask staff to use `/session-admin channel-state` with state `Active` here (legacy `%start` also works).",
       );
       return;
     }

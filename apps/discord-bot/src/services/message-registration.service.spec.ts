@@ -697,6 +697,67 @@ test("idp staff message forwards to registered slot managers with reply button",
   assert.equal(logPayload.status, "1/1 delivered");
 });
 
+test("invalidating the idp channel cache applies a disabled forwarding state immediately", async () => {
+  const dmPayloads: unknown[] = [];
+  const managerId = "111111111111111111";
+  let forwardingEnabled = true;
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: {
+        id: "00000000-0000-4000-8000-000000000001",
+        name: "Scrim 1",
+      },
+      config: {
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        organizationId: "org-1",
+        guildId: "guild-1",
+        manageRoleIds: [],
+        emojis: {
+          idpDmForwardingEnabled: forwardingEnabled ? "true" : "false",
+        },
+      },
+      channelKind: "idp",
+    }),
+    listRegisteredSlotManagerDiscordIds: async () => [managerId],
+    sendDiscordActionLog: async () => undefined,
+  };
+  const message = (id: string) => ({
+    id,
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "Room details changed.",
+    guild: { id: "guild-1" },
+    channel: { id: "idp-channel" },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    attachments: new Collection(),
+    embeds: [],
+    client: {
+      users: {
+        fetch: async () => ({
+          send: async (payload: unknown) => {
+            dmPayloads.push(payload);
+          },
+        }),
+      },
+    },
+  });
+  const service = new MessageRegistrationService(sessionService as any);
+
+  assert.equal(
+    await service.handleMessage(message("123456789012345678") as any),
+    true,
+  );
+  assert.equal(dmPayloads.length, 1);
+
+  forwardingEnabled = false;
+  service.invalidateIdpDmChannelCache("guild-1", "idp-channel");
+  await service.handleMessage(message("123456789012345679") as any);
+
+  assert.equal(dmPayloads.length, 1);
+});
+
 test("idp dm reply modal sends only manager identity and text to manager channel", async () => {
   let managerMessage: any = null;
   let replyPayload: any = null;
@@ -8926,4 +8987,103 @@ test("automatic result review paginates every skipped row and missing official s
     previewButtons[2].custom_id,
     /result:auto:preview-page:123456789012345685:1/,
   );
+});
+
+test("interaction registration reuses the normal registration policy and persistence path", async () => {
+  const managerUser = {
+    id: "222222222222222222",
+    username: "manager",
+    globalName: "Team Manager",
+    bot: false,
+  };
+  let registrationArgs: unknown[] | null = null;
+  let promotionChecks = 0;
+  const config = {
+    sessionId: "session-1",
+    organizationId: "org-1",
+    guildId: "guild-1",
+    registrationMode: "SCRIM",
+    maxManagersPerTeam: 10,
+    manageRoleIds: [],
+    emojis: {},
+  };
+  const sessionService = {
+    findScrimForWaitlistChannel: async () => null,
+    findScrimForRegistrationChannel: async () => ({
+      session: { id: "session-1", name: "Weekly Scrim" },
+      config,
+      accepting: true,
+    }),
+    withOrganization: async (
+      organizationId: string,
+      callback: () => Promise<string>,
+    ) => {
+      assert.equal(organizationId, "org-1");
+      return callback();
+    },
+    promoteWaitlistedTeamFromRegistrationChannel: async () => {
+      promotionChecks += 1;
+      return null;
+    },
+    customRoleRegistrationAccesses: async () => [],
+    userHasVipRegistrationAccess: async () => false,
+    userHasEarlyAccessRegistrationAccess: async () => false,
+    userHasConfiguredRegistrationRole: async () => true,
+    registerTeamAndJoinScrim: async (...args: unknown[]) => {
+      registrationArgs = args;
+      return "Registered in slot #7";
+    },
+    sendDiscordActionLog: async () => undefined,
+  };
+  const service = new MessageRegistrationService(sessionService as any);
+  const interaction = {
+    id: "333333333333333333",
+    guild: {
+      id: "guild-1",
+      members: {
+        fetch: async () => ({ user: managerUser }),
+      },
+    },
+    guildId: "guild-1",
+    channelId: "registration-channel",
+    channel: {
+      id: "registration-channel",
+      topic: "arenzyra-session=session-1;kind=registration",
+    },
+    user: {
+      id: "111111111111111111",
+      username: "captain",
+      globalName: "Captain",
+      tag: "captain#0001",
+    },
+    member: null,
+    memberPermissions: { has: () => false },
+  };
+
+  const result = await service.registerFromInteraction(interaction as any, {
+    kind: "team",
+    teamName: "Team Alpha",
+    tag: "ALP",
+    placement: "NORMAL",
+    managers: [managerUser as any],
+    logo: null,
+  });
+
+  assert.equal(result, "Registered in slot #7");
+  assert.equal(promotionChecks, 1);
+  assert.ok(registrationArgs);
+  assert.equal(registrationArgs![0], "111111111111111111");
+  assert.equal(registrationArgs![3], "ALP");
+  assert.equal(registrationArgs![4], "Team Alpha");
+  assert.deepEqual(registrationArgs![5], [
+    {
+      discordUserId: "222222222222222222",
+      discordUsername: "manager",
+      displayName: "Team Manager",
+      role: "LEADER",
+    },
+  ]);
+  assert.equal(registrationArgs![7], "session-1");
+  assert.equal((registrationArgs![10] as { requesterDiscordId: string }).requesterDiscordId, "111111111111111111");
+  assert.equal((registrationArgs![10] as { placement: string }).placement, "NORMAL");
 });

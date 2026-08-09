@@ -5,14 +5,20 @@ import test from "node:test";
 import { componentAuthorizationPolicy } from "./command-authorization";
 
 const sourceRoot = path.resolve(__dirname);
-const sourceFiles = [
-  "bot.ts",
-  "services/control-panel.service.ts",
-  "services/message-registration.service.ts",
-  "services/session.service.ts",
-  "services/staff-task.service.ts",
-  "services/ticket.service.ts",
-].map((relativePath) => path.join(sourceRoot, relativePath));
+
+function sourceFilesUnder(directory: string): string[] {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFilesUnder(entryPath);
+    if (!entry.isFile() || !entry.name.endsWith(".ts")) return [];
+    if (entry.name.endsWith(".spec.ts") || entry.name === "test-env.ts") {
+      return [];
+    }
+    return [entryPath];
+  });
+}
+
+const sourceFiles = sourceFilesUnder(sourceRoot);
 
 function extractedComponentIds(source: string) {
   const values = new Set<string>();
@@ -86,9 +92,70 @@ test("staff autocomplete authorizes before invoking data-producing handlers", ()
   const start = botSource.indexOf("async function handleAutocomplete");
   const end = botSource.indexOf("async function handleMessageContextCommand", start);
   const handler = botSource.slice(start, end);
-  const authorizationAt = handler.indexOf("commandRequiresStaff(interaction.commandName)");
-  const executeAt = handler.indexOf("await command.autocomplete");
-  assert.ok(authorizationAt >= 0, "autocomplete staff authorization is missing");
-  assert.ok(executeAt > authorizationAt, "autocomplete executes before staff authorization");
+  const policyAt = handler.indexOf(
+    'registration.authorization.policy === "staff"',
+  );
+  const authorizationAt = handler.indexOf(
+    "sessionService.authorizeStaffCommand",
+  );
+  const executeAt = handler.indexOf("await autocomplete(interaction");
+  assert.ok(policyAt >= 0, "autocomplete command policy check is missing");
+  assert.ok(
+    authorizationAt > policyAt,
+    "autocomplete staff authorization runs before its policy check",
+  );
+  assert.ok(
+    executeAt > authorizationAt,
+    "autocomplete executes before staff authorization",
+  );
   assert.match(handler, /if \(!authorization\.allowed\)[\s\S]*interaction\.respond\(\[\]\)/);
+});
+
+test("application command dispatch looks up classified metadata before pause and execution", () => {
+  const botSource = fs.readFileSync(path.join(sourceRoot, "bot.ts"), "utf8");
+  for (const [startMarker, endMarker, lookupMarker] of [
+    [
+      "async function handleCommand",
+      "async function handleAutocomplete",
+      "findSlashCommandRegistration(interaction.commandName)",
+    ],
+    [
+      "async function handleMessageContextCommand",
+      "async function authorizeSensitiveComponent",
+      "findMessageContextCommandRegistration(",
+    ],
+  ]) {
+    const start = botSource.indexOf(startMarker);
+    const end = botSource.indexOf(endMarker, start);
+    const handler = botSource.slice(start, end);
+    const lookupAt = handler.indexOf(lookupMarker);
+    const classifiedAt = handler.indexOf("hasClassifiedCommandAuthorization");
+    const pauseAt = handler.indexOf("isInteractionChannelPaused");
+    const policyAt = handler.indexOf(
+      'registration.authorization.policy === "staff"',
+    );
+    const authorizationAt = handler.indexOf(
+      "sessionService.authorizeStaffCommand",
+    );
+    const executeAt = handler.indexOf("registration.command.execute");
+
+    assert.ok(lookupAt >= 0, `${startMarker} registry lookup is missing`);
+    assert.ok(
+      classifiedAt > lookupAt,
+      `${startMarker} does not fail closed on missing policy metadata`,
+    );
+    assert.ok(
+      pauseAt > classifiedAt,
+      `${startMarker} checks pause state before command classification`,
+    );
+    assert.ok(policyAt > pauseAt, `${startMarker} staff policy check is missing`);
+    assert.ok(
+      authorizationAt > policyAt,
+      `${startMarker} authorizes staff before checking command policy`,
+    );
+    assert.ok(
+      executeAt > authorizationAt,
+      `${startMarker} executes before central staff authorization`,
+    );
+  }
 });

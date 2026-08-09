@@ -2593,8 +2593,8 @@ export class ControlPanelService {
       content: [
         "Logo upload",
         logoChannelId
-          ? `Send \`%logo Team Name\` with a PNG, JPG, or WEBP image in <#${logoChannelId}>.`
-          : "Send `%logo Team Name` with a PNG, JPG, or WEBP image in the synced logo channel.",
+          ? `Use \`/team-media logo\` with a PNG, JPG, or WEBP image in <#${logoChannelId}>. The legacy \`%logo\` format also remains available during migration.`
+          : "Use `/team-media logo` with a PNG, JPG, or WEBP image in the synced logo channel. The legacy `%logo` format also remains available during migration.",
         "The saved logo is reused for registrations, slots, and result widgets.",
       ].join("\n"),
       ephemeral: true,
@@ -8242,13 +8242,13 @@ export class ControlPanelService {
       .setColor(0x2563eb)
       .setTitle("Arenzyra Scrim Registration")
       .setDescription(
-        "Use %register in the registration channel. This panel is only for scrim status actions.",
+        "Use `/register team` in the registration channel. Legacy `%register` remains available during migration. This panel is only for scrim status actions.",
       )
       .addFields(
         {
           name: "Team leaders",
           value:
-            "Send %register, team name, tag, and at least one manager mention in the registration channel.",
+            "Run `/register team` with the team name, tag, and managers in the registration channel.",
         },
         {
           name: "Results",

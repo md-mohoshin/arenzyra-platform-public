@@ -1,27 +1,29 @@
-const STAFF_COMMANDS = new Set([
-  "apply-results",
-  "arenzyra-doctor",
-  "arenzyra ban manager",
-  "ban-control",
-  "captain-panel",
-  "changename",
-  "control-panel",
-  "create-scrim",
-  "idp",
-  "live-center",
-  "map-slots",
-  "play-buttons",
-  "preview-results",
-  "production-pins",
-  "production-setup",
-  "result-control",
-  "schedule-event",
-  "session-audit",
-  "staff-tasks",
-  "start-scrim",
-  "ticket-panel",
-  "waitlist-control",
-]);
+import type {
+  CommandAuthorizationPolicy,
+  SlashCommandRegistration,
+} from "./command-contract";
+import type {
+  AutocompleteInteraction,
+  ChatInputCommandInteraction,
+} from "discord.js";
+import { findApplicationCommandRegistration } from "./command-registry";
+
+export type CommandAuthorizationSessionResolution =
+  | Readonly<{ allowed: true; sessionId: string | null }>
+  | Readonly<{
+      allowed: false;
+      reason: string;
+      error?: unknown;
+    }>;
+
+type ConfiguredSessionLookup = (
+  guildId: string,
+  channelId: string,
+  channelTopic: string | null,
+) => Promise<{ session: { id: string } } | null>;
+
+const CONFIGURED_SESSION_REQUIRED_REASON =
+  "Use this command in a configured Arenzyra session channel or provide a session ID.";
 
 const STAFF_CONTROL_ACTIONS = new Set([
   "create-scrim",
@@ -83,30 +85,123 @@ const SELF_SERVICE_CONTROL_ACTIONS = new Set([
   "standings",
 ]);
 
-const SESSION_SCOPED_COMMANDS = new Set([
-  "arenzyra-doctor",
-  "captain-panel",
-  "control-panel",
-  "live-center",
-  "result-control",
-  "schedule-event",
-  "session-audit",
-  "start-scrim",
-]);
-
 export function commandRequiresStaff(commandName: string) {
-  return STAFF_COMMANDS.has(String(commandName || "").trim().toLowerCase());
+  return commandAuthorizationPolicy(commandName) === "staff";
+}
+
+export function commandAuthorizationPolicy(
+  commandName: string,
+): CommandAuthorizationPolicy | "unclassified" {
+  return (
+    findApplicationCommandRegistration(commandName)?.authorization.policy ??
+    "unclassified"
+  );
 }
 
 export function commandAuthorizationSessionId(
   commandName: string,
   getStringOption: (name: string) => string | null,
 ) {
-  const normalizedCommand = String(commandName || "").trim().toLowerCase();
-  if (!SESSION_SCOPED_COMMANDS.has(normalizedCommand)) {
+  const sessionIdOption = findApplicationCommandRegistration(
+    commandName,
+  )?.authorization.sessionIdOption;
+  if (!sessionIdOption) {
     return null;
   }
-  return getStringOption("session-id")?.trim() || null;
+  return getStringOption(sessionIdOption)?.trim() || null;
+}
+
+/**
+ * Resolve the session whose configuration must govern a staff command.
+ *
+ * `null` is returned as an allowed session only for commands that genuinely do
+ * not require configured-channel inference. Commands that opt into inference
+ * fail closed when the channel cannot be resolved, so callers never fall back
+ * to guild-level staff-role matching after a lookup failure.
+ */
+export async function resolveCommandAuthorizationSession(
+  registration: SlashCommandRegistration,
+  interaction: ChatInputCommandInteraction | AutocompleteInteraction,
+  lookupConfiguredSession: ConfiguredSessionLookup,
+): Promise<CommandAuthorizationSessionResolution> {
+  const optionName = registration.authorization.sessionIdOption;
+  if (optionName) {
+    try {
+      const explicitSessionId = interaction.options
+        .getString(optionName)
+        ?.trim();
+      if (explicitSessionId) {
+        return { allowed: true, sessionId: explicitSessionId };
+      }
+    } catch {
+      // The option can be absent from the active subcommand or incomplete
+      // autocomplete payload. Configured-channel inference still applies when
+      // the registry requires it.
+    }
+  }
+
+  if (!registration.authorization.inferSessionFromConfiguredChannel) {
+    return { allowed: true, sessionId: null };
+  }
+
+  if (!interaction.guildId) {
+    return { allowed: false, reason: CONFIGURED_SESSION_REQUIRED_REASON };
+  }
+
+  let targetChannel = interaction.channel as {
+    id: string;
+    topic?: unknown;
+  } | null;
+  const channelOption = registration.authorization.channelOption;
+  if (channelOption) {
+    try {
+      const chatOptions =
+        interaction.options as ChatInputCommandInteraction["options"];
+      targetChannel =
+        (chatOptions.getChannel(channelOption) as {
+          id: string;
+          topic?: unknown;
+        } | null) ?? targetChannel;
+    } catch {
+      // This subcommand does not expose the optional target-channel field.
+    }
+  }
+
+  const channelId = targetChannel?.id ?? interaction.channelId;
+  if (!channelId) {
+    return { allowed: false, reason: CONFIGURED_SESSION_REQUIRED_REASON };
+  }
+  const topic = targetChannel?.topic;
+
+  try {
+    const resolved = await lookupConfiguredSession(
+      interaction.guildId,
+      channelId,
+      typeof topic === "string" ? topic : null,
+    );
+    const sessionId = resolved?.session.id?.trim();
+    return sessionId
+      ? { allowed: true, sessionId }
+      : { allowed: false, reason: CONFIGURED_SESSION_REQUIRED_REASON };
+  } catch (error) {
+    return {
+      allowed: false,
+      reason: CONFIGURED_SESSION_REQUIRED_REASON,
+      error,
+    };
+  }
+}
+
+export async function interactionIsPausedFailClosed(
+  lookup: () => Promise<boolean>,
+  onError?: (error: unknown) => void,
+) {
+  try {
+    return await lookup();
+  } catch (error) {
+    onError?.(error);
+    return true;
+  }
 }
 
 export function componentRequiresStaff(customId: string) {

@@ -143,7 +143,7 @@ if (
 
 if (botConfig.nodeEnv === 'production' && !botConfig.messageContentIntent) {
   throw new Error(
-    'Refusing to start the production Discord bot without DISCORD_MESSAGE_CONTENT_INTENT=true. Text commands such as %register require Discord Message Content intent.',
+    'Refusing to start the production Discord bot without DISCORD_MESSAGE_CONTENT_INTENT=true during the hybrid migration. Legacy text commands and channel-native roster, slot-list, result, and IDP workflows still require Message Content intent.',
   );
 }
 

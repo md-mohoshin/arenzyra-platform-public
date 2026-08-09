@@ -6,6 +6,7 @@ import {
   Collection,
   type ButtonInteraction,
   ComponentType,
+  type ChatInputCommandInteraction,
   ModalBuilder,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
@@ -178,6 +179,64 @@ type ParsedRegisterMessage = {
   tournamentRoster?: ParsedTournamentRoster | null;
 };
 type RegistrationInputMode = "SCRIM" | "EVENT" | "TOURNAMENT";
+
+export type InteractionRegistrationInput =
+  | {
+      kind: "team";
+      teamName: string;
+      tag: string;
+      placement?: "NORMAL" | "VIP";
+      managers: User[];
+      logo: Attachment | null;
+    }
+  | {
+      kind: "tournament";
+      teamName: string;
+      tag: string;
+      manager: User;
+      mainPlayers: Array<{
+        slot: number;
+        name: string;
+        uid: string;
+        user: User;
+      }>;
+      substitutes: Array<{
+        slot: number;
+        name: string;
+        uid: string;
+        user: User;
+      }>;
+      logo: Attachment | null;
+    };
+
+type RegistrationWorkflowOutcome =
+  | { kind: "registered"; content: string }
+  | { kind: "promoted"; content: string }
+  | {
+      kind: "rejected";
+      content: string;
+      status: "vip denied" | "closed";
+      reason: string;
+    };
+type ResolvedRegistrationContext = {
+  session: { id: string; name: string };
+  config: SessionDiscordConfigResponse;
+  accepting: boolean;
+};
+type RegistrationWorkflowActor = {
+  discordUserId: string;
+  username: string;
+  displayName: string | null;
+  label: string;
+};
+type RegistrationResultNotice = {
+  registration?: {
+    status?: string | null;
+    waitlistPosition?: number | null;
+  } | null;
+  status?: string | null;
+  warning?: string | null;
+};
 type TournamentRosterLineupType = "MAIN" | "SUBSTITUTE";
 type ParsedTournamentRosterPlayer = {
   slot: number;
@@ -475,6 +534,17 @@ export class MessageRegistrationService {
       resolved,
       expiresAt: Date.now() + IDP_DM_CHANNEL_CACHE_TTL_MS,
     });
+  }
+
+  invalidateIdpDmChannelCache(guildId: string, channelId: string) {
+    const cleanGuildId = guildId.trim();
+    const cleanChannelId = channelId.trim();
+    if (!cleanGuildId || !cleanChannelId) {
+      return;
+    }
+    this.idpDmChannelCache.delete(
+      this.idpDmChannelCacheKey(cleanGuildId, cleanChannelId),
+    );
   }
 
   private async shouldIgnoreUnknownSessionTopic(message: Message) {
@@ -9216,6 +9286,357 @@ export class MessageRegistrationService {
     return this.resolveBanTarget(message, remaining);
   }
 
+  async registerFromInteraction(
+    interaction: ChatInputCommandInteraction,
+    input: InteractionRegistrationInput,
+  ): Promise<string> {
+    const guild = interaction.guild;
+    if (!guild) {
+      throw new Error(
+        "Use `/register` inside the Discord server registration channel.",
+      );
+    }
+
+    const sourceChannelId = interaction.channelId;
+    const channelTopic = this.channelTopic(interaction.channel);
+    const actor: RegistrationWorkflowActor = {
+      discordUserId: interaction.user.id,
+      username: interaction.user.username,
+      displayName: interaction.user.globalName ?? null,
+      label: interaction.user.tag,
+    };
+    const waitlist =
+      input.kind === "team"
+        ? await this.sessionService.findScrimForWaitlistChannel(
+            guild.id,
+            sourceChannelId,
+            channelTopic,
+          )
+        : null;
+
+    if (waitlist && input.kind === "team") {
+      if ((input.placement ?? "NORMAL") === "VIP") {
+        throw new Error(
+          "Use normal registration in the waitlist channel. VIP slots do not open waitlist promotion.",
+        );
+      }
+      const members = await this.interactionRegistrationMembers(
+        guild,
+        input.managers,
+        waitlist.config,
+      );
+      const staffAccess = this.hasInteractionStaffAccess(
+        interaction,
+        waitlist.config,
+      );
+      if (!waitlist.accepting && !staffAccess) {
+        throw new Error(
+          "Waitlist promotion is closed. It opens only during the waitlist schedule and when a normal slot is empty.",
+        );
+      }
+      return this.withOrganization(waitlist.config.organizationId, () =>
+        this.sessionService.promoteWaitlistedTeamFromDiscord(
+          actor.discordUserId,
+          actor.label,
+          input.tag,
+          input.teamName,
+          members,
+          guild,
+          waitlist.session.id,
+          {
+            actorDiscordId: actor.discordUserId,
+            actorLabel: actor.label,
+            sourceChannelId,
+            sessionName: waitlist.session.name,
+          },
+        ),
+      );
+    }
+
+    const resolved = await this.sessionService.findScrimForRegistrationChannel(
+      guild.id,
+      sourceChannelId,
+      channelTopic,
+    );
+    if (!resolved) {
+      throw new Error(
+        "This command only works inside a synced registration channel.",
+      );
+    }
+
+    const sessionMode = this.registrationMode(resolved.config);
+    if (
+      (input.kind === "tournament" && sessionMode !== "TOURNAMENT") ||
+      (input.kind === "team" && sessionMode === "TOURNAMENT")
+    ) {
+      throw new Error(this.registrationUsageMessage(sessionMode));
+    }
+    if (
+      input.kind === "team" &&
+      sessionMode === "EVENT" &&
+      (input.placement ?? "NORMAL") === "VIP"
+    ) {
+      throw new Error("VIP placement is only available for scrim registration.");
+    }
+
+    const prepared = await this.prepareInteractionRegistration(
+      guild,
+      input,
+      resolved.config,
+      sessionMode,
+    );
+    const staffAccess = this.hasInteractionStaffAccess(
+      interaction,
+      resolved.config,
+    );
+
+    try {
+      const outcome = await this.withOrganization(
+        resolved.config.organizationId,
+        () =>
+          this.executeResolvedRegistration({
+            actor,
+            guild,
+            sourceChannelId,
+            inputMode: sessionMode,
+            resolved,
+            parsed: prepared.parsed,
+            members: prepared.members,
+            staffAccess,
+            logoSource: null,
+            audit: {
+              actorDiscordId: actor.discordUserId,
+              actorLabel: actor.label,
+              sourceChannelId,
+              sessionName: resolved.session.name,
+            },
+          }),
+      );
+
+      if (outcome.kind === "rejected") {
+        await this.sendDiscordActionLog(guild, resolved.config, {
+          action:
+            outcome.status === "closed"
+              ? "Registration blocked"
+              : "Registration rejected",
+          actorDiscordId: actor.discordUserId,
+          actorLabel: actor.label,
+          sourceChannelId,
+          sessionId: resolved.session.id,
+          sessionName: resolved.session.name,
+          team: {
+            name: prepared.parsed.teamName,
+            tag: prepared.parsed.tag,
+          },
+          status: outcome.status,
+          reason: outcome.reason,
+          color: 0xef4444,
+        }).catch(() => undefined);
+      }
+      return outcome.content;
+    } catch (error) {
+      await this.sendDiscordActionLog(guild, resolved.config, {
+        action: "Registration rejected",
+        actorDiscordId: actor.discordUserId,
+        actorLabel: actor.label,
+        sourceChannelId,
+        sessionId: resolved.session.id,
+        sessionName: resolved.session.name,
+        team: {
+          name: prepared.parsed.teamName,
+          tag: prepared.parsed.tag,
+        },
+        status: this.isBanRegistrationError(error) ? "banned" : "rejected",
+        reason: this.registrationErrorMessage(
+          error,
+          "Registration failed. Please check the form and try again.",
+        ),
+        color: 0xef4444,
+      }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async prepareInteractionRegistration(
+    guild: Guild,
+    input: InteractionRegistrationInput,
+    config: SessionDiscordConfigResponse,
+    inputMode: RegistrationInputMode,
+  ): Promise<{
+    parsed: ParsedRegisterMessage;
+    members: DiscordRegistrationMemberInput[];
+  }> {
+    const logoUrl = this.interactionImageUrl(input.logo, "Team logo");
+    if (input.kind === "team") {
+      const teamName = input.teamName.trim();
+      const tag = input.tag.trim();
+      if (!teamName || !tag) {
+        throw new Error(this.registrationUsageMessage(inputMode));
+      }
+      const members = await this.interactionRegistrationMembers(
+        guild,
+        input.managers,
+        config,
+      );
+      return {
+        parsed: {
+          teamName,
+          tag,
+          placement:
+            inputMode === "SCRIM" ? (input.placement ?? "NORMAL") : "NORMAL",
+          logoUrl,
+          logoSource: null,
+          tournamentRoster: null,
+        },
+        members,
+      };
+    }
+
+    const teamName = input.teamName.trim();
+    if (!teamName) {
+      throw new Error(this.tournamentUsageMessage());
+    }
+    if (this.tournamentLogoRequired(config) && !logoUrl) {
+      throw new Error(
+        "Team logo is required for this tournament registration.",
+      );
+    }
+    const managerUser = await this.visibleInteractionUser(
+      guild,
+      input.manager,
+      "Team manager",
+    );
+    const players: ParsedTournamentRosterPlayer[] = [];
+    for (const player of input.mainPlayers) {
+      const user = await this.visibleInteractionUser(
+        guild,
+        player.user,
+        `Player ${player.slot}`,
+      );
+      players.push({
+        slot: player.slot,
+        lineupType: "MAIN",
+        name: player.name.trim(),
+        uid: this.cleanTournamentUid(
+          player.uid,
+          `Player ${player.slot} UID`,
+        ),
+        discordUserId: user.id,
+        discordUsername: user.username ?? null,
+        displayName: user.globalName ?? null,
+      });
+    }
+    for (const player of input.substitutes) {
+      const user = await this.visibleInteractionUser(
+        guild,
+        player.user,
+        `Substitute ${player.slot}`,
+      );
+      players.push({
+        slot: player.slot,
+        lineupType: "SUBSTITUTE",
+        name: player.name.trim(),
+        uid: this.cleanTournamentUid(
+          player.uid,
+          `Substitute ${player.slot} UID`,
+        ),
+        discordUserId: user.id,
+        discordUsername: user.username ?? null,
+        displayName: user.globalName ?? null,
+      });
+    }
+    if (players.some((player) => !player.name)) {
+      throw new Error("Every tournament player needs a player name.");
+    }
+    const requiredMainPlayers = this.tournamentMainPlayersRequired(config);
+    this.validateTournamentRosterRows(players, requiredMainPlayers);
+    const teamTag = this.cleanTournamentTag(input.tag);
+    const tournamentRoster: ParsedTournamentRoster = {
+      teamTag,
+      managerDiscordUserId: managerUser.id,
+      managerDiscordUsername: managerUser.username ?? null,
+      managerDisplayName: managerUser.globalName ?? null,
+      managerUser,
+      requiredMainPlayers,
+      logoRequired: this.tournamentLogoRequired(config),
+      players,
+    };
+    return {
+      parsed: {
+        teamName,
+        tag: teamTag,
+        placement: "NORMAL",
+        logoUrl,
+        logoSource: null,
+        tournamentRoster,
+      },
+      members: [],
+    };
+  }
+
+  private interactionImageUrl(
+    attachment: Attachment | null,
+    label: string,
+  ): string | null {
+    if (!attachment) {
+      return null;
+    }
+    if (!this.isImageAttachment(attachment)) {
+      throw new Error(`${label} must be a PNG, JPEG, or WEBP image.`);
+    }
+    if (attachment.size > MAX_LOGO_BYTES) {
+      throw new Error(`${label} must be 8 MB or smaller.`);
+    }
+    return attachment.url;
+  }
+
+  private async visibleInteractionUser(
+    guild: Guild,
+    user: User,
+    label: string,
+  ): Promise<User> {
+    if (user.bot) {
+      throw new Error(`${label} must be a person, not a bot.`);
+    }
+    const member = await guild.members
+      .fetch({ user: user.id, force: true })
+      .catch(() => null);
+    if (!member || member.user.bot) {
+      throw new Error(
+        `${label} <@${user.id}> is not visible to the bot or is not in this server.`,
+      );
+    }
+    return member.user;
+  }
+
+  private async interactionRegistrationMembers(
+    guild: Guild,
+    users: User[],
+    config: Pick<SessionDiscordConfigResponse, "maxManagersPerTeam"> | null,
+  ): Promise<DiscordRegistrationMemberInput[]> {
+    const uniqueUsers = [
+      ...new Map(users.map((user) => [user.id, user] as const)).values(),
+    ];
+    const maxManagers = this.maxManagersPerTeam(config);
+    if (uniqueUsers.length < 1) {
+      throw new Error("Select at least 1 manager for the team.");
+    }
+    if (uniqueUsers.length > maxManagers) {
+      throw new Error(
+        `Select up to ${maxManagers} manager${maxManagers === 1 ? "" : "s"} per team.`,
+      );
+    }
+    const members: DiscordRegistrationMemberInput[] = [];
+    for (const user of uniqueUsers) {
+      members.push(
+        this.userToMemberInput(
+          await this.visibleInteractionUser(guild, user, "Manager"),
+        ),
+      );
+    }
+    return members;
+  }
+
   private async handleNoCommandRegisterMessage(
     message: Message,
     inputMode: RegistrationInputMode,
@@ -9580,270 +10001,84 @@ export class MessageRegistrationService {
             resolved.config,
           );
           const staffAccess = this.hasStaffAccess(message, resolved.config);
-          const registrationChannelPromotion = (
-            this.sessionService as unknown as {
-              promoteWaitlistedTeamFromRegistrationChannel?: (
-                requesterDiscordId: string,
-                requesterLabel: string | null,
-                rawTag: string,
-                rawName: string,
-                members: DiscordRegistrationMemberInput[],
-                guild: Message["guild"],
-                sessionId: string,
-                audit?: {
-                  actorDiscordId: string;
-                  actorLabel: string;
-                  sourceChannelId: string;
-                  sessionName: string;
-                },
-              ) => Promise<string | null>;
-            }
-          ).promoteWaitlistedTeamFromRegistrationChannel;
-          if (
-            inputMode === "SCRIM" &&
-            parsed.placement !== "VIP" &&
-            resolved.accepting &&
-            typeof registrationChannelPromotion === "function"
-          ) {
-            const promotionMembers = await this.parseMentionedManagers(
-              message,
-              resolved.config,
-            );
-            const promotion = await registrationChannelPromotion.call(
-              this.sessionService,
-              message.author.id,
-              message.author.tag,
-              parsed.tag,
-              parsed.teamName,
-              promotionMembers,
-              message.guild,
-              resolved.session.id,
-              {
-                actorDiscordId: message.author.id,
-                actorLabel: message.author.tag,
-                sourceChannelId: message.channel.id,
-                sessionName: resolved.session.name,
-              },
-            );
-            if (promotion) {
-              await finishRegistrationReaction(
-                this.registrationResultReaction("registered", resolved.config),
-                resolved.config,
-              );
-              await message.reply({
-                content: promotion,
-                allowedMentions: { parse: [] },
-              });
-              return true;
-            }
-          }
-          const customRoleAccesses = !staffAccess
-            ? await this.customRoleRegistrationAccesses(
-                message.author.id,
-                message.guild,
-                resolved.config,
-                parsed.placement === "VIP" ? "vip" : "normal",
-              )
-            : [];
-          const placementAccess = customRoleAccesses.length > 0;
-          const nonWinnerCustomAccess = customRoleAccesses.find(
-            (entry) => !entry.winnerQualified,
-          );
-          const winnerCustomAccess = customRoleAccesses.find(
-            (entry) => entry.winnerQualified && entry.group?.id,
-          );
-          const customVipAccess =
-            parsed.placement === "VIP" && !staffAccess
-              ? placementAccess
-              : false;
-          const activeVipAccessRole = !staffAccess
-            ? await this.userHasVipRegistrationAccess(
-                message.author.id,
-                message.guild,
-                resolved.config,
-              )
-            : false;
-          const roleVipAccess =
-            parsed.placement === "VIP" && !staffAccess
-              ? activeVipAccessRole
-              : false;
-          const vipAccess =
-            parsed.placement === "VIP" && !staffAccess
-              ? customVipAccess || roleVipAccess
-              : false;
-          const vipRoleNormalAccess =
-            parsed.placement !== "VIP" && !staffAccess
-              ? activeVipAccessRole
-              : false;
-          const activeEarlyAccessRole =
-            !staffAccess && parsed.placement !== "VIP"
-              ? await this.userHasEarlyAccessRegistrationAccess(
-                  message.author.id,
-                  message.guild,
-                  resolved.config,
+          const outcome = await this.executeResolvedRegistration({
+            actor: {
+              discordUserId: message.author.id,
+              username: message.author.username,
+              displayName: message.author.globalName ?? null,
+              label: message.author.tag,
+            },
+            guild: message.guild!,
+            sourceChannelId: message.channel.id,
+            inputMode,
+            resolved,
+            parsed,
+            resolveMembers: () =>
+              this.parseMentionedManagers(message, resolved.config),
+            staffAccess,
+            logoSource: parsed.logoSource
+              ? this.toDiscordTeamLogoSource(
+                  message,
+                  parsed.teamName,
+                  parsed.tag,
+                  parsed.logoSource,
                 )
-              : false;
-          const customEarlyAccess =
-            !resolved.accepting && !staffAccess ? placementAccess : false;
-          const earlyAccess =
-            !resolved.accepting && !staffAccess
-              ? customEarlyAccess || activeEarlyAccessRole
-              : false;
-          const configuredRegistrationRoleAccess = staffAccess
-            ? true
-            : await this.userHasConfiguredRegistrationRole(
-                message.author.id,
-                message.guild,
+              : null,
+            audit: this.canSendDiscordActionLog()
+              ? {
+                  actorDiscordId: message.author.id,
+                  actorLabel: message.author.tag,
+                  sourceChannelId: message.channel.id,
+                  sessionName: resolved.session.name,
+                }
+              : undefined,
+            onSessionRegistration: async (result) => {
+              await finishRegistrationReaction(
+                this.registrationResultReaction(result, resolved.config),
                 resolved.config,
               );
-          const customAccessNeeded =
-            !staffAccess &&
-            placementAccess &&
-            !nonWinnerCustomAccess &&
-            ((parsed.placement === "VIP" && !roleVipAccess) ||
-              (parsed.placement !== "VIP" &&
-                !resolved.accepting &&
-                !activeEarlyAccessRole &&
-                !vipRoleNormalAccess) ||
-              !configuredRegistrationRoleAccess);
-          const winnerAccessGroupId = customAccessNeeded
-            ? (winnerCustomAccess?.group?.id ?? null)
-            : null;
-          if (parsed.placement === "VIP" && !staffAccess && !vipAccess) {
+            },
+          });
+
+          if (outcome.kind === "promoted") {
             await finishRegistrationReaction(
-              this.registrationRejectReaction(resolved.config),
+              this.registrationResultReaction("registered", resolved.config),
               resolved.config,
             );
-            await this.logDiscordMessageProof(message, {
-              action: "Registration rejected",
-              config: resolved.config,
-              session: resolved.session,
-              status: "vip denied",
-              reason:
-                "VIP registration is closed or the user does not have the configured VIP role.",
-              team: { name: parsed.teamName, tag: parsed.tag },
-            });
             await message.reply({
-              content:
-                "VIP registration is closed or you do not have the configured VIP role.",
+              content: outcome.content,
               allowedMentions: { parse: [] },
             });
             return true;
           }
-          if (
-            !resolved.accepting &&
-            !staffAccess &&
-            !earlyAccess &&
-            !vipAccess &&
-            !vipRoleNormalAccess
-          ) {
-            const modeLabel = this.registrationModeLabel(resolved.config);
+
+          if (outcome.kind === "rejected") {
             await finishRegistrationReaction(
               this.registrationRejectReaction(resolved.config),
               resolved.config,
             );
             await this.logDiscordMessageProof(message, {
-              action: "Registration blocked",
+              action:
+                outcome.status === "closed"
+                  ? "Registration blocked"
+                  : "Registration rejected",
               config: resolved.config,
               session: resolved.session,
               team: { name: parsed.teamName, tag: parsed.tag },
-              status: "closed",
-              reason: "Registration is closed for normal users",
-              color: 0xef4444,
+              status: outcome.status,
+              reason: outcome.reason,
+              color: outcome.status === "closed" ? 0xef4444 : undefined,
             });
-            await message.reply(
-              `Registration is currently closed for this ${modeLabel}.`,
-            );
+            await message.reply({
+              content: outcome.content,
+              allowedMentions: { parse: [] },
+            });
             return true;
           }
 
-          const tournamentRoster = parsed.tournamentRoster ?? null;
-          const members = tournamentRoster
-            ? []
-            : await this.parseMentionedManagers(message, resolved.config);
-          const leader = tournamentRoster
-            ? this.userToMemberInput(tournamentRoster.managerUser)
-            : staffAccess
-              ? members[0]
-              : this.userToMemberInput(message.author);
-          const logoUpload = await this.loadLogoUpload(parsed.logoUrl);
-          const registrationOptions: {
-            requesterDiscordId: string;
-            registrationWindowBypass?: boolean;
-            registrationRoleBypass?: boolean;
-            winnerAccessGroupId?: string | null;
-            tournamentRosterJson?: Record<string, unknown>;
-            logoSource?: DiscordTeamLogoSource | null;
-            audit?: {
-              actorDiscordId: string;
-              actorLabel: string;
-              sourceChannelId: string;
-              sessionName: string;
-            };
-          } = {
-            requesterDiscordId: message.author.id,
-            registrationWindowBypass:
-              earlyAccess ||
-              vipAccess ||
-              (!resolved.accepting && vipRoleNormalAccess),
-            registrationRoleBypass:
-              placementAccess ||
-              activeEarlyAccessRole ||
-              vipAccess ||
-              vipRoleNormalAccess,
-            winnerAccessGroupId,
-          };
-          if (this.canSendDiscordActionLog()) {
-            registrationOptions.audit = {
-              actorDiscordId: message.author.id,
-              actorLabel: message.author.tag,
-              sourceChannelId: message.channel.id,
-              sessionName: resolved.session.name,
-            };
-          }
-          if (parsed.logoSource) {
-            registrationOptions.logoSource = this.toDiscordTeamLogoSource(
-              message,
-              parsed.teamName,
-              parsed.tag,
-              parsed.logoSource,
-            );
-          }
-          if (tournamentRoster) {
-            registrationOptions.tournamentRosterJson =
-              this.tournamentRosterJson(tournamentRoster);
-          }
-          const registrationResult =
-            await this.sessionService.registerTeamAndJoinScrim(
-              leader.discordUserId,
-              leader.discordUsername ?? leader.discordUserId,
-              leader.displayName ?? null,
-              parsed.tag,
-              parsed.teamName,
-              members,
-              message.guild,
-              resolved.session.id,
-              null,
-              logoUpload,
-              {
-                ...registrationOptions,
-                placement: parsed.placement,
-                backgroundDiscordSync: true,
-                onSessionRegistration: async (result) => {
-                  await finishRegistrationReaction(
-                    this.registrationResultReaction(result, resolved.config),
-                    resolved.config,
-                  );
-                },
-              },
-            );
-
           if (!finalReactionSent) {
             await finishRegistrationReaction(
-              this.registrationResultReaction(
-                registrationResult,
-                resolved.config,
-              ),
+              this.registrationResultReaction(outcome.content, resolved.config),
               resolved.config,
             );
           }
@@ -9878,6 +10113,263 @@ export class MessageRegistrationService {
       }
       return true;
     }
+  }
+
+  private async executeResolvedRegistration(params: {
+    actor: RegistrationWorkflowActor;
+    guild: Guild;
+    sourceChannelId: string;
+    inputMode: RegistrationInputMode;
+    resolved: ResolvedRegistrationContext;
+    parsed: ParsedRegisterMessage;
+    members?: DiscordRegistrationMemberInput[];
+    resolveMembers?: () => Promise<DiscordRegistrationMemberInput[]>;
+    staffAccess: boolean;
+    logoSource?: DiscordTeamLogoSource | null;
+    audit?: {
+      actorDiscordId: string;
+      actorLabel: string;
+      sourceChannelId: string;
+      sessionName: string;
+    };
+    onSessionRegistration?: (
+      result: RegistrationResultNotice,
+    ) => Promise<void> | void;
+  }): Promise<RegistrationWorkflowOutcome> {
+    const {
+      actor,
+      guild,
+      sourceChannelId,
+      inputMode,
+      resolved,
+      parsed,
+      staffAccess,
+    } = params;
+    let cachedMembers = params.members;
+    const registrationMembers = async () => {
+      if (cachedMembers) {
+        return cachedMembers;
+      }
+      cachedMembers = params.resolveMembers
+        ? await params.resolveMembers()
+        : [];
+      return cachedMembers;
+    };
+    const registrationChannelPromotion = (
+      this.sessionService as unknown as {
+        promoteWaitlistedTeamFromRegistrationChannel?: (
+          requesterDiscordId: string,
+          requesterLabel: string | null,
+          rawTag: string,
+          rawName: string,
+          registrationMembers: DiscordRegistrationMemberInput[],
+          targetGuild: Guild,
+          sessionId: string,
+          audit?: {
+            actorDiscordId: string;
+            actorLabel: string;
+            sourceChannelId: string;
+            sessionName: string;
+          },
+        ) => Promise<string | null>;
+      }
+    ).promoteWaitlistedTeamFromRegistrationChannel;
+
+    if (
+      inputMode === "SCRIM" &&
+      parsed.placement !== "VIP" &&
+      resolved.accepting &&
+      typeof registrationChannelPromotion === "function"
+    ) {
+      const promotion = await registrationChannelPromotion.call(
+        this.sessionService,
+        actor.discordUserId,
+        actor.label,
+        parsed.tag,
+        parsed.teamName,
+        await registrationMembers(),
+        guild,
+        resolved.session.id,
+        params.audit ?? {
+          actorDiscordId: actor.discordUserId,
+          actorLabel: actor.label,
+          sourceChannelId,
+          sessionName: resolved.session.name,
+        },
+      );
+      if (promotion) {
+        return { kind: "promoted", content: promotion };
+      }
+    }
+
+    const customRoleAccesses = !staffAccess
+      ? await this.customRoleRegistrationAccesses(
+          actor.discordUserId,
+          guild,
+          resolved.config,
+          parsed.placement === "VIP" ? "vip" : "normal",
+        )
+      : [];
+    const placementAccess = customRoleAccesses.length > 0;
+    const nonWinnerCustomAccess = customRoleAccesses.find(
+      (entry) => !entry.winnerQualified,
+    );
+    const winnerCustomAccess = customRoleAccesses.find(
+      (entry) => entry.winnerQualified && entry.group?.id,
+    );
+    const customVipAccess =
+      parsed.placement === "VIP" && !staffAccess ? placementAccess : false;
+    const activeVipAccessRole = !staffAccess
+      ? await this.userHasVipRegistrationAccess(
+          actor.discordUserId,
+          guild,
+          resolved.config,
+        )
+      : false;
+    const roleVipAccess =
+      parsed.placement === "VIP" && !staffAccess
+        ? activeVipAccessRole
+        : false;
+    const vipAccess =
+      parsed.placement === "VIP" && !staffAccess
+        ? customVipAccess || roleVipAccess
+        : false;
+    const vipRoleNormalAccess =
+      parsed.placement !== "VIP" && !staffAccess
+        ? activeVipAccessRole
+        : false;
+    const activeEarlyAccessRole =
+      !staffAccess && parsed.placement !== "VIP"
+        ? await this.userHasEarlyAccessRegistrationAccess(
+            actor.discordUserId,
+            guild,
+            resolved.config,
+          )
+        : false;
+    const customEarlyAccess =
+      !resolved.accepting && !staffAccess ? placementAccess : false;
+    const earlyAccess =
+      !resolved.accepting && !staffAccess
+        ? customEarlyAccess || activeEarlyAccessRole
+        : false;
+    const configuredRegistrationRoleAccess = staffAccess
+      ? true
+      : await this.userHasConfiguredRegistrationRole(
+          actor.discordUserId,
+          guild,
+          resolved.config,
+        );
+    const customAccessNeeded =
+      !staffAccess &&
+      placementAccess &&
+      !nonWinnerCustomAccess &&
+      ((parsed.placement === "VIP" && !roleVipAccess) ||
+        (parsed.placement !== "VIP" &&
+          !resolved.accepting &&
+          !activeEarlyAccessRole &&
+          !vipRoleNormalAccess) ||
+        !configuredRegistrationRoleAccess);
+    const winnerAccessGroupId = customAccessNeeded
+      ? (winnerCustomAccess?.group?.id ?? null)
+      : null;
+
+    if (parsed.placement === "VIP" && !staffAccess && !vipAccess) {
+      const reason =
+        "VIP registration is closed or the user does not have the configured VIP role.";
+      return {
+        kind: "rejected",
+        content: reason,
+        status: "vip denied",
+        reason,
+      };
+    }
+    if (
+      !resolved.accepting &&
+      !staffAccess &&
+      !earlyAccess &&
+      !vipAccess &&
+      !vipRoleNormalAccess
+    ) {
+      return {
+        kind: "rejected",
+        content: `Registration is currently closed for this ${this.registrationModeLabel(
+          resolved.config,
+        )}.`,
+        status: "closed",
+        reason: "Registration is closed for normal users",
+      };
+    }
+
+    const tournamentRoster = parsed.tournamentRoster ?? null;
+    const members = tournamentRoster ? [] : await registrationMembers();
+    const leader = tournamentRoster
+      ? this.userToMemberInput(tournamentRoster.managerUser)
+      : staffAccess
+        ? members[0]
+        : {
+            discordUserId: actor.discordUserId,
+            discordUsername: actor.username,
+            displayName: actor.displayName,
+            role: "LEADER" as const,
+          };
+    if (!leader) {
+      throw new Error("Mention at least 1 manager in the registration message.");
+    }
+    const logoUpload = await this.loadLogoUpload(parsed.logoUrl);
+    const registrationOptions: {
+      requesterDiscordId: string;
+      registrationWindowBypass?: boolean;
+      registrationRoleBypass?: boolean;
+      winnerAccessGroupId?: string | null;
+      tournamentRosterJson?: Record<string, unknown>;
+      logoSource?: DiscordTeamLogoSource | null;
+      audit?: {
+        actorDiscordId: string;
+        actorLabel: string;
+        sourceChannelId: string;
+        sessionName: string;
+      };
+    } = {
+      requesterDiscordId: actor.discordUserId,
+      registrationWindowBypass:
+        earlyAccess ||
+        vipAccess ||
+        (!resolved.accepting && vipRoleNormalAccess),
+      registrationRoleBypass:
+        placementAccess ||
+        activeEarlyAccessRole ||
+        vipAccess ||
+        vipRoleNormalAccess,
+      winnerAccessGroupId,
+      audit: params.audit,
+      logoSource: params.logoSource ?? null,
+    };
+    if (tournamentRoster) {
+      registrationOptions.tournamentRosterJson =
+        this.tournamentRosterJson(tournamentRoster);
+    }
+
+    const registrationResult =
+      await this.sessionService.registerTeamAndJoinScrim(
+        leader.discordUserId,
+        leader.discordUsername ?? leader.discordUserId,
+        leader.displayName ?? null,
+        parsed.tag,
+        parsed.teamName,
+        members,
+        guild,
+        resolved.session.id,
+        null,
+        logoUpload,
+        {
+          ...registrationOptions,
+          placement: parsed.placement,
+          backgroundDiscordSync: true,
+          onSessionRegistration: params.onSessionRegistration,
+        },
+      );
+
+    return { kind: "registered", content: registrationResult };
   }
 
   private registrationErrorMessage(error: unknown, fallback: string) {
@@ -10545,6 +11037,7 @@ export class MessageRegistrationService {
 
   private hasInteractionStaffAccess(
     interaction:
+      | ChatInputCommandInteraction
       | ButtonInteraction
       | StringSelectMenuInteraction
       | ModalSubmitInteraction,
