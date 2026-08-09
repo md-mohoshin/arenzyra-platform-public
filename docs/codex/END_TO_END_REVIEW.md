@@ -37,12 +37,12 @@ and 30-day validation gates are in
 The release work uses three independent Git repositories. Root does not track
 the nested Web repository as content or as a gitlink.
 
-| Tree                                                      | Audited revision                           |                                                                                                             Status at this checkpoint |
-| --------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------: |
-| Root source checkpoint, before this evidence correction   | `5bd5d20d020bb0f56d1db4b29ef24c5304c4bbf3` | pre-commit status was exactly 28 paths: these four intended documents plus 24 exclusions; after this checkpoint, 24 exclusions remain |
-| Canonical API worktree (`.worktrees/api-release-lineage`) | `a508e9747d5d93aff2a50506e93938a51ff2e4a1` |                                                                                                                                 clean |
-| Web runtime source/build checkpoint (`apps/arenzyra-web`) | `f2ca9a152e60830ed526fa0b9a784982aba1afeb` |                                                     clean; source, build, and runtime-package evidence below belongs to this revision |
-| Web test-harness checkpoint (`apps/arenzyra-web`)         | `1d37d1096ce8c5323ccdb0938f800c35f6a2029c` |                                                                       clean; only two test files changed after the runtime checkpoint |
+| Tree                                                      | Audited revision                           |                                                                                                                Status at this checkpoint |
+| --------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------: |
+| Root checkpoint before this production-evidence addendum  | `0a53211c989d771200b17a27f2a456e5a20bac27` | pre-commit status is exactly 25 paths: this intended document plus 24 exclusions; after this addendum is committed, 24 exclusions remain |
+| Canonical API worktree (`.worktrees/api-release-lineage`) | `4edafafd28aaf684a78f678adf358b5eaed80238` |                                                   clean; one test-only standings regression was added after runtime checkpoint `a508e97` |
+| Web runtime source/build checkpoint (`apps/arenzyra-web`) | `f2ca9a152e60830ed526fa0b9a784982aba1afeb` |                                                        clean; source, build, and runtime-package evidence below belongs to this revision |
+| Web test-harness checkpoint (`apps/arenzyra-web`)         | `1d37d1096ce8c5323ccdb0938f800c35f6a2029c` |                                                                          clean; only two test files changed after the runtime checkpoint |
 
 The dirty legacy `apps/api` tree at
 `54dd78c91ac15747c3ded2d1e5c99fd31c8d9b8a` is not release identity. Its
@@ -64,17 +64,17 @@ That is local source recovery, not a production-data backup.
 
 ## Current retained verification
 
-| Area                    | Retained result                                                                                                                                                         |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Canonical API           | Build passed; full unit run passed 153/167 suites and 1,204/1,266 tests, with 14 suites/62 tests failing; 8 e2e suites were inventoried but not run in that result      |
-| Web source              | At clean runtime checkpoint `f2ca9a1`, full ESLint and TypeScript passed; focused font 4/4, release-boundary 10/10, Facet Grid 2/2, and Studio TLS/migration 6/6 passed |
-| Web browser             | At test-harness checkpoint `1d37d10`, the final full single-worker Chromium run passed 150/150; the two affected tests also passed together 2/2 before that run         |
-| Web production build    | 79/79 static pages; emitted static/server output contains none of the quarantined Production Design or old-logo markers                                                 |
-| Web runtime package     | Clean `f2ca9a1` modern frozen pnpm deploy passed: 18,698 regular files, 599,685,932 logical bytes, and 232 contained links; no dev/cache/source tree or escaping link   |
-| Desktop                 | Exact-final full suite passed 289/289 across 38 files; 76/76 launcher-release tests and 42/42 PCOB coverage tests passed; TypeScript and full ESLint passed             |
-| Root production policy  | 31/31 production policy tests and 12/12 publish-preflight tests passed                                                                                                  |
-| Pricing consistency     | Canonical-root-aware gate passed 5/6; the sole failing check is the real canonical catalog/add-on mismatch. The earlier dirty-tree 6/6 is not retained evidence         |
-| Migration checksum gate | At Root `5bd5d20`, 26/26 direct tests and 72/72 related policy tests passed; real production ledger comparison and disposable replay remain outstanding                 |
+| Area                    | Retained result                                                                                                                                                                  |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical API           | At `4edafaf`, build passed; full unit run passed 154/168 suites and 1,205/1,267 tests, with 14 suites/62 tests failing; 8 e2e suites were inventoried but not run in that result |
+| Web source              | At clean runtime checkpoint `f2ca9a1`, full ESLint and TypeScript passed; focused font 4/4, release-boundary 10/10, Facet Grid 2/2, and Studio TLS/migration 6/6 passed          |
+| Web browser             | At test-harness checkpoint `1d37d10`, the final full single-worker Chromium run passed 150/150; the two affected tests also passed together 2/2 before that run                  |
+| Web production build    | 79/79 static pages; emitted static/server output contains none of the quarantined Production Design or old-logo markers                                                          |
+| Web runtime package     | Clean `f2ca9a1` modern frozen pnpm deploy passed: 18,698 regular files, 599,685,932 logical bytes, and 232 contained links; no dev/cache/source tree or escaping link            |
+| Desktop                 | Exact-final full suite passed 289/289 across 38 files; 76/76 launcher-release tests and 42/42 PCOB coverage tests passed; TypeScript and full ESLint passed                      |
+| Root production policy  | 31/31 production policy tests and 12/12 publish-preflight tests passed                                                                                                           |
+| Pricing consistency     | Canonical-root-aware gate passed 5/6; the sole failing check is the real canonical catalog/add-on mismatch. The earlier dirty-tree 6/6 is not retained evidence                  |
+| Migration checksum gate | At Root `5bd5d20`, 26/26 direct tests and 72/72 related policy tests passed; real production ledger comparison and disposable replay remain outstanding                          |
 
 The passing Chromium run still emitted recurring development-only React
 script-tag diagnostics and Fast Refresh reload warnings. The likely source is
@@ -127,8 +127,9 @@ drill remain unproven.
   Signer/TSA policy remains deliberately empty and unapproved.
 
 These controls describe candidate source. They do not prove every candidate API
-change is integrated into the canonical release. API reconciliation still has
-150 direct overlay entries, 258 manual-review entries, and 15 migration holds.
+change is integrated into the canonical release. Of 2,710 candidate-delta paths,
+2,288 are now exact; API reconciliation still has 149 direct overlay entries,
+258 manual-review entries, and 15 migration holds.
 Four manually reviewed WebSocket gateway files, including protected PCOB,
 block the next access-token integration; account-security integration depends
 on a held Prisma enum and migration. Do not force those overlays.
@@ -163,6 +164,24 @@ of `ob.js` still require owner/legal review before a public release.
 
 ## Historical production evidence only
 
+On 2026-08-09, a new bounded read-only check entered `/opt/arenzyra` through a
+clean-parent `env -i` Bash process and listed the running containers. It did not
+run SQL, a migration, Compose, a build, a restart, or a Discord interaction.
+The exact migration-ledger query stopped before database access because the
+deployed tree lacks the required database-identity helper scripts and the running database
+uses mutable `postgres:16-alpine` rather than the reviewed pinned PostgreSQL
+16.14 digest. Production checksums therefore remain unknown and fail closed.
+The running API command still includes `npx prisma migrate deploy` on container
+startup, so no API recreate or restart is safe until the guarded release source,
+database identity, preflight, and exact-checksum lineage gate are in place.
+
+The same point-in-time inventory observed a recently started Discord container
+reporting healthy. That is not candidate verification or continuous health: no
+bot process was started by this review, and no guild, gateway, or credential
+interaction was attempted. Unexpected whitespace/shell-like top-level names
+also remain under `/opt/arenzyra`; preserve them and review their provenance
+instead of deleting them during deployment preparation.
+
 During the 2026-08-05 audit window (00:10-01:11 UTC; final recheck 03:52 UTC),
 read-only HTTPS, container inspection, aggregate logs, and count-only SQL under
 `/opt/arenzyra` observed an older deployment. The observed source label was
@@ -187,7 +206,7 @@ new production inventory.
 
 1. Resolve or explicitly retire the 24 excluded Root paths, confirm `ob.js`
    provenance, and reproduce all revisions from clean checkouts.
-2. Complete the 150 direct and 258 manual API overlays without overwriting
+2. Complete the 149 direct and 258 manual API overlays without overwriting
    protected gateway or credential-approval changes. Resolve the passwordless
    application/account-setup/trial and catalog/billing incompatibilities.
    Reconcile all 15 schema/migration holds against release lineage and
