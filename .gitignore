@@ -47,6 +47,7 @@ yarn-error.log*
 **/.env.production.local
 **/.env.*
 **/.env.publish
+infra/.env.release
 !infra/.env.example
 !infra/.env.publish.example
 !apps/api/.env.example
@@ -56,6 +57,7 @@ yarn-error.log*
 # Backups, dumps, and local archives
 *.dump
 *.sql
+!infra/sql/bootstrap-production-roles.sql
 *.sqlite
 *.sqlite3
 *.bak
@@ -67,17 +69,42 @@ yarn-error.log*
 *.gz
 .codex/
 .codex-*/
+.artifacts/
+.deploy-safety-backups/
+.deploy-safety-staging/
+.local-backups/
 .tmp/
+/.tmp*/
+/.tmp*
+/tmp*/
 _cleanup-archive/
 deploy-artifacts/
 deploy-backups/
 backups/
 logs/
+production-backup-archive/
+recordings/
 
 # Root-level scratch artifacts
+/.tools/
+/output/
+/vlc-help.txt
+/docs/widget-style-previews/
 /*.png
-/ob.js
 /obs-map-widget.js
+/tmp*
+/*.b64
+
+# Launcher package inputs are source assets, not generated build output.
+!apps/desktop/build/
+apps/desktop/build/*
+!apps/desktop/build/icon.ico
+!apps/desktop/build/default-team.png
+!apps/desktop/build/default-player.png
+!apps/desktop/build/shadow-logo-template.svg
+!apps/launcher/build/
+apps/launcher/build/*
+!apps/launcher/build/icon.ico
 
 # Local certificates and keys
 *.pem
