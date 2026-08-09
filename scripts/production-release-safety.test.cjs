@@ -747,11 +747,41 @@ test("applied database history absent from source fails closed as divergent", (t
 
 test("the production manifest is a closed canonical-lineage policy", () => {
   const manifest = loadManifest();
-  assert.deepEqual(manifest, {
-    schemaVersion: 2,
-    contractMigrations: [],
-    dataImpactMigrations: [],
-  });
+  assert.deepEqual(
+    manifest.contractMigrations.map(({ name }) => name),
+    [
+      "20260805021000_idp_encrypted_credential_storage",
+      "20260809203000_secure_account_setup",
+    ],
+  );
+  assert.deepEqual(
+    manifest.dataImpactMigrations.map(({ name, impactKind }) => ({
+      name,
+      impactKind,
+    })),
+    [
+      {
+        name: "20260805021000_idp_encrypted_credential_storage",
+        impactKind: "credential-encryption-backfill",
+      },
+      {
+        name: "20260809203000_secure_account_setup",
+        impactKind: "legacy-application-default",
+      },
+    ],
+  );
+  assert.equal(
+    manifest.contractMigrations.some(
+      ({ name }) => name === "20260809200000_studio_widget_release_foundation",
+    ),
+    false,
+  );
+  assert.equal(
+    manifest.dataImpactMigrations.some(
+      ({ name }) => name === "20260809200000_studio_widget_release_foundation",
+    ),
+    false,
+  );
 });
 
 test("legacy candidate-only migration policy fields fail closed", (t) => {

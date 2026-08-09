@@ -16,6 +16,9 @@ const MODE_BINDINGS = Object.freeze({
   "discord-bot": Object.freeze({
     "discord-bot": "discord-bot",
   }),
+  "idp-maintenance": Object.freeze({
+    "api-maintenance-idp-dry-run": "api",
+  }),
 });
 const IMAGE_FLAGS = Object.freeze({
   api: "--api-image-id",

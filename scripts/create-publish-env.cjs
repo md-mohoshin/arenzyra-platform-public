@@ -136,6 +136,7 @@ function main() {
     "",
     line("JWT_SECRET", secret(48)),
     line("IDP_CREDENTIAL_ENCRYPTION_KEY", secret(48)),
+    line("PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED", "false"),
     line("SUPERADMIN_MFA_REQUIRED", "true"),
     line("SUPERADMIN_MFA_ENCRYPTION_KEY", secret(48)),
     line("SUPERADMIN_MFA_RECOVERY_PEPPER", secret(48)),

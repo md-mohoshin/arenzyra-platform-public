@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const {
@@ -10,7 +11,7 @@ const {
   validateLauncherReleaseConfig,
   validateStudioDatabaseTls,
   validateEnvRelationships,
-  validateUnsupportedApiMaintenanceServices,
+  validateIdpMaintenanceServices,
 } = require("./preflight-publish.cjs");
 
 const repositoryRoot = path.resolve(__dirname, "..");
@@ -61,23 +62,58 @@ test("publish preflight finds sensitive build args without crossing YAML scopes"
   );
 });
 
-test("publish preflight rejects every unsupported API maintenance surface", () => {
-  for (const compose of [
-    'services:\n  api-maintenance-idp-read:\n    image: "api"\n',
-    'services:\n  task:\n    profiles: ["maintenance"]\n',
-    'services:\n  task:\n    entrypoint: ["node", "dist-maintenance/task.js"]\n',
+test("publish preflight accepts only the exact IDP maintenance closure", () => {
+  const compose = fs.readFileSync(
+    path.join(repositoryRoot, "infra", "docker-compose.publish.yml"),
+    "utf8",
+  );
+  const cleanErrors = [];
+  validateIdpMaintenanceServices(compose, cleanErrors);
+  assert.deepEqual(cleanErrors, []);
+
+  for (const candidate of [
+    `${compose}\n  api-maintenance-youtube-apply:\n    image: "api"\n`,
+    compose.replace(
+      "dist-maintenance/scripts/backfill-idp-credentials.js",
+      "scripts/backfill-idp-credentials.ts",
+    ),
+    compose.replace(
+      "MAINTENANCE_READ_DATABASE_URL:?REQUIRED ENV VARIABLE MISSING: MAINTENANCE_READ_DATABASE_URL",
+      "DATABASE_URL:?REQUIRED ENV VARIABLE MISSING: DATABASE_URL",
+    ),
+    compose.replaceAll("      - no-new-privileges:true", ""),
   ]) {
     const errors = [];
-    validateUnsupportedApiMaintenanceServices(compose, errors);
-    assert.equal(errors.length, 1, compose);
+    validateIdpMaintenanceServices(candidate, errors);
+    assert.ok(errors.length > 0);
   }
+});
 
-  const errors = [];
-  validateUnsupportedApiMaintenanceServices(
-    'services:\n  api-migrate:\n    profiles: ["migration"]\n',
-    errors,
-  );
-  assert.deepEqual(errors, []);
+test("publish preflight requires invite-only public applications", () => {
+  for (const value of [undefined, "true", "TRUE", " false "]) {
+    const errors = [];
+    validateEnvRelationships(
+      {
+        PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED: value,
+      },
+      errors,
+      [],
+    );
+    if (value === " false ") {
+      assert.equal(
+        errors.includes(
+          "PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED must be exactly false in production.",
+        ),
+        false,
+      );
+    } else {
+      assert.ok(
+        errors.includes(
+          "PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED must be exactly false in production.",
+        ),
+      );
+    }
+  }
 });
 
 test("publish preflight rejects sensitive values in Compose labels", () => {

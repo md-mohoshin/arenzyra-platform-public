@@ -2,26 +2,17 @@
   "schemaVersion": 1,
   "databaseSchema": "public",
   "sourceDigests": {
-    "apiPrismaSchemaSha256": "a84db28b398b65f468472de15643c588db8bbd1c520027dee4d0010b296a2649",
-    "apiMigrationTreeSha256": "a482667e8429080d67d823a83403b295c9b405ddee859c17448bb80b286dd33e",
+    "apiPrismaSchemaSha256": "4899764f2c94d5d85bb976577bb316eb2ef54f1066e6584c12dece5b7dddfc30",
+    "apiMigrationTreeSha256": "e32676d65996077cf5eed7039e8527b0614427436c92be1bb363aafd58ae993a",
     "apiFunctionTriggerMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b",
     "studioMigrationSha256": "efa1fc3bffec6b2ab3d044c10653e01aafee945c3cfcc041d81a206c81fb94bb"
   },
   "apiRuntimeTables": [
+    "AccountSetupToken",
     "AdminAdjustment",
     "AdminOrganizationLink",
     "AuditLog",
     "Ban",
-    "BillingNotificationOutbox",
-    "BillingRateLimitReservation",
-    "BillingSubmission",
-    "ConditionalBanEnrollment",
-    "ConditionalBanEnrollmentManagerBan",
-    "ConditionalBanEnrollmentMatch",
-    "ConditionalBanEnrollmentTeamBan",
-    "ConditionalBanFinalization",
-    "ConditionalBanFinalSnapshot",
-    "ConditionalBanOutbox",
     "DiscordGuildChannelPause",
     "DiscordGuildIconAsset",
     "DiscordIdpSchedule",
@@ -64,21 +55,15 @@
     "OrganizationFeature",
     "OrganizationWidgetApproval",
     "OrganizerFeature",
-    "PasswordActionToken",
     "Payout",
     "PcobAppliedEvent",
     "PcobRawEvent",
     "PcobState",
     "PcobUnmatchedKill",
     "PcobUnmatchedPlayer",
-    "PlatformSecurityAuditLog",
-    "PlatformSuperAdminMfaChallenge",
-    "PlatformSuperAdminMfaCredential",
-    "PlatformSuperAdminMfaRecoveryCode",
     "Player",
     "PlayerDiscipline",
     "PlayerMapping",
-    "PrivateAsset",
     "RefreshToken",
     "Report",
     "ResultApproval",
@@ -167,6 +152,10 @@
   "studioMigrationLedgers": ["StudioSchemaMigration"],
   "apiEnumTypes": [
     {
+      "name": "AccountSetupTokenStatus",
+      "labels": ["PENDING_DELIVERY", "ACTIVE", "CONSUMED", "REVOKED"]
+    },
+    {
       "name": "AdminAdjustmentScope",
       "labels": ["MATCH", "GROUP", "STAGE", "TOURNAMENT", "SESSION"]
     },
@@ -228,26 +217,6 @@
         "TOURNAMENT_HARD_DELETE",
         "CONTENT_MODERATE"
       ]
-    },
-    {
-      "name": "BillingNotificationOutboxStatus",
-      "labels": ["PENDING", "CLAIMED", "SENT", "FAILED"]
-    },
-    {
-      "name": "BillingRateReservationStatus",
-      "labels": ["PROCESSING", "COMPLETED", "FAILED"]
-    },
-    {
-      "name": "BillingSubmissionStatus",
-      "labels": ["PENDING", "CLAIMED", "APPROVED", "REJECTED", "CANCELLED"]
-    },
-    {
-      "name": "ConditionalBanEnrollmentStatus",
-      "labels": ["ACTIVE", "COMPLETED", "CANCELLED"]
-    },
-    {
-      "name": "ConditionalBanTargetOutcome",
-      "labels": ["PENDING", "REVOKED", "ALREADY_INACTIVE", "NOT_RELEASED"]
     },
     {
       "name": "ControlState",
@@ -441,10 +410,6 @@
       "labels": ["FULL_PRODUCTION", "DISCORD_ONLY"]
     },
     {
-      "name": "PasswordActionPurpose",
-      "labels": ["RESET", "ACCOUNT_SETUP"]
-    },
-    {
       "name": "PayoutStatus",
       "labels": ["PENDING", "APPROVED", "REJECTED"]
     },
@@ -453,16 +418,8 @@
       "labels": ["PENDING", "READY", "ERROR"]
     },
     {
-      "name": "PlatformSuperAdminMfaChallengePurpose",
-      "labels": ["LOGIN", "ENROLLMENT"]
-    },
-    {
       "name": "PlayerSource",
       "labels": ["MANUAL", "API"]
-    },
-    {
-      "name": "PrivateAssetKind",
-      "labels": ["SCREENSHOT_EVIDENCE", "PAYMENT_PROOF"]
     },
     {
       "name": "ReportStatus",

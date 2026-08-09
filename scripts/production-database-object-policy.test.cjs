@@ -48,10 +48,10 @@ test("Studio function and trigger policy binds the exact forward migration", () 
 
 test("committed object policy exactly matches every reviewed repository object", () => {
   const { policy, counts } = loadPolicy({ manifestPath, repositoryRoot });
-  assert.equal(counts.apiTables, 146);
+  assert.equal(counts.apiTables, 131);
   assert.equal(counts.studioTables, 6);
   assert.equal(counts.ledgers, 2);
-  assert.equal(counts.enumTypes, 76);
+  assert.equal(counts.enumTypes, 69);
   assert.equal(counts.functions, 2);
   assert.equal(counts.triggers, 2);
   assert.equal(counts.sequences, 0);
@@ -59,7 +59,7 @@ test("committed object policy exactly matches every reviewed repository object",
   assert.equal(policy.apiRuntimeTables.includes("Sponsor"), true);
   assert.deepEqual(policy.apiMigrationLedgers, ["_prisma_migrations"]);
   assert.deepEqual(policy.studioMigrationLedgers, ["StudioSchemaMigration"]);
-  assert.equal(policy.apiEnumTypes.length, 76);
+  assert.equal(policy.apiEnumTypes.length, 69);
   assert.deepEqual(
     policy.apiEnumTypes.find((item) => item.name === "StudioWidgetTarget")
       .labels,
@@ -251,8 +251,8 @@ test("CLI emits only canonical base64 when requested", () => {
     Buffer.from(result.stdout, "base64").toString("utf8"),
   );
   assert.equal(decoded.schemaVersion, 1);
-  assert.equal(decoded.apiRuntimeTables.length, 146);
-  assert.equal(decoded.apiEnumTypes.length, 76);
+  assert.equal(decoded.apiRuntimeTables.length, 131);
+  assert.equal(decoded.apiEnumTypes.length, 69);
   assert.equal(decoded.apiFunctions.length, 2);
   assert.equal(decoded.apiTriggers.length, 2);
   assert.equal(result.stderr, "");

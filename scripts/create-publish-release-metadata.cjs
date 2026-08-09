@@ -64,6 +64,22 @@ const defaultDockerfiles = Object.freeze([
 const defaultRuntimeComposeFiles = Object.freeze([
   "infra/docker-compose.publish.yml",
 ]);
+const embeddedRepositoryBoundaries = Object.freeze([
+  Object.freeze({ prefix: "apps/api/", repoPath: "apps/api" }),
+  Object.freeze({ prefix: "apps/arenzyra-web/", repoPath: "apps/arenzyra-web" }),
+]);
+const dockerExcludedRuntimePrefixes = Object.freeze([
+  "apps/api/uploads/",
+  "apps/api/storage/",
+  "apps/api/.cache/",
+  "apps/api/pids/",
+  "apps/arenzyra-web/.arenzyra-data/",
+  "apps/arenzyra-web/artifacts/",
+  "apps/arenzyra-web/.next-playwright/",
+  "apps/arenzyra-web/out/",
+  "apps/arenzyra-web/.vercel/",
+  "apps/arenzyra-web/public/downloads/",
+]);
 
 const ignoredDirectoryNames = new Set([
   ".artifacts",
@@ -182,6 +198,17 @@ function isReviewedSqlSource(filePath, rootDir = repoRoot) {
 }
 
 function shouldIgnore(filePath, entry, { rootDir = repoRoot } = {}) {
+  const relativePath = `${toPosixRelative(path.resolve(rootDir), filePath).replace(/\/$/, "")}${entry.isDirectory() ? "/" : ""}`;
+  if (
+    dockerExcludedRuntimePrefixes.some(
+      (prefix) => relativePath === prefix || relativePath.startsWith(prefix),
+    ) ||
+    /^apps\/api\/public\/assets\/(?:players\/player_|teams\/team_)[^/]*\/?$/.test(
+      relativePath,
+    )
+  ) {
+    return true;
+  }
   if (
     entry.isDirectory() &&
     (ignoredDirectoryNames.has(entry.name) ||
@@ -253,9 +280,64 @@ function collectFiles(targetPath, files, rootDir) {
   }
 }
 
+function gitTrackedFiles(repositoryPath) {
+  let output;
+  try {
+    output = execFileSync(
+      "git",
+      ["--no-optional-locks", "ls-files", "--cached", "-z"],
+      {
+        cwd: repositoryPath,
+        env: {
+          ...process.env,
+          GIT_OPTIONAL_LOCKS: "0",
+          GIT_NO_REPLACE_OBJECTS: "1",
+        },
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+  } catch {
+    throw new Error(`Release input owner is not an available Git repository: ${repositoryPath}`);
+  }
+  return new Set(
+    output
+      .toString("utf8")
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => entry.replace(/\\/g, "/")),
+  );
+}
+
+function assertReleaseFilesTracked(files, rootDir) {
+  const resolvedRoot = path.resolve(rootDir);
+  const owners = new Map();
+  const ownerFor = (relativePath) =>
+    embeddedRepositoryBoundaries.find(({ prefix }) =>
+      relativePath.startsWith(prefix),
+    ) || { prefix: "", repoPath: "." };
+
+  for (const filePath of files) {
+    const relativePath = toPosixRelative(resolvedRoot, filePath);
+    const owner = ownerFor(relativePath);
+    const repositoryPath = path.resolve(resolvedRoot, owner.repoPath);
+    if (!owners.has(owner.repoPath)) {
+      const topLevel = gitValue(repositoryPath, ["rev-parse", "--show-toplevel"]);
+      if (!topLevel || !samePath(topLevel, repositoryPath)) {
+        throw new Error(`Release input owner is not an exact Git worktree: ${owner.repoPath}`);
+      }
+      owners.set(owner.repoPath, gitTrackedFiles(repositoryPath));
+    }
+    const ownerRelative = relativePath.slice(owner.prefix.length);
+    if (!owners.get(owner.repoPath).has(ownerRelative)) {
+      throw new Error(`Release input is not tracked by its owning Git repository: ${relativePath}`);
+    }
+  }
+}
+
 function collectReleaseFiles({
   rootDir = repoRoot,
   includedPaths = defaultIncludedPaths,
+  requireTracked = true,
 } = {}) {
   const resolvedRoot = path.resolve(rootDir);
   const files = new Set();
@@ -276,11 +358,13 @@ function collectReleaseFiles({
     collectFiles(targetPath, files, resolvedRoot);
   }
 
-  return [...files].sort((left, right) =>
+  const collected = [...files].sort((left, right) =>
     toPosixRelative(resolvedRoot, left).localeCompare(
       toPosixRelative(resolvedRoot, right),
     ),
   );
+  if (requireTracked) assertReleaseFilesTracked(collected, resolvedRoot);
+  return collected;
 }
 
 function contentDigest(options = {}) {
@@ -288,6 +372,7 @@ function contentDigest(options = {}) {
   const files = collectReleaseFiles({
     rootDir,
     includedPaths: options.includedPaths || defaultIncludedPaths,
+    requireTracked: options.requireTracked !== false,
   });
 
   const digest = crypto.createHash("sha256");
@@ -306,7 +391,11 @@ function gitValue(cwd, args) {
     return execFileSync("git", ["--no-optional-locks", ...args], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: {
+        ...process.env,
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_NO_REPLACE_OBJECTS: "1",
+      },
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
@@ -510,8 +599,13 @@ function createReleaseMetadata({
   dockerfiles = defaultDockerfiles,
   runtimeComposeFiles = defaultRuntimeComposeFiles,
   builtAt = new Date().toISOString(),
+  requireTracked = true,
 } = {}) {
-  const { digest, fileCount } = contentDigest({ rootDir, includedPaths });
+  const { digest, fileCount } = contentDigest({
+    rootDir,
+    includedPaths,
+    requireTracked,
+  });
   const baseImages = collectBaseImageReferences({ rootDir, dockerfiles });
   const baseImagesJson = JSON.stringify(baseImages);
   const baseImagesDigest = crypto
@@ -712,6 +806,7 @@ if (require.main === module) {
 module.exports = {
   appendOverrideAudit,
   authorizeReleaseProvenance,
+  assertReleaseFilesTracked,
   collectGitProvenance,
   collectBaseImageReferences,
   collectRuntimeImageReferences,

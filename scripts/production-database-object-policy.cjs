@@ -661,7 +661,7 @@ function validatePolicyShape(policy) {
     fail("schemaVersion 1 forbids sequences until dependency policy is added");
   }
   if (
-    policy.apiEnumTypes.length !== 76 ||
+    policy.apiEnumTypes.length !== 69 ||
     policy.apiFunctions.length !== 2 ||
     policy.apiTriggers.length !== 2
   ) {

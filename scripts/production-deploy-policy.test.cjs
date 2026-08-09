@@ -57,19 +57,26 @@ test("routine deploy blocks pending old-writer-incompatible migrations before an
   assert.ok(releaseArchiveMutation > gate);
   assert.ok(metadata > gate);
   assert.ok(build > gate);
-  assert.match(
-    deploy,
-    /production-deploy-preflight\.sh --skip-health[\s\S]*production-release-safety-gate\.sh --first-deploy/,
-  );
+  assert.doesNotMatch(deploy, /production-release-safety-gate\.sh --first-deploy/);
 
   const manifest = JSON.parse(
     read("infra/production-api-migration-safety.json"),
   );
-  assert.deepEqual(manifest, {
-    schemaVersion: 2,
-    contractMigrations: [],
-    dataImpactMigrations: [],
-  });
+  assert.equal(manifest.schemaVersion, 2);
+  assert.deepEqual(
+    manifest.contractMigrations.map(({ name }) => name),
+    [
+      "20260805021000_idp_encrypted_credential_storage",
+      "20260809203000_secure_account_setup",
+    ],
+  );
+  assert.deepEqual(
+    manifest.dataImpactMigrations.map(({ name }) => name),
+    [
+      "20260805021000_idp_encrypted_credential_storage",
+      "20260809203000_secure_account_setup",
+    ],
+  );
   assert.match(
     read("scripts/verify-production-migration-safety.cjs"),
     /unclassified-destructive-migrations/,
@@ -104,6 +111,45 @@ test("full deploy verifies the canonical API image boundary before release mutat
   assert.doesNotMatch(adapter, /verify-runtime-capabilities\.cjs/);
 });
 
+test("deploy trust-bootstrap verifies exact clean nested commits before checkout code", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const publish = read("infra/PUBLISH.md");
+  const checkout = deploy.indexOf('cd "$resolved_root"');
+  const bootstrap = deploy.indexOf(
+    "verify_bootstrap_repository ROOT",
+    checkout,
+  );
+  const firstSource = deploy.indexOf(
+    "source scripts/require-local-production-docker.sh",
+    checkout,
+  );
+  const firstNode = deploy.indexOf("node scripts/", checkout);
+
+  assert.ok(checkout >= 0);
+  assert.ok(bootstrap > checkout && bootstrap < firstSource);
+  assert.ok(firstSource < firstNode);
+  assert.match(deploy.slice(checkout, firstSource), /\/usr\/bin\/env -i/);
+  assert.match(deploy.slice(checkout, firstSource), /\/usr\/bin\/git/);
+  assert.match(deploy.slice(checkout, firstSource), /GIT_OPTIONAL_LOCKS=0/);
+  assert.match(deploy.slice(checkout, firstSource), /GIT_NO_REPLACE_OBJECTS=1/);
+  assert.match(deploy.slice(checkout, firstSource), /-c core\.fsmonitor=false/);
+  assert.match(deploy.slice(checkout, firstSource), /--porcelain=v1 --untracked-files=all/);
+  assert.match(deploy.slice(checkout, firstSource), /info\/grafts/);
+  assert.match(deploy.slice(checkout, firstSource), /refs\/replace/);
+  for (const component of ["ROOT", "API", "WEB"]) {
+    assert.match(
+      deploy.slice(checkout, firstSource),
+      new RegExp(`ARENZYRA_REVIEWED_${component}_COMMIT`),
+    );
+  }
+  assert.match(
+    publish,
+    /\/usr\/bin\/git[\s\S]*show[\s\S]*scripts\/production-reviewed-entrypoint\.sh[\s\S]*\/bin\/bash -s[\s\S]*production_entry deploy/,
+  );
+  assert.match(publish, /exact clean Root\/API\/Web (?:heads|assembly)/);
+  assert.match(publish, /GIT_NO_REPLACE_OBJECTS=1/);
+});
+
 test("routine full deploy verifies canonical entitlements before every release mutation", () => {
   const deploy = read("scripts/deploy-production.sh");
   const initialSafetyPhase = deploy.indexOf("# Before release metadata");
@@ -131,7 +177,7 @@ test("routine full deploy verifies canonical entitlements before every release m
   }
   assert.match(
     deploy.slice(initialSafetyPhase, releaseArchiveMutation),
-    /if \[ "\$FIRST_DEPLOY" -eq 1 \]; then[\s\S]*else[\s\S]*verify-production-entitlement-invariants\.sh[\s\S]*fi/,
+    /if \[ "\$MODE" = "full" \]; then[\s\S]*verify-production-entitlement-invariants\.sh[\s\S]*fi/,
   );
 
   const gate = read("scripts/verify-production-entitlement-invariants.sh");
@@ -143,6 +189,9 @@ test("routine full deploy verifies canonical entitlements before every release m
   assert.match(gate, /default_transaction_read_only=on/);
   assert.match(gate, /ON_ERROR_STOP=1/);
   assert.match(gate, /verify-production-entitlement-invariants\.cjs/);
+  assert.match(gate, /production-entitlement-inventory\.sql/);
+  assert.match(gate, /parse-production-entitlement-inventory\.cjs/);
+  assert.match(gate, /verify-production-entitlement-deployment\.cjs/);
   assert.match(sql[1], /FROM "Organization"/);
   assert.match(sql[1], /WHERE "deletedAt" IS NULL/);
   assert.match(
@@ -160,6 +209,37 @@ test("routine full deploy verifies canonical entitlements before every release m
   assert.doesNotMatch(sql[1], /CURRENT_TIMESTAMP/);
   assert.doesNotMatch(sql[1], /"(?:id|name|slug|email)"/i);
   assert.doesNotMatch(sql[1], /\b(?:UPDATE|INSERT|DELETE|TRUNCATE)\b/i);
+});
+
+test("both deploy modes preflight before archive or release metadata mutation", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const guardArguments = deploy.indexOf("guard_args=()");
+  const initialPreflight = deploy.indexOf(
+    'bash scripts/production-deploy-preflight.sh "${guard_args[@]}"',
+    guardArguments,
+  );
+  const fullModeBranch = deploy.indexOf('if [ "$MODE" = "full" ]', initialPreflight);
+  const archive = deploy.indexOf("\nverify_release_archive_root\n", initialPreflight);
+  const metadata = deploy.indexOf("create-publish-release-metadata.cjs", archive);
+  const discordBranch = deploy.indexOf('if [ "$MODE" = "discord-bot" ]', metadata);
+  const repeatedDiscordPreflight = deploy.indexOf(
+    'bash scripts/production-deploy-preflight.sh "${guard_args[@]}"',
+    discordBranch,
+  );
+  const discordBuild = deploy.indexOf(
+    '"${compose[@]}" --profile discord-bot build discord-bot',
+    discordBranch,
+  );
+
+  assert.ok(guardArguments >= 0 && guardArguments < initialPreflight);
+  assert.ok(initialPreflight < fullModeBranch);
+  assert.ok(initialPreflight < archive && archive < metadata);
+  assert.ok(repeatedDiscordPreflight > discordBranch);
+  assert.ok(repeatedDiscordPreflight < discordBuild);
+  assert.match(
+    deploy.slice(guardArguments, initialPreflight),
+    /FIRST_DEPLOY[\s\S]*guard_args\+?=\(--skip-health\)/,
+  );
 });
 
 test("deploy binds Compose, gates, backup, runtimes, and migrators to one reviewed database", () => {
@@ -200,8 +280,16 @@ test("deploy binds Compose, gates, backup, runtimes, and migrators to one review
     compose,
     /STUDIO_MIGRATION_DATABASE_URL: "\$\{STUDIO_MIGRATION_DATABASE_URL:\?REQUIRED/,
   );
-  assert.doesNotMatch(compose, /api-maintenance-/);
-  assert.doesNotMatch(compose, /dist-maintenance/);
+  assert.deepEqual(
+    [...compose.matchAll(/^  (api-maintenance-[a-z0-9-]+):$/gm)].map(
+      (match) => match[1],
+    ),
+    [
+      "api-maintenance-idp-dry-run",
+    ],
+  );
+  assert.doesNotMatch(compose, /api-maintenance-youtube/);
+  assert.match(compose, /dist-maintenance\/scripts\/backfill-idp-credentials\.js/);
 
   const databaseContainer = read(
     "scripts/verify-production-database-container.sh",
@@ -518,7 +606,7 @@ test("mutable Compose operations consume only attested immutable image-ID overri
   );
   assert.match(
     rollback,
-    /attest_pinned_compose_override\s*\n"\$\{compose\[@\]\}" --profile discord-bot up --no-build -d --pull never discord-bot/,
+    /attest_pinned_compose_override\s*\n"\$\{compose\[@\]\}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot/,
   );
   assert.ok(
     deploy.lastIndexOf("verify_running_release_images") <
@@ -527,6 +615,28 @@ test("mutable Compose operations consume only attested immutable image-ID overri
   assert.ok(
     rollback.lastIndexOf("verify_running_discord_image") <
       rollback.indexOf("write_release_pointer CURRENT"),
+  );
+});
+
+test("Discord-only deploy and rollback never start or recreate dependencies", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const rollback = read("scripts/rollback-production-images.sh");
+  const isolatedUp =
+    /"\$\{compose\[@\]\}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot/;
+
+  assert.match(deploy, isolatedUp);
+  assert.match(rollback, isolatedUp);
+  assert.equal(
+    [...deploy.matchAll(/--profile discord-bot up[^\n]*/g)].every((match) =>
+      /--no-deps discord-bot$/.test(match[0]),
+    ),
+    true,
+  );
+  assert.equal(
+    [...rollback.matchAll(/--profile discord-bot up[^\n]*/g)].every((match) =>
+      /--no-deps discord-bot$/.test(match[0]),
+    ),
+    true,
   );
 });
 
@@ -753,71 +863,21 @@ test("entitlements are rechecked after backup, before cutover, and after health"
   );
 });
 
-test("first deploy proves an empty target after database health and before backup or migration", () => {
+test("normal full deploy rejects implicit first deployment before external action", () => {
   const deploy = read("scripts/deploy-production.sh");
-  const postgresStart = deploy.indexOf(
-    '"${compose[@]}" up --no-build -d --pull never postgres redis',
+  const block = deploy.indexOf(
+    "DEPLOYMENT BLOCKED: FULL FIRST DEPLOY REQUIRES REVIEWED EMPTY-TARGET BOOTSTRAP",
   );
-  const databaseHealth = deploy.indexOf(
-    "wait_for_health postgres redis",
-    postgresStart,
+  const dockerGuard = deploy.indexOf(
+    "source scripts/require-local-production-docker.sh",
   );
-  const emptyTargetGate = deploy.indexOf(
-    "bash scripts/verify-production-empty-target.sh",
-    databaseHealth,
-  );
-  const verifiedFlag = deploy.indexOf(
-    "empty_target_verified=1",
-    emptyTargetGate,
-  );
-  const roleBootstrap = deploy.indexOf(
-    "provision-production-database-roles.sh",
-    verifiedFlag,
-  );
-  const backup = deploy.lastIndexOf("create_pre_migration_backup");
-  const migration = deploy.indexOf("api-migrate", backup);
-
-  assert.ok(postgresStart >= 0);
-  assert.ok(databaseHealth > postgresStart);
-  assert.ok(emptyTargetGate > databaseHealth);
-  assert.ok(verifiedFlag > emptyTargetGate);
-  assert.ok(roleBootstrap > verifiedFlag);
-  assert.ok(backup > roleBootstrap);
-  assert.ok(migration > backup);
-  assert.match(deploy, /production-release-safety-gate\.sh --first-deploy/);
-
-  const initialGate = read("scripts/production-release-safety-gate.sh");
-  assert.match(
-    initialGate,
-    /--no-old-writers[\s\\]*\n[\s\\]*--defer-data-impact/,
-  );
-
-  const emptyTarget = read("scripts/verify-production-empty-target.sh");
-  assert.match(emptyTarget, /default_transaction_read_only=on/);
-  assert.match(emptyTarget, /pg_catalog\.pg_class/);
-  assert.match(emptyTarget, /namespace\.nspname !~ '\^pg_'/);
-  assert.match(emptyTarget, /namespace\.nspname <> 'information_schema'/);
-  assert.match(emptyTarget, /application_relation_count/);
-  assert.match(
-    emptyTarget,
-    /--no-old-writers[\s\\]*\n[\s\\]*--verified-empty-target/,
-  );
-  assert.doesNotMatch(emptyTarget, /\b(?:UPDATE|INSERT|DELETE|TRUNCATE)\b/i);
-  assert.match(deploy, /ARENZYRA_DEPLOY_LOCK_INHERITED=1/);
-
-  const roleProvisioning = read(
-    "scripts/provision-production-database-roles.sh",
-  );
-  assert.match(roleProvisioning, /Inherited production deployment lock/);
-  assert.match(roleProvisioning, /verify_tcp_identity/);
-  assert.match(
-    deploy,
-    /--apply --first-deploy-create-only[\s\S]*verify-production-database-roles\.sh/,
-  );
-  assert.doesNotMatch(
-    roleProvisioning,
-    /--set\s+"[^"]*password|--set=[^\s]*password/i,
-  );
+  assert.ok(block >= 0 && block < dockerGuard);
+  assert.match(deploy, /normal deploy cannot implicitly migrate or validate/);
+  assert.match(deploy, /No Docker, database, release, backup, or service action/);
+  assert.doesNotMatch(deploy, /production-release-safety-gate\.sh --first-deploy/);
+  assert.doesNotMatch(deploy, /--first-deploy-create-only/);
+  assert.doesNotMatch(deploy, /ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY=1/);
+  assert.doesNotMatch(deploy, /verify-production-empty-target\.sh/);
 });
 
 test("database roles are verified before mutation, after migrations, before cutover, and after health", () => {
@@ -841,13 +901,11 @@ test("database roles are verified before mutation, after migrations, before cuto
     "provision-production-database-roles.sh",
     studioMigration,
   );
-  const firstDeployRoleCreate = deploy.indexOf("--first-deploy-create-only");
-  const firstMigration = deploy.indexOf("api-migrate", firstDeployRoleCreate);
   const emptyObjectPolicyCalls = [
     ...deploy.matchAll(/ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY=1/g),
   ].map((match) => match.index);
 
-  assert.equal(roleCalls.length, 4);
+  assert.equal(roleCalls.length, 3);
   assert.equal(
     inheritedRoleCalls.length,
     roleCalls.length,
@@ -861,24 +919,14 @@ test("database roles are verified before mutation, after migrations, before cuto
     ),
   );
   assert.ok(roleCalls.some((index) => index > health));
-  assert.equal(
-    emptyObjectPolicyCalls.length,
-    1,
-    "only the first-deploy post-create verifier may accept an empty object policy",
-  );
-  assert.ok(emptyObjectPolicyCalls[0] > firstDeployRoleCreate);
-  assert.ok(emptyObjectPolicyCalls[0] < firstMigration);
-  assert.match(
-    deploy.slice(firstDeployRoleCreate, firstMigration),
-    /--first-deploy-create-only\r?\n\s*ARENZYRA_DEPLOY_LOCK_INHERITED=1\s*\\\r?\n\s*ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY=1\s*\\\r?\n\s*bash scripts\/verify-production-database-roles\.sh/,
-  );
+  assert.equal(emptyObjectPolicyCalls.length, 0);
   assert.match(
     deploy.slice(studioMigration, cutover),
     /production-deploy-preflight\.sh[\s\S]*provision-production-database-roles\.sh[\s\S]*verify-production-database-roles\.sh[\s\S]*production-deploy-preflight\.sh/,
   );
 });
 
-test("full release remains blocked until the IDP encryption closure is integrated", () => {
+test("full release requires structural and compiled IDP evidence", () => {
   const deploy = read("scripts/deploy-production.sh");
   const releaseArchiveMutation = deploy.lastIndexOf(
     "\nverify_release_archive_root\n",
@@ -891,23 +939,51 @@ test("full release remains blocked until the IDP encryption closure is integrate
 
   assert.ok(firstIdpGate >= 0);
   assert.ok(releaseArchiveMutation > firstIdpGate);
-  assert.doesNotMatch(
-    deploy,
-    /idp-credentials:backfill|backfill-idp-credentials/,
+  const imageBuild = deploy.indexOf('"${compose[@]}" build api media-ai web');
+  const imageArchive = deploy.indexOf("archive_built_image_manifest api", imageBuild);
+  const firstCompiled = deploy.indexOf("verify_compiled_idp_storage", imageArchive);
+  const backup = deploy.lastIndexOf("create_pre_migration_backup");
+  const health = deploy.lastIndexOf('wait_for_health "${services[@]}"');
+  const finalCompiled = deploy.indexOf("verify_compiled_idp_storage", health);
+  assert.ok(imageBuild > firstIdpGate);
+  assert.ok(imageArchive > imageBuild);
+  assert.ok(firstCompiled > imageArchive && firstCompiled < backup);
+  assert.ok(finalCompiled > health);
+  assert.equal(
+    [...deploy.matchAll(/^\s*verify_compiled_idp_storage$/gm)].length,
+    2,
   );
 
   const idpGateScript = read("scripts/verify-production-idp-encryption.sh");
   assert.match(idpGateScript, /IDP ENCRYPTION GATE BLOCKED/);
-  assert.match(idpGateScript, /stores Discord IDP room passwords as plaintext/);
-  assert.match(idpGateScript, /writer-stopped backfill/);
-  assert.match(idpGateScript, /zero-plaintext postcondition/);
-  assert.match(idpGateScript, /exit 75/);
-  assert.doesNotMatch(idpGateScript, /docker\s+(?:compose|run|exec|inspect)/);
+  assert.match(idpGateScript, /constraint_validated_count/);
+  assert.match(idpGateScript, /legacy_count/);
+  assert.match(idpGateScript, /verify-idp-credential-storage\.cjs/);
+
+  const compiledGate = read("scripts/verify-production-idp-compiled.sh");
+  assert.match(compiledGate, /ARENZYRA_DEPLOY_LOCK_INHERITED/);
+  assert.match(compiledGate, /validate-release-image-manifest\.cjs/);
+  assert.match(compiledGate, /verify-production-release-source\.cjs/);
+  assert.match(compiledGate, /pg_catalog\.pg_control_system\(\)/);
+  assert.match(compiledGate, /api-maintenance-idp-dry-run/);
+  assert.match(compiledGate, /verify-idp-maintenance-summary\.cjs/);
+  assert.match(compiledGate, /--require-clean/);
 
   const manifest = JSON.parse(
     read("infra/production-api-migration-safety.json"),
   );
-  assert.equal(Object.hasOwn(manifest, "idpCredentialStorage"), false);
+  assert.ok(
+    manifest.contractMigrations.some(
+      ({ name }) => name === "20260805021000_idp_encrypted_credential_storage",
+    ),
+  );
+  assert.ok(
+    manifest.dataImpactMigrations.some(
+      ({ name, impactKind }) =>
+        name === "20260805021000_idp_encrypted_credential_storage" &&
+        impactKind === "credential-encryption-backfill",
+    ),
+  );
 });
 
 test("restore drill extracts archives into isolated contained temporary targets", () => {
@@ -995,6 +1071,34 @@ test("rollback helper blocks full old-image rollback before every mutable operat
     rollback,
     /arenzyra-api:\$RELEASE_ID|arenzyra-web:\$RELEASE_ID|arenzyra-media-ai:\$RELEASE_ID/,
   );
+});
+
+test("Discord rollback starts from an exact clean committed Root wrapper", () => {
+  const rollback = read("scripts/rollback-production-images.sh");
+  const publish = read("infra/PUBLISH.md");
+  const checkout = rollback.indexOf('cd "$resolved_root"');
+  const rootHead = rollback.indexOf("ARENZYRA_REVIEWED_ROOT_COMMIT", checkout);
+  const source = rollback.indexOf(
+    "source scripts/require-local-production-docker.sh",
+    checkout,
+  );
+  const checkoutOnly = rollback.indexOf(
+    "verify-production-release-source.cjs --check-checkout-only",
+    source,
+  );
+
+  assert.ok(checkout >= 0 && rootHead > checkout && rootHead < source);
+  assert.ok(checkoutOnly > source);
+  assert.match(rollback.slice(checkout, source), /\/usr\/bin\/env -i/);
+  assert.match(rollback.slice(checkout, source), /\/usr\/bin\/git/);
+  assert.match(rollback.slice(checkout, source), /GIT_NO_REPLACE_OBJECTS=1/);
+  assert.match(rollback.slice(checkout, source), /--porcelain=v1 --untracked-files=all/);
+  assert.match(rollback.slice(checkout, source), /refs\/replace/);
+  assert.match(
+    publish,
+    /git[\s\S]*show[\s\S]*production-reviewed-entrypoint\.sh[\s\S]*production_entry rollback-discord/,
+  );
+  assert.match(publish, /ownership check is not content provenance/);
 });
 
 test("Discord rollback binds the archive, image labels, and running image ID", () => {
@@ -1113,6 +1217,80 @@ test("production runtime cannot receive bootstrap or seed credentials", () => {
     assert.match(preflight, new RegExp(`"${key}"`));
   }
   assert.match(preflight, /AUTH_DEV_BOOTSTRAP_ENABLED is development-only/);
+});
+
+test("raw npm aliases cannot execute production mutation wrappers", () => {
+  const manifest = JSON.parse(read("package.json"));
+  const blocker = read("scripts/blocked-production-mutation-entrypoint.cjs");
+  for (const scriptName of [
+    "deploy:release-metadata",
+    "deploy:verify-api-image-contract",
+    "deploy:guard",
+    "deploy:migration-safety",
+    "deploy:verify-idp-encryption",
+    "deploy:up",
+    "deploy:up:discord-bot",
+    "deploy:api-maintenance",
+    "deploy:preflight",
+    "deploy:maintenance",
+    "deploy:maintenance:check",
+    "backup:production",
+    "backup:restore-drill",
+    "media-ai:warm-model-cache",
+    "deploy:ps",
+    "deploy:logs",
+    "deploy:verify",
+    "deploy:studio-qa",
+    "studio:qa:live",
+  ]) {
+    assert.match(
+      manifest.scripts[scriptName],
+      /^node scripts\/blocked-production-mutation-entrypoint\.cjs /,
+    );
+    assert.doesNotMatch(
+      manifest.scripts[scriptName],
+      /(?:deploy-production|production-api-maintenance|production-maintenance|rollback-production-images)\.sh/,
+    );
+  }
+  assert.equal(Object.hasOwn(manifest.scripts, "deploy:rollback"), false);
+  assert.match(blocker, /raw npm\/check-out script entrypoints cannot establish source trust/);
+  assert.match(blocker, /infra\/PUBLISH\.md/);
+  assert.match(blocker, /process\.exitCode = 75/);
+
+  const agents = read("AGENTS.md");
+  assert.match(agents, /reviewed-commit outer launcher/);
+  assert.match(agents, /Raw production npm aliases intentionally[\s\S]*fail closed/);
+  assert.doesNotMatch(agents, /Prefer the guarded `npm run deploy:up`/);
+});
+
+test("one reviewed production entrypoint exposes only the closed command allowlist", () => {
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  assert.deepEqual(
+    [...launcher.matchAll(/^  ([a-z][a-z-]+)\)$/gm)].map((match) => match[1]),
+    [
+      "deploy",
+      "deploy-discord",
+      "rollback-discord",
+      "idp-dry-run",
+      "backup",
+      "restore-drill",
+      "roles-dry-run",
+      "host-maintenance",
+      "observe",
+      "verify",
+      "studio-qa",
+    ],
+  );
+  const rootGate = launcher.indexOf("verify_repository ROOT");
+  const dispatch = launcher.indexOf('case "$command_id" in');
+  const firstCheckoutExec = launcher.indexOf("exec /bin/bash scripts/");
+  assert.ok(rootGate >= 0 && rootGate < dispatch && dispatch < firstCheckoutExec);
+  assert.match(launcher.slice(0, dispatch), /\/usr\/bin\/env -i/);
+  assert.match(launcher.slice(0, dispatch), /GIT_NO_REPLACE_OBJECTS=1/);
+  assert.match(launcher.slice(0, dispatch), /--porcelain=v1 --untracked-files=all/);
+  assert.match(launcher, /require_nested_assembly/);
+  assert.doesNotMatch(launcher, /\beval\b|bash\s+-c/);
+  assert.doesNotMatch(launcher, /idp-credentials (?:apply|validate)/);
 });
 
 test("launcher release downloads remain server-only and fail closed", () => {
@@ -1368,9 +1546,18 @@ test("production env generator creates independent MFA and YouTube material", ()
 test("API migrations use only the lockfile-installed Prisma CLI", () => {
   const dockerfile = read("apps/api/Dockerfile");
   const manifest = JSON.parse(read("apps/api/package.json"));
+  const lockfile = JSON.parse(read("apps/api/package-lock.json"));
   const compose = read("infra/docker-compose.publish.yml");
 
-  assert.match(manifest.dependencies.prisma, /^\^7\./);
+  assert.match(manifest.dependencies.prisma, /^7\./);
+  assert.equal(
+    manifest.dependencies.prisma,
+    lockfile.packages[""].dependencies.prisma,
+  );
+  assert.equal(
+    manifest.dependencies.prisma,
+    lockfile.packages["node_modules/prisma"].version,
+  );
   assert.equal(Object.hasOwn(manifest.devDependencies, "prisma"), false);
   assert.match(dockerfile, /npm ci --omit=dev/);
   assert.match(dockerfile, /\.\/node_modules\/\.bin\/prisma generate/);

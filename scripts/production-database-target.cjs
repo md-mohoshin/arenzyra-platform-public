@@ -336,6 +336,12 @@ function assertResolvedComposeTargets(compose, env) {
   const bindings = [
     ["api", "DATABASE_URL", "DATABASE_URL", true],
     ["api-migrate", "DATABASE_URL", "MIGRATION_DATABASE_URL", false],
+    [
+      "api-maintenance-idp-dry-run",
+      "DATABASE_URL",
+      "MAINTENANCE_READ_DATABASE_URL",
+      false,
+    ],
     ["web", "STUDIO_DATABASE_URL", "STUDIO_DATABASE_URL", true],
     [
       "studio-migrate",
@@ -344,8 +350,11 @@ function assertResolvedComposeTargets(compose, env) {
       false,
     ],
   ];
+  const reviewedServiceNames = new Set(bindings.map(([name]) => name));
   const unsupportedMaintenanceServices = Object.keys(services).filter(
-    (serviceName) => serviceName.startsWith("api-maintenance-"),
+    (serviceName) =>
+      serviceName.startsWith("api-maintenance-") &&
+      !reviewedServiceNames.has(serviceName),
   );
   if (unsupportedMaintenanceServices.length > 0) {
     throw new Error(
@@ -358,7 +367,6 @@ function assertResolvedComposeTargets(compose, env) {
     throw new Error("Resolved Compose postgres is not bound to POSTGRES_DB.");
   }
 
-  const reviewedServiceNames = new Set(bindings.map(([name]) => name));
   const databaseEnvironmentKeys = new Set(DATABASE_URL_KEYS);
   for (const [serviceName, service] of Object.entries(services)) {
     const environment = composeEnvironment(service);

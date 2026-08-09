@@ -63,6 +63,28 @@ function walkSecureTree(targetPath, description) {
   }
 }
 
+function assertNoGitObjectSubstitution(gitDirectory, description) {
+  for (const relativePath of [
+    path.join("info", "grafts"),
+    path.join("objects", "info", "alternates"),
+    path.join("objects", "info", "http-alternates"),
+    path.join("refs", "replace"),
+  ]) {
+    if (fs.existsSync(path.join(gitDirectory, relativePath))) {
+      throw new Error(`${description} contains Git object substitution metadata.`);
+    }
+  }
+  const packedRefsPath = path.join(gitDirectory, "packed-refs");
+  if (
+    fs.existsSync(packedRefsPath) &&
+    /(?:^|\n)[^\n]*\srefs\/replace\//.test(
+      fs.readFileSync(packedRefsPath, "utf8"),
+    )
+  ) {
+    throw new Error(`${description} contains a packed Git replacement ref.`);
+  }
+}
+
 function assertSecureProductionCheckout({
   rootDir = EXPECTED_PRODUCTION_ROOT,
   includedPaths = defaultIncludedPaths,
@@ -113,6 +135,10 @@ function assertSecureProductionCheckout({
       throw new Error(`Production Git metadata ${gitDirectory} must be a directory.`);
     }
     walkSecureTree(gitDirectory, `Production Git metadata ${gitDirectory}`);
+    assertNoGitObjectSubstitution(
+      gitDirectory,
+      `Production Git metadata ${gitDirectory}`,
+    );
   }
 }
 
@@ -182,6 +208,7 @@ if (require.main === module) main();
 
 module.exports = {
   EXPECTED_PRODUCTION_ROOT,
+  assertNoGitObjectSubstitution,
   assertExactReleaseBytes,
   assertSecureProductionCheckout,
   assertSecureStat,

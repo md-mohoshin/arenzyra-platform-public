@@ -233,21 +233,87 @@ function validateStaticFiles(errors) {
   }
 }
 
-function validateUnsupportedApiMaintenanceServices(compose, errors) {
-  if (/^  api-maintenance-[a-zA-Z0-9_-]+:\s*$/m.test(compose)) {
+function composeServiceBlock(compose, service) {
+  return (
+    compose.match(
+      new RegExp(
+        `\\n  ${service}:\\r?\\n([\\s\\S]*?)(?=\\n  [a-zA-Z0-9_-]+:\\r?\\n|\\nvolumes:\\r?\\n)`,
+      ),
+    )?.[1] ?? ""
+  );
+}
+
+function validateIdpMaintenanceServices(compose, errors) {
+  const specifications = Object.freeze({
+    "api-maintenance-idp-dry-run": Object.freeze({
+      database: "MAINTENANCE_READ_DATABASE_URL",
+      entrypoint: "dist-maintenance/scripts/backfill-idp-credentials.js",
+      arguments: [],
+    }),
+  });
+  const discovered = [
+    ...compose.matchAll(/^  (api-maintenance-[a-zA-Z0-9_-]+):\s*$/gm),
+  ].map((match) => match[1]);
+  const expected = Object.keys(specifications);
+  if (
+    discovered.length !== expected.length ||
+    expected.some((service) => !discovered.includes(service))
+  ) {
     errors.push(
-      "Publish Compose must not advertise API maintenance services that are absent from the canonical image.",
+      "Publish Compose maintenance services must match the exact IDP-only dry-run allowlist.",
     );
   }
-  if (/profiles:\s*\[[^\]]*["']maintenance["']/m.test(compose)) {
-    errors.push(
-      "Publish Compose must not expose the unsupported API maintenance profile.",
-    );
+  if (/youtube|token-rotation|rotate-youtube/i.test(compose)) {
+    const maintenanceText = discovered
+      .map((service) => composeServiceBlock(compose, service))
+      .join("\n");
+    if (/youtube|token-rotation|rotate-youtube/i.test(maintenanceText)) {
+      errors.push("Publish API maintenance must remain IDP-only.");
+    }
   }
-  if (/dist-maintenance\//.test(compose)) {
-    errors.push(
-      "Publish Compose must not reference absent dist-maintenance entrypoints.",
-    );
+
+  for (const [service, specification] of Object.entries(specifications)) {
+    const block = composeServiceBlock(compose, service);
+    const normalized = block.replace(/\s+/g, " ");
+    for (const fragment of [
+      'profiles: ["maintenance"]',
+      'image: "arenzyra-api:${ARENZYRA_RELEASE_ID:-unversioned}"',
+      'user: "1000:1000"',
+      `DATABASE_URL: "\${${specification.database}:?`,
+      'IDP_CREDENTIAL_ENCRYPTION_KEY: "${IDP_CREDENTIAL_ENCRYPTION_KEY:?',
+      'ARENZYRA_EXPECTED_DATABASE_NAME: "${ARENZYRA_EXPECTED_DATABASE_NAME:-UNSEALED}"',
+      'ARENZYRA_EXPECTED_DATABASE_OID: "${ARENZYRA_EXPECTED_DATABASE_OID:-0}"',
+      'ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER: "${ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER:-0}"',
+      'read_only: true',
+      'nodev',
+      'cap_drop: - ALL',
+      'security_opt: - no-new-privileges:true',
+      'restart: "no"',
+      'pids_limit: 64',
+      'mem_limit: 512m',
+      'cpus: 1.0',
+    ]) {
+      if (!normalized.includes(fragment.replace(/\s+/g, " "))) {
+        errors.push(`Publish ${service} is missing its exact ${fragment} boundary.`);
+      }
+    }
+    if (
+      !normalized.includes(`"node", "${specification.entrypoint}"`) ||
+      specification.arguments.some(
+        (argument) => !normalized.includes(`"${argument}"`),
+      )
+    ) {
+      errors.push(`Publish ${service} command differs from the IDP image allowlist.`);
+    }
+    if (
+      /^    (?:build|volumes|ports|entrypoint):/m.test(block) ||
+      /\b(?:npx|ts-node|\.ts\b|dist\/main|\/bin\/(?:ba)?sh)\b/.test(block) ||
+      /JWT_SECRET|SUPERADMIN|COLLECTOR_SECRET|PCOB_SECRET|YOUTUBE_TOKEN/.test(
+        block,
+      )
+    ) {
+      errors.push(`Publish ${service} exposes an unsupported maintenance surface.`);
+    }
   }
 }
 
@@ -268,6 +334,11 @@ function validateComposeWiring(errors) {
       "STUDIO_MIGRATION_DATABASE_URL",
       "STUDIO_MIGRATION_DATABASE_URL",
     ],
+    [
+      "api-maintenance-idp-dry-run",
+      "DATABASE_URL",
+      "MAINTENANCE_READ_DATABASE_URL",
+    ],
   ];
   for (const [service, serviceKey, envKey] of databaseBindings) {
     const block =
@@ -280,7 +351,18 @@ function validateComposeWiring(errors) {
       errors.push(`Publish ${service} service must receive exactly ${envKey}.`);
     }
   }
-  validateUnsupportedApiMaintenanceServices(compose, errors);
+  validateIdpMaintenanceServices(compose, errors);
+  const apiService = composeServiceBlock(compose, "api");
+  if (
+    apiService.split('PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED: "false"')
+      .length -
+      1 !==
+    1
+  ) {
+    errors.push(
+      "Publish API must hard-disable public organization applications exactly once.",
+    );
+  }
   const webEnvVars = [
     "NEXT_PUBLIC_API_URL",
     "INTERNAL_API_URL",
@@ -382,6 +464,7 @@ function validateComposeWiring(errors) {
     "YOUTUBE_MAINTENANCE_DATABASE_URL",
     "JWT_SECRET",
     "IDP_CREDENTIAL_ENCRYPTION_KEY",
+    "PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED",
     "YOUTUBE_TOKEN_ENCRYPTION_KEY",
     "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS",
     "YOUTUBE_TOKEN_ENCRYPTION_LEGACY_V1_KEY",
@@ -612,6 +695,14 @@ function validateEnvRelationships(
 
   if (mfaRequired !== "true") {
     errors.push("SUPERADMIN_MFA_REQUIRED must be exactly true in production.");
+  }
+
+  if (
+    (env.PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED ?? "").trim() !== "false"
+  ) {
+    errors.push(
+      "PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED must be exactly false in production.",
+    );
   }
 
   if ((env.DISTRIBUTED_RATE_LIMIT_REQUIRED ?? "").trim() !== "true") {
@@ -1364,5 +1455,5 @@ module.exports = {
   validateLauncherReleaseConfig,
   validateStudioDatabaseTls,
   validateEnvRelationships,
-  validateUnsupportedApiMaintenanceServices,
+  validateIdpMaintenanceServices,
 };

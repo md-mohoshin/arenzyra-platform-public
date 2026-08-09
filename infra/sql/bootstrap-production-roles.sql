@@ -241,11 +241,11 @@ SELECT 1 / CASE WHEN
   document ->> 'schemaVersion' = '1'
   AND document ->> 'databaseSchema' = :'schema_name'
   AND jsonb_array_length(document -> 'sequences') = 0
-  AND jsonb_array_length(document -> 'apiEnumTypes') = 76
+  AND jsonb_array_length(document -> 'apiEnumTypes') = 69
   AND jsonb_array_length(document -> 'apiFunctions') = 2
   AND jsonb_array_length(document -> 'apiTriggers') = 2
-  AND (SELECT count(*) FROM arenzyra_object_policy) = 154
-  AND (SELECT count(*) FROM arenzyra_enum_policy) = 76
+  AND (SELECT count(*) FROM arenzyra_object_policy) = 139
+  AND (SELECT count(*) FROM arenzyra_enum_policy) = 69
   AND (SELECT count(*) FROM arenzyra_function_policy) = 2
   AND (SELECT count(*) FROM arenzyra_trigger_policy) = 2
 THEN 1 ELSE 0 END AS object_policy_document_attested
@@ -771,6 +771,35 @@ WHERE namespace.nspname = :'schema_name'
 \gexec
 GRANT USAGE ON SCHEMA :"schema_name" TO :"api_runtime_role", :"studio_runtime_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 GRANT USAGE, CREATE ON SCHEMA :"schema_name" TO :"api_migration_role", :"studio_migration_role";
+
+-- Physical-target authentication needs one catalog function, not membership
+-- in pg_monitor or another predefined monitoring role. Revoke the ambient
+-- function default and grant EXECUTE only to the read-only IDP scanner, the
+-- IDP compare-and-swap role, and the API migrator used by constraint validation.
+SELECT 1 / CASE WHEN to_regprocedure('pg_catalog.pg_control_system()') IS NOT NULL
+  THEN 1 ELSE 0 END AS physical_identity_function_attested;
+SELECT format(
+  'REVOKE ALL PRIVILEGES ON FUNCTION pg_catalog.pg_control_system() FROM %s',
+  CASE
+    WHEN privilege.grantee = 0 THEN 'PUBLIC'
+    ELSE format('%I', pg_get_userbyid(privilege.grantee))
+  END
+)
+FROM pg_proc routine
+JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+CROSS JOIN LATERAL aclexplode(
+  COALESCE(routine.proacl, acldefault('f', routine.proowner))
+) privilege
+WHERE namespace.nspname = 'pg_catalog'
+  AND routine.proname = 'pg_control_system'
+  AND pg_get_function_identity_arguments(routine.oid) = ''
+  AND privilege.grantee <> routine.proowner
+GROUP BY privilege.grantee
+\gexec
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system()
+  FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system()
+  TO :"api_migration_role", :"maintenance_read_role", :"idp_maintenance_role";
 
 -- No runtime DML defaults are allowed: a broad default grant would also make a
 -- newly-created migration ledger writable. Reconciliation runs after migration.

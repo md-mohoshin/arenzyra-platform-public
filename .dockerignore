@@ -6,6 +6,7 @@
 .codex-*
 .deploy-safety-backups
 .migration-rehearsal-*
+/.scoped-release-backup-operator-*/
 .worktrees
 .tmp
 .tmp-*

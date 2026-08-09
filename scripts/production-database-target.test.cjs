@@ -48,6 +48,9 @@ function validCompose(env = validEnv()) {
       "api-migrate": {
         environment: { DATABASE_URL: env.MIGRATION_DATABASE_URL },
       },
+      "api-maintenance-idp-dry-run": {
+        environment: { DATABASE_URL: env.MAINTENANCE_READ_DATABASE_URL },
+      },
       web: {
         environment: { STUDIO_DATABASE_URL: env.STUDIO_DATABASE_URL },
         extra_hosts: ["host.docker.internal:host-gateway"],
@@ -204,6 +207,28 @@ test("resolved Compose services receive exactly the reviewed database URLs", () 
   assert.throws(() => assertResolvedComposeTargets(compose, env));
 });
 
+test("resolved Compose binds only the exact IDP maintenance role closure", () => {
+  const env = validEnv();
+  const expected = [
+    ["api-maintenance-idp-dry-run", "MAINTENANCE_READ_DATABASE_URL"],
+  ];
+  for (const [serviceName, envKey] of expected) {
+    const wrong = validCompose(env);
+    wrong.services[serviceName].environment.DATABASE_URL = env.DATABASE_URL;
+    assert.throws(
+      () => assertResolvedComposeTargets(wrong, env),
+      new RegExp(`${serviceName} is not bound to ${envKey}`),
+    );
+
+    const missing = validCompose(env);
+    delete missing.services[serviceName];
+    assert.throws(
+      () => assertResolvedComposeTargets(missing, env),
+      new RegExp(`${serviceName} is not bound to ${envKey}`),
+    );
+  }
+});
+
 test("resolved Compose database consumers reject alternate routing", () => {
   const env = validEnv();
   const mutations = [
@@ -242,7 +267,6 @@ test("resolved Compose rejects unsupported API maintenance consumers", () => {
   const env = validEnv();
   for (const serviceName of [
     "api-maintenance-idp-read",
-    "api-maintenance-idp-apply",
     "api-maintenance-youtube-read",
     "api-maintenance-youtube-apply",
   ]) {

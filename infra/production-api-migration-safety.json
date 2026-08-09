@@ -1,5 +1,33 @@
 {
   "schemaVersion": 2,
-  "contractMigrations": [],
-  "dataImpactMigrations": []
+  "contractMigrations": [
+    {
+      "name": "20260805021000_idp_encrypted_credential_storage",
+      "requiredWorkflow": "controlled-maintenance",
+      "oldWriterServices": ["api"],
+      "reason": "The envelope CHECK immediately rejects plaintext writes from the old API while the writer-stopped credential backfill is pending."
+    },
+    {
+      "name": "20260809203000_secure_account_setup",
+      "requiredWorkflow": "controlled-maintenance",
+      "oldWriterServices": ["api"],
+      "reason": "The new API creates inactive users with null passwords and deferred setup tokens that the old API authentication contract does not understand."
+    }
+  ],
+  "dataImpactMigrations": [
+    {
+      "name": "20260805021000_idp_encrypted_credential_storage",
+      "requiredWorkflow": "controlled-maintenance",
+      "acceptanceRequirement": "reviewed-controlled-maintenance",
+      "impactKind": "credential-encryption-backfill",
+      "reason": "The separately guarded maintenance transaction encrypts every legacy IDP credential and removes plaintext credential material from persisted messages."
+    },
+    {
+      "name": "20260809203000_secure_account_setup",
+      "requiredWorkflow": "controlled-maintenance",
+      "acceptanceRequirement": "reviewed-controlled-maintenance",
+      "impactKind": "legacy-application-default",
+      "reason": "Existing organization applications receive the explicit accountSetupRequired=false compatibility value before new invite-only setup semantics are enabled."
+    }
+  ]
 }

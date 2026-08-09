@@ -47,6 +47,20 @@ test("Discord override contains only the bot and rejects mutable or extra images
   );
 });
 
+test("IDP maintenance override pins only the reviewed dry-run service", () => {
+  const apiIds = { api: ids.api };
+  const text = canonicalPinnedOverride("idp-maintenance", apiIds);
+  assert.deepEqual(
+    validatePinnedOverride(text, "idp-maintenance", apiIds),
+    {
+      services: {
+        "api-maintenance-idp-dry-run": { image: ids.api },
+      },
+    },
+  );
+  assert.doesNotMatch(text, /youtube|api-migrate|\"api\":/i);
+});
+
 test("override validation rejects noncanonical and expanded Compose documents", () => {
   const fullIds = { api: ids.api, web: ids.web, "media-ai": ids["media-ai"] };
   const canonical = canonicalPinnedOverride("full", fullIds);

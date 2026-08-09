@@ -23,6 +23,7 @@ Environment:
                                       Existing Compose project to inspect.
   ARENZYRA_DEPLOY_ENV_FILE=infra/.env.publish
                                       Production environment to validate.
+
 EOF
 }
 
@@ -31,9 +32,17 @@ while [ "$#" -gt 0 ]; do
     --skip-health)
       SKIP_HEALTH=1
       ;;
+    --allow-stopped-idp-maintenance)
+      printf '%s\n' \
+        'DEPLOYMENT BLOCKED: IDP MUTATION PREFLIGHT MODE IS UNAVAILABLE' \
+        'Production IDP apply/validate require a reviewed durable writer-credential fence.' \
+        'No cleanup or deployment action was performed.' >&2
+      exit 75
+      ;;
     --allow-stopped-api-maintenance)
       printf '%s\n' \
-        'DEPLOYMENT BLOCKED: API MAINTENANCE IS UNSUPPORTED BY THIS RELEASE.' \
+        'DEPLOYMENT BLOCKED: LEGACY MAINTENANCE FLAG IS UNSUPPORTED' \
+        'Use only the reviewed IDP closure wrapper.' \
         'No cleanup or deployment action was performed.' >&2
       exit 75
       ;;
@@ -143,6 +152,19 @@ containers=()
 while IFS= read -r container_id; do
   [ -n "$container_id" ] && containers+=("$container_id")
 done <<<"$container_output"
+
+volume_gate_args=()
+if [ "$SKIP_HEALTH" -eq 1 ]; then
+  volume_gate_args+=(--allow-absent)
+fi
+if ! volume_gate_output="$(
+  ARENZYRA_DEPLOY_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
+  ARENZYRA_DEPLOY_ENV_FILE="$PUBLISH_ENV_FILE" \
+    bash scripts/verify-production-api-data-volumes.sh "${volume_gate_args[@]}" 2>&1
+)"; then
+  block "API DATA VOLUME POLICY FAILED" "$volume_gate_output"
+fi
+printf '%s\n' "$volume_gate_output"
 
 if [ "$SKIP_HEALTH" -eq 1 ]; then
   if [ "${#containers[@]}" -ne 0 ]; then

@@ -20,13 +20,16 @@ ARENZYRA_DEPLOY_COMPOSE_PROJECT=infra
 ARENZYRA_BACKUP_HELPER_IMAGE=postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
 ```
 
-Scheduled jobs should set only
-`ARENZYRA_BACKUP_ENV_FILE=/opt/arenzyra/infra/.env.publish` and invoke the
-checked-in script from `/opt/arenzyra`. The backup rejects process overrides of
-the reviewed project, root, age recipient, rclone destination, or helper image;
-do not maintain a divergent second copy of those values.
+Scheduled jobs must use the exact clean-parent, reviewed-Root
+`production_entry backup` launcher defined in [`PUBLISH.md`](PUBLISH.md); do not
+execute a checkout script or npm alias directly. A systemd unit must pin the
+reviewed 40-hex Root commit and clear ambient shell/Node/Git variables as that
+launcher does. The dispatcher uses the fixed reviewed production environment
+path. The backup rejects process overrides of the reviewed project, root, age recipient, rclone
+destination, or helper image; do not maintain a divergent second copy of those
+values.
 
-Run `bash scripts/production-backup.sh` from a systemd timer. It creates a
+Run `production_entry backup` from the reviewed systemd launcher. It creates a
 consistent PostgreSQL custom dump, role metadata without password hashes, and
 read-only archives of existing uploads/storage/Redis/Caddy/Discord state
 volumes. Every artifact and its checksum manifest are age-encrypted. The
@@ -48,9 +51,9 @@ application write-maintenance window.
 On an isolated recovery host with the age identity:
 
 ```bash
-bash scripts/production-restore-drill.sh \
-  --backup /opt/arenzyra-backups/20260804T120000Z-ab12cd34 \
-  --identity /secure/off-host/arenzyra-backup-age.key
+export ARENZYRA_BACKUP_AGE_IDENTITY=/secure/off-host/arenzyra-backup-age.key
+production_entry restore-drill \
+  /opt/arenzyra-backups/20260804T120000Z-ab12cd34
 ```
 
 The drill validates encrypted checksums and archive names, rejects absolute or

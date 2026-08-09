@@ -85,3 +85,28 @@ node scripts/verify-production-entitlement-invariants.cjs \
   --expired-count "$expired_count" \
   --expired-inconsistent-count "$expired_inconsistent_count" \
   --unknown-status-count "$unknown_status_count"
+
+# The stored-shape gate above is necessary but deliberately insufficient for a
+# strict clock-bounded release. Reuse the exact aggregate-only inventory and its
+# bounded sanitizer; do not infer or mutate customer dates during deployment.
+INVENTORY_SQL="infra/sql/production-entitlement-inventory.sql"
+if [ ! -f "$INVENTORY_SQL" ] || [ -L "$INVENTORY_SQL" ]; then
+  printf 'ENTITLEMENT DEPLOYMENT GATE BLOCKED: reviewed inventory SQL is unavailable.\n' >&2
+  exit 75
+fi
+if ! sanitized_inventory="$(
+  docker exec -i "${database_binding[0]}" sh -ceu '
+    database="$1"
+    schema="$2"
+    export PGCONNECT_TIMEOUT=10
+    export PGOPTIONS="-c default_transaction_read_only=on -c search_path=$schema -c statement_timeout=30000 -c lock_timeout=5000"
+    exec psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$database" -At
+  ' sh "${database_binding[3]}" "${database_binding[4]}" \
+    <"$INVENTORY_SQL" \
+    | node scripts/parse-production-entitlement-inventory.cjs
+)"; then
+  printf 'ENTITLEMENT DEPLOYMENT GATE BLOCKED: aggregate inventory could not be verified. No customer state was changed.\n' >&2
+  exit 75
+fi
+printf '%s\n' "$sanitized_inventory" \
+  | node scripts/verify-production-entitlement-deployment.cjs

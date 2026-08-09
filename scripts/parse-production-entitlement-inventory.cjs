@@ -434,6 +434,7 @@ module.exports = {
   MAX_INPUT_BYTES,
   formatInventory,
   parseInventoryJson,
+  readBoundedStdin,
   sanitizeAgainstShape,
   validateConsistency,
 };

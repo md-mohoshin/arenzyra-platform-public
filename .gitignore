@@ -75,6 +75,7 @@ infra/.env.release
 .deploy-safety-staging/
 .local-backups/
 /.migration-rehearsal-*/
+/.scoped-release-backup-operator-*/
 /.worktrees/
 .tmp/
 /.tmp*/

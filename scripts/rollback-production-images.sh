@@ -90,6 +90,52 @@ if ! [[ "$HEALTH_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || \
   exit 75
 fi
 cd "$resolved_root"
+# Rollback uses the current reviewed Root wrapper but never builds API/Web. The
+# target Discord image remains independently bound to archived release evidence.
+# Require that current wrapper checkout before sourcing any repository code.
+if [ ! -x /usr/bin/env ] || [ ! -x /usr/bin/git ]; then
+  printf 'ROLLBACK BLOCKED: reviewed system env/git tools are unavailable.\n' >&2
+  exit 75
+fi
+reviewed_root_commit="${ARENZYRA_REVIEWED_ROOT_COMMIT:-}"
+if ! [[ "$reviewed_root_commit" =~ ^[0-9a-f]{40}$ ]] || \
+  [ -L "$resolved_root/.git" ] || [ ! -d "$resolved_root/.git" ]; then
+  printf 'ROLLBACK BLOCKED: reviewed current Root commit/worktree is invalid.\n' >&2
+  exit 75
+fi
+bootstrap_git=(
+  /usr/bin/env -i
+  "PATH=$SAFE_COMMAND_PATH"
+  "HOME=$safe_account_home"
+  "LC_ALL=C"
+  "GIT_OPTIONAL_LOCKS=0"
+  "GIT_NO_REPLACE_OBJECTS=1"
+  "GIT_CONFIG_NOSYSTEM=1"
+  "GIT_CONFIG_GLOBAL=/dev/null"
+  /usr/bin/git
+  -c core.fsmonitor=false
+  -c core.hooksPath=/dev/null
+)
+root_top="$("${bootstrap_git[@]}" -C "$resolved_root" rev-parse --show-toplevel 2>/dev/null || true)"
+root_head="$("${bootstrap_git[@]}" -C "$resolved_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)"
+root_replace_refs="$("${bootstrap_git[@]}" -C "$resolved_root" \
+  for-each-ref --format='%(refname)' refs/replace 2>/dev/null || true)"
+root_status="$("${bootstrap_git[@]}" -C "$resolved_root" status \
+  --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null || printf '__git_failed__')"
+if [ "$root_top" != "$resolved_root" ] || \
+  [ "$root_head" != "$reviewed_root_commit" ] || \
+  [ -n "$root_replace_refs" ] || [ -n "$root_status" ] || \
+  [ -e "$resolved_root/.git/info/grafts" ] || \
+  [ -L "$resolved_root/.git/info/grafts" ] || \
+  [ -e "$resolved_root/.git/objects/info/alternates" ] || \
+  [ -L "$resolved_root/.git/objects/info/alternates" ] || \
+  [ -e "$resolved_root/.git/objects/info/http-alternates" ] || \
+  [ -L "$resolved_root/.git/objects/info/http-alternates" ]; then
+  printf 'ROLLBACK BLOCKED: current Root wrapper checkout is not the exact clean reviewed commit.\n' >&2
+  exit 75
+fi
+unset bootstrap_git root_top root_head root_replace_refs root_status reviewed_root_commit
+
 source scripts/require-local-production-docker.sh
 sanitized_environment=(
   env -i
@@ -476,7 +522,7 @@ verify_running_discord_image() {
 
 bash scripts/production-deploy-preflight.sh
 attest_pinned_compose_override
-"${compose[@]}" --profile discord-bot up --no-build -d --pull never discord-bot
+"${compose[@]}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot
 verify_running_discord_image
 services=(discord-bot)
 

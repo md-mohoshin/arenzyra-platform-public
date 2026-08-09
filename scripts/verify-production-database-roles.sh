@@ -570,7 +570,7 @@ WITH object_policy_document AS (
   WHERE document ->> 'schemaVersion' <> '1'
      OR document ->> 'databaseSchema' <> parameter.expected_schema
      OR jsonb_array_length(document -> 'sequences') <> 0
-     OR jsonb_array_length(document -> 'apiEnumTypes') <> 76
+     OR jsonb_array_length(document -> 'apiEnumTypes') <> 69
      OR jsonb_array_length(document -> 'apiFunctions') <> 2
      OR jsonb_array_length(document -> 'apiTriggers') <> 2
 
@@ -771,6 +771,73 @@ WITH object_policy_document AS (
     AND EXISTS (
       SELECT 1 FROM pg_auth_members membership
       WHERE membership.member = role.oid OR membership.roleid = role.oid
+    )
+
+  -- The IDP closure authenticates the physical cluster with one narrowly
+  -- granted catalog function. Its ACL is closed to the owner and the exact
+  -- three reviewed roles; PUBLIC, arbitrary roles, and grant options fail.
+  UNION ALL
+  SELECT 1 FROM parameter
+  WHERE parameter.profile <> 'administrator'
+    AND has_function_privilege(
+      current_user,
+      'pg_catalog.pg_control_system()',
+      'EXECUTE'
+    ) IS DISTINCT FROM (
+      parameter.profile IN ('api-migrator', 'maintenance-read', 'idp-maintenance')
+    )
+
+  UNION ALL
+  SELECT 1 FROM parameter
+  WHERE NOT EXISTS (
+      SELECT 1
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      WHERE namespace.nspname = 'pg_catalog'
+        AND routine.proname = 'pg_control_system'
+        AND pg_get_function_identity_arguments(routine.oid) = ''
+    )
+     OR EXISTS (
+      SELECT 1
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      CROSS JOIN LATERAL aclexplode(
+        COALESCE(routine.proacl, acldefault('f', routine.proowner))
+      ) privilege
+      WHERE namespace.nspname = 'pg_catalog'
+        AND routine.proname = 'pg_control_system'
+        AND pg_get_function_identity_arguments(routine.oid) = ''
+        AND (
+          privilege.privilege_type <> 'EXECUTE'
+          OR privilege.grantee NOT IN (
+            routine.proowner,
+            (SELECT oid FROM pg_roles WHERE rolname = parameter.api_migration_role),
+            (SELECT oid FROM pg_roles WHERE rolname = parameter.maintenance_read_role),
+            (SELECT oid FROM pg_roles WHERE rolname = parameter.idp_maintenance_role)
+          )
+          OR (
+            privilege.grantee <> routine.proowner
+            AND privilege.is_grantable
+          )
+        )
+    )
+     OR 3 <> (
+      SELECT count(DISTINCT privilege.grantee)
+      FROM pg_proc routine
+      JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+      CROSS JOIN LATERAL aclexplode(
+        COALESCE(routine.proacl, acldefault('f', routine.proowner))
+      ) privilege
+      WHERE namespace.nspname = 'pg_catalog'
+        AND routine.proname = 'pg_control_system'
+        AND pg_get_function_identity_arguments(routine.oid) = ''
+        AND privilege.privilege_type = 'EXECUTE'
+        AND NOT privilege.is_grantable
+        AND privilege.grantee IN (
+          (SELECT oid FROM pg_roles WHERE rolname = parameter.api_migration_role),
+          (SELECT oid FROM pg_roles WHERE rolname = parameter.maintenance_read_role),
+          (SELECT oid FROM pg_roles WHERE rolname = parameter.idp_maintenance_role)
+        )
     )
 
   -- Application identities may not own another database, appear directly in

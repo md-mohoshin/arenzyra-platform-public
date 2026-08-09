@@ -17,7 +17,8 @@ This stack is the production-oriented deployment path. It keeps Postgres and Red
 - Open inbound ports `80` and `443` on the server firewall.
 - Copy `infra/.env.publish.example` to `infra/.env.publish` and replace every placeholder.
 
-You can generate a first production env file with strong local secrets:
+On a trusted local preparation checkout (not as a production-host entrypoint),
+you can generate a first production env file with strong local secrets:
 
 ```bash
 npm run deploy:create-env
@@ -32,18 +33,31 @@ before changing or removing any YouTube token key.
 
 ## Start the publish stack
 
-Every production deployment must first pass the read-only disk and service
-health gate:
-
-```bash
-npm run deploy:guard
-```
+Every production deployment must enter through the committed-script launcher
+below. After its pre-source Root/API/Web trust bootstrap, it runs the read-only
+disk and service health gate. The raw `npm run deploy:guard` alias is
+intentionally blocked; only the attested dispatcher/wrapper invokes
+`production-deploy-preflight.sh`. Every build, pull, recreate, restart, or
+Compose-up still requires that internal preflight immediately beforehand in the
+same session.
 
 The gate requires at least 30 GiB free on `/` by default. It exits with
 `DEPLOYMENT BLOCKED` when space is below the threshold or an existing production
-container is unhealthy. It never performs cleanup automatically. Both guarded
-`deploy:up` commands run this check before generating release metadata or
-starting a build.
+container is unhealthy. It never performs cleanup automatically. Both committed
+launcher modes run this check before generating release metadata or
+starting a build. A full deploy also verifies the exact PostgreSQL 16.14 target,
+the API data-volume boundary, clean release source, entitlement clocks, and the
+structural IDP postcondition before it can build or mutate a release.
+
+The read-only production audit on 2026-08-09 does **not** satisfy those gates.
+`/opt/arenzyra` is a non-Git mixed release without a complete cryptographic
+release-file manifest from the exact clean Root/API/Web assembly; PostgreSQL is
+16.13 rather than the pinned 16.14 release; 12 IDP schedules still fail the
+credential/message zero-plaintext postcondition; strict entitlement inventory
+reports 4 expired `ACTIVE` clocks and 2 invalid `TRIALING` clocks; and the
+`api-uploads` and `api-storage` roots are `0:0` mode `0777`. These are current
+hard blockers, not optional warnings. The deploy must not change customer rows,
+volume contents, ownership, modes, or database state to make them pass.
 
 For a full API release, the guarded deploy then performs a second read-only
 release-safety check. It inventories every row in `_prisma_migrations`, binds
@@ -70,68 +84,117 @@ writers waives only old-writer compatibility. It does not accept effects on
 existing data, visibility, sessions, credentials, or external access.
 
 A checksum match is necessary evidence, not release authorization. The
-canonical checkpoint contains the exact 102-migration historical lineage plus
-the separately reviewed additive Studio migration. The version-2 safety
-manifest is intentionally empty only for that 103-migration lineage; it does
-not approve later migrations. Before any forward migration is added, its
-contract and data effects must be reviewed and every required classification
-must be added to the manifest. Unclassified destructive or data-impact SQL
-continues to fail closed mechanically.
+version-2 safety manifest explicitly classifies the IDP credential-storage and
+secure-account-setup migrations as both old-writer-incompatible and
+data-impacting controlled maintenance. The Studio widget-release foundation is
+an additive Studio migration and is not a routine data rewrite. The manifest is
+bound to exact candidate migration names and bytes; it does not approve later
+migrations. Before any forward migration is added, its contract and data
+effects must be reviewed and every required classification must be added.
+Unclassified destructive or data-impact SQL continues to fail closed
+mechanically.
 
-For a non-first full deploy, the same pre-mutation phase runs a read-only,
-aggregate-only entitlement query over non-deleted organizations. It reports
-counts, never organization identifiers or other row data, and performs no
-reconciliation. The release fails closed if the query or count parsing fails,
-or if any organization violates the canonical `ACTIVE`, `TRIALING`, or
-`EXPIRED` storage-shape rules. Elapsed paid/trial clocks remain safely denied by
-the runtime and do not become deployment failures merely because time passes.
-Use the reviewed reconciliation procedure below;
-deployment never backfills or edits entitlement rows.
+For every full deploy, the same pre-mutation phase runs read-only,
+aggregate-only entitlement checks over non-deleted organizations. They report
+counts, never organization identifiers or arbitrary row data, and perform no
+reconciliation. The release fails closed if a query or bounded parser fails, if
+stored `ACTIVE`, `TRIALING`, or `EXPIRED` forms are inconsistent, or if an
+approved active organization has a missing/expired `ACTIVE` clock, an invalid
+`TRIALING` clock, or a legacy/unknown subscription status. Elapsed clocks are
+therefore deployment failures under the current strict policy. Use the reviewed
+customer/business disposition procedure below; deployment never backfills or
+edits entitlement rows.
 
-`--first-deploy` first proves that the Compose project has no managed containers
-or old writers, but that fact is not evidence that a persistent database volume
-is empty. After the guarded deploy starts only Postgres and Redis and they are
-healthy, it runs a read-only aggregate catalog query. The target must contain
-zero relations in every non-system schema before the entitlement gate may be
-skipped and before backup or migration. Any pre-existing relation, query
-failure, or malformed count blocks the first deploy. The first-deploy flag alone
-never waives data-impact review for an existing database.
+The normal full `--first-deploy` path is intentionally unavailable and exits
+`75` after the reviewed launcher attests the clean checkout but before any
+Docker, database, release, backup, or service action. A first installation requires a separate,
+explicitly reviewed empty-target bootstrap that migrates and validates a
+zero-row IDP constraint before starting any writer. No such full bootstrap is
+shipped by the normal deploy entrypoint. The flag is retained only for the
+guarded Discord-bot-only exception: it still checks reviewed source, preflight,
+volume inventory, and zero managed containers, then starts only the bot with
+`--no-deps`. Full-application entitlement, IDP, and migration gates are outside
+that dependency-isolated operation; they are not treated as passed or waived.
 
-The canonical checkpoint still stores Discord IDP room passwords as plaintext.
-Consequently every full deployment, including a first deployment, is
-deliberately blocked before release metadata, builds, backups, migrations, or
-replacement services. This is not resolved by the historical-lineage replay.
-The block may be replaced with a real postcondition verifier only after a
-reviewed forward encryption migration, encrypted runtime writes, a
-writer-stopped backfill, and a zero-plaintext verification are integrated.
+Canonical API source encrypts new Discord IDP credentials. Its image contains
+the exact compiled dry-run plus apply/validate artifacts for isolated private
+restore rehearsal only; Publish exposes only authenticated dry-run. Live production remains different:
+its 12 legacy schedules still contain credential material in the legacy field
+and persisted message bodies. A routine full deploy therefore fails before a
+build until the structural migration exists exactly once, legacy credential
+storage is zero, and the exact envelope CHECK is validated. Candidate-image
+compiled dry-runs before backup and after health must also authenticate every
+envelope and report `ok:true`, zero legacy credentials, zero plaintext message
+schedules, and zero invalid envelopes.
 
 The full deploy creates and verifies its encrypted off-host pre-migration
 backup, then immediately repeats `production-deploy-preflight.sh` before the API
 migration. This catches root-disk capacity consumed by the backup itself. A
 failed repeated preflight stops before schema mutation.
 
-Then run the publish configuration preflight before starting or updating the
-stack:
-
-```bash
-npm run deploy:preflight
-```
-
-That command validates `infra/.env.publish`, checks the Studio production env
-wiring, and runs `docker compose config` when Docker Compose is available.
-
-Use the guarded command; a raw `docker compose up --build` bypasses the
-migration-safety ordering and is not a supported API production deployment:
+Use the single reviewed production entrypoint below. Raw production npm aliases,
+checkout scripts, and Compose commands execute untrusted checkout bytes before
+the source gate and intentionally fail closed or are unsupported. Replace all
+three values with the exact full commits from the reviewed clean assembly. The
+optional secret variables are passed explicitly for only the allowlisted restore
+and Studio-QA actions; leave them unset otherwise.
 
 ```bash
 cd /opt/arenzyra
-env -i \
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  HOME=/root \
-  npm run deploy:up
+reviewed_root='<40-hex-reviewed-root-commit>'
+reviewed_api='<40-hex-reviewed-api-commit>'
+reviewed_web='<40-hex-reviewed-web-commit>'
+production_entry() {
+  /usr/bin/env -i \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/root \
+    ARENZYRA_REVIEWED_ROOT_COMMIT="$reviewed_root" \
+    ARENZYRA_REVIEWED_API_COMMIT="$reviewed_api" \
+    ARENZYRA_REVIEWED_WEB_COMMIT="$reviewed_web" \
+    ARENZYRA_BACKUP_AGE_IDENTITY="${ARENZYRA_BACKUP_AGE_IDENTITY:-}" \
+    STUDIO_QA_EMAIL="${STUDIO_QA_EMAIL:-}" \
+    STUDIO_QA_PASSWORD="${STUDIO_QA_PASSWORD:-}" \
+    STUDIO_QA_AUTH_TOKEN="${STUDIO_QA_AUTH_TOKEN:-}" \
+    STUDIO_QA_SERVICE_TOKEN="${STUDIO_QA_SERVICE_TOKEN:-}" \
+    STUDIO_QA_INCLUDE_WORKSPACE_WRITE="${STUDIO_QA_INCLUDE_WORKSPACE_WRITE:-}" \
+    STUDIO_QA_REQUIRE_EXTERNAL_IMAGE_PROVIDER="${STUDIO_QA_REQUIRE_EXTERNAL_IMAGE_PROVIDER:-}" \
+    STUDIO_QA_TEST_EXTERNAL_IMAGE_PROVIDER="${STUDIO_QA_TEST_EXTERNAL_IMAGE_PROVIDER:-}" \
+    /bin/bash --noprofile --norc -ceu '
+      set -o pipefail
+      /usr/bin/env -i PATH="$PATH" HOME="$HOME" LC_ALL=C \
+        GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+        -C /opt/arenzyra show \
+        "${ARENZYRA_REVIEWED_ROOT_COMMIT}:scripts/production-reviewed-entrypoint.sh" |
+      /usr/bin/env -i PATH="$PATH" HOME="$HOME" \
+        ARENZYRA_REVIEWED_ROOT_COMMIT="$ARENZYRA_REVIEWED_ROOT_COMMIT" \
+        ARENZYRA_REVIEWED_API_COMMIT="$ARENZYRA_REVIEWED_API_COMMIT" \
+        ARENZYRA_REVIEWED_WEB_COMMIT="$ARENZYRA_REVIEWED_WEB_COMMIT" \
+        ARENZYRA_BACKUP_AGE_IDENTITY="$ARENZYRA_BACKUP_AGE_IDENTITY" \
+        STUDIO_QA_EMAIL="$STUDIO_QA_EMAIL" STUDIO_QA_PASSWORD="$STUDIO_QA_PASSWORD" \
+        STUDIO_QA_AUTH_TOKEN="$STUDIO_QA_AUTH_TOKEN" \
+        STUDIO_QA_SERVICE_TOKEN="$STUDIO_QA_SERVICE_TOKEN" \
+        STUDIO_QA_INCLUDE_WORKSPACE_WRITE="$STUDIO_QA_INCLUDE_WORKSPACE_WRITE" \
+        STUDIO_QA_REQUIRE_EXTERNAL_IMAGE_PROVIDER="$STUDIO_QA_REQUIRE_EXTERNAL_IMAGE_PROVIDER" \
+        STUDIO_QA_TEST_EXTERNAL_IMAGE_PROVIDER="$STUDIO_QA_TEST_EXTERNAL_IMAGE_PROVIDER" \
+        /bin/bash -s -- "$@"
+    ' arenzyra-production-entry "$@"
+}
+
+production_entry deploy
 ```
 
-Use the same clean-environment prefix with `npm run deploy:up:discord-bot`.
+Use `production_entry deploy-discord` for the supported bot-only mode and append
+`--first-deploy` only for its documented bot health exception. Do not use the
+full first-deploy form. The outer `git show` makes the dispatcher bytes come from
+the explicitly reviewed Root commit. It uses absolute sanitized Git to require
+the exact clean Root head before checkout execution and exact API/Web heads for
+commands that consume them. The deploy later recomputes every release input
+before build. Both layers disable Git
+replacement objects and reject grafts, replacement refs, and alternate object
+stores, so a reviewed commit name cannot resolve to substituted tree bytes.
+
 This matters because non-interactive Bash evaluates `BASH_ENV` before the
 script body, and Node can evaluate `NODE_OPTIONS` before an application
 validator starts. The scripts also reject `BASH_ENV`, `ENV`, `NODE_OPTIONS`,
@@ -151,26 +214,26 @@ archived release manifests, then reconcile both pointer files before the next
 release. The pointers are recovery hints, not authoritative transactional
 state.
 
-For a custom Discord-bot-only deployment, run `npm run deploy:guard`
-immediately before each build, restart, recreate, or Compose-up. A custom or
-partial change that can replace the API/web writer, alter schema, or change
-database-backed access must also run the migration-safety, entitlement, and IDP
-encryption-readiness gates in the same pre-mutation session. If a classified
-contract/data-impact migration is pending, use the separately reviewed
-writer-stopped maintenance procedure below; `deploy:guard` alone is not an API
-release authorization. Prefer `npm run deploy:up` or
-`npm run deploy:up:discord-bot` whenever their supported topology fits.
+Use `production_entry deploy-discord` for the dependency-isolated bot mode; add
+its sole reviewed optional argument, `--first-deploy`, only when the Compose
+project has zero managed containers. The dispatcher and wrapper repeat preflight
+immediately before each supported build or Compose-up and use `--no-deps` for
+the bot. A partial action outside the dispatcher's closed command allowlist is
+not authorized by a raw checkout script or preflight alone. Extend and review
+the committed dispatcher and all applicable full-application gates before such
+an action is supported.
 
 ## Contract and data-impact migrations
 
-The current manifest contains no entries because it is bound to the reconciled
-102-migration history plus the reviewed additive Studio migration, not to the
-discarded future-candidate lineage. That empty list is temporary release
-evidence, not permission to append an unreviewed migration. IDP encryption
-requires controlled-maintenance and data-impact classification, and onboarding
-requires explicit old/new-writer contract review. Populate the manifest with
-their exact final migration names and reviewed effects in the same commit that
-integrates those migrations.
+The current manifest names both
+`20260805021000_idp_encrypted_credential_storage` and
+`20260809203000_secure_account_setup` in its contract and data-impact lists.
+Both require controlled maintenance: IDP storage immediately rejects legacy
+plaintext writes while its backfill is pending, and secure onboarding introduces
+inactive users, nullable legacy passwords, and deferred one-use setup tokens
+that an old API does not understand. The onboarding migration also assigns the
+explicit compatibility default to existing applications. These classifications
+are release gates, not bypasses.
 
 The reviewed additive Studio foundation is
 `20260809200000_studio_widget_release_foundation/migration.sql`, with normalized
@@ -207,46 +270,65 @@ validated in an isolated environment as described in
 
 A Discord rollback also requires the immutable
 `<release-id>.discord-bot-image.json` archive created by that release's build.
-Before it creates or acquires the deployment lock or reads release archives,
-the rollback wrapper runs the checkout-only source gate from a sanitized
-`env -i` Node process. The gate requires `/opt/arenzyra`, every collected
-release input, the complete `scripts` tree, and root/API/web Git metadata to be
-root-owned and not group- or other-writable; release input files must also have
-one hard link. This gate deliberately does not require the current orchestration
-checkout to equal the older target release: that would prevent a current,
-reviewed rollback wrapper from selecting an archived older bot image. The
-target image is instead bound to the archived release environment and immutable
-image manifest as described below.
+Use the generic reviewed entrypoint from above, not a raw checkout script:
 
-The rollback shell and its first sourced environment guard necessarily execute
-before an in-checkout verifier can inspect that checkout. Start the entrypoint
-with the clean parent `env -i` launcher above and keep `/opt/arenzyra`
-root-controlled; an in-script gate cannot repair a compromised parent shell or
-a verifier that was already replaced by root.
+```bash
+target_release='<immutable-discord-release-id>'
+production_entry rollback-discord "$target_release"
+```
+
+The wrapper requires that exact clean Root HEAD before it sources checkout code.
+Root-only current-wrapper provenance is intentionally narrower than a deploy:
+rollback never builds API/Web, and the older target bot is independently bound
+to its archived release environment and immutable Discord image manifest. The
+later checkout-only verifier still requires `/opt/arenzyra`, collected inputs,
+the scripts tree, and Root/API/Web Git metadata to be root-owned, non-writable,
+and one-link where required; that ownership check is not content provenance and
+does not replace the committed outer launcher.
 
 Before Compose can start the bot, the rollback wrapper validates the manifest's
 exact archive path, root ownership, `0600` mode, non-symlink identity, closed
 schema, and binding to `<release-id>.env`; the locally tagged image ID and labels
 must then match the archived evidence exactly.
 
-This maintenance sequence is deliberately not automated by
+The controlled migration itself is deliberately not automated by
 `deploy-production.sh`; its exact stop/migrate/start command sheet must be
 reviewed against the production topology. Every build, restart, recreate, or
 Compose-up in that sheet remains subject to `scripts/production-deploy-preflight.sh`
 and the repository production rules.
 
-The canonical API image has no `dist-maintenance` payload. Publish Compose
-therefore exposes no `maintenance` profile and no IDP-backfill or YouTube-key
-rotation services. `npm run deploy:api-maintenance -- ...` is retained only as
-an explicit compatibility blocker: it exits `75` before Docker, database,
-backup, migration, or service actions. Do not bypass it with a raw Compose or
-host-side command. A future maintenance utility must restore the full reviewed
-lock, immutable-image, clean-environment, backup, least-privilege role, timeout,
-and postcondition contract before its service can be added to Publish Compose.
+The canonical API image ships the reviewed compiled IDP dry-run/apply/validate
+artifacts so the full sequence can be rehearsed against an isolated private
+restore. Production Publish Compose exposes only the authenticated one-shot
+`api-maintenance-idp-dry-run` service. It runs as UID/GID `1000:1000`, uses the
+read-only maintenance URL, has no build, ports, persistent mounts, or long-lived
+restart policy, and executes only the exact compiled dry-run. There is no
+production IDP apply/validate, YouTube, or other API-maintenance service.
 
-The least-privilege maintenance database roles remain provisioned and verified
-as reserved boundaries; their existence does not mean a runnable maintenance
-utility is shipped or authorized.
+Use only the generic committed entrypoint:
+
+```bash
+production_entry idp-dry-run
+```
+
+The production wrapper accepts no other action. It holds the shared deploy lock, binds an
+archived immutable API image and complete clean source manifest to the physical
+database, and rechecks the exact command/image override. Before any maintenance
+Compose run it recomputes the full manifest from the clean nested checkout and
+requires byte-for-byte agreement with the archived release.
+
+Production mutation remains fail-closed because a momentary container/session
+sample cannot stop an external writer from reconnecting during the backfill.
+Apply and constraint validation require a separately reviewed durable writer
+credential fence (for example, a controlled runtime-role credential/`NOLOGIN`
+cutover with session termination and restoration), plus backup and postcondition
+evidence. That fence is not implemented here. The production wrapper therefore
+rejects apply/validate before Docker, database, backup, or service action. Do not
+invoke the maintenance Compose service or compiled scripts directly.
+
+The YouTube maintenance database role remains a reserved, separately confined
+identity because it is part of the closed role policy. Its existence does not
+authorize a YouTube maintenance command, service, or raw database write.
 
 ### Entitlement reconciliation
 
@@ -257,22 +339,31 @@ non-deleted organizations:
 - `TRIALING`: `trialEndsAt` is present and `paidUntil` is null.
 - `EXPIRED`: both `paidUntil` and `trialEndsAt` are null.
 
-This is deliberately separate from effective access. `ACTIVE` grants access
-only while `paidUntil` is in the future, and `TRIALING` only while
-`trialEndsAt` is in the future. An elapsed clock therefore fails closed without
-requiring an automatic database write, and cannot make a release fail just by
-crossing a timestamp during deployment. An audited operator may later normalize
-the commercial workflow status to `EXPIRED`, which clears both clocks.
+Deployment authorization uses strict clocks under the current policy. `ACTIVE`
+is deployable only when `paidUntil` is in the future;
+`TRIALING` is deployable only when its complete, ordered trial dates describe a
+currently active trial and `paidUntil` is null. A missing or elapsed clock fails
+the release gate without an automatic database write. Do not infer runtime
+monetization enforcement from this inventory gate: the canonical API must also
+use the same shared predicate in authentication, launcher, Discord, and session
+paths, with focused tests, before that enforcement can be called complete.
 
-Any other status or aggregate mismatch fails closed. Gate output contains only
-status and inconsistency counts; it intentionally cannot identify affected
+The 2026-08-09 aggregate inventory found 11 approved active organizations:
+7 `ACTIVE` (3 future and 4 expired clocks) and 4 `TRIALING` (2 valid, 1 expired,
+and 1 missing dates). The deployment gate therefore reports six clock denials
+and remains blocked until an explicit reviewed customer/business disposition
+and remediation artifact exists and the read-only inventory returns zero. It
+has no grandfather flag or permissive default.
+
+Any other status or aggregate mismatch also fails closed. Gate output contains
+only status and inconsistency counts; it intentionally cannot identify affected
 organizations. Investigate and reconcile through an approved, audited,
 writer-stopped maintenance procedure using a fresh verified off-host backup,
 reviewed target selection, before/after counts, and the normal billing audit
 path. Do not add an automatic deploy backfill, print identifiers from the gate,
-or weaken a boundary to make deployment pass. After the controlled correction,
-rerun the read-only gate and record zero inconsistent counts before returning to
-the standard deployment workflow. The detailed billing semantics are in
+or weaken a boundary to make deployment pass. After an explicitly approved
+controlled correction, rerun both read-only entitlement checks and record zero
+denials before returning to the standard deployment workflow. The detailed billing semantics are in
 [`MANUAL_BILLING_RUNBOOK.md`](../docs/product/MANUAL_BILLING_RUNBOOK.md).
 
 Before deciding whether legacy `ACTIVE` access can become strictly
@@ -284,37 +375,53 @@ production write.
 
 ### Legacy IDP credential backfill
 
-The canonical checkpoint writes `DiscordIdpSchedule.roomPassword` in plaintext.
-Its `deploy:verify-idp-encryption` command is intentionally a blocker, not a
-verification success path, and no backfill entrypoint is present in the image.
-Do not describe IDP schedules as encrypted at rest and do not deploy this
-checkpoint.
+Canonical runtime writes use authenticated `v1` envelopes, and the reviewed
+forward migration widens `DiscordIdpSchedule.roomPassword` and installs the
+exact envelope CHECK as `NOT VALID`. Live production has not completed that
+cutover: all 12 observed schedules still fail the compiled credential/message
+zero-plaintext postcondition.
 
-Closure requires one reviewed forward migration and matching runtime changes,
-classification in `production-api-migration-safety.json`, an isolated replay,
-a writer-stopped backfill with a fresh verified off-host backup, and a bounded
-postcondition proving that no plaintext rows remain. Only then may the blocker
-be replaced with a structural and zero-row verifier and rechecked after the new
-API becomes healthy.
+Closure requires the exact migration once, its existing controlled-maintenance
+classification, a successful isolated replay, a fresh verified off-host backup,
+a durable runtime-writer credential fence with session termination, the compiled
+apply, and constraint validation. That production mutation workflow is not
+shipped by this release and must remain blocked until separately reviewed. The
+final compiled dry-run must be
+authenticated with the production IDP key and report `ok:true`, zero legacy
+credentials, zero plaintext message schedules, zero invalid envelopes, and zero
+oversized legacy values. The structural verifier must independently report zero
+non-envelope values and the exact validated CHECK. A normal deploy then repeats
+the compiled dry-run after its immutable image build and again after health; no
+SQL-only regex can substitute for envelope authentication or message scrubbing.
 
 ## Release provenance
 
-Each deploy should generate a non-secret `infra/.env.release` manifest before
-building. It records a release ID, build timestamp, and content digest. When a
-clean Git checkout is available it also records its revision; source bundles
-without Git metadata are explicitly labelled `source-digest` rather than being
-misreported as a clean Git release.
+Each deploy must generate a non-secret `infra/.env.release` manifest before
+building. It records a release ID, build timestamp, component revisions, and a
+cryptographic digest over the complete reviewed release-file set. Routine
+production authorization requires clean, available Git provenance for Root and
+the embedded API/Web repositories and exact recomputation of the archived
+manifest bytes from `/opt/arenzyra`. A non-Git or mixed source tree is a hard
+blocker. An OCI label or `.env.release` file alone is not source proof.
 
 Generate metadata directly only for an approved controlled-maintenance command
-sheet. Routine releases must use `npm run deploy:up`, which generates and
-archives the metadata after its release-safety gates pass.
+sheet. The committed-script launcher generates and archives routine release
+metadata only after its pre-build safety gates pass.
 
-`npm run deploy:up` and `npm run deploy:up:discord-bot` generate this metadata
-automatically. The digest covers the complete deployment-script tree, the
-database object policy, every reviewed API/Studio migration SQL source, and the
-exact role-bootstrap SQL while continuing to exclude arbitrary SQL/dumps,
-secrets, and local artifacts. Keep the generated manifest with the deployment
-backup so every built service can be traced to the same reviewed source.
+The launcher generates this metadata automatically in full and Discord-only
+mode. The digest covers all selected build contexts, the complete
+deployment-script tree, the database object policy, every reviewed API/Studio
+migration SQL source, and the exact role-bootstrap and entitlement-inventory SQL
+while excluding secrets, Docker-excluded runtime/user-data paths, and local
+artifacts. Every collected release input must be tracked by its owning exact
+Root, API, or Web repository; an ignored or untracked file that would otherwise
+enter a build context fails closed instead of receiving reviewed-source labels.
+The verifier requires secure root-owned checkout and Git metadata, one-link
+release inputs, clean exact nested revisions, and byte-for-byte agreement with
+the archived manifest before an image or maintenance command is trusted. Keep
+the generated manifest with the deployment backup so every built service can be
+traced to the same reviewed source. Do not weaken the exact migration checksum
+gate to accommodate a mixed installation.
 
 After a successful build, the deploy wrapper also archives closed-schema,
 root-owned mode-`0600` image manifests beside the release environment. A full
@@ -327,30 +434,23 @@ descriptor-attested Compose override containing those immutable IDs, disables
 pulling, and verifies each running container ID before release pointers are
 advanced.
 
-From `/opt/arenzyra`, root can retrieve an expected API image ID only after
-validating it against the exact archived release environment:
+The deploy and IDP dry-run retrieve expected image IDs only inside the reviewed
+entrypoint after validating the exact archived release environment and image
+manifest. There is no supported raw production-host Node command for this step.
 
-```bash
-release_id='git-YYYYMMDD-HHMMSSmmm-xxxxxxxxxxxx'
-env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
-  node scripts/validate-release-image-manifest.cjs \
-  --file "/opt/arenzyra-release-metadata/${release_id}.api-image.json" \
-  --release-env "/opt/arenzyra-release-metadata/${release_id}.env" \
-  --expected-release "$release_id" --service api --print-image-id
-```
-
-Deploy commands do not delete files or run maintenance automatically. Scheduled
-host cleanup remains separate from deployment and is invoked explicitly with
-`npm run deploy:maintenance`. Database-writing API maintenance is unsupported
-by this release and its compatibility command blocks before external action.
+Deploy commands do not delete files or run maintenance automatically. Host
+cleanup remains separate and is invoked only as
+`production_entry host-maintenance` (or `--check-only`). No database-writing API
+maintenance is production-authorized in this release; authenticated IDP dry-run
+is read-only, and IDP apply/validate, YouTube, and all other API maintenance
+remain blocked.
 
 This command intentionally does not start the local `discord-bot` service. The
 Discord bot should have one production runtime only. If you deliberately need to
 start this stack's bot, opt in explicitly:
 
-```bash
-npm run deploy:up:discord-bot
-```
+Use `production_entry deploy-discord`; do not replace it
+with a raw npm or Compose invocation.
 
 The bot also has a startup lock: production-mode bot containers only connect to
 Discord when `ARENZYRA_DISCORD_BOT_INSTANCE=production` is present in the publish
@@ -376,6 +476,17 @@ Postgres and Redis stay internal to Docker in this stack.
 - API uploads are stored in the named volume `api-uploads`.
 - API media/storage files are stored in the named volume `api-storage`.
 
+Before deploying the non-root API image, the volume gate requires both volumes
+to have the exact reviewed local-volume identity. Their roots and every existing
+entry must be UID/GID `1000:1000`, and the roots must be mode `0750`. Every
+descendant must be a regular file or directory; regular files must have exactly
+one hard link. Symlinks, special nodes, cross-filesystem descendants, unexpected
+ownership, or any world-writable entry fail closed. A fresh image also creates
+`/app/uploads` and `/app/storage` as `1000:1000` mode `0750`.
+Current production roots are `0:0` mode `0777`, so deployment is blocked until a
+separately reviewed, backed-up ownership/mode remediation is approved. The gate
+does not mutate either volume.
+
 Never restore an existing database directly over the live stack. Validate an
 encrypted recovery point through the isolated procedure in
 [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md), then use a separately reviewed
@@ -392,6 +503,7 @@ The API requires these production startup values:
 - `SUPERADMIN_MFA_RECOVERY_PEPPER` (at least 32 bytes)
 - `COLLECTOR_SECRET`
 - `PCOB_SECRET`
+- `PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED=false` (exactly; public acquisition remains invite-only)
 - `DATABASE_URL` using a non-owner runtime role
 - `MIGRATION_DATABASE_URL` using a dedicated DDL role
 - `STUDIO_DATABASE_URL` using a distinct Studio runtime role
@@ -410,25 +522,26 @@ The production preflight rejects them. Provision production accounts through
 an audited administrative workflow; do not keep bootstrap passwords in the
 long-lived service environment.
 
-On a guarded `--first-deploy`, the deploy starts only Postgres/Redis, proves the
-database has zero application relations, then provisions and connectivity-tests
-the seven application URL roles under the inherited deployment lock before backup or
-migration. Do not run a separate bootstrap command for that clean path.
+The normal full deploy does not provision a first installation. Its
+`--first-deploy` form exits `75` before external action. A separate reviewed
+empty-target bootstrap must prove source and volume identity, close auxiliary
+database ACLs, provision and connectivity-test the seven application URL roles,
+migrate an empty target exactly once, validate the zero-row IDP CHECK, and only
+then start an application writer. That bootstrap is not implemented by
+`deploy-production.sh`; do not improvise it from individual helper commands.
 
-For an existing installation, the helper can create missing roles and establish
-grants only after existing object ownership already matches the reviewed API
-and Studio migration-role boundary:
+For an existing installation, the allowlisted command below is a read-only role
+provisioning preview. It does not create roles or grants:
 
 ```bash
-bash scripts/provision-production-database-roles.sh --env infra/.env.publish --dry-run
+production_entry roles-dry-run
 ```
 
-The script shares or verifies the deployment lock, reruns the production
-preflight, binds to the reviewed database/schema/container, creates only missing
-non-superuser roles, passes credentials over protected stdin, establishes
-separate API/Studio/maintenance grants, and verifies the administrator plus all
-seven application role connections. It
-deliberately does not rotate an existing role password. Existing installations
+The preview shares or verifies the deployment lock, reruns the production
+preflight, binds to the reviewed database/schema/container, and reports the
+closed role/ownership plan without applying it. Role creation or grant changes
+occur only as an explicitly guarded step inside a reviewed full deploy after its
+source, backup, database-identity, and release gates pass. Existing installations
 whose tables/types are owned by a prior administrator still require a reviewed
 DBA ownership migration before the dedicated DDL roles can migrate.
 
@@ -448,8 +561,10 @@ extension, and default ACL; explicitly classify each object as API- or
 Studio-owned; stop ingress and every writer; and prove the session inventory is
 empty. Use an explicit, reviewed `ALTER ... OWNER` list for those exact objects,
 then reapply the closed-world grants and run the role verifier before any writer
-returns. Never use blanket `REASSIGN OWNED`, `\gexec`, dynamically generated
-unreviewed SQL, or a superuser service URL to make the migration pass.
+returns. Never use blanket `REASSIGN OWNED`, ad hoc `\gexec`, dynamically
+generated unreviewed ownership SQL, or a superuser service URL to make the
+migration pass. The tracked bootstrap's closed, reviewed `\gexec` statements
+for exact ACL reconciliation do not authorize operator-generated ownership SQL.
 
 The role verifier also enforces these application, cluster, and schema
 boundaries. Candidate-source object classification is closed, but the
@@ -462,7 +577,7 @@ production cluster prerequisites below remain release blockers:
   fails if any can connect to or create temporary objects in another
   connectable database. A stock cluster normally grants this access on
   `postgres` and `template1`, so complete the reviewed cross-database ACL
-  closure procedure before the first `--first-deploy` role provisioning run.
+  closure procedure before any separate first-installation bootstrap.
   Restrictive HBA rules remain defense-in-depth but do not satisfy this ACL
   gate. The role provisioner checks PUBLIC and every already-existing
   configured app role with the administrator before backup, role creation, or
@@ -470,12 +585,19 @@ production cluster prerequisites below remain release blockers:
   database/role/reason tuples as escaped JSON. The role scripts never
   auto-revoke cluster-wide ACLs; the first deployment remains blocked until
   that prerequisite is complete and the gate passes.
+- The role bootstrap revokes `pg_catalog.pg_control_system()` execution from
+  `PUBLIC` and every application role, then grants it only to the exact API
+  migrator, maintenance-read, and IDP-maintenance roles so the immutable
+  candidate and physical-database helpers can attest `system_identifier`.
+  Verification requires that exact ACL. No application role receives
+  `pg_monitor`, and membership in `pg_monitor` or another predefined monitoring
+  role remains forbidden.
 - The current schema has no reviewed row-level-security design. Any
   `relrowsecurity`/`relforcerowsecurity` flag or `pg_policy` row in the
   application schema fails the role gate instead of being silently accepted.
 - The committed database object policy currently binds repository source
-  digests to 146 API runtime tables, 6 Studio runtime tables, both migration
-  ledgers, zero sequences, all 76 Prisma enum types with 375 ordered labels,
+  digests to 131 API runtime tables, 6 Studio runtime tables, both migration
+  ledgers, zero sequences, all 69 Prisma enum types with 354 ordered labels,
   exactly 2 trigger functions, and exactly 2 enabled user-trigger wirings.
   Bootstrap grants and the verifier consume that policy rather than trusting
   migrator ownership alone. Missing, extra, misowned, misgranted, or mismatched
@@ -601,8 +723,8 @@ If those services run on the same server outside Docker, `host.docker.internal` 
 ## Useful commands
 
 ```bash
-npm run deploy:ps
-npm run deploy:logs
+production_entry observe ps
+production_entry observe logs
 ```
 
 These read-only helpers resolve the reviewed Compose project from
@@ -615,8 +737,8 @@ Production builds can leave Docker build cache behind. Keep these safeguards
 enabled on the server:
 
 ```bash
-npm run deploy:maintenance
-npm run deploy:maintenance:check
+production_entry host-maintenance --check-only
+production_entry host-maintenance
 ```
 
 The maintenance script defaults are conservative:
@@ -628,18 +750,17 @@ The maintenance script defaults are conservative:
 - disk usage warnings start at `85%`; critical status starts at `90%`.
 - only build cache and old backup entries are removed.
 
-Install the checked-in cron template on production:
-
-```bash
-cp infra/arenzyra-maintenance.cron /etc/cron.d/arenzyra-maintenance
-chmod 0644 /etc/cron.d/arenzyra-maintenance
-```
+Do not install the checked-in cron template as a raw checkout-script entry. A
+scheduled job needs a separately installed root-owned launcher that implements
+the same reviewed-commit `production_entry host-maintenance` bootstrap. Until
+that host-owned scheduling wrapper is reviewed, run cleanup manually through
+the allowlisted entrypoint.
 
 Optional environment overrides:
 
 ```bash
 # See infra/arenzyra-maintenance.env.example.
-# Put overrides in /etc/arenzyra-maintenance.env for cron runs.
+# Put overrides in /etc/arenzyra-maintenance.env for a future reviewed scheduler.
 ARENZYRA_DOCKER_BUILDER_KEEP_STORAGE=15GB
 ARENZYRA_BACKUP_RETENTION_DAYS=30
 ARENZYRA_DISK_WARN_PERCENT=85
@@ -660,7 +781,7 @@ That command rebuilds the local web app, starts a local production preview on `h
 Then verify the deployed public stack and Studio auth gates:
 
 ```bash
-npm run deploy:verify
+production_entry verify
 ```
 
 For the authenticated Studio path, run the live QA script with a real organizer
@@ -669,29 +790,20 @@ session. Prefer environment variables so secrets are not stored in shell history
 ```bash
 STUDIO_QA_EMAIL="organizer@example.com" \
 STUDIO_QA_PASSWORD="..." \
-npm run deploy:studio-qa
-```
-
-PowerShell:
-
-```powershell
-$env:STUDIO_QA_EMAIL = "organizer@example.com"
-$env:STUDIO_QA_PASSWORD = "..."
-npm run deploy:studio-qa
-Remove-Item Env:\STUDIO_QA_EMAIL, Env:\STUDIO_QA_PASSWORD
+production_entry studio-qa
 ```
 
 You can also pass a current access token:
 
 ```bash
-STUDIO_QA_AUTH_TOKEN="..." npm run deploy:studio-qa
+STUDIO_QA_AUTH_TOKEN="..." production_entry studio-qa
 ```
 
 For automated production checks, the existing API service token can be used
 without an organizer password:
 
 ```bash
-STUDIO_QA_SERVICE_TOKEN="..." npm run deploy:studio-qa
+STUDIO_QA_SERVICE_TOKEN="..." production_entry studio-qa
 ```
 
 If you do not keep the plaintext service token, set only

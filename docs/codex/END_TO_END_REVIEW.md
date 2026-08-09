@@ -25,8 +25,9 @@ For new candidate offers only:
 These prices do not automatically reprice legacy entitlements or separate
 YouTube automation plans. The planned seven-day trial would activate only when
 the approved owner's single-use secure account-setup transaction succeeds,
-without overwriting a later billing decision. That behavior is not integrated
-into the canonical API yet and must not be promised to customers.
+without overwriting a later billing decision. That behavior is integrated in
+the clean candidate, but public applications remain disabled and it must not be
+promised to customers before the production gates below pass.
 
 This is a price and customer hypothesis, not an earnings promise. The operating
 and 30-day validation gates are in
@@ -37,12 +38,12 @@ and 30-day validation gates are in
 The release work uses three independent Git repositories. Root does not track
 the nested Web repository as content or as a gitlink.
 
-| Tree                                                      | Audited revision                           |                                                                                   Status at this checkpoint |
-| --------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------: |
-| Root checkpoint before the exclusions quarantine          | `45a4e3d893646f9cc27b714b5ec961bdb00c8137` | pre-commit status contains only these two intended evidence documents; after this checkpoint, Root is clean |
-| Canonical API worktree (`.worktrees/api-release-lineage`) | `4edafafd28aaf684a78f678adf358b5eaed80238` |                      clean; one test-only standings regression was added after runtime checkpoint `a508e97` |
-| Web runtime source/build checkpoint (`apps/arenzyra-web`) | `f2ca9a152e60830ed526fa0b9a784982aba1afeb` |                           clean; source, build, and runtime-package evidence below belongs to this revision |
-| Web test-harness checkpoint (`apps/arenzyra-web`)         | `1d37d1096ce8c5323ccdb0938f800c35f6a2029c` |                                             clean; only two test files changed after the runtime checkpoint |
+| Tree                                                      | Audited revision                           | Status at this checkpoint |
+| --------------------------------------------------------- | ------------------------------------------ | ------------------------- |
+| Root release assembly                                     | `codex/root-final-release-integration-20260809` | isolated release branch; this review travels with the selected final Root commit |
+| Canonical API worktree (`apps/api`)                       | `67e6d6185df182b4c8267f9488e1af831f9087e7` | clean exact detached head |
+| Web runtime source/build checkpoint (`apps/arenzyra-web`) | `62cb97a`                                  | clean runtime source used by the focused setup/build evidence |
+| Web pricing-test checkpoint (`apps/arenzyra-web`)         | `642d22d2a2b8329faf0756bd0520295cfa05f511` | clean assertion-only descendant of `30c684a` |
 
 The dirty legacy `apps/api` tree at
 `54dd78c91ac15747c3ded2d1e5c99fd31c8d9b8a` is not release identity. Its
@@ -66,17 +67,16 @@ That is local source recovery, not a production-data backup.
 
 ## Current retained verification
 
-| Area                    | Retained result                                                                                                                                                                  |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Canonical API           | At `4edafaf`, build passed; full unit run passed 154/168 suites and 1,205/1,267 tests, with 14 suites/62 tests failing; 8 e2e suites were inventoried but not run in that result |
-| Web source              | At clean runtime checkpoint `f2ca9a1`, full ESLint and TypeScript passed; focused font 4/4, release-boundary 10/10, Facet Grid 2/2, and Studio TLS/migration 6/6 passed          |
-| Web browser             | At test-harness checkpoint `1d37d10`, the final full single-worker Chromium run passed 150/150; the two affected tests also passed together 2/2 before that run                  |
-| Web production build    | 79/79 static pages; emitted static/server output contains none of the quarantined Production Design or old-logo markers                                                          |
-| Web runtime package     | Clean `f2ca9a1` modern frozen pnpm deploy passed: 18,698 regular files, 599,685,932 logical bytes, and 232 contained links; no dev/cache/source tree or escaping link            |
-| Desktop                 | Exact-final full suite passed 289/289 across 38 files; 76/76 launcher-release tests and 42/42 PCOB coverage tests passed; TypeScript and full ESLint passed                      |
-| Root production policy  | 31/31 production policy tests and 12/12 publish-preflight tests passed                                                                                                           |
-| Pricing consistency     | Canonical-root-aware gate passed 5/6; the sole failing check is the real canonical catalog/add-on mismatch. The earlier dirty-tree 6/6 is not retained evidence                  |
-| Migration checksum gate | At Root `5bd5d20`, 26/26 direct tests and 72/72 related policy tests passed; real production ledger comparison and disposable replay remain outstanding                          |
+| Area                    | Retained result |
+| ----------------------- | --------------- |
+| Canonical API           | At `67e6d618`, full Jest passed 190/190 suites and 1,481/1,481 tests; normal and maintenance builds, Prisma validate/generate, full lint/format, and the 16/16 image-boundary suite passed. Disposable database replay remains separate evidence. |
+| Web source/build        | Runtime source `62cb97a` passed the focused secure-setup suite 7/7 and production build. Pricing-test parent `30c684a` passed canonical pricing consistency 6/6 and targeted ESLint; final assertion-only head is `642d22d`. |
+| Web browser             | The earlier full single-worker Chromium 150/150 result belongs to the earlier recorded Web checkpoint; it is historical regression evidence, not a rerun against the final Web assertion-only head. |
+| Web production package | The earlier bounded runtime-package and 79-page build inventories remain historical boundary evidence; focused final build evidence is scoped to the runtime head above. |
+| Desktop                 | Exact-final full suite passed 289/289 across 38 files; 76/76 launcher-release tests and 42/42 PCOB coverage tests passed; TypeScript and full ESLint passed. |
+| Root production policy  | The isolated release-gate suite passed all 177 executable tests across the 21 scoped files; one POSIX FIFO fixture was skipped on Windows. Bash syntax passed for all 10 changed shell files and Node syntax passed for all 29 changed/new CommonJS files. |
+| Pricing consistency     | Canonical-root-aware pricing consistency passed 6/6; canonical customer catalog parity is complete while public acquisition remains hard-disabled. |
+| Migration checksum gate | Candidate checksum/classification policy is bound to exact migration bytes; real production-ledger comparison and disposable replay remain outstanding. |
 
 The passing Chromium run still emitted recurring development-only React
 script-tag diagnostics and Fast Refresh reload warnings. The likely source is
@@ -99,16 +99,15 @@ drill remain unproven.
 
 ## Material safety boundaries completed
 
-- Dirty candidate source contains deferred account-setup trial activation, but
-  the canonical API does not; this is a planned integration, not a completed
-  release control.
-- Dirty candidate authentication, refresh-family reuse response, account state, service
+- The clean canonical API and Web now share deferred single-use account setup
+  and setup-time trial activation. Public acquisition remains hard-disabled;
+  this completed source integration is not production authorization.
+- Authentication, refresh-family reuse response, account state, service
   identities, platform-superadmin MFA, tenancy, private assets, public
   publication, manual billing, SMTP outbox, Redis throttling, and browser token
   storage received source-level fail-closed controls and regression coverage.
-- Web and the opt-in Discord pricing publisher use the candidate ladder. The
-  canonical API still exposes its older catalog/add-ons, so cross-service
-  pricing parity is not complete.
+- Web, API, and the opt-in Discord pricing publisher use the aligned canonical
+  ladder/catalog contract. Public organization applications remain disabled.
 - Studio persistence uses explicit migrations rather than runtime schema DDL.
   Runtime and publish preflight reject insecure, unknown, or URL-overridden
   PostgreSQL TLS modes; explicit trusted-network no-TLS remains an affirmative
@@ -128,20 +127,13 @@ drill remain unproven.
   candidate scaffold is non-publishable and requires `--publish never`.
   Signer/TSA policy remains deliberately empty and unapproved.
 
-These controls describe candidate source. They do not prove every candidate API
-change is integrated into the canonical release. Of 2,710 candidate-delta paths,
-2,288 are now exact; API reconciliation still has 149 direct overlay entries,
-258 manual-review entries, and 15 migration holds.
-Four manually reviewed WebSocket gateway files, including protected PCOB,
-block the next access-token integration; account-security integration depends
-on a held Prisma enum and migration. Do not force those overlays.
+Dirty-candidate overlay counts and migration holds were reconciliation aids,
+not release-completion targets. They are historical and are not substituted for
+the exact clean canonical API, Web, and Root assembly identified above.
 
-The current clean revisions are functionally incompatible for onboarding: Web
-submits passwordless applications and calls `/auth/account-setup/consume`, while
-the canonical API requires an application password, lacks that consume endpoint,
-and starts trials at approval. Closing this needs the protected/manual auth and
-super-service merge plus held password-action and billing schema work; it is not
-a safe four-file copy.
+Secure invite-only onboarding is integrated end to end in the canonical API and Web: approval creates an inactive account with deferred, single-use fragment-token setup, verified SMTP delivery activates the token, and account setup atomically sets the password and activates the user.
+The canonical catalog/pricing contract is aligned and public organization applications remain hard-disabled.
+This does not authorize production: deployment remains fail-closed on the observed mixed/non-Git source, PostgreSQL 16.13, unresolved IDP plaintext and durable writer-credential-fence cutover, six entitlement-clock denials, and 0777 API volumes, plus final migration/replay evidence.
 
 ## Quarantines and rights boundary
 
@@ -168,6 +160,41 @@ a safe four-file copy.
 These targeted quarantines do not prove the entire repository rights-cleared.
 Older tracked PUBG/scene/brand assets and the public redistribution provenance
 of `ob.js` still require owner/legal review before a public release.
+
+## Current production evidence and hard blockers
+
+A bounded read-only clean-parent inventory on 2026-08-09 found five independent
+production blockers. No production write, cleanup, build, Compose mutation,
+service restart, Discord interaction, or customer-state change was performed.
+
+- `/opt/arenzyra` and its deployed API/Web directories are not Git worktrees
+  and contain a mixed release. OCI labels and `.env.release` alone are not
+  complete source proof. The checkout/source gate therefore remains closed
+  unless a complete cryptographic release-file manifest is generated from and
+  verified against the exact clean Root/API/Web assembly; migration SQL
+  checksum verification remains mandatory and separate.
+- The live PostgreSQL server is 16.13, not the reviewed pinned 16.14 image and
+  digest. The physical database identity gate must continue to fail.
+- The aggregate-only IDP check found 12 legacy plaintext schedules. The final
+  structural gate requires the exact migration, zero plaintext rows, the exact
+  envelope CHECK, and a validated constraint; the authenticated compiled check
+  must also report zero legacy credentials, plaintext message schedules, and
+  invalid envelopes. Production apply/validate remains unavailable until a
+  reviewed durable writer-credential fence and session termination workflow
+  exists; no default, stopped-container sample, or placeholder passes it.
+- Aggregate entitlement inventory found 11 approved/active organizations and
+  six effective clock denials. Deployment stays blocked until an explicit,
+  reviewed customer/business policy and remediation artifact resolves them.
+  There is no automatic mutation, permissive default, or grandfather switch.
+- Both API data-volume roots are owned by `0:0` with mode `0777`. The nonroot
+  image cutover must remain blocked until an exact, backed-up ownership and mode
+  remediation is reviewed. The read-only gate requires roots `1000:1000` mode
+  `0750`, every descendant owned `1000:1000`, regular files/directories only,
+  regular-file link count one, and no symlink, special node, cross-filesystem,
+  or world-writable state.
+
+These blockers are cumulative. Resolving one does not waive any other, and this
+review does not claim that production is ready.
 
 ## Historical production evidence only
 
@@ -203,22 +230,19 @@ entitlement, publication, refresh-token, credential, MFA/session, and log
 inventories before maintenance. The detailed historical record is
 [`PRODUCTION_READ_ONLY_AUDIT_20260805.md`](PRODUCTION_READ_ONLY_AUDIT_20260805.md).
 
-The earlier 12-migration production observation is historical. The current 15
-figure means canonical reconciliation holds, not 15 migrations freshly queried
-from production. Reconcile exact SQL lineage and `_prisma_migrations` checksums,
-then replay the candidate sequence on disposable PostgreSQL 16 before taking a
-new production inventory.
+Earlier migration/overlay counts are historical reconciliation notes, not a
+release-completion target or fresh production inventory. Reconcile exact SQL
+lineage and `_prisma_migrations` checksums, then replay the candidate sequence
+on disposable PostgreSQL 16.14 before taking a new production inventory.
 
 ## Genuine release blockers
 
 1. Keep every quarantined Root path and external recovery snapshot outside
    release input unless individually approved, confirm `ob.js` provenance, and
    reproduce all revisions from clean checkouts.
-2. Complete the 149 direct and 258 manual API overlays without overwriting
-   protected gateway or credential-approval changes. Resolve the passwordless
-   application/account-setup/trial and catalog/billing incompatibilities.
-   Reconcile all 15 schema/migration holds against release lineage and
-   production checksums, then pass disposable PostgreSQL 16 replay, database
+2. Bind the exact clean canonical API/Web heads and Root release commit, verify
+   the complete tracked-only release-file manifest, reconcile exact production
+   migration checksums, and pass disposable PostgreSQL 16.14 replay, database
    E2E, and exact role/object-policy checks.
 3. Obtain exact-byte redistribution and branding evidence for every asset that
    will ship. Do not restore quarantined maps or visuals by category or name.
@@ -231,8 +255,9 @@ new production inventory.
    second gateway runtime or test access to live bot credentials.
 6. Create a reviewed maintenance plan with fresh count-only inventories,
    customer-by-customer entitlement decisions, lock/outage estimates, distinct
-   production roles and secrets, super-admin MFA rollout, and IDP plaintext-zero
-   proof.
+   production roles and secrets, a durable IDP writer-credential fence/session
+   termination cutover, super-admin MFA rollout, and authenticated IDP
+   plaintext-zero proof.
 7. Create and verify a real encrypted off-host recovery point and isolated
    restore drill tied to immutable release identity.
 8. Complete real non-sensitive SMTP, manual-billing, approval, retry, and
@@ -249,17 +274,18 @@ new production inventory.
 ## Production continuation rule
 
 Every production Bash or Node entrypoint, including a read-only one, must begin
-from the exact clean-parent `env -i` launcher documented in `infra/PUBLISH.md`,
-clearing at least `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, and ambient
-`GIT_*` variables before the interpreter starts.
+through the exact reviewed-Root `git show ... production-reviewed-entrypoint.sh |
+env -i bash -s -- <command-id>` launcher documented in `infra/PUBLISH.md`. It
+clears at least `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, and ambient
+`GIT_*` variables before the interpreter starts, then attests the exact clean
+Root and, where required, API/Web heads before checkout code executes. Raw npm,
+checkout scripts, and custom Compose commands are not supported production
+entrypoints.
 
-Immediately before every production build, pull, recreate, restart,
-`docker compose up`, or custom/partial operation, run in the same clean session:
-
-```bash
-cd /opt/arenzyra
-bash scripts/production-deploy-preflight.sh
-```
+Immediately before every supported production build, pull, recreate, restart,
+or `docker compose up`, the attested wrapper runs
+`production-deploy-preflight.sh` internally in the same session. Operators do
+not replace that invariant with a raw preflight command.
 
 Stop on any nonzero result. The default minimum is 30 GiB free on the production
 root filesystem. Do not automatically delete backups, images, logs, volumes, or

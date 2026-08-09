@@ -244,6 +244,14 @@ test("role verifier attests flags, memberships, ownership, and privilege boundar
   assert.match(verifier, /'maintenance-read'/);
   assert.match(verifier, /'idp-maintenance'/);
   assert.match(verifier, /'youtube-maintenance'/);
+  assert.match(verifier, /pg_catalog\.pg_control_system\(\)/);
+  assert.match(
+    verifier,
+    /profile IN \('api-migrator', 'maintenance-read', 'idp-maintenance'\)/,
+  );
+  assert.match(verifier, /privilege\.grantee = 0/);
+  assert.match(verifier, /privilege\.privilege_type = 'EXECUTE'/);
+  assert.doesNotMatch(verifier, /GRANT\s+pg_monitor/i);
   assert.match(
     verifier,
     /profile IN \([\s\S]{0,180}'maintenance-read'[\s\S]{0,180}has_function_privilege\(oid, 'EXECUTE'\)/,
@@ -301,7 +309,7 @@ test("stock auxiliary database privileges block first-deploy role verification",
   assert.match(publishGuide, /stock cluster normally grants this access/);
   assert.match(
     publishGuide,
-    /before the first `--first-deploy` role provisioning run/,
+    /before any separate first-installation bootstrap/,
   );
   assert.match(publishGuide, /never\s+auto-revoke cluster-wide ACLs/);
 
@@ -354,6 +362,7 @@ test("stock auxiliary database privileges block first-deploy role verification",
 
 test("bootstrap removes ambient grants and never default-grants runtime DML", () => {
   const sql = read("infra/sql/bootstrap-production-roles.sql");
+  const verifier = read("scripts/verify-production-database-roles.sh");
   assert.match(sql, /CREATE EXTENSION IF NOT EXISTS "pgcrypto"/);
   assert.match(sql, /NOBYPASSRLS/);
   assert.match(sql, /NOINHERIT/);
@@ -409,6 +418,28 @@ test("bootstrap removes ambient grants and never default-grants runtime DML", ()
   assert.match(sql, /ORDER BY enum_value\.enumsortorder/);
   assert.match(sql, /REVOKE ALL PRIVILEGES ON TYPE/);
   assert.match(sql, /GRANT USAGE ON TYPE %I\.%I TO %I, %I/);
+  assert.match(
+    sql,
+    /REVOKE EXECUTE ON FUNCTION pg_catalog\.pg_control_system\(\)[\s\S]*FROM PUBLIC/,
+  );
+  assert.match(
+    sql,
+    /GRANT EXECUTE ON FUNCTION pg_catalog\.pg_control_system\(\)[\s\S]*api_migration_role[\s\S]*maintenance_read_role[\s\S]*idp_maintenance_role/,
+  );
+  assert.match(
+    sql,
+    /aclexplode\([\s\S]*pg_control_system[\s\S]*privilege\.grantee <> routine\.proowner[\s\S]*\\gexec/,
+  );
+  assert.match(
+    verifier,
+    /privilege\.grantee NOT IN \([\s\S]*routine\.proowner[\s\S]*api_migration_role[\s\S]*maintenance_read_role[\s\S]*idp_maintenance_role/,
+  );
+  assert.match(
+    verifier,
+    /OR 3 <> \([\s\S]*count\(DISTINCT privilege\.grantee\)/,
+  );
+  assert.match(verifier, /privilege\.is_grantable/);
+  assert.doesNotMatch(sql, /GRANT\s+pg_monitor/i);
   assert.match(sql, /REVOKE ALL PRIVILEGES ON TYPES FROM PUBLIC/);
   assert.match(sql, /default_acl\.defaclobjtype IN \('r', 'S', 'f', 'T'\)/);
   assert.match(sql, /routine\.prorettype <> 'pg_catalog\.trigger'::regtype/);

@@ -4,14 +4,20 @@ These rules apply to every production deployment or production service rebuild
 under `/opt/arenzyra`, including partial API, web, Discord bot, media service,
 proxy, and launcher deployments.
 
-Start every production shell entrypoint from a clean parent environment. At a
-minimum, clear `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH`, and all ambient
-`GIT_*` variables before Bash or Node starts. Prefer the exact `env -i` launcher
-documented in `infra/PUBLISH.md`; an in-script check runs too late to undo a
-malicious `BASH_ENV`.
+Start every production shell entrypoint from the one exact clean-parent,
+reviewed-commit outer launcher documented in `infra/PUBLISH.md`. It loads the
+committed allowlisted dispatcher with absolute sanitized `git show` and passes
+only the reviewed Root/API/Web commits required by that workflow. At a minimum, clear `BASH_ENV`,
+`ENV`, `NODE_OPTIONS`, `NODE_PATH`, and all ambient `GIT_*` variables before Bash
+or Node starts. A raw npm alias or checkout script is not a trusted production
+entrypoint; an in-script check runs too late to undo a malicious `BASH_ENV` or a
+replaced wrapper. The dispatcher enforces the narrower reviewed-current-Root
+boundary for Discord rollback and the reviewed nested-assembly boundary for
+deploy, IDP inspection, role checks, verification, and Studio QA.
 
-1. Immediately before any production build, pull, recreate, restart, or
-   `docker compose up`, run:
+1. The reviewed dispatcher and selected wrapper must run the following preflight
+   immediately before any production build, pull, recreate, restart, or
+   `docker compose up`:
 
    ```bash
    cd /opt/arenzyra
@@ -27,9 +33,13 @@ malicious `BASH_ENV`.
 4. Never use `docker system prune --volumes` or otherwise prune production
    volumes. PostgreSQL, Redis, uploads, and API storage volumes must be
    preserved.
-5. Prefer the guarded `npm run deploy:up` or
-   `npm run deploy:up:discord-bot` commands. For a custom/partial deployment,
-   run the same preflight explicitly before the custom command.
+5. Use only an allowlisted command ID through the reviewed production entrypoint
+   documented in `infra/PUBLISH.md`. Raw production npm aliases intentionally
+   fail closed, including deployment, API/host maintenance, backup/restore,
+   role, observation, verification, and QA aliases. For a custom/partial
+   deployment, first establish the same reviewed source trust, then run the same
+   preflight explicitly before the custom command; leave the action blocked if
+   it cannot be expressed by the reviewed allowlist.
 6. After deployment, verify container health and the public HTTPS endpoint.
 
 # Local ignored-data safety

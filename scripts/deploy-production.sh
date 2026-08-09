@@ -21,14 +21,32 @@ pinned_override_digest=""
 pinned_override_mode=""
 pinned_override_fd_open=0
 pinned_override_validator_args=()
+idp_verification_override_path=""
+idp_verification_override_digest=""
+idp_verification_override_identity=""
+idp_verification_override_fd_open=0
+idp_database_name=""
+idp_database_oid=""
+idp_database_system_identifier=""
 api_image_id=""
 web_image_id=""
 media_ai_image_id=""
 discord_bot_image_id=""
 schema_change_possible=0
-empty_target_verified=0
 
 cleanup_runtime_files() {
+  if [ "$idp_verification_override_fd_open" -eq 1 ]; then
+    exec 10<&- 2>/dev/null || true
+    idp_verification_override_fd_open=0
+  fi
+  if [ -n "$idp_verification_override_path" ]; then
+    case "$idp_verification_override_path" in
+      /run/arenzyra-idp-verification.*)
+        rm -f -- "$idp_verification_override_path"
+        ;;
+    esac
+    idp_verification_override_path=""
+  fi
   if [ "$pinned_override_fd_open" -eq 1 ]; then
     exec 9<&- 2>/dev/null || true
     pinned_override_fd_open=0
@@ -63,9 +81,9 @@ health convergence, IDP plaintext-zero verification, and public HTTPS
 verification as one chain.
 
 --first-deploy may bypass only the existing-container health portion of the
-preflight. It never bypasses the disk-space or source-provenance gates, and it
-must prove the started PostgreSQL target has zero application relations before
-backup or migration.
+preflight for a Discord-bot-only bootstrap. A full first deployment is blocked:
+it requires a separate reviewed empty-target bootstrap that migrates and
+validates the zero-row IDP constraint before any application writer starts.
 EOF
 }
 
@@ -78,6 +96,14 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ "$MODE" = "full" ] && [ "$FIRST_DEPLOY" -eq 1 ]; then
+  printf '%s\n' \
+    'DEPLOYMENT BLOCKED: FULL FIRST DEPLOY REQUIRES REVIEWED EMPTY-TARGET BOOTSTRAP' \
+    'The normal deploy cannot implicitly migrate or validate the IDP contract.' \
+    'No Docker, database, release, backup, or service action was attempted.' >&2
+  exit 75
+fi
 
 resolved_root="$(realpath -e -- "$PRODUCTION_ROOT" 2>/dev/null || true)"
 if [ -z "$resolved_root" ]; then
@@ -107,6 +133,87 @@ if [ -z "$safe_account_home" ] || [ ! -d "$safe_account_home" ] || \
 fi
 
 cd "$resolved_root"
+
+# Trust bootstrap: before sourcing any checkout file or starting Node, require
+# the on-disk Root/API/Web repositories to be exact clean revisions selected by
+# the outer committed-script launcher documented in infra/PUBLISH.md. This
+# deliberately uses only absolute system tools in a new environment; the later
+# complete release-file verifier remains authoritative for source bytes.
+if [ ! -x /usr/bin/env ] || [ ! -x /usr/bin/git ]; then
+  printf 'DEPLOYMENT BLOCKED: reviewed system env/git tools are unavailable.\n' >&2
+  exit 75
+fi
+bootstrap_git=(
+  /usr/bin/env -i
+  "PATH=$SAFE_COMMAND_PATH"
+  "HOME=$safe_account_home"
+  "LC_ALL=C"
+  "GIT_OPTIONAL_LOCKS=0"
+  "GIT_NO_REPLACE_OBJECTS=1"
+  "GIT_CONFIG_NOSYSTEM=1"
+  "GIT_CONFIG_GLOBAL=/dev/null"
+  /usr/bin/git
+  -c core.fsmonitor=false
+  -c core.hooksPath=/dev/null
+)
+
+verify_bootstrap_repository() {
+  local label="$1"
+  local repository="$2"
+  local expected_variable="$3"
+  local expected_commit="${!expected_variable:-}"
+  local actual_commit=""
+  local actual_top=""
+  local replace_refs=""
+  local status_output=""
+
+  if ! [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'DEPLOYMENT BLOCKED: %s reviewed commit is missing or invalid.\n' "$label" >&2
+    exit 75
+  fi
+  if [ -L "$repository" ] || [ ! -d "$repository" ] || \
+    [ -L "$repository/.git" ] || [ ! -d "$repository/.git" ]; then
+    printf 'DEPLOYMENT BLOCKED: %s is not a standalone Git worktree.\n' "$label" >&2
+    exit 75
+  fi
+  if ! actual_top="$("${bootstrap_git[@]}" -C "$repository" rev-parse --show-toplevel 2>/dev/null)" || \
+    [ "$actual_top" != "$repository" ]; then
+    printf 'DEPLOYMENT BLOCKED: %s Git root is not exact.\n' "$label" >&2
+    exit 75
+  fi
+  if ! actual_commit="$("${bootstrap_git[@]}" -C "$repository" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" || \
+    [ "$actual_commit" != "$expected_commit" ]; then
+    printf 'DEPLOYMENT BLOCKED: %s HEAD does not match the reviewed commit.\n' "$label" >&2
+    exit 75
+  fi
+  if [ -e "$repository/.git/info/grafts" ] || \
+    [ -L "$repository/.git/info/grafts" ] || \
+    [ -e "$repository/.git/objects/info/alternates" ] || \
+    [ -L "$repository/.git/objects/info/alternates" ] || \
+    [ -e "$repository/.git/objects/info/http-alternates" ] || \
+    [ -L "$repository/.git/objects/info/http-alternates" ]; then
+    printf 'DEPLOYMENT BLOCKED: %s Git object substitution metadata exists.\n' "$label" >&2
+    exit 75
+  fi
+  if ! replace_refs="$("${bootstrap_git[@]}" -C "$repository" \
+    for-each-ref --format='%(refname)' refs/replace 2>/dev/null)" || \
+    [ -n "$replace_refs" ]; then
+    printf 'DEPLOYMENT BLOCKED: %s Git replacement refs exist.\n' "$label" >&2
+    exit 75
+  fi
+  if ! status_output="$("${bootstrap_git[@]}" -C "$repository" status \
+    --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" || \
+    [ -n "$status_output" ]; then
+    printf 'DEPLOYMENT BLOCKED: %s worktree is not clean.\n' "$label" >&2
+    exit 75
+  fi
+}
+
+verify_bootstrap_repository ROOT "$resolved_root" ARENZYRA_REVIEWED_ROOT_COMMIT
+verify_bootstrap_repository API "$resolved_root/apps/api" ARENZYRA_REVIEWED_API_COMMIT
+verify_bootstrap_repository WEB "$resolved_root/apps/arenzyra-web" ARENZYRA_REVIEWED_WEB_COMMIT
+unset bootstrap_git
+
 source scripts/require-local-production-docker.sh
 sanitized_environment=(
   env -i
@@ -118,9 +225,10 @@ test -f infra/docker-compose.publish.yml
 test -f infra/production-api-migration-safety.json
 test -f scripts/production-deploy-preflight.sh
 test -f scripts/production-release-safety-gate.sh
-test -f scripts/verify-production-empty-target.sh
 test -f scripts/verify-production-entitlement-invariants.sh
 test -f scripts/verify-production-idp-encryption.sh
+test -f scripts/verify-production-idp-compiled.sh
+test -f scripts/verify-idp-maintenance-summary.cjs
 test -f scripts/production-database-target.cjs
 test -f scripts/verify-production-database-container.sh
 test -f scripts/verify-production-database-roles.sh
@@ -570,6 +678,128 @@ create_pinned_compose_override() {
   compose+=( -f "/proc/$$/fd/9" )
 }
 
+attest_idp_verification_override() {
+  local current_digest descriptor_identity descriptor_target path_identity
+  if [ "$idp_verification_override_fd_open" -ne 1 ] || \
+    [ -z "$idp_verification_override_path" ] || \
+    [ -z "$idp_verification_override_digest" ] || \
+    [ -z "$idp_verification_override_identity" ]; then
+    printf 'IDP verification image override is incomplete.\n' >&2
+    return 75
+  fi
+  case "$idp_verification_override_path" in
+    "/run/arenzyra-idp-verification.$new_release_id."*) ;;
+    *)
+      printf 'IDP verification image override path is not bound to this release.\n' >&2
+      return 75
+      ;;
+  esac
+  descriptor_target="$(readlink -f "/proc/$$/fd/10" 2>/dev/null || true)"
+  descriptor_identity="$(stat -Lc '%d:%i:%u:%g:%a:%h' -- "/proc/$$/fd/10" 2>/dev/null || true)"
+  path_identity="$(stat -Lc '%d:%i:%u:%g:%a:%h' -- "$idp_verification_override_path" 2>/dev/null || true)"
+  current_digest="$(
+    "${sanitized_environment[@]}" \
+      node scripts/production-pinned-image-override.cjs \
+        --mode idp-maintenance --api-image-id "$api_image_id" \
+        --validate-stdin --print-sha256 <"/proc/$$/fd/10"
+  )"
+  if [ "$descriptor_target" != "$idp_verification_override_path" ] || \
+    [ "$descriptor_identity" != "$idp_verification_override_identity" ] || \
+    [ "$path_identity" != "$idp_verification_override_identity" ] || \
+    [ "$current_digest" != "$idp_verification_override_digest" ]; then
+    printf 'IDP verification image override content or identity changed.\n' >&2
+    return 75
+  fi
+}
+
+create_idp_verification_override() {
+  if [ "$pinned_override_mode" != "full" ] || \
+    [ "$idp_verification_override_fd_open" -ne 0 ] || \
+    [ -n "$idp_verification_override_path" ] || \
+    ! [[ "$api_image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+    printf 'IDP verification image override prerequisites are incomplete.\n' >&2
+    return 75
+  fi
+  idp_verification_override_path="$(
+    mktemp -- "/run/arenzyra-idp-verification.$new_release_id.XXXXXX"
+  )"
+  case "$idp_verification_override_path" in
+    "/run/arenzyra-idp-verification.$new_release_id."*) ;;
+    *) return 75 ;;
+  esac
+  if ! "${sanitized_environment[@]}" \
+    node scripts/production-pinned-image-override.cjs \
+      --mode idp-maintenance --api-image-id "$api_image_id" --create \
+      >"$idp_verification_override_path" || \
+    ! chmod 600 -- "$idp_verification_override_path" || \
+    ! chown root:root -- "$idp_verification_override_path"; then
+    printf 'Unable to create the IDP verification image override.\n' >&2
+    return 75
+  fi
+  idp_verification_override_digest="$(
+    "${sanitized_environment[@]}" \
+      node scripts/production-pinned-image-override.cjs \
+        --mode idp-maintenance --api-image-id "$api_image_id" \
+        --validate-stdin --print-sha256 <"$idp_verification_override_path"
+  )"
+  [[ "$idp_verification_override_digest" =~ ^[a-f0-9]{64}$ ]] || return 75
+  idp_verification_override_identity="$(
+    stat -Lc '%d:%i:%u:%g:%a:%h' -- "$idp_verification_override_path"
+  )"
+  case "$idp_verification_override_identity" in
+    *:0:0:600:1) ;;
+    *) return 75 ;;
+  esac
+  exec 10<"$idp_verification_override_path"
+  idp_verification_override_fd_open=1
+  attest_idp_verification_override
+}
+
+attest_idp_database_identity() {
+  local physical_identity
+  local -a database_binding
+  mapfile -t database_binding < <(bash scripts/verify-production-database-container.sh)
+  [ "${#database_binding[@]}" -eq 5 ] || return 75
+  physical_identity="$(
+    docker exec "${database_binding[0]}" sh -ceu '
+      database="$1"
+      export PGCONNECT_TIMEOUT=10
+      export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=5000"
+      exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$database" -At -F " " -c \
+        "SELECT database_record.datname, database_record.oid, control_record.system_identifier
+           FROM pg_catalog.pg_database AS database_record
+           CROSS JOIN pg_catalog.pg_control_system() AS control_record
+          WHERE database_record.datname = current_database();"
+    ' sh "${database_binding[3]}"
+  )" || return 75
+  if ! [[ "$physical_identity" =~ ^([A-Za-z0-9_][A-Za-z0-9_.-]{0,62})[[:space:]]([1-9][0-9]{0,9})[[:space:]]([0-9]{10,24})$ ]] || \
+    [ "${BASH_REMATCH[1]}" != "${database_binding[3]}" ]; then
+    printf 'IDP verification physical database identity is invalid.\n' >&2
+    return 75
+  fi
+  idp_database_name="${BASH_REMATCH[1]}"
+  idp_database_oid="${BASH_REMATCH[2]}"
+  idp_database_system_identifier="${BASH_REMATCH[3]}"
+}
+
+verify_compiled_idp_storage() {
+  attest_pinned_compose_override
+  attest_idp_verification_override
+  attest_idp_database_identity
+  "${sanitized_environment[@]}" \
+    "DOCKER_HOST=$DOCKER_HOST" \
+    "ARENZYRA_DEPLOY_COMPOSE_PROJECT=$compose_project" \
+    "ARENZYRA_DEPLOY_ENV_FILE=$reviewed_env_file" \
+    "ARENZYRA_DEPLOY_LOCK_INHERITED=1" \
+    "ARENZYRA_IDP_API_IMAGE_ID=$api_image_id" \
+    "ARENZYRA_IDP_RELEASE_ENV_FILE=$release_env" \
+    "ARENZYRA_IDP_API_IMAGE_MANIFEST=$RELEASE_ARCHIVE_ROOT/$new_release_id.api-image.json" \
+    "ARENZYRA_EXPECTED_DATABASE_NAME=$idp_database_name" \
+    "ARENZYRA_EXPECTED_DATABASE_OID=$idp_database_oid" \
+    "ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER=$idp_database_system_identifier" \
+    bash scripts/verify-production-idp-compiled.sh
+}
+
 verify_running_release_images() {
   local actual_image_id container_id expected_image_id service
   local -a runtime_services
@@ -646,7 +876,7 @@ deploy_failed() {
     printf 'Schema changes may have committed. Do not start an older API image or perform an image-only rollback.\n' >&2
     printf 'Keep incompatible old writers stopped and use a reviewed forward-recovery plan.\n' >&2
   elif [ "$MODE" = "discord-bot" ] && [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-    printf 'Discord-bot-only rollback candidate: bash scripts/rollback-production-images.sh --release %q --discord-bot\n' \
+    printf 'Discord-bot-only rollback candidate release=%q. Use the reviewed-current-Root committed rollback launcher in infra/PUBLISH.md.\n' \
       "$prior_release_id" >&2
   else
     printf 'The API schema was not entered by this run; inspect current service state before any recovery action.\n' >&2
@@ -656,25 +886,29 @@ deploy_failed() {
 
 "${sanitized_environment[@]}" node scripts/verify-production-api-capabilities.cjs
 node scripts/preflight-publish.cjs --env infra/.env.publish
+guard_args=()
+if [ "$FIRST_DEPLOY" -eq 1 ]; then
+  guard_args+=(--skip-health)
+fi
 # Before release metadata, image builds, backups, migrations, or service
 # changes, prove that the current database has no pending contract migration
-# that an existing API writer cannot survive. A first deploy is exempt only
-# after the standard guard proves the Compose project has no managed services.
+# that an existing API writer cannot survive. The normal full-deploy path has
+# no first-deploy exemption; an empty target requires a separate reviewed
+# bootstrap that is intentionally outside this entrypoint. Discord-only mode
+# still runs this pre-metadata guard; its first-deploy form skips only health.
+bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
 if [ "$MODE" = "full" ]; then
-  if [ "$FIRST_DEPLOY" -eq 1 ]; then
-    bash scripts/production-deploy-preflight.sh --skip-health
-    bash scripts/production-release-safety-gate.sh --first-deploy
-    bash scripts/verify-production-idp-encryption.sh
-  else
-    bash scripts/production-deploy-preflight.sh
-    bash scripts/production-release-safety-gate.sh
-    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
-      bash scripts/verify-production-database-roles.sh
-    # Aggregate-only and read-only: no organization identifiers or mutable
-    # reconciliation are part of a routine release.
-    bash scripts/verify-production-entitlement-invariants.sh
-    bash scripts/verify-production-idp-encryption.sh
-  fi
+  bash scripts/production-release-safety-gate.sh
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/verify-production-database-roles.sh
+  # Aggregate-only and read-only: no organization identifiers or mutable
+  # reconciliation are part of a routine release. The gate also requires zero
+  # unresolved clock-bounded access denials.
+  bash scripts/verify-production-entitlement-invariants.sh
+  # This pre-build structural prerequisite is necessary but not the final IDP
+  # evidence. The immutable candidate image performs authenticated dry-runs
+  # before any subsequent release mutation and again after health convergence.
+  bash scripts/verify-production-idp-encryption.sh
 fi
 
 verify_release_archive_root
@@ -714,11 +948,6 @@ if ! "${compose[@]}" --profile migration config --format json \
   printf 'DEPLOYMENT BLOCKED: resolved Compose database bindings differ from the reviewed environment.\n' >&2
   exit 75
 fi
-guard_args=()
-if [ "$FIRST_DEPLOY" -eq 1 ]; then
-  guard_args+=(--skip-health)
-fi
-
 wait_for_health() {
   local services=("$@")
   local deadline=$((SECONDS + 10#$HEALTH_TIMEOUT_SECONDS))
@@ -763,11 +992,6 @@ create_pre_migration_backup() {
     "ARENZYRA_BACKUP_REQUIRE_OFFSITE=1"
     "ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES=0"
   )
-  if [ "$FIRST_DEPLOY" -eq 1 ]; then
-    # A genuinely empty first deployment has no upload/storage volumes yet.
-    # Its PostgreSQL recovery point is still mandatory and encrypted.
-    backup_environment[${#backup_environment[@]}-1]="ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES=1"
-  fi
 
   env "${backup_environment[@]}" bash scripts/production-backup.sh
   test -f "$result_file"
@@ -819,7 +1043,7 @@ if [ "$MODE" = "discord-bot" ]; then
   create_pinned_compose_override discord-bot
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   attest_pinned_compose_override
-  "${compose[@]}" --profile discord-bot up --no-build -d --pull never discord-bot
+  "${compose[@]}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot
   services=(discord-bot)
 else
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
@@ -832,43 +1056,22 @@ else
   web_image_id="$(read_archived_release_image_id web)"
   media_ai_image_id="$(read_archived_release_image_id media-ai)"
   create_pinned_compose_override full
-  if [ "$FIRST_DEPLOY" -eq 1 ]; then
-    bash scripts/production-deploy-preflight.sh --skip-health
-    attest_pinned_compose_override
-    "${compose[@]}" up --no-build -d --pull never postgres redis
-    wait_for_health postgres redis
-    # --first-deploy proves only that there were no managed old writers. An
-    # existing volume or pre-populated target must still fail closed here.
-    bash scripts/verify-production-empty-target.sh
-    empty_target_verified=1
-    printf 'ENTITLEMENT INVARIANT GATE SKIPPED verified_empty_target=1\n'
-    # The empty-target proof must precede this first mutation. The child verifies
-    # that it inherited this deployment's lock, provisions only the reviewed
-    # least-privilege roles, and proves all four credentials reach this target.
-    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
-      bash scripts/provision-production-database-roles.sh \
-        --env infra/.env.publish --apply --first-deploy-create-only
-    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
-      ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY=1 \
-      bash scripts/verify-production-database-roles.sh
-    guard_args=()
-  fi
+  create_idp_verification_override
+  # The candidate image is now immutable and archived. Before backup, schema,
+  # or service mutation, authenticate every envelope and inspect persisted
+  # message storage through its exact compiled read-only utility.
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-  if [ "$FIRST_DEPLOY" -eq 1 ] && [ "$empty_target_verified" -ne 1 ]; then
-    printf 'DEPLOYMENT BLOCKED: first deployment has no verified empty database target.\n' >&2
-    exit 75
-  fi
+  verify_compiled_idp_storage
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   create_pre_migration_backup
   # Backup creation can consume enough root-disk capacity to invalidate the
   # preceding guard, so the mandatory preflight is repeated immediately before
   # the first schema mutation.
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-  if [ "$FIRST_DEPLOY" -ne 1 ]; then
-    bash scripts/verify-production-entitlement-invariants.sh
-    # The entitlement query is read-only but can take time; repeat the required
-    # disk/service preflight literally immediately before schema mutation.
-    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-  fi
+  bash scripts/verify-production-entitlement-invariants.sh
+  # The entitlement query is read-only but can take time; repeat the required
+  # disk/service preflight literally immediately before schema mutation.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   schema_change_possible=1
   attest_pinned_compose_override
   "${compose[@]}" --profile migration run --rm --no-deps --pull never api-migrate
@@ -883,11 +1086,9 @@ else
       --env infra/.env.publish --apply
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/verify-production-database-roles.sh
-  if [ "$FIRST_DEPLOY" -ne 1 ]; then
-    bash scripts/verify-production-entitlement-invariants.sh
-  fi
+  bash scripts/verify-production-entitlement-invariants.sh
   # Preserve the literal immediate-operation guard after all grant and
-  # entitlement checks, including on a first deployment.
+  # entitlement checks.
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   attest_pinned_compose_override
   "${compose[@]}" up --no-build -d --pull never
@@ -903,6 +1104,8 @@ if [ "$MODE" = "full" ]; then
     bash scripts/verify-production-database-roles.sh
   bash scripts/verify-production-entitlement-invariants.sh
   bash scripts/verify-production-idp-encryption.sh
+  bash scripts/production-deploy-preflight.sh
+  verify_compiled_idp_storage
 fi
 node scripts/verify-publish.cjs --env infra/.env.publish
 verify_running_release_images

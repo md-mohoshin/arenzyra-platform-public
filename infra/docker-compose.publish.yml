@@ -110,6 +110,7 @@ services:
       EVENT_BUS_STREAM_MAXLEN: "${EVENT_BUS_STREAM_MAXLEN:-10000}"
       JWT_SECRET: "${JWT_SECRET:?REQUIRED ENV VARIABLE MISSING: JWT_SECRET}"
       IDP_CREDENTIAL_ENCRYPTION_KEY: "${IDP_CREDENTIAL_ENCRYPTION_KEY:?REQUIRED ENV VARIABLE MISSING: IDP_CREDENTIAL_ENCRYPTION_KEY}"
+      PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED: "false"
       SUPERADMIN_MFA_REQUIRED: "true"
       SUPERADMIN_MFA_ENCRYPTION_KEY: "${SUPERADMIN_MFA_ENCRYPTION_KEY:?REQUIRED ENV VARIABLE MISSING: SUPERADMIN_MFA_ENCRYPTION_KEY}"
       SUPERADMIN_MFA_RECOVERY_PEPPER: "${SUPERADMIN_MFA_RECOVERY_PEPPER:?REQUIRED ENV VARIABLE MISSING: SUPERADMIN_MFA_RECOVERY_PEPPER}"
@@ -256,6 +257,35 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    logging: *default-logging
+    restart: "no"
+
+  api-maintenance-idp-dry-run:
+    profiles: ["maintenance"]
+    image: "arenzyra-api:${ARENZYRA_RELEASE_ID:-unversioned}"
+    user: "1000:1000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: "${MAINTENANCE_READ_DATABASE_URL:?REQUIRED ENV VARIABLE MISSING: MAINTENANCE_READ_DATABASE_URL}"
+      IDP_CREDENTIAL_ENCRYPTION_KEY: "${IDP_CREDENTIAL_ENCRYPTION_KEY:?REQUIRED ENV VARIABLE MISSING: IDP_CREDENTIAL_ENCRYPTION_KEY}"
+      ARENZYRA_EXPECTED_DATABASE_NAME: "${ARENZYRA_EXPECTED_DATABASE_NAME:-UNSEALED}"
+      ARENZYRA_EXPECTED_DATABASE_OID: "${ARENZYRA_EXPECTED_DATABASE_OID:-0}"
+      ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER: "${ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER:-0}"
+    command: ["node", "dist-maintenance/scripts/backfill-idp-credentials.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=1000,gid=1000
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1.0
     logging: *default-logging
     restart: "no"
 

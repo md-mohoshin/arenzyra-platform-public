@@ -93,6 +93,7 @@ test("Docker build context excludes credentials, archives, and local runtime dat
     ".codex",
     ".codex-*",
     ".deploy-safety-backups",
+    "/.scoped-release-backup-operator-*",
     ".worktrees",
     ".tmp-*",
     ".tmp_*",
@@ -200,6 +201,21 @@ test("brand sync safely retains bundled package inputs when the optional web rep
     const resolvedTemporaryRoot = path.resolve(temporaryRoot);
     assert.ok(resolvedTemporaryRoot.startsWith(path.resolve(os.tmpdir())));
     fs.rmSync(resolvedTemporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("unknown scoped release backups remain outside Git and Docker inputs", () => {
+  for (const ignoreFile of [".gitignore", ".dockerignore"]) {
+    const lines = fs
+      .readFileSync(path.join(repoRoot, ignoreFile), "utf8")
+      .split(/\r?\n/);
+    assert.equal(
+      lines.filter(
+        (line) => line === "/.scoped-release-backup-operator-*/",
+      ).length,
+      1,
+      ignoreFile,
+    );
   }
 });
 

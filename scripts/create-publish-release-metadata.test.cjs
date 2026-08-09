@@ -51,6 +51,11 @@ function initializeRepository(directory) {
   ]);
 }
 
+const collectFixtureReleaseFiles = (options) =>
+  collectReleaseFiles({ ...options, requireTracked: false });
+const fixtureContentDigest = (options) =>
+  contentDigest({ ...options, requireTracked: false });
+
 test("release inputs cover every production Compose build component", () => {
   const compose = fs.readFileSync(
     path.join(repositoryRoot, "infra", "docker-compose.publish.yml"),
@@ -159,7 +164,7 @@ test("release inputs fail closed for quarantined commercial map sources", (t) =>
   writeFile(rootDir, "scripts/assets/neutral/preview.svg", "<svg/>\n");
   const includedPaths = ["scripts"];
 
-  const initialFiles = collectReleaseFiles({ rootDir, includedPaths }).map(
+  const initialFiles = collectFixtureReleaseFiles({ rootDir, includedPaths }).map(
     (filePath) => path.relative(rootDir, filePath).replace(/\\/g, "/"),
   );
   assert.deepEqual(initialFiles, [
@@ -173,7 +178,7 @@ test("release inputs fail closed for quarantined commercial map sources", (t) =>
     "unapproved-raster-bytes\n",
   );
   assert.throws(
-    () => collectReleaseFiles({ rootDir, includedPaths }),
+    () => collectFixtureReleaseFiles({ rootDir, includedPaths }),
     /Release input is quarantined.*scripts\/assets\/pubgm-maps\/erangel\.png/,
   );
   fs.rmSync(rasterPath);
@@ -184,12 +189,12 @@ test("release inputs fail closed for quarantined commercial map sources", (t) =>
     "// quarantined single-purpose generator\n",
   );
   assert.throws(
-    () => collectReleaseFiles({ rootDir, includedPaths }),
+    () => collectFixtureReleaseFiles({ rootDir, includedPaths }),
     /Release input is quarantined.*scripts\/generate-pubgm-map-assets\.mjs/,
   );
   fs.rmSync(generatorPath);
 
-  assert.doesNotThrow(() => collectReleaseFiles({ rootDir, includedPaths }));
+  assert.doesNotThrow(() => collectFixtureReleaseFiles({ rootDir, includedPaths }));
 });
 
 test("content digest changes for every release component and excludes local artifacts", (t) => {
@@ -244,13 +249,13 @@ test("content digest changes for every release component and excludes local arti
     "generated\n",
   );
 
-  const initial = contentDigest({ rootDir, includedPaths }).digest;
+  const initial = fixtureContentDigest({ rootDir, includedPaths }).digest;
   for (const relativePath of componentFiles) {
     const filePath = path.join(rootDir, relativePath);
     const original = fs.readFileSync(filePath);
     fs.appendFileSync(filePath, "changed\n");
     assert.notEqual(
-      contentDigest({ rootDir, includedPaths }).digest,
+      fixtureContentDigest({ rootDir, includedPaths }).digest,
       initial,
       `${relativePath} should affect the release digest`,
     );
@@ -265,7 +270,7 @@ test("content digest changes for every release component and excludes local arti
     const original = fs.readFileSync(filePath);
     fs.appendFileSync(filePath, "changed\n");
     assert.notEqual(
-      contentDigest({ rootDir, includedPaths }).digest,
+      fixtureContentDigest({ rootDir, includedPaths }).digest,
       initial,
       `${relativePath} is Docker-included and should affect the release digest`,
     );
@@ -289,9 +294,9 @@ test("content digest changes for every release component and excludes local arti
     "changed\n",
   );
   fs.writeFileSync(path.join(rootDir, "apps/api/private-key.pem"), "changed\n");
-  assert.equal(contentDigest({ rootDir, includedPaths }).digest, initial);
+  assert.equal(fixtureContentDigest({ rootDir, includedPaths }).digest, initial);
 
-  const collected = collectReleaseFiles({ rootDir, includedPaths }).map(
+  const collected = collectFixtureReleaseFiles({ rootDir, includedPaths }).map(
     (filePath) => path.relative(rootDir, filePath).replace(/\\/g, "/"),
   );
   assert.deepEqual(
@@ -311,7 +316,7 @@ test("content digest changes for every release component and excludes local arti
     false,
   );
   assert.throws(
-    () => collectReleaseFiles({ rootDir, includedPaths: ["../outside"] }),
+    () => collectFixtureReleaseFiles({ rootDir, includedPaths: ["../outside"] }),
     /escapes repository root/,
   );
 });
@@ -349,8 +354,8 @@ test("database policy and only reviewed SQL sources affect release provenance", 
     "{}\n",
   );
 
-  const initial = contentDigest({ rootDir, includedPaths }).digest;
-  const collected = collectReleaseFiles({ rootDir, includedPaths }).map(
+  const initial = fixtureContentDigest({ rootDir, includedPaths }).digest;
+  const collected = collectFixtureReleaseFiles({ rootDir, includedPaths }).map(
     (filePath) => path.relative(rootDir, filePath).replace(/\\/g, "/"),
   );
   for (const relativePath of reviewedSql) {
@@ -359,7 +364,7 @@ test("database policy and only reviewed SQL sources affect release provenance", 
     const original = fs.readFileSync(filePath);
     fs.appendFileSync(filePath, "reviewed change\n");
     assert.notEqual(
-      contentDigest({ rootDir, includedPaths }).digest,
+      fixtureContentDigest({ rootDir, includedPaths }).digest,
       initial,
       `${relativePath} must affect the release digest`,
     );
@@ -368,7 +373,7 @@ test("database policy and only reviewed SQL sources affect release provenance", 
 
   fs.appendFileSync(objectPolicyPath, "reviewed change\n");
   assert.notEqual(
-    contentDigest({ rootDir, includedPaths }).digest,
+    fixtureContentDigest({ rootDir, includedPaths }).digest,
     initial,
     "the production database object policy must affect the release digest",
   );
@@ -378,7 +383,7 @@ test("database policy and only reviewed SQL sources affect release provenance", 
     assert.equal(collected.includes(relativePath), false, relativePath);
     fs.appendFileSync(path.join(rootDir, relativePath), "excluded change\n");
   }
-  assert.equal(contentDigest({ rootDir, includedPaths }).digest, initial);
+  assert.equal(fixtureContentDigest({ rootDir, includedPaths }).digest, initial);
 });
 
 test("provenance includes untracked root files and dirty embedded repositories", (t) => {
@@ -485,6 +490,68 @@ test("provenance includes untracked root files and dirty embedded repositories",
     );
   }
   assert.doesNotMatch(output, /untracked-web|must-not-appear|password/i);
+});
+
+test("release collection rejects ignored Docker inputs and excludes reviewed runtime paths", (t) => {
+  const rootDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "arenzyra-release-tracked-inputs-"),
+  );
+  t.after(() => fs.rmSync(rootDir, { force: true, recursive: true }));
+
+  writeFile(rootDir, ".gitignore", "apps/api/\napps/arenzyra-web/\n");
+  writeFile(rootDir, "root.txt", "root\n");
+  writeFile(
+    rootDir,
+    "apps/api/.gitignore",
+    "/public/ignored-but-docker-included.bin\n/public/assets/players/player_*\n/uploads/\n/storage/\n",
+  );
+  writeFile(
+    rootDir,
+    "apps/api/.dockerignore",
+    "uploads\nstorage\npublic/assets/players/player_*\npublic/assets/teams/team_*\n",
+  );
+  writeFile(rootDir, "apps/api/public/tracked.txt", "tracked\n");
+  writeFile(rootDir, "apps/arenzyra-web/web.txt", "web\n");
+  initializeRepository(rootDir);
+  initializeRepository(path.join(rootDir, "apps/api"));
+  initializeRepository(path.join(rootDir, "apps/arenzyra-web"));
+
+  const rogue = writeFile(
+    rootDir,
+    "apps/api/public/ignored-but-docker-included.bin",
+    "unreviewed bytes\n",
+  );
+  assert.equal(collectGitProvenance({ rootDir }).dirty, "false");
+  assert.throws(
+    () =>
+      collectReleaseFiles({
+        rootDir,
+        includedPaths: ["root.txt", "apps/api/public"],
+      }),
+    /not tracked by its owning Git repository: apps\/api\/public\/ignored-but-docker-included\.bin/,
+  );
+  fs.rmSync(rogue);
+
+  writeFile(
+    rootDir,
+    "apps/api/public/assets/players/player_generated.png",
+    "ignored generated asset\n",
+  );
+  writeFile(rootDir, "apps/api/uploads/runtime.bin", "runtime\n");
+  writeFile(rootDir, "apps/api/storage/runtime.bin", "runtime\n");
+  const collected = collectReleaseFiles({
+    rootDir,
+    includedPaths: ["apps/api"],
+  }).map((filePath) => path.relative(rootDir, filePath).replace(/\\/g, "/"));
+  assert.equal(collected.includes("apps/api/public/tracked.txt"), true);
+  assert.equal(collected.some((entry) => /player_generated|uploads|storage/.test(entry)), false);
+
+  const canonicalDockerIgnore = fs.readFileSync(
+    path.join(repositoryRoot, "apps/api/.dockerignore"),
+    "utf8",
+  );
+  assert.match(canonicalDockerIgnore, /^public\/assets\/players\/player_\*$/m);
+  assert.match(canonicalDockerIgnore, /^public\/assets\/teams\/team_\*$/m);
 });
 
 test("source bundles report unknown component commits without walking into a parent repo", (t) => {

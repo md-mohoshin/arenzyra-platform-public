@@ -73,7 +73,7 @@ test("verification evidence requires two nonempty regular marker files", (t) => 
   assert.equal(hasVerifiedRecoveryMarkers(backup), false);
 });
 
-test("installed maintenance entrypoints use the guarded verified-retention implementation", () => {
+test("maintenance is reachable only through the reviewed dispatcher", () => {
   const repositoryRoot = path.resolve(__dirname, "..");
   const wrapper = fs.readFileSync(
     path.join(repositoryRoot, "scripts", "production-maintenance.sh"),
@@ -91,11 +91,11 @@ test("installed maintenance entrypoints use the guarded verified-retention imple
   assert.match(wrapper, /require-local-production-docker\.sh/);
   assert.match(wrapper, /exec node scripts\/production-maintenance\.cjs/);
   assert.doesNotMatch(wrapper, /\brm\s+-rf\b|docker builder prune/);
-  assert.match(cron, /bash scripts\/production-maintenance\.sh --check-only/);
-  assert.match(cron, /bash scripts\/production-maintenance\.sh >>/);
-  assert.doesNotMatch(cron, /\/bin\/sh scripts\/production-maintenance\.sh/);
-  assert.equal(
+  assert.match(cron, /INTENTIONALLY NON-EXECUTABLE TEMPLATE/);
+  assert.match(cron, /production_entry host-maintenance \[--check-only\]/);
+  assert.doesNotMatch(cron, /^(?!#).*production-maintenance\.sh/m);
+  assert.match(
     manifest.scripts["deploy:maintenance"],
-    "bash scripts/production-maintenance.sh",
+    /^node scripts\/blocked-production-mutation-entrypoint\.cjs /,
   );
 });

@@ -1,13 +1,21 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 const {
   assertExactReleaseBytes,
+  assertNoGitObjectSubstitution,
   assertSecureStat,
   parseArguments,
   serializeReleaseMetadata,
 } = require("./verify-production-release-source.cjs");
+
+function substitutionFixture() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "arenzyra-git-substitution-"));
+}
 
 function fakeStat({
   uid = 0,
@@ -73,4 +81,37 @@ test("production source verifier accepts only its two closed CLI modes", () => {
   ]) {
     assert.throws(() => parseArguments(argumentsList), /Usage:/);
   }
+});
+
+test("production source rejects Git grafts, alternates, and replacement refs", (t) => {
+  const gitDirectory = substitutionFixture();
+  t.after(() => fs.rmSync(gitDirectory, { recursive: true, force: true }));
+  assert.doesNotThrow(() =>
+    assertNoGitObjectSubstitution(gitDirectory, "fixture"),
+  );
+
+  for (const relativePath of [
+    path.join("info", "grafts"),
+    path.join("objects", "info", "alternates"),
+    path.join("refs", "replace"),
+  ]) {
+    const target = path.join(gitDirectory, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (path.extname(target)) fs.writeFileSync(target, "replacement\n");
+    else fs.mkdirSync(target, { recursive: true });
+    assert.throws(
+      () => assertNoGitObjectSubstitution(gitDirectory, "fixture"),
+      /object substitution/,
+    );
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+
+  fs.writeFileSync(
+    path.join(gitDirectory, "packed-refs"),
+    `${"a".repeat(40)} refs/replace/${"b".repeat(40)}\n`,
+  );
+  assert.throws(
+    () => assertNoGitObjectSubstitution(gitDirectory, "fixture"),
+    /packed Git replacement ref/,
+  );
 });
