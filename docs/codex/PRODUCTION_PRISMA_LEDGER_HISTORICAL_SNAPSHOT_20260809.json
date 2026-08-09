@@ -1,0 +1,950 @@
+{
+  "schema_version": "arenzyra-historical-prisma-ledger-evidence-v1",
+  "classification": {
+    "state": "historical_snapshot_only",
+    "warning": "Not current production state. Not release authorization. Not migration authorization."
+  },
+  "generated_at_utc": "2026-08-09T16:48:02.340Z",
+  "source_snapshot": {
+    "backup_id": "20260809T083232Z-bd709276",
+    "backup_completed_at_utc": "2026-08-09T09:09:57Z",
+    "restore_drill_completed_at_utc": "2026-08-09T10:46:29Z",
+    "database_ciphertext": {
+      "file_name": "database.dump.age",
+      "bytes": 6324755925,
+      "sha256": "c4050175cc9a3ae1a0221d1d290cf617570977bf70c480f223e14ee29d8a601d"
+    },
+    "authenticated_plaintext_archive": {
+      "bytes": 6323211981,
+      "sha256": "3d5e38a921753166120bfce45b40dda5fb3d38e44007536e87b7f794a3172aa2"
+    },
+    "encrypted_manifest_sha256": "a7f8488a854bd429a789166acff72e765d2a6f083c55db3c5be4d322c43193d1"
+  },
+  "verified_tools": {
+    "age": {
+      "version": "1.3.1",
+      "executable_sha256": "90f5cc37249c06e0b302e476a8a63bcefeecd9437c192b8af33e6ff2d69558dd"
+    },
+    "pg_restore": {
+      "version": "16.14",
+      "executable_sha256": "27a51e27253bc3e565127558136400608a62e392ca95b4858cbe7480fdda198c"
+    }
+  },
+  "extraction": {
+    "network_or_database_service_used": false,
+    "full_plaintext_archive_written_to_disk": false,
+    "selected_toc_entry": "6328; 0 27207 TABLE DATA public _prisma_migrations postgres",
+    "selection_method": "Exact one-entry pg_restore --use-list after an authenticated full-stream catalog pass."
+  },
+  "sanitization": {
+    "retained_record_fields": [
+      "migration_name",
+      "checksum",
+      "finished_at",
+      "rolled_back_at",
+      "applied_steps_count"
+    ],
+    "omitted_fields": ["id", "logs", "started_at"],
+    "raw_sql_retained": false,
+    "application_rows_retained": false
+  },
+  "aggregate": {
+    "total": 107,
+    "successful": 102,
+    "rolled_back": 5,
+    "active_unfinished": 0,
+    "conflicting_finished_and_rolled_back": 0,
+    "unique_successful_migration_names": 102,
+    "duplicate_successful_migration_names": [],
+    "exact_duplicate_sanitized_rows": 0,
+    "orphan_rolled_back_attempts": [],
+    "rolled_back_checksum_drift_attempts": 5,
+    "rolled_back_checksum_drift_names": [
+      "20260503131000_team_bans",
+      "20260503152000_match_result_source",
+      "20260520043000_result_backups",
+      "20260522214500_tournament_registration_mode_split"
+    ],
+    "successful_sequence_sha256": "342fc35cbc23ff8dc5efcde1072a8b3cb22f00d40a30d05544da08d94fe59888",
+    "chronological_sequence_sha256": "dcd8431024c4cbb661536c877615f280e978f24ef8dc482ce4c25036c0aad2cd",
+    "lexical_sequence_sha256": "50e75925e3da1ab2f9ae6fd818a05ca74b06c204c2edb5558938fb40cb9b867b",
+    "file_order_matches_finished_chronology": false,
+    "finished_chronology_matches_lexical_order": false,
+    "sanitized_records_sha256": "d4287966ff964ed1b0df1368ebf3f3fecf40dfa24db100ddbc171861d041c644"
+  },
+  "ordering": {
+    "retained_record_order": "Physical COPY order from the historical custom archive; not treated as migration order.",
+    "source_comparison_order": "ASCII lexical migration_name order (matching Git path order).",
+    "successful_finished_at_order_position_differences_from_lexical": 24,
+    "note": "The 102 successful rows have 24 positional differences between finished_at order and ASCII lexical migration-name order."
+  },
+  "comparisons": {
+    "canonical_api_lineage": {
+      "label": "canonical-api-lineage-commit",
+      "ref": "d4cf1abf9c90dd1f922aa13e50fc544dfac696de",
+      "migration_tree_git_oid": "ee04cf9bc2ebc6a4f84baf82152647103a14452c",
+      "comparison_ref_verified_at_utc": "2026-08-09T16:55:37.4919257Z",
+      "migration_count": 100,
+      "inventory_sequence_sha256": "e847ada272bb3595bff4f0eb51b6bbcc4c32d1048f3abb8025ec2393d49184da",
+      "historical_successful_missing_from_source": [
+        "20260801190000_pcob_raw_payload_bytes",
+        "20260803110000_add_pubg_match_maps"
+      ],
+      "source_only_not_in_historical_successes": [],
+      "checksum_drift": [
+        {
+          "migration_name": "20260303_matchslot_elimination",
+          "historical_checksum": "855267f5ba01abadc679de832f8532d9638e54e1ad10ef4010953bc67cbfbdf2",
+          "source_checksum": "e621e4d7b814f8c39691c450dfdeb902969a63709bbf3e435ac999e0c6d3704e"
+        },
+        {
+          "migration_name": "20260306_final_results_persistence",
+          "historical_checksum": "e10e0c9fd2e4de75037b7cd29b98cd38969956e3baab3ae225854f1d942423ce",
+          "source_checksum": "7882bc56cc52638494ab7628589061312b325fb1c8093daa7771228705f3f1ee"
+        },
+        {
+          "migration_name": "20260521195500_event_branding",
+          "historical_checksum": "20b3afc5a3a52b2093bb70a1548f75c84e6a53db75bd3aed02f864295a557688",
+          "source_checksum": "1a0e3064c51b638e01524a47fa8687b8eb6b27a84798e86be97edb6abc24c98e"
+        }
+      ],
+      "exact_historical_matches": 97,
+      "historical_successes_are_exact_set_subset": false,
+      "source_name_order_is_prefix_of_historical": true,
+      "historical_name_order_is_prefix_of_source": false,
+      "exact_name_checksum_common_prefix_length": 4,
+      "source_is_exact_name_checksum_prefix_of_historical": false,
+      "historical_is_exact_name_checksum_prefix_of_source": false
+    },
+    "dirty_api_candidate": {
+      "label": "dirty-api-working-tree",
+      "ref": "54dd78c91ac15747c3ded2d1e5c99fd31c8d9b8a",
+      "migration_count": 115,
+      "inventory_sequence_sha256": "67f5eb674e397c1c41e151ce42d53ad9a3bd8bb4a474a2d642f915ccb50e0d65",
+      "historical_successful_missing_from_source": [],
+      "source_only_not_in_historical_successes": [
+        "20260713130000_studio_widget_release_foundation",
+        "20260804120000_auth_password_actions",
+        "20260804123000_application_attribution",
+        "20260804230000_match_publication_boundary",
+        "20260805010000_harden_tournament_invite_lifecycle",
+        "20260805020000_refresh_token_families",
+        "20260805021000_idp_encrypted_credential_storage",
+        "20260805030000_broadcast_capability_lifecycle",
+        "20260805030000_conditional_ban_enrollments",
+        "20260805040000_platform_superadmin_mfa",
+        "20260805050000_private_assets_and_screenshot_evidence",
+        "20260805060000_durable_manual_billing",
+        "20260805070000_widget_capability_lifecycle"
+      ],
+      "checksum_drift": [],
+      "exact_historical_matches": 102,
+      "historical_successes_are_exact_set_subset": true,
+      "source_name_order_is_prefix_of_historical": false,
+      "historical_name_order_is_prefix_of_source": false,
+      "exact_name_checksum_common_prefix_length": 96,
+      "source_is_exact_name_checksum_prefix_of_historical": false,
+      "historical_is_exact_name_checksum_prefix_of_source": false
+    },
+    "d708_archive_branch_commit": {
+      "label": "d708-archive-branch-commit",
+      "ref": "d708f9beae8fa43d65ea5cb22630514f9e2c4186",
+      "migration_count": 105,
+      "inventory_sequence_sha256": "7d0dcbdc8951ca5ee3316979cf5d7cfea1c0dffd951a96b4f6cde241c1a30d0f",
+      "historical_successful_missing_from_source": [],
+      "source_only_not_in_historical_successes": [
+        "20260805021000_idp_encrypted_credential_storage",
+        "20260805030000_conditional_ban_enrollments",
+        "20260809190000_canonical_subscription_default"
+      ],
+      "checksum_drift": [
+        {
+          "migration_name": "20260303_matchslot_elimination",
+          "historical_checksum": "855267f5ba01abadc679de832f8532d9638e54e1ad10ef4010953bc67cbfbdf2",
+          "source_checksum": "e621e4d7b814f8c39691c450dfdeb902969a63709bbf3e435ac999e0c6d3704e"
+        },
+        {
+          "migration_name": "20260306_final_results_persistence",
+          "historical_checksum": "e10e0c9fd2e4de75037b7cd29b98cd38969956e3baab3ae225854f1d942423ce",
+          "source_checksum": "7882bc56cc52638494ab7628589061312b325fb1c8093daa7771228705f3f1ee"
+        },
+        {
+          "migration_name": "20260521195500_event_branding",
+          "historical_checksum": "20b3afc5a3a52b2093bb70a1548f75c84e6a53db75bd3aed02f864295a557688",
+          "source_checksum": "1a0e3064c51b638e01524a47fa8687b8eb6b27a84798e86be97edb6abc24c98e"
+        }
+      ],
+      "exact_historical_matches": 99,
+      "historical_successes_are_exact_set_subset": false,
+      "source_name_order_is_prefix_of_historical": false,
+      "historical_name_order_is_prefix_of_source": true,
+      "exact_name_checksum_common_prefix_length": 4,
+      "source_is_exact_name_checksum_prefix_of_historical": false,
+      "historical_is_exact_name_checksum_prefix_of_source": false
+    }
+  },
+  "temporary_plaintext_cleanup": {
+    "status": "verified_removed",
+    "verified_at_utc": "2026-08-09T16:49:08.1829008Z",
+    "temporary_root_exists": false,
+    "residual_exact_temp_names": 0,
+    "matching_age_or_pg_restore_processes": 0,
+    "deleted_exact_files": [
+      "archive.toc.list",
+      "prisma-ledger-only.sql",
+      "prisma-table-data.toc.list"
+    ],
+    "limitation": "Pathname and process cleanup verified; storage-layer overwrite is not claimed."
+  },
+  "records": [
+    {
+      "migration_name": "20260227202015_init_clean",
+      "checksum": "e2d26efbdcc38fc1a6d1c288bf2208a59275408e29b65b5b4bb892b271832476",
+      "finished_at": "2026-03-03 20:55:18.616645+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260307_player_name_sync_identity",
+      "checksum": "2accb1b09e0dda9d7cfe00bea75480f3f0d39a1b174095d19438b1ae2773b3b3",
+      "finished_at": "2026-03-07 20:34:27.353391+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260302_tournament_sponsors_refactor",
+      "checksum": "81aa1aab55d617f9dcfc894b39a45de383d0760730433967cd470d9f09b7f20d",
+      "finished_at": "2026-03-03 20:55:18.666868+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260308132829_widget_instance_permanent_keys",
+      "checksum": "c573af92b312df565eaf1d490dfafa3d6cc8a20220c87f39d659a62826628163",
+      "finished_at": "2026-03-08 11:29:48.414729+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 0
+    },
+    {
+      "migration_name": "20260303_matchslot_elimination",
+      "checksum": "855267f5ba01abadc679de832f8532d9638e54e1ad10ef4010953bc67cbfbdf2",
+      "finished_at": "2026-03-03 20:55:18.676612+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260303_matchstatus_simplify",
+      "checksum": "29a37d73215d9bbecf92edcc3feea0b62daf06f5fdd46b2c938b62d62bb86ffe",
+      "finished_at": "2026-03-03 20:55:18.723087+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260324133000_application_rejection_reason",
+      "checksum": "3605aa2e4c1d5cb69c05caee03a8f6783f4d20f6e134d4c46e2041babd2d33d9",
+      "finished_at": "2026-03-23 22:47:43.968877+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260303_org_default_media",
+      "checksum": "da36d2071079e2f837e3162cee077bd4d732605de49cf7ffe0b9b890df3668dd",
+      "finished_at": "2026-03-03 20:55:18.733305+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260308164000_player_open_id_identity",
+      "checksum": "61ea18eb9dfecd118b515599d3243422e7c6836ae422dc149a338e10a3572e36",
+      "finished_at": "2026-03-08 21:06:03.763457+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260303084826_structural_policy_v1",
+      "checksum": "3c93b4d08d0bef8700798001a8200d8fd683ef6a9fe9bf1b5ac10e79dbe53b5d",
+      "finished_at": "2026-03-03 20:55:18.789802+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260303085505_sponsor_soft_delete",
+      "checksum": "19a2df3d990d3b8f930a2041281be0fb1a71650b68ceffeda14dda24162db2d9",
+      "finished_at": "2026-03-03 20:55:18.806111+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "202603041446_add_auto_matchdatasource",
+      "checksum": "30c2768d75c2901959b6cbd58cdfd4c05cc2edb1acb1ba34bb37ec62d28cfc95",
+      "finished_at": "2026-03-04 12:51:06.838238+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260310140000_launcher_licensing",
+      "checksum": "3b735839c4698fa028b2c409caeeef6a7854e15c60fa62d0b1e39cd06d632f82",
+      "finished_at": "2026-03-10 21:29:34.859271+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260304230520_enforce_match_hierarchy",
+      "checksum": "4ace8c8a726954e2b575326d97cbcbd4515ee653c813524e33c513a8b6f308fa",
+      "finished_at": "2026-03-04 23:06:03.857296+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260306_results_eliminated_order",
+      "checksum": "5075db729a81b28242eabd82ed5b1d47a877d8e050a4f3264eefdb92d4ff63de",
+      "finished_at": "2026-03-06 10:44:05.935802+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260329110717_discord_team_membership",
+      "checksum": "a712ff966328cf31cf773bed7ca2c4097684ff88bc453e166d12363401c8d107",
+      "finished_at": "2026-03-29 11:08:37.586622+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260306_final_results_persistence",
+      "checksum": "e10e0c9fd2e4de75037b7cd29b98cd38969956e3baab3ae225854f1d942423ce",
+      "finished_at": "2026-03-06 11:47:24.666331+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260313093700_organization_widget_approvals",
+      "checksum": "9cde9d098b935828ca2f8469a28e00025be0e2eec9f981ee79d3488de2c588fd",
+      "finished_at": "2026-03-13 09:37:00.623053+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260307_match_slot_lobby_readiness",
+      "checksum": "0c39dd4ae887b5e2ac2088c602c9769f3d7a473d842a5647878754f2bd24c927",
+      "finished_at": "2026-03-07 19:10:05.906974+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260307_match_player_identity",
+      "checksum": "fa7c14a22a689f61a5a8ad6e03fdd0d4bc55eeae2f122bbe6d1ad5f9aba2eafa",
+      "finished_at": "2026-03-07 20:23:15.937865+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260324150000_tournament_registrations",
+      "checksum": "90b7eae6a7c287ef98bc27277214b1577fde55ab630d042bf8c9396f1076f995",
+      "finished_at": "2026-03-24 07:18:29.310009+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260316033000_telemetry_authority_engine",
+      "checksum": "cf9b3db2d9c0fe092660b20a1502825ace32736e2c28d5760487645b6c08833f",
+      "finished_at": "2026-03-16 18:59:14.028477+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260318_match_finish_lifecycle",
+      "checksum": "3af5658d7d2bb7d2a8ba5a577e1f792c9442b76017d92847c10d435750179239",
+      "finished_at": "2026-03-17 23:39:00.117057+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260319113000_match_control_state_authority_mode_guard",
+      "checksum": "c905c183d2c0156db9adf69213c1c833155615e777c538a2b641a024f3d8ee99",
+      "finished_at": "2026-03-19 20:45:00.268698+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260324170000_stage_registration_invites",
+      "checksum": "4b2fa1edf4f898973737c074cdff2499f17318655ebb01450b4e94da2ba36a10",
+      "finished_at": "2026-03-24 11:01:01.788205+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260324120000_organization_applications",
+      "checksum": "d4143014f633e9e9030962632da8f7b8065bc2d61a4f8267ed2d021991653edb",
+      "finished_at": "2026-03-23 22:47:43.957966+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260404130000_match_slot_result_presence_flag",
+      "checksum": "bb31bfef2ad700457aecae63be42a868a5884b0daf2c586d0b041c8930894d9f",
+      "finished_at": "2026-04-04 12:04:15.573698+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260325124602_session_foundation",
+      "checksum": "2179f835e6030c105c94e1df9af278e3b0c54417fbe0dd214b7bd9af6cd47db9",
+      "finished_at": "2026-03-25 21:19:17.867863+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260403021000_match_slot_player_pubg_account_id",
+      "checksum": "584a5b545fe3a410673ed96dd628825c4a0e6d5cb9e3d470cafc9f75c0bd5fe1",
+      "finished_at": "2026-04-03 19:39:16.179793+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260329131205_organization_discord_control_plane",
+      "checksum": "b26cdca7b1a76a6c9e0f55a739d2fcafbf24749cf5610be0eabb4701e4031a02",
+      "finished_at": "2026-03-29 10:33:10.898262+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260403110000_match_slot_player_external_player_id",
+      "checksum": "11c67f3e9770c1a6dabca9fc8b867205b8f73e8bc0e8d6a3b95cdb6795a4f9a4",
+      "finished_at": "2026-04-03 19:39:16.291404+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260408191500_organization_branding_authoring_metadata",
+      "checksum": "d2616cdc9a39c4513f8cbca0134a2aa6215df0705013312534c10c185d7fe939",
+      "finished_at": "2026-04-08 12:07:16.191093+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260404191000_match_telemetry_source_lock",
+      "checksum": "16cd04cb833f6c718f41077d667786a95c51aefcb69338f4a171a705ce7c4188",
+      "finished_at": "2026-04-04 18:35:12.800921+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260418120000_control_state_finish_pending",
+      "checksum": "90cb63071b2372c0c03eed2b3cad03a7259797ea228220053939f25601bf2089",
+      "finished_at": "2026-04-18 22:26:40.644991+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260427114000_match_slot_player_assists",
+      "checksum": "e49db040b328c876764f2059ec615a24d86bcb326d5de63a23d4b92776661a05",
+      "finished_at": "2026-04-27 09:13:45.848899+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260429181500_team_tag_15_chars",
+      "checksum": "ec9b84d5b225b8dc5b2ee4ca42f6b841f1f45808d178f8af1dc3b50cf46e795c",
+      "finished_at": "2026-04-29 18:25:29.072211+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260429190500_unlimited_stage_group_teams",
+      "checksum": "f73a0790ad7a6069683e629689d2cf03ca83833921bd0f4a587b23646ee78cfc",
+      "finished_at": "2026-04-29 18:56:49.172796+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260501220000_organizer_access_mode",
+      "checksum": "b6a4140ea9eae8e98e92ecf1ec54a14922bdd40432e384a974a67ff5b780e93c",
+      "finished_at": "2026-05-01 19:33:06.046603+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260501224500_discord_bot_avatar",
+      "checksum": "70229afd023b1a2a1270722a8a67bfb9cf80097c3e9c822e1db3987eba027d6f",
+      "finished_at": "2026-05-01 20:10:32.136707+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260501133000_session_discord_config",
+      "checksum": "8de1778ea2f8354ba8b44dacb36eb96509a8d71a7e1da7380da963ce76cd3868",
+      "finished_at": "2026-05-01 20:42:03.259085+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260503002000_discord_org_entitlements",
+      "checksum": "d86584fac29c707639d87fdb11b279ec957435e037a458141a0b968b7651ebb6",
+      "finished_at": "2026-05-02 22:07:03.097901+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260512193000_organization_discord_access_roles",
+      "checksum": "86098663e9e7207061c9936f9d6f2619d2d3784baea3ce880c707187025bbeab",
+      "finished_at": "2026-05-12 20:07:03.160469+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260503131000_team_bans",
+      "checksum": "a3ac8527e1adef5a9b23885e4e85daad9e355ce79ebc9214f4d47074e784a8d9",
+      "finished_at": null,
+      "rolled_back_at": "2026-05-03 13:54:16.665364+00",
+      "applied_steps_count": 0
+    },
+    {
+      "migration_name": "20260503152000_match_result_source",
+      "checksum": "654ab129a00aa5aec8b392d87ba576e88b9145560be0705247785b9a95b5243d",
+      "finished_at": "2026-05-03 16:02:55.124933+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260503131000_team_bans",
+      "checksum": "c0e2d2dd1b380d6d4c035040424aee6183c515556a339d2e5f42759089454db5",
+      "finished_at": "2026-05-03 13:55:00.155444+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260503152000_match_result_source",
+      "checksum": "3fb55205bc6bef328ee9196571fe9d033e06dbe25153f109297bf8bdcdaea8d0",
+      "finished_at": null,
+      "rolled_back_at": "2026-05-03 16:02:19.92802+00",
+      "applied_steps_count": 0
+    },
+    {
+      "migration_name": "20260508034000_unique_organization_discord_guild",
+      "checksum": "b4217b6d02c44789e354e752c84ddf01f03fe90eba963c9f80840a86d23a1617",
+      "finished_at": "2026-05-08 08:31:51.816436+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260508114500_session_discord_registration_mode",
+      "checksum": "4ea142ffb3122736fc9c93bda3ab583a0a7186683d9cdc85202999a9dfc621f9",
+      "finished_at": "2026-05-08 15:22:36.543254+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260515161000_saas_application_plan_fields",
+      "checksum": "148ec5ddbbcdb8506750291da0e635ccae4fd585dda581c39ee262e478f013a3",
+      "finished_at": "2026-05-15 19:54:58.515893+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260509141000_discord_channel_pauses",
+      "checksum": "021a2367809e980b4f2f189c0122183099f1aa01b5c6293e3cc58bae3876e395",
+      "finished_at": "2026-05-09 14:50:43.263509+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260510153000_session_discord_transfer_channel",
+      "checksum": "f201bc0e7901c52d4d739735d31bce952579a9f6f413d96fdcb2a21c91a4c904",
+      "finished_at": "2026-05-10 12:35:55.673559+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260510183000_organization_discord_staff_role_defaults",
+      "checksum": "58198bd0068489444188e8a442603d6524fe9c450016a6f42ea7fe46362378ed",
+      "finished_at": "2026-05-10 15:21:22.407052+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260516002000_global_logo_channels",
+      "checksum": "3e826cc3f3e1043d2a6af9e6ffb4ac18fbea601c3ce60099c23a0d2301cc2316",
+      "finished_at": "2026-05-16 13:53:56.60263+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260516001000_multi_discord_guilds",
+      "checksum": "fedc5d475e2689c6316f1eaec693690c654ec30f99c55bd6c8d05685d1bb346a",
+      "finished_at": "2026-05-15 21:37:55.17344+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260516090000_organization_trial_status",
+      "checksum": "52381351fbbb820e1a9dc33421af7236ad94399ec8279a4a208f86c28380d465",
+      "finished_at": "2026-05-15 22:19:58.746726+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260516102000_application_contact_details",
+      "checksum": "b845c8e48c274d16c4aa615f9f42f0441bd1fdfc7d478203137726cbd9f11aac",
+      "finished_at": "2026-05-16 06:36:49.973595+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260516191000_free_fire_match_rules",
+      "checksum": "6112d31ef9fec6145e415b337a732fa6bcb13c1bf3bae7fdc47223addfde48eb",
+      "finished_at": "2026-05-16 20:15:09.888109+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260517013000_valorant_match_rules",
+      "checksum": "dbc21fa6dcf966f94d644fb8a89a04959adbe6531f00d5228bd10921a87ca904",
+      "finished_at": "2026-05-16 22:56:54.789425+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260516193000_canonical_live_sources",
+      "checksum": "b806ecd675e85986ff704c76b668ea19ff39d027b74c721217b47d3601e943a3",
+      "finished_at": "2026-05-16 20:27:21.871285+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260517121000_cricket_ruleset_seed",
+      "checksum": "b4418240dc151394b8d348af2b08ce05c5cc3b873b422b78e0e40336ac964c0e",
+      "finished_at": "2026-05-17 18:16:41.524631+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260517120000_cricket_enum_values",
+      "checksum": "0ad9d3051ba295ffcc0090649fe55722d98f59788e4ae4bfa942d409c962c9e4",
+      "finished_at": "2026-05-17 18:16:41.514874+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260517190000_organization_plan_entitlements",
+      "checksum": "2d1c18937d4f4b644452a462940955f20b2a838ea4cd2256da62aa519e790978",
+      "finished_at": "2026-05-17 19:47:51.419431+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260518100000_call_of_duty_enum_values",
+      "checksum": "7a0c32d375c8b763d55dc3fe8f65c524a74e13de7a78d0ac8535b0b00ba3450a",
+      "finished_at": "2026-05-18 11:24:51.682843+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260518101000_call_of_duty_ruleset_seed",
+      "checksum": "c7c1258feaf2328a04413f75863701e575677c553cb936916d759c793671a6d3",
+      "finished_at": "2026-05-18 11:24:51.693191+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260801190000_pcob_raw_payload_bytes",
+      "checksum": "242bb288479b4998f66721cd218d6bfb5a31a5c062ca76a8aa3d824b17dc9ca5",
+      "finished_at": "2026-08-01 21:39:49.368441+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260519154500_manager_bans",
+      "checksum": "2ad9673e661c247087a6b91b16e5d61e62aae91a28c0778a9082dfb7bd4fb95a",
+      "finished_at": "2026-05-19 13:36:53.613584+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260520033000_no_show_ban_snapshots",
+      "checksum": "27296af8f89d8e1c53073dbfbe6052d133723ad886143e8fbf86b1e9ae05a356",
+      "finished_at": "2026-05-20 00:19:16.027843+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260520043000_result_backups",
+      "checksum": "a9a97891f4675244a063d6fe6852a90062a7ccd43f4f97e08bf4134f3a06eb5d",
+      "finished_at": null,
+      "rolled_back_at": "2026-05-20 09:11:41.159447+00",
+      "applied_steps_count": 0
+    },
+    {
+      "migration_name": "20260521195500_event_branding",
+      "checksum": "20b3afc5a3a52b2093bb70a1548f75c84e6a53db75bd3aed02f864295a557688",
+      "finished_at": "2026-05-21 20:37:01.788548+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260520043000_result_backups",
+      "checksum": "a9a97891f4675244a063d6fe6852a90062a7ccd43f4f97e08bf4134f3a06eb5d",
+      "finished_at": null,
+      "rolled_back_at": "2026-05-20 09:23:11.259758+00",
+      "applied_steps_count": 0
+    },
+    {
+      "migration_name": "20260520043000_result_backups",
+      "checksum": "7308e12ac8e15717680d1398c82a94b711a52c8a0fb69f708694b6e075274fc2",
+      "finished_at": "2026-05-20 09:24:10.563266+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260521224500_youtube_comment_bot",
+      "checksum": "c220917d4cd9b3d81c8ce153d64b6290c668ae09c2a73e1e94ea3ed915ee8e95",
+      "finished_at": "2026-05-21 21:35:37.186225+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522203000_session_registration_live_lookup_indexes",
+      "checksum": "b70e02d0cb8d846ead16c2b326c8b1d24ca9a75259772b1ffc6ae812ac436039",
+      "finished_at": "2026-05-22 19:21:14.475431+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260521223000_discord_event_server_access",
+      "checksum": "f78d2c10d8b93bdc89053e00c90830bc15e1c2b6345416671714779e0f0bc943",
+      "finished_at": "2026-05-21 22:54:16.59164+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522164500_youtube_live_chat",
+      "checksum": "4d71ec80a7c672ad6cb708a6e3a418ca2f47d97ee6365eeb09d1589ef7de2488",
+      "finished_at": "2026-05-22 13:51:55.436858+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260803110000_add_pubg_match_maps",
+      "checksum": "36a85934382ac89495d2be6af2f47a6282ced6e39102f3785123cac8c02afba7",
+      "finished_at": "2026-08-03 09:01:44.93353+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522173500_youtube_channel_snapshots",
+      "checksum": "21dd67ba7e02ec91ce7869a8f1e3dfb4acd64a143e25fb531f90d2feadb8640c",
+      "finished_at": "2026-05-22 16:13:10.977417+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522185000_session_registration_manager_snapshot",
+      "checksum": "0cf57bdebafd1cdd5712bd9f94ea0266eccfa50037f80c610ef49c472e7fc876",
+      "finished_at": "2026-05-22 17:29:17.74017+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522183000_youtube_predictions_and_match_commands",
+      "checksum": "5965260c0a9c403cf30f4ae663aef403565d7cfbc83cc9561e1e7225b0efcb46",
+      "finished_at": "2026-05-22 18:08:47.16956+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522214500_tournament_registration_mode_split",
+      "checksum": "6af8651724af83ae39aebc596b47cd974749969a5dbb01a233ee1e64b0efe138",
+      "finished_at": null,
+      "rolled_back_at": "2026-05-22 20:23:43.885191+00",
+      "applied_steps_count": 0
+    },
+    {
+      "migration_name": "20260613133000_result_backup_player_kills",
+      "checksum": "ecc72eb83feb13c2992024416f7fad980ca89ff3d18f5f3a879636520b118590",
+      "finished_at": "2026-06-13 12:16:03.332607+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522214500_tournament_registration_mode_split",
+      "checksum": "eac5352610234b234566509d62bc91d0cf3aa739259f58ec7ee9882304a9e9f7",
+      "finished_at": "2026-05-22 20:24:41.167322+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260522192000_youtube_commands_timers_logs",
+      "checksum": "77470e3bdaa8823a42a46879444cb001d8ae380104810d95f39869a19700ab4f",
+      "finished_at": "2026-05-22 20:57:30.31012+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260625153000_shop_curated_affiliate",
+      "checksum": "26cf59827c7418ff3bb97d3ae230d5355b99c0f9cde0f8f5a7f78517a55a8b30",
+      "finished_at": "2026-06-25 12:38:09.326129+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260525011500_license_revoked_status",
+      "checksum": "63d8d7072fc3aa24390a21a6af51c5318cd589ba5951a130f1c8298f69b6ce6b",
+      "finished_at": "2026-05-24 22:32:36.005578+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260618120000_session_public_chat_channel",
+      "checksum": "54c62694aef2f7e1cfb69071e193b07b9f43362c2fd8703ab5f40d5def69f013",
+      "finished_at": "2026-06-17 21:33:43.693031+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260525202000_discord_event_readonly_sources",
+      "checksum": "6b78ace739e82b46d5f41604c87c873bcb6c547059dc9c11279b599acc71f400",
+      "finished_at": "2026-05-25 20:25:37.146378+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260529091500_youtube_live_bot_greetings",
+      "checksum": "5e2cfa4be0863096a6d2c44d0b3572720a4bfe088269ee57f85fd3f08a133c91",
+      "finished_at": "2026-05-28 21:32:52.412531+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260529101500_youtube_premium_engagement",
+      "checksum": "18c98eb31708317528f44a294664f130017ec94c8dc8efdf6db1496701583923",
+      "finished_at": "2026-05-28 22:04:26.593357+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260618153000_session_player_result_snapshots",
+      "checksum": "45ca873dad3b62c4b03cac5c49f6ddce83053c3c4f99e378608766060a64275a",
+      "finished_at": "2026-06-18 08:50:47.773592+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260609221000_add_qualification_settings",
+      "checksum": "317dd8a73a558ad8806bdd829f17e0f8e47a17662e5a0a0e84befb4606e8c093",
+      "finished_at": "2026-06-09 06:49:59.616039+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260610113000_scoped_admin_adjustments",
+      "checksum": "3fb979925874a84e88e05a05c3129c3c96a9cc20e39eeb6e6e09c4a210f1d830",
+      "finished_at": "2026-06-10 21:00:09.665726+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260707093000_shop_jersey_orders",
+      "checksum": "b197aadf8fd256b34c848abc609aa4e2dd7b5d3d2701f6c40b63ded68c23b4fb",
+      "finished_at": "2026-07-06 23:41:09.189433+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260613120000_session_branding",
+      "checksum": "354b8730b9b6b7b2ff04fc317b5f3c9ba78e7421ca6764671e2dc9455797b556",
+      "finished_at": "2026-06-13 09:56:17.13713+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260625165000_shop_delivery_availability",
+      "checksum": "f91a84a714004c159207f58b9b1fce7a8eab2f2043e8d4717b3d2950fc544ba2",
+      "finished_at": "2026-06-25 19:24:41.982399+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260619120000_player_video_url",
+      "checksum": "5f6bbdc7d17cc9ab0a2c6e8839338c550de5ec22d8298babcab9dd371a998bd8",
+      "finished_at": "2026-06-19 21:50:51.130117+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260625093000_shop_affiliate",
+      "checksum": "edcb8b74f11e699deba4da4167d2c62c54c393d506492d406e53e30c25a7d055",
+      "finished_at": "2026-06-25 11:15:47.838826+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260625103000_shop_trust_safety",
+      "checksum": "0cb522b6d5c009007e86b835bdfb2b1e65cd0270e2c599f1e0aa3cdfe620d742",
+      "finished_at": "2026-06-25 11:15:47.911298+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260714123000_discord_scheduled_messages",
+      "checksum": "781e6785b2c0d1b855a4fde7ccc5ee8db309b07be0b0c57881e4fed0bbcbf94e",
+      "finished_at": "2026-07-14 11:23:43.688753+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260629103000_shop_marketplace_business",
+      "checksum": "0ce10af86e5e402c17065ac6c05b977eb2dd2459a3914ed977d1d1b26973137f",
+      "finished_at": "2026-06-29 20:57:31.487057+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260713010000_staff_task_system",
+      "checksum": "3760d147a92e9769d5a20afc30688403b70295edd48e4ff36e631297d6cf7936",
+      "finished_at": "2026-07-12 22:27:05.53748+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260706143000_shop_product_image_gallery",
+      "checksum": "48a0096ebe833b9c548a3c88dfb2667f38666e1fd53b86c996b660b92b0253f5",
+      "finished_at": "2026-07-06 11:41:03.833051+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260713113000_discord_idp_free_game_labels",
+      "checksum": "1af632c33a090d99d4e2d7e3a382c1135248832a4d0c9cdc65bc12470cad8d6e",
+      "finished_at": "2026-07-13 12:27:12.668616+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260713023000_discord_idp_schedules",
+      "checksum": "e81e638acafbee0867624e80c82ec7da9ef2196d757f4a6e86e25072a780e0ac",
+      "finished_at": "2026-07-12 23:24:10.353433+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260714150000_scope_discord_scheduled_messages_to_sessions",
+      "checksum": "a08f0587a534b1763218852dfbc6cdfb32e6b348929d3b56b9df488d8e0ac177",
+      "finished_at": "2026-07-14 12:36:53.054407+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260720093000_match_slot_player_result_damage",
+      "checksum": "c3dc10faad7a6c706dc5c97333aa963290231cb006a9370353db36f993ac2aca",
+      "finished_at": "2026-07-20 00:27:39.810694+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727170000_discord_guild_icon_asset",
+      "checksum": "a47a2c9f229ded9a2adf2b6e6a2dc5e2c3b43c6c3f90a59f081ffba597bcf8a7",
+      "finished_at": "2026-07-27 17:39:29.642873+00",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    }
+  ]
+}

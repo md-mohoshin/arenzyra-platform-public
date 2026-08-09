@@ -15,6 +15,7 @@
     "verify:desktop-map-provenance": "node scripts/verify-desktop-map-provenance.cjs",
     "test:launcher-release": "node --test scripts/launcher-release-artifact-verifier.test.cjs scripts/verify-desktop-connector-provenance.test.cjs scripts/verify-desktop-map-provenance.test.cjs scripts/stage-launcher-release.test.cjs apps/desktop/release/runtime-file-policy.test.cjs apps/desktop/release/release-packaging-policy.test.cjs scripts/verify-desktop-release-inputs.test.cjs scripts/package-boundary.test.cjs scripts/desktop-machine-path-resolution.test.cjs",
     "test:production-api-maintenance": "node --test scripts/production-api-maintenance.test.cjs",
+    "test:historical-migration-ledger": "node --test scripts/parse-prisma-migration-ledger.test.cjs",
     "web:build": "pnpm --filter arenzyra-web build",
     "web:preview:prod": "pnpm --filter arenzyra-web preview:prod",
     "web:verify:live": "pnpm --filter arenzyra-web verify:live",
