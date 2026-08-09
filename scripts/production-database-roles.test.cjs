@@ -403,7 +403,11 @@ test("bootstrap removes ambient grants and never default-grants runtime DML", ()
   );
   assert.match(
     sql.slice(adoptionStart, adoptionEnd),
-    /\\if :object_policy_adopt_ownership[\s\S]*LOCK TABLE %I\.%I IN ACCESS EXCLUSIVE MODE[\s\S]*ALTER TABLE %I\.%I OWNER TO %I/,
+    /LOCK TABLE %I\.%I IN ACCESS EXCLUSIVE MODE[\s\S]*ALTER TABLE %I\.%I OWNER TO %I/,
+  );
+  assert.equal(
+    (sql.match(/\\if :object_policy_adopt_ownership/gu) ?? []).length,
+    2,
   );
   assert.doesNotMatch(
     sql,
