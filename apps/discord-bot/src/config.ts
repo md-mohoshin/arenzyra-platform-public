@@ -1,8 +1,18 @@
 import { config as loadEnv } from 'dotenv';
 import path from 'path';
 
-const envFilePath = path.resolve(__dirname, '..', '.env');
-loadEnv({ path: envFilePath });
+const configurationEnvFilePath = path.resolve(__dirname, '..', '.env');
+loadEnv({ path: configurationEnvFilePath });
+const configuredNodeEnv = process.env.NODE_ENV?.trim() || 'development';
+const configuredStateDir = process.env.ARENZYRA_DISCORD_STATE_DIR?.trim() || null;
+const envFilePath = configuredStateDir && configuredNodeEnv !== 'production'
+  ? path.resolve(configuredStateDir, 'api-auth.env')
+  : configurationEnvFilePath;
+if (envFilePath !== configurationEnvFilePath) {
+  // This file contains only bot-managed rotated API tokens. It intentionally
+  // overrides stale token values from the immutable deployment environment.
+  loadEnv({ path: envFilePath, override: true });
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -35,6 +45,32 @@ function optionalBooleanEnv(name: string, fallback: boolean): boolean {
   return value === '1' || value === 'true' || value === 'yes';
 }
 
+function optionalPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = optionalEnv(name);
+  if (!raw) {
+    return fallback;
+  }
+
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive whole number`);
+  }
+  return value;
+}
+
+function optionalNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const raw = optionalEnv(name);
+  if (!raw) {
+    return fallback;
+  }
+
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative whole number`);
+  }
+  return value;
+}
+
 export const botConfig = {
   envFilePath,
   nodeEnv: optionalEnv('NODE_ENV') ?? 'development',
@@ -43,6 +79,7 @@ export const botConfig = {
   discordClientId: requireEnv('DISCORD_CLIENT_ID'),
   discordGuildId: optionalEnv('DISCORD_GUILD_ID'),
   messageContentIntent: optionalBooleanEnv('DISCORD_MESSAGE_CONTENT_INTENT', false),
+  guildMembersIntent: optionalBooleanEnv('DISCORD_GUILD_MEMBERS_INTENT', false),
   registerGlobalCommands: optionalBooleanEnv(
     'DISCORD_REGISTER_GLOBAL_COMMANDS',
     true,
@@ -55,7 +92,45 @@ export const botConfig = {
   apiPassword: optionalEnv('ARENZYRA_API_PASSWORD'),
   apiOrganizationId: optionalEnv('ARENZYRA_API_ORGANIZATION_ID'),
   apiUserAgent: 'Arenzyra Discord Bot',
+  apiRequestTimeoutMs: optionalPositiveIntegerEnv(
+    'ARENZYRA_API_REQUEST_TIMEOUT_MS',
+    10_000,
+  ),
+  apiMaxIdempotentRetries: optionalNonNegativeIntegerEnv(
+    'ARENZYRA_API_MAX_IDEMPOTENT_RETRIES',
+    2,
+  ),
+  stateDir: configuredStateDir,
 } as const;
+
+export function validateProductionApiAuth(config: {
+  nodeEnv: string;
+  apiServiceToken: string | null;
+  apiOrganizationId: string | null;
+  apiToken: string | null;
+  apiRefreshToken: string | null;
+  apiEmail: string | null;
+  apiPassword: string | null;
+}) {
+  if (config.nodeEnv !== 'production') return;
+  if (!config.apiServiceToken || !config.apiOrganizationId) {
+    throw new Error(
+      'Production Discord bot requires ARENZYRA_API_SERVICE_TOKEN and ARENZYRA_API_ORGANIZATION_ID.',
+    );
+  }
+  if (
+    config.apiToken ||
+    config.apiRefreshToken ||
+    config.apiEmail ||
+    config.apiPassword
+  ) {
+    throw new Error(
+      'Production Discord bot rejects human API credentials, bearer tokens, and refresh-token auth; use only the scoped service token.',
+    );
+  }
+}
+
+validateProductionApiAuth(botConfig);
 
 if (
   botConfig.nodeEnv === 'production' &&

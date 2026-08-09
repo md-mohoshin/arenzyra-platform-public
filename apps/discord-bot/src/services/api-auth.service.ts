@@ -1,5 +1,14 @@
 import axios, { AxiosError, AxiosInstance } from 'axios';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import path from 'node:path';
 import { botConfig } from '../config';
 
 type AuthSessionResponse = {
@@ -19,6 +28,7 @@ export class BotApiAuthService {
   constructor() {
     this.authClient = axios.create({
       baseURL: botConfig.apiBaseUrl,
+      timeout: botConfig.apiRequestTimeoutMs,
       headers: {
         'User-Agent': botConfig.apiUserAgent,
       },
@@ -63,6 +73,9 @@ export class BotApiAuthService {
     value: string | null,
     lineBreak: string,
   ): string {
+    if (value && /[\r\n]/.test(value)) {
+      throw new Error(`Refusing to persist multiline value for ${key}`);
+    }
     const pattern = new RegExp(`^${key}=.*$`, 'm');
     const nextLine = `${key}=${value ?? ''}`;
 
@@ -79,6 +92,9 @@ export class BotApiAuthService {
   }
 
   private persistTokens() {
+    if (botConfig.nodeEnv === 'production') {
+      throw new Error('Token persistence is disabled for the production service-token bot.');
+    }
     const lineBreak =
       existsSync(botConfig.envFilePath) &&
       readFileSync(botConfig.envFilePath, 'utf8').includes('\r\n')
@@ -101,7 +117,22 @@ export class BotApiAuthService {
       lineBreak,
     );
 
-    writeFileSync(botConfig.envFilePath, nextSource, 'utf8');
+    const temporaryPath = `${botConfig.envFilePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      mkdirSync(path.dirname(botConfig.envFilePath), {
+        recursive: true,
+        mode: 0o700,
+      });
+      writeFileSync(temporaryPath, nextSource, {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+      renameSync(temporaryPath, botConfig.envFilePath);
+      chmodSync(botConfig.envFilePath, 0o600);
+    } finally {
+      rmSync(temporaryPath, { force: true });
+    }
 
     process.env.ARENZYRA_API_TOKEN = this.accessToken ?? '';
     process.env.ARENZYRA_API_REFRESH_TOKEN = this.refreshToken ?? '';

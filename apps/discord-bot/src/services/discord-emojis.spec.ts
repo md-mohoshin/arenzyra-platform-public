@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  activeAutoRegistrationGrants,
   autoRegistrationWindow,
   parseAutoRegistrationConfig,
+  parseAutoRegistrationGrants,
+  parseRoleAccessGroups,
   registrationWindow,
   registrationWindowForSession,
   registrationMessageText,
   registrationMessageTitle,
+  serializeAutoRegistrationGrants,
   playConfirmationWindow,
   registrationWindowStatusText,
   registrationWindowStatusTextForSession,
@@ -189,6 +193,59 @@ test("temporary waitlist promotion auto-open expires at the stored timestamp", (
     ).allowsAction,
     false,
   );
+});
+
+test("parseRoleAccessGroups preserves winner qualification settings", () => {
+  const [group] = parseRoleAccessGroups({
+    emojis: {
+      roleAccessGroups: JSON.stringify({
+        groups: [
+          {
+            id: "winner-access",
+            name: "Winner Access",
+            roleId: "winner-role",
+            roleName: "Winner",
+            mode: "normal",
+            enabled: true,
+            qualificationMode: "winner",
+            winnerSourceSessionId: "source-session",
+            winnerSourceSessionName: "Final Scrim",
+            winnerTopCount: 3,
+            winnerDurationDays: 2,
+            winnerRemoveRoleOnExpiry: false,
+            winnerLastSyncedAt: "2026-06-16T10:00:00.000Z",
+            winnerQualifications: [
+              {
+                id: "wq-1",
+                sourceSessionId: "source-session",
+                teamId: "team-1",
+                teamName: "FiX Esports",
+                teamTag: "FIX",
+                managerDiscordIds: ["manager-1"],
+                rank: 1,
+                roleId: "winner-role",
+                roleName: "Winner",
+                grantedAt: "2026-06-16T10:00:00.000Z",
+                expiresAt: "2026-06-18T10:00:00.000Z",
+                totalPoints: 55,
+                totalKills: 31,
+              },
+            ],
+          },
+        ],
+      }),
+    },
+  });
+
+  assert.equal(group.qualificationMode, "winner");
+  assert.equal(group.winnerSourceSessionId, "source-session");
+  assert.equal(group.winnerTopCount, 3);
+  assert.equal(group.winnerDurationDays, 2);
+  assert.equal(group.winnerRemoveRoleOnExpiry, false);
+  assert.equal(group.winnerQualifications[0].teamId, "team-1");
+  assert.deepEqual(group.winnerQualifications[0].managerDiscordIds, [
+    "manager-1",
+  ]);
 });
 
 test("confirmation waitlist grace reopens a closed confirmation window until expiry", () => {
@@ -456,6 +513,45 @@ test("auto registration config normalizes placement, fallback, and limits", () =
   assert.equal(config.waitlistFallback, false);
   assert.equal(config.maxTeams, 100);
   assert.equal(config.lastRunKey, "run-1");
+});
+
+test("auto registration grants serialize parse and filter active entries", () => {
+  const grant = {
+    id: "grant-1",
+    teamId: "team-1",
+    teamName: "Team One",
+    teamTag: "ONE",
+    managerDiscordId: "123456789012345678",
+    managerDiscordUsername: "manager",
+    managerDisplayName: "Manager",
+    roleId: "234567890123456789",
+    roleName: "VIP",
+    grantedAt: "2026-06-16T10:00:00.000Z",
+    expiresAt: "2026-06-17T10:00:00.000Z",
+    createdByDiscordId: "345678901234567890",
+    createdByLabel: "Admin#0001",
+    sourceChannelId: "456789012345678901",
+    sourceMessageId: "567890123456789012",
+    roleAddedByBot: true,
+  };
+  const expired = {
+    ...grant,
+    id: "grant-2",
+    teamId: "team-2",
+    expiresAt: "2026-06-15T10:00:00.000Z",
+  };
+  const serialized = serializeAutoRegistrationGrants([grant, expired]);
+  const parsed = parseAutoRegistrationGrants({
+    autoRegistrationGrants: serialized,
+  });
+  assert.equal(parsed.length, 2);
+  assert.deepEqual(
+    activeAutoRegistrationGrants(
+      { autoRegistrationGrants: serialized },
+      new Date("2026-06-16T12:00:00.000Z"),
+    ).map((entry) => entry.id),
+    ["grant-1"],
+  );
 });
 
 test("auto registration opens only during an enabled role schedule", () => {

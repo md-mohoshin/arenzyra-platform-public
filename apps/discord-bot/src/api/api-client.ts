@@ -7,6 +7,11 @@ import axios, {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { botConfig } from "../config";
 import { BotApiAuthService } from "../services/api-auth.service";
+import {
+  delay,
+  retryDelayMs,
+  shouldRetryApiRequest,
+} from "./api-request-policy";
 
 export type SessionType = "SCRIM" | "EVENT" | "CUSTOM" | "PRACTICE";
 export type SessionStatus =
@@ -32,6 +37,13 @@ export type SessionResponse = {
   type: SessionType;
   status: SessionStatus;
   createdById?: string | null;
+  gameId?: string | null;
+  game?: {
+    id: string;
+    key: string;
+    name: string;
+    isEnabled?: boolean;
+  } | null;
   slotCount: number;
   maxTeams: number;
   waitlistEnabled: boolean;
@@ -83,6 +95,217 @@ export type SessionResultResetResponse = {
   matchIds: string[];
   reason: string | null;
   resetAt: string;
+};
+
+export type ConditionalBanEnrollmentStatus =
+  | "ACTIVE"
+  | "COMPLETED"
+  | "REQUIREMENTS_NOT_MET"
+  | "CANCELLED";
+
+export type PreviewConditionalBanEnrollmentPayload = {
+  teamQuery: string;
+  managerDiscordUserIds: string[];
+  requiredMatchCount: number;
+};
+
+export type ConditionalBanEnrollmentTeamBanResponse = {
+  id: string;
+  scope: TeamBanScope;
+  sessionId: string | null;
+  matchId: string | null;
+  reason: string;
+  note: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ConditionalBanEnrollmentManagerBanResponse =
+  ConditionalBanEnrollmentTeamBanResponse & {
+    discordUserId: string;
+  };
+
+export type PlannedConditionalManagerBanCompanionResponse = {
+  discordUserId: string;
+  scope: TeamBanScope;
+  sessionId: string | null;
+  matchId: string | null;
+  reason: string;
+  note: string | null;
+  expiresAt: string | null;
+  sourceTeamBanIds: string[];
+};
+
+export type PreviewConditionalBanEnrollmentResponse = {
+  eligible: true;
+  recovery: boolean;
+  enrollment?: ConditionalBanEnrollmentResponse;
+  confirmationToken: string;
+  sessionId: string;
+  team: {
+    id: string;
+    name: string;
+    tag: string | null;
+    logoUrl: string | null;
+    countryCode: string | null;
+    region: string | null;
+  };
+  proposedSlotNumber: number;
+  existingRegistration: SessionRegistrationResponse | null;
+  requiredMatchCount: number;
+  managerDiscordUserIds: string[];
+  teamBans: ConditionalBanEnrollmentTeamBanResponse[];
+  managerBans: ConditionalBanEnrollmentManagerBanResponse[];
+  plannedManagerBanCompanions: PlannedConditionalManagerBanCompanionResponse[];
+};
+
+export type ConfirmConditionalBanEnrollmentPayload = {
+  requestKey: string;
+  confirmationToken: string;
+  teamId: string;
+  managerDiscordUserIds: string[];
+  requiredMatchCount: number;
+  approvedByDiscordId: string;
+  approvedByDiscordUsername?: string | null;
+  reason: string;
+};
+
+export type ConditionalBanEnrollmentResponse = {
+  id: string;
+  organizationId: string;
+  sessionId: string;
+  registrationId: string;
+  teamId: string;
+  status: ConditionalBanEnrollmentStatus;
+  requiredMatchCount: number;
+  managerDiscordUserIds: string[];
+  teamBanIds: string[];
+  managerBanIds: string[];
+  activeKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ConfirmConditionalBanEnrollmentResponse = {
+  idempotent: boolean;
+  recovered: boolean;
+  registration: SessionRegistrationResponse;
+  enrollment: ConditionalBanEnrollmentResponse;
+};
+
+export type ConditionalBanRoleProtectionResponse = {
+  sessionId: string;
+  guildId: string;
+  discordUserId: string;
+  managedTeamIds: string[];
+  teamBans: Array<{
+    id: string;
+    teamId: string;
+    scope: TeamBanScope;
+    sessionId: string | null;
+    matchId: string | null;
+    targetSessionId: string | null;
+    expiresAt: string | null;
+  }>;
+  managerBans: Array<{
+    id: string;
+    discordUserId: string;
+    scope: TeamBanScope;
+    sessionId: string | null;
+    matchId: string | null;
+    targetSessionId: string | null;
+    expiresAt: string | null;
+  }>;
+  protected: boolean;
+};
+
+export type FinalizeConditionalBanEnrollmentsPayload = {
+  requestKey: string;
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  sourceMatchId: string;
+  resultSnapshotId: string;
+  resultSnapshotHash: string;
+};
+
+export type PrepareConditionalBanFinalSnapshotPayload = {
+  guildId: string;
+  sourceMatchId: string;
+};
+
+export type ConditionalBanFinalSnapshotResponse =
+  | { required: false }
+  | {
+      required: true;
+      id: string;
+      resultStateHash: string;
+      resultBackupId: string;
+      sourceMatchId: string;
+      liveMatchIds: string[];
+      appliedMatchIds: string[];
+      createdAt: string;
+    };
+
+export type ConditionalBanFinalArtifactManifest = {
+  version: number;
+  contentSha256: string;
+  files: Array<{ name: string; size: number; sha256: string }>;
+};
+
+export type SealConditionalBanFinalSnapshotPayload = {
+  snapshotId: string;
+  resultStateHash: string;
+  contentSha256: string;
+  files: Array<{ name: string; size: number; sha256: string }>;
+};
+
+export type SealConditionalBanFinalSnapshotResponse = {
+  id: string;
+  resultStateHash: string;
+  snapshotHash: string;
+  resultBackupId: string;
+  artifactManifest: ConditionalBanFinalArtifactManifest;
+  sealedAt?: string;
+  idempotent: boolean;
+};
+
+export type ConditionalBanFinalizationEnrollmentResponse = {
+  id: string;
+  teamId: string;
+  status: ConditionalBanEnrollmentStatus;
+  requiredMatchCount: number;
+  boundMatchIds: string[];
+  presentAppliedMatchIds: string[];
+  missingMatchIds: string[];
+  managerDiscordUserIds: string[];
+  revokedTeamBanIds: string[];
+  alreadyInactiveTeamBanIds: string[];
+  revokedManagerBanIds: string[];
+  alreadyInactiveManagerBanIds: string[];
+  remainingActiveTeamBanIds: string[];
+  remainingActiveManagerBanIds: string[];
+  remainingProtection: boolean;
+  outboxId: string | null;
+};
+
+export type FinalizeConditionalBanEnrollmentsResponse = {
+  idempotent: boolean;
+  receipt: {
+    id: string;
+    runKey: string;
+    requestKey: string;
+    guildId: string;
+    channelId: string;
+    messageId: string;
+    resultSnapshotId: string;
+    resultSnapshotHash: string;
+    overallBackupId: string;
+    matchIds: string[];
+    createdAt: string;
+  };
+  enrollments: ConditionalBanFinalizationEnrollmentResponse[];
 };
 
 export type RefreshDiscordSourceImportsResponse = {
@@ -144,6 +367,8 @@ export type SessionDiscordConfigResponse = {
   waitlistChannelName: string | null;
   idpChannelId: string | null;
   idpChannelName: string | null;
+  publicChatChannelId: string | null;
+  publicChatChannelName: string | null;
   managerChannelId: string | null;
   managerChannelName: string | null;
   transferChannelId: string | null;
@@ -625,7 +850,10 @@ export type ResultBackupSummaryResponse = {
   rowCount?: number;
 };
 
-export type ResultBackupPlayerResponse = Omit<MatchResultPlayerResponse, "playerId"> & {
+export type ResultBackupPlayerResponse = Omit<
+  MatchResultPlayerResponse,
+  "playerId"
+> & {
   playerId?: string | null;
   playerName?: string | null;
 };
@@ -684,13 +912,23 @@ export type UpdateResultBackupRowPayload = {
   }>;
 };
 
-export type ResultBackupRenderKind = "match-result" | "overall-ranking";
+export type ResultBackupRenderKind =
+  | "match-result"
+  | "overall-ranking"
+  | "overall-top-mvp"
+  | "overall-top-fraggers"
+  | "match-schedule";
 
 export type TeamSummary = {
   id: string;
   name: string;
   tag: string | null;
   logoUrl?: string | null;
+};
+
+export type UpdateTeamPayload = {
+  name?: string;
+  tag?: string | null;
 };
 
 export type TeamMemberSummary = {
@@ -814,6 +1052,169 @@ export type ResolvedDiscordGuildResponse = {
   source: "guild-link" | "legacy-config";
 };
 
+export type StaffTaskScheduleFrequency = "ONCE" | "DAILY" | "WEEKLY";
+export type StaffTaskStatus =
+  | "OPEN"
+  | "CLAIM_PENDING"
+  | "CLAIMED"
+  | "RELEASE_PENDING"
+  | "COMPLETION_PENDING"
+  | "PENDING_REVIEW"
+  | "COMPLETED"
+  | "CLOSED";
+
+export type StaffTaskTemplateItemPayload = {
+  title: string;
+  description?: string | null;
+  points: number;
+  assigneeDiscordUserId?: string | null;
+  requiresReview?: boolean;
+};
+
+export type CreateStaffTaskTemplatePayload = {
+  guildId: string;
+  name: string;
+  scheduleFrequency: StaffTaskScheduleFrequency;
+  scheduledAt?: string | null;
+  scheduleTime?: string | null;
+  scheduleWeekdays?: number[];
+  timeZone?: string;
+  durationMinutes: number;
+  boardChannelId: string;
+  logChannelId: string;
+  staffRoleIds?: string[];
+  items: StaffTaskTemplateItemPayload[];
+};
+
+export type StaffTaskTemplateResponse = {
+  id: string;
+  organizationId: string;
+  guildId: string;
+  name: string;
+  enabled: boolean;
+  scheduleFrequency: StaffTaskScheduleFrequency;
+  scheduledAt: string | null;
+  scheduleTime: string | null;
+  scheduleWeekdays: number[];
+  timeZone: string;
+  durationMinutes: number;
+  boardChannelId: string;
+  logChannelId: string;
+  staffRoleIds: string[];
+  items: Array<
+    StaffTaskTemplateItemPayload & {
+      id: string;
+      position: number;
+    }
+  >;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type StaffTaskResponse = {
+  id: string;
+  runId: string;
+  title: string;
+  description: string | null;
+  points: number;
+  assigneeDiscordUserId: string | null;
+  requiresReview: boolean;
+  status: StaffTaskStatus;
+  claimedByDiscordUserId: string | null;
+  claimedByUsername: string | null;
+  completionNote: string | null;
+  completedAt: string | null;
+  approvedAt: string | null;
+  approvedByDiscordUserId: string | null;
+  updatedAt: string | null;
+};
+
+export type StaffTaskRunResponse = {
+  id: string;
+  templateId: string;
+  guildId: string;
+  occurrenceKey: string;
+  scheduledFor: string;
+  closesAt: string;
+  status: "OPEN" | "CLOSED";
+  boardChannelId: string;
+  boardMessageId: string | null;
+  template: {
+    id: string;
+    name: string;
+    logChannelId: string;
+    staffRoleIds: string[];
+  } | null;
+  tasks: StaffTaskResponse[];
+};
+
+export type StaffTaskActionResponse = {
+  task: StaffTaskResponse;
+  action: string;
+  runId: string;
+  boardChannelId: string;
+  boardMessageId: string | null;
+  logChannelId: string;
+  templateName: string;
+};
+
+export type StaffTaskLeaderboardResponse = {
+  month: string;
+  timeZone: string;
+  rankings: Array<{
+    rank: number;
+    discordUserId: string;
+    discordUsername: string | null;
+    points: number;
+    completedTasks: number;
+  }>;
+};
+
+export type DiscordIdpReminderResponse = {
+  key: string;
+  offsetMinutes: number;
+  message: string;
+};
+
+export type DiscordIdpScheduleResponse = {
+  id: string;
+  sessionId: string;
+  matchId: string | null;
+  guildId: string;
+  channelId: string;
+  logChannelId: string | null;
+  matchNumber: number;
+  matchName?: string;
+  map?: string | null;
+  startsAt: string;
+  timeZone: string;
+  primaryMessage: string;
+  reminders: DiscordIdpReminderResponse[];
+  primaryMessageId: string | null;
+  sentReminderKeys: string[];
+  cancelledAt: string | null;
+  sessionName?: string;
+};
+
+export type DiscordScheduledMessageResponse = {
+  id: string;
+  guildId: string;
+  channelId: string;
+  name: string;
+  content: string;
+  enabled: boolean;
+  scheduleFrequency: "ONCE" | "DAILY" | "WEEKLY";
+  scheduledAt: string | null;
+  scheduleTime: string | null;
+  scheduleWeekdays: number[];
+  timeZone: string;
+  nextRunAt: string | null;
+  lastSentAt: string | null;
+  lastError: string | null;
+  sentCount: number;
+  claimToken?: string | null;
+};
+
 export type CreateSessionPayload = {
   name: string;
   type: SessionType;
@@ -821,6 +1222,7 @@ export type CreateSessionPayload = {
   slotCount: number;
   maxTeams: number;
   waitlistEnabled?: boolean;
+  gameKey?: string;
 };
 
 export type RegisterTeamPayload = {
@@ -868,6 +1270,7 @@ export type ListTeamBansParams = {
   sessionId?: string;
   matchId?: string;
   scope?: TeamBanScope;
+  limit?: number;
 };
 
 export type CreateTeamBanPayload = {
@@ -879,6 +1282,7 @@ export type CreateTeamBanPayload = {
   reason: string;
   note?: string | null;
   expiresAt?: string | null;
+  skipRegistrationRemoval?: boolean;
 };
 
 export type ListManagerBansParams = {
@@ -887,6 +1291,7 @@ export type ListManagerBansParams = {
   sessionId?: string;
   matchId?: string;
   scope?: TeamBanScope;
+  limit?: number;
 };
 
 export type CreateManagerBanPayload = {
@@ -1031,7 +1436,9 @@ export type MapScreenshotSlotsPayload = {
 
 export type ApplyScreenshotResultsPayload = {
   matchId: string;
+  reviewedMissingPlacements?: number[];
   markMissingSlotsNoShow?: boolean;
+  noShowSlotNumbers?: number[];
   results: Array<{
     position: number;
     tag: string;
@@ -1244,10 +1651,35 @@ export class ArenzyraApiClient {
     this.authService = authService;
     this.client = axios.create({
       baseURL: botConfig.apiBaseUrl,
+      timeout: botConfig.apiRequestTimeoutMs,
       headers: {
         "User-Agent": botConfig.apiUserAgent,
       },
     });
+  }
+
+  private async requestWithRetry<T>(
+    config: AxiosRequestConfig,
+  ): Promise<AxiosResponse<T>> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.client.request<T>(config);
+      } catch (error) {
+        const axiosError = axios.isAxiosError(error) ? error : null;
+        const retry =
+          attempt < botConfig.apiMaxIdempotentRetries &&
+          shouldRetryApiRequest({
+            method: config.method,
+            status: axiosError?.response?.status,
+            code: axiosError?.code,
+          });
+        if (!retry) {
+          throw error;
+        }
+        const retryAfter = axiosError?.response?.headers?.["retry-after"];
+        await delay(retryDelayMs(attempt, retryAfter));
+      }
+    }
   }
 
   withOrganization<T>(
@@ -1277,7 +1709,7 @@ export class ArenzyraApiClient {
       if (organizationId) {
         headers["x-organization-id"] = organizationId;
       }
-      return await this.client.request<T>({
+      return await this.requestWithRetry<T>({
         ...config,
         headers: {
           ...headers,
@@ -1480,6 +1912,395 @@ export class ArenzyraApiClient {
     }
   }
 
+  async createStaffTaskTemplate(
+    payload: CreateStaffTaskTemplatePayload,
+  ): Promise<StaffTaskTemplateResponse> {
+    try {
+      const response = await this.request<StaffTaskTemplateResponse>({
+        method: "post",
+        url: "/staff-tasks/templates",
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async listStaffTaskTemplates(
+    guildId: string,
+  ): Promise<StaffTaskTemplateResponse[]> {
+    try {
+      const response = await this.request<StaffTaskTemplateResponse[]>({
+        method: "get",
+        url: "/staff-tasks/templates",
+        params: { guildId },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async setStaffTaskTemplateEnabled(
+    templateId: string,
+    enabled: boolean,
+  ): Promise<StaffTaskTemplateResponse> {
+    try {
+      const response = await this.request<StaffTaskTemplateResponse>({
+        method: "patch",
+        url: `/staff-tasks/templates/${templateId}/enabled`,
+        data: { enabled },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async postStaffTaskTemplateNow(
+    templateId: string,
+  ): Promise<StaffTaskRunResponse> {
+    try {
+      const response = await this.request<StaffTaskRunResponse>({
+        method: "post",
+        url: `/staff-tasks/templates/${templateId}/post-now`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async dispatchStaffTasks(
+    guildId: string,
+  ): Promise<{ runs: StaffTaskRunResponse[] }> {
+    try {
+      const response = await this.request<{ runs: StaffTaskRunResponse[] }>({
+        method: "post",
+        url: "/staff-tasks/dispatch",
+        data: { guildId },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async getStaffTaskBoard(
+    guildId: string,
+  ): Promise<{ runs: StaffTaskRunResponse[] }> {
+    try {
+      const response = await this.request<{ runs: StaffTaskRunResponse[] }>({
+        method: "get",
+        url: "/staff-tasks/board",
+        params: { guildId },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async markStaffTaskBoardPosted(
+    runId: string,
+    payload: {
+      discordUserId: string;
+      discordUsername?: string | null;
+      boardChannelId: string;
+      boardMessageId: string;
+    },
+  ): Promise<{
+    id: string;
+    boardChannelId: string;
+    boardMessageId: string | null;
+  }> {
+    try {
+      const response = await this.request<{
+        id: string;
+        boardChannelId: string;
+        boardMessageId: string | null;
+      }>({
+        method: "post",
+        url: `/staff-tasks/runs/${runId}/board`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  private async staffTaskAction(
+    taskId: string,
+    path: string,
+    payload: {
+      discordUserId: string;
+      discordUsername?: string | null;
+      completionNote?: string | null;
+    },
+  ): Promise<StaffTaskActionResponse> {
+    try {
+      const response = await this.request<StaffTaskActionResponse>({
+        method: "post",
+        url: `/staff-tasks/tasks/${taskId}/${path}`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async requestStaffTaskClaim(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "claim/request", payload);
+  }
+
+  async confirmStaffTaskClaim(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "claim/confirm", payload);
+  }
+
+  async cancelStaffTaskClaim(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "claim/cancel", payload);
+  }
+
+  async requestStaffTaskRelease(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "release/request", payload);
+  }
+
+  async confirmStaffTaskRelease(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "release/confirm", payload);
+  }
+
+  async cancelStaffTaskRelease(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "release/cancel", payload);
+  }
+
+  async requestStaffTaskCompletion(
+    taskId: string,
+    payload: {
+      discordUserId: string;
+      discordUsername?: string | null;
+      completionNote?: string | null;
+    },
+  ) {
+    return this.staffTaskAction(taskId, "completion/request", payload);
+  }
+
+  async confirmStaffTaskCompletion(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "completion/confirm", payload);
+  }
+
+  async cancelStaffTaskCompletion(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "completion/cancel", payload);
+  }
+
+  async approveStaffTaskCompletion(
+    taskId: string,
+    payload: { discordUserId: string; discordUsername?: string | null },
+  ) {
+    return this.staffTaskAction(taskId, "review/approve", payload);
+  }
+
+  async getStaffTaskLeaderboard(
+    guildId: string,
+    month?: string,
+  ): Promise<StaffTaskLeaderboardResponse> {
+    try {
+      const response = await this.request<StaffTaskLeaderboardResponse>({
+        method: "get",
+        url: "/staff-tasks/leaderboard",
+        params: { guildId, ...(month ? { month } : {}) },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async createDiscordIdpSchedule(
+    sessionId: string,
+    payload: {
+      guildId: string;
+      matchNumber: number;
+      roomId: string;
+      roomPassword: string;
+      startsAt: string;
+      discordUserId: string;
+      discordUsername?: string | null;
+    },
+  ): Promise<DiscordIdpScheduleResponse> {
+    try {
+      const response = await this.request<DiscordIdpScheduleResponse>({
+        method: "post",
+        url: `/idp-schedules/sessions/${sessionId}`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async markDiscordIdpPrimaryPosted(
+    scheduleId: string,
+    payload: {
+      discordUserId: string;
+      discordUsername?: string | null;
+      messageId: string;
+    },
+  ): Promise<DiscordIdpScheduleResponse> {
+    try {
+      const response = await this.request<DiscordIdpScheduleResponse>({
+        method: "post",
+        url: `/idp-schedules/${scheduleId}/primary-posted`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async listDueDiscordIdpSchedules(
+    guildId: string,
+  ): Promise<{ schedules: DiscordIdpScheduleResponse[] }> {
+    try {
+      const response = await this.request<{
+        schedules: DiscordIdpScheduleResponse[];
+      }>({
+        method: "get",
+        url: "/idp-schedules/due",
+        params: { guildId },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async claimDiscordIdpReminder(
+    scheduleId: string,
+    reminderKey: string,
+  ): Promise<
+    DiscordIdpScheduleResponse & { reminder: DiscordIdpReminderResponse }
+  > {
+    try {
+      const response = await this.request<
+        DiscordIdpScheduleResponse & { reminder: DiscordIdpReminderResponse }
+      >({
+        method: "post",
+        url: `/idp-schedules/${scheduleId}/reminders/${reminderKey}/claim`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async releaseDiscordIdpReminder(
+    scheduleId: string,
+    reminderKey: string,
+  ): Promise<DiscordIdpScheduleResponse> {
+    try {
+      const response = await this.request<DiscordIdpScheduleResponse>({
+        method: "post",
+        url: `/idp-schedules/${scheduleId}/reminders/${reminderKey}/release`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async listDueDiscordScheduledMessages(
+    guildId: string,
+  ): Promise<{ messages: DiscordScheduledMessageResponse[] }> {
+    try {
+      const response = await this.request<{
+        messages: DiscordScheduledMessageResponse[];
+      }>({
+        method: "get",
+        url: "/discord-scheduled-messages/due",
+        params: { guildId },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async claimDiscordScheduledMessage(
+    messageId: string,
+  ): Promise<DiscordScheduledMessageResponse> {
+    try {
+      const response = await this.request<DiscordScheduledMessageResponse>({
+        method: "post",
+        url: `/discord-scheduled-messages/${messageId}/claim`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async markDiscordScheduledMessageSent(
+    messageId: string,
+    claimToken: string,
+  ): Promise<DiscordScheduledMessageResponse> {
+    try {
+      const response = await this.request<DiscordScheduledMessageResponse>({
+        method: "post",
+        url: `/discord-scheduled-messages/${messageId}/sent`,
+        data: { claimToken },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async releaseDiscordScheduledMessage(
+    messageId: string,
+    claimToken: string,
+    error?: string,
+  ): Promise<DiscordScheduledMessageResponse> {
+    try {
+      const response = await this.request<DiscordScheduledMessageResponse>({
+        method: "post",
+        url: `/discord-scheduled-messages/${messageId}/release`,
+        data: { claimToken, ...(error ? { error } : {}) },
+      });
+      return response.data;
+    } catch (requestError) {
+      throw normalizeApiError(requestError);
+    }
+  }
+
   async getDiscordChannelPause(
     guildId: string,
     channelId: string,
@@ -1633,11 +2454,16 @@ export class ArenzyraApiClient {
 
   async listRegistrations(
     sessionId: string,
+    params: { status?: string | null; includeDeleted?: boolean } = {},
   ): Promise<SessionRegistrationResponse[]> {
     try {
       const response = await this.request<SessionRegistrationResponse[]>({
         method: "get",
         url: `/sessions/${sessionId}/registrations`,
+        params: {
+          status: params.status?.trim() || undefined,
+          includeDeleted: params.includeDeleted ? "true" : undefined,
+        },
       });
       return response.data;
     } catch (error) {
@@ -1697,6 +2523,108 @@ export class ArenzyraApiClient {
           reason: payload.reason ?? "Reset session result system",
         },
       });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async previewConditionalBanEnrollment(
+    sessionId: string,
+    payload: PreviewConditionalBanEnrollmentPayload,
+  ): Promise<PreviewConditionalBanEnrollmentResponse> {
+    try {
+      const response =
+        await this.request<PreviewConditionalBanEnrollmentResponse>({
+          method: "post",
+          url: `/sessions/${sessionId}/conditional-ban-enrollments/preview`,
+          data: payload,
+        });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async confirmConditionalBanEnrollment(
+    sessionId: string,
+    payload: ConfirmConditionalBanEnrollmentPayload,
+  ): Promise<ConfirmConditionalBanEnrollmentResponse> {
+    try {
+      const response =
+        await this.request<ConfirmConditionalBanEnrollmentResponse>({
+          method: "post",
+          url: `/sessions/${sessionId}/conditional-ban-enrollments/confirm`,
+          data: payload,
+        });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async getConditionalBanRoleProtection(
+    sessionId: string,
+    payload: { guildId: string; discordUserId: string },
+  ): Promise<ConditionalBanRoleProtectionResponse> {
+    try {
+      const response = await this.request<ConditionalBanRoleProtectionResponse>(
+        {
+          method: "post",
+          url: `/sessions/${sessionId}/conditional-ban-enrollments/role-protection`,
+          data: payload,
+        },
+      );
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async finalizeConditionalBanEnrollments(
+    sessionId: string,
+    payload: FinalizeConditionalBanEnrollmentsPayload,
+  ): Promise<FinalizeConditionalBanEnrollmentsResponse> {
+    try {
+      const response =
+        await this.request<FinalizeConditionalBanEnrollmentsResponse>({
+          method: "post",
+          url: `/sessions/${sessionId}/conditional-ban-enrollments/finalize`,
+          data: payload,
+        });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async prepareConditionalBanFinalSnapshot(
+    sessionId: string,
+    payload: PrepareConditionalBanFinalSnapshotPayload,
+  ): Promise<ConditionalBanFinalSnapshotResponse> {
+    try {
+      const response = await this.request<ConditionalBanFinalSnapshotResponse>({
+        method: "post",
+        url: `/sessions/${sessionId}/conditional-ban-enrollments/final-snapshot`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async sealConditionalBanFinalSnapshot(
+    sessionId: string,
+    payload: SealConditionalBanFinalSnapshotPayload,
+  ): Promise<SealConditionalBanFinalSnapshotResponse> {
+    try {
+      const response =
+        await this.request<SealConditionalBanFinalSnapshotResponse>({
+          method: "post",
+          url: `/sessions/${sessionId}/conditional-ban-enrollments/final-snapshot/seal`,
+          data: payload,
+        });
       return response.data;
     } catch (error) {
       throw normalizeApiError(error);
@@ -1886,9 +2814,7 @@ export class ArenzyraApiClient {
     }
   }
 
-  async getResultBackup(
-    backupId: string,
-  ): Promise<ResultBackupDetailResponse> {
+  async getResultBackup(backupId: string): Promise<ResultBackupDetailResponse> {
     try {
       const response = await this.request<ResultBackupDetailResponse>({
         method: "get",
@@ -1922,6 +2848,22 @@ export class ArenzyraApiClient {
         method: "get",
         url: "/organizer/teams",
         params: { search, scope: "all" },
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async updateTeam(
+    teamId: string,
+    payload: UpdateTeamPayload,
+  ): Promise<TeamSummary> {
+    try {
+      const response = await this.request<TeamSummary>({
+        method: "patch",
+        url: `/organizer/teams/${encodeURIComponent(teamId)}`,
+        data: payload,
       });
       return response.data;
     } catch (error) {

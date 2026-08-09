@@ -16,6 +16,16 @@ export const DEFAULT_DISCORD_EMOJIS = {
   team: "\u{1F3AE}",
   idp: "\u{1F511}",
   room: "\u{1F3E0}",
+  idpScheduleEnabled: "true",
+  idpScheduleTimeZone: "Europe/Bucharest",
+  idpSchedulePrimaryMessageTemplate:
+    "{idpRole}\n**{match} Room Information**\n{mapLine}\nRoom ID: `{roomId}`\nPassword: `{password}`\nStart: {startTime} ({startsRelative})",
+  idpScheduleReminder5Message:
+    "{idpRole}\n**{match} starts in {minutes} minutes.**\n{mapLine}\nRoom ID: `{roomId}`\nPassword: `{password}`",
+  idpScheduleReminder2Message:
+    "{idpRole}\n**{match} starts in {minutes} minutes.**\n{mapLine}\nRoom ID: `{roomId}`\nPassword: `{password}`",
+  idpScheduleReminder1Message:
+    "{idpRole}\n**{match} Last Call** — starts in {minutes} minute.\n{mapLine}\nRoom ID: `{roomId}`\nPassword: `{password}`",
   results: "\u{1F4DD}",
   empty: "\u25AB",
   slotListMode: "number",
@@ -41,6 +51,10 @@ export const DEFAULT_DISCORD_EMOJIS = {
   playConfirmationCleanupBanEnabled: "false",
   playConfirmationCleanupReason: "Missed confirmation for {session}",
   playConfirmationCleanupLastClosedAt: "",
+  playCancellationCleanupEnabled: "false",
+  playCancellationCleanupDelayMinutes: "10",
+  playCancellationCleanupBanEnabled: "false",
+  playCancellationCleanupReason: "Cancelled slot for {session}",
   playConfirmationWaitlistGraceMinutes: "30",
   playConfirmationWaitlistGraceStartedAt: "",
   playConfirmationWaitlistGraceUntil: "",
@@ -52,6 +66,8 @@ export const DEFAULT_DISCORD_EMOJIS = {
   waitlistPromotionAutoOpenUntil: "",
   waitlistPromotionScheduleOverrideState: "",
   waitlistPromotionScheduleOverrideUpdatedAt: "",
+  waitlistPromotionOpenMessageText:
+    "{role} A normal slot is available for {session}. Register in the waitlist channel before it closes {closesRelative}.",
   registrationMessageEnabled: "true",
   registrationMessageDisplayMode: "plain",
   registrationMessageTitle: "Arenzyra Scrim Registration",
@@ -103,6 +119,17 @@ export const DEFAULT_DISCORD_EMOJIS = {
   autoRegistrationWaitlistFallback: "true",
   autoRegistrationMaxTeams: "25",
   autoRegistrationLastRunKey: "",
+  autoRegistrationGrantChannelId: "",
+  autoRegistrationGrantChannelName: "auto-registration",
+  autoRegistrationGrants: "",
+  roleRemovalRequests: "",
+  teamLogoReminderEnabled: "false",
+  teamLogoReminderWeeklySchedule: "",
+  teamLogoReminderTimeZone: "",
+  teamLogoReminderIntervalMinutes: "30",
+  teamLogoReminderMaxMessages: "6",
+  teamLogoReminderMessageText:
+    "{managers} Please upload or sync your team logo for {session}.\n\nMissing logos: {missingCount}/{totalCount}\n{missingTeams}",
   discordLogoChannelIds: "",
   resultReviewChannelId: "",
   matchResultPostChannelId: "",
@@ -112,6 +139,9 @@ export const DEFAULT_DISCORD_EMOJIS = {
   finalResultPostBackupId: "",
   discordWidgetTemplateEnabled: "false",
   discordWidgetTemplateBackgroundUrl: "",
+  discordWidgetCanvasPreset: "discord-default",
+  discordWidgetCanvasWidth: "1200",
+  discordWidgetCanvasHeight: "630",
   discordWidgetPrimaryColor: "",
   discordWidgetTextColor: "",
   discordWidgetMutedColor: "",
@@ -168,6 +198,11 @@ export const DEFAULT_DISCORD_EMOJIS = {
   banDefaultDurationDays: "3",
   banDefaultReason: "Manual Discord ban",
   banServerAction: "ROLE",
+  slotBanDefaultScope: "",
+  slotBanDefaultDurationDays: "",
+  slotBanDefaultReason: "",
+  slotBanServerAction: "",
+  slotBanRoleIds: "",
   banApplyRoleOnTeamBan: "false",
   banRoleIds: "",
   permanentBanRoleIds: "",
@@ -208,6 +243,10 @@ export type DiscordEmojiKey = Exclude<
   | "playConfirmationCleanupBanEnabled"
   | "playConfirmationCleanupReason"
   | "playConfirmationCleanupLastClosedAt"
+  | "playCancellationCleanupEnabled"
+  | "playCancellationCleanupDelayMinutes"
+  | "playCancellationCleanupBanEnabled"
+  | "playCancellationCleanupReason"
   | "playConfirmationWaitlistGraceMinutes"
   | "playConfirmationWaitlistGraceStartedAt"
   | "playConfirmationWaitlistGraceUntil"
@@ -263,6 +302,16 @@ export type DiscordEmojiKey = Exclude<
   | "autoRegistrationWaitlistFallback"
   | "autoRegistrationMaxTeams"
   | "autoRegistrationLastRunKey"
+  | "autoRegistrationGrantChannelId"
+  | "autoRegistrationGrantChannelName"
+  | "autoRegistrationGrants"
+  | "roleRemovalRequests"
+  | "teamLogoReminderEnabled"
+  | "teamLogoReminderWeeklySchedule"
+  | "teamLogoReminderTimeZone"
+  | "teamLogoReminderIntervalMinutes"
+  | "teamLogoReminderMaxMessages"
+  | "teamLogoReminderMessageText"
   | "discordLogoChannelIds"
   | "resultReviewChannelId"
   | "matchResultPostChannelId"
@@ -272,6 +321,9 @@ export type DiscordEmojiKey = Exclude<
   | "finalResultPostBackupId"
   | "discordWidgetTemplateEnabled"
   | "discordWidgetTemplateBackgroundUrl"
+  | "discordWidgetCanvasPreset"
+  | "discordWidgetCanvasWidth"
+  | "discordWidgetCanvasHeight"
   | "discordWidgetPrimaryColor"
   | "discordWidgetTextColor"
   | "discordWidgetMutedColor"
@@ -327,6 +379,11 @@ export type DiscordEmojiKey = Exclude<
   | "banDefaultDurationDays"
   | "banDefaultReason"
   | "banServerAction"
+  | "slotBanDefaultScope"
+  | "slotBanDefaultDurationDays"
+  | "slotBanDefaultReason"
+  | "slotBanServerAction"
+  | "slotBanRoleIds"
   | "banApplyRoleOnTeamBan"
   | "banRoleIds"
   | "permanentBanRoleIds"
@@ -367,9 +424,33 @@ export type PlayConfirmationCleanupWindow = {
   mode: "weekly" | "none";
   timeZone: string | null;
 };
+export type PlayConfirmationCloseWindow = {
+  configured: boolean;
+  closesAt: Date | null;
+  nextClosesAt: Date | null;
+  opensAt: Date | null;
+  mode: "weekly" | "none";
+  timeZone: string | null;
+};
 export type RoleAccessKind = "earlyAccess" | "vipAccess";
 export type RoleAccessGroupMode = "normal" | "vip" | "both";
+export type RoleAccessQualificationMode = "none" | "winner";
 export type AutoRegistrationPlacement = "normal" | "vip";
+export type WinnerQualification = {
+  id: string;
+  sourceSessionId: string;
+  teamId: string;
+  teamName: string;
+  teamTag: string | null;
+  managerDiscordIds: string[];
+  rank: number;
+  roleId: string;
+  roleName: string;
+  grantedAt: string;
+  expiresAt: string;
+  totalPoints: number | null;
+  totalKills: number | null;
+};
 export type RoleAccessGroup = {
   id: string;
   name: string;
@@ -384,6 +465,14 @@ export type RoleAccessGroup = {
   closeMessageText: string;
   managedState: "open" | "closed" | "";
   managedMessageId: string;
+  qualificationMode: RoleAccessQualificationMode;
+  winnerSourceSessionId: string;
+  winnerSourceSessionName: string;
+  winnerTopCount: number;
+  winnerDurationDays: number;
+  winnerRemoveRoleOnExpiry: boolean;
+  winnerLastSyncedAt: string;
+  winnerQualifications: WinnerQualification[];
 };
 export type AutoRegistrationConfig = {
   enabled: boolean;
@@ -395,6 +484,48 @@ export type AutoRegistrationConfig = {
   waitlistFallback: boolean;
   maxTeams: number;
   lastRunKey: string;
+};
+export type TeamLogoReminderConfig = {
+  enabled: boolean;
+  weeklySchedule: string;
+  timeZone: string;
+  intervalMinutes: number;
+  maxMessages: number;
+  messageText: string;
+};
+export type AutoRegistrationGrant = {
+  id: string;
+  teamId: string;
+  teamName: string;
+  teamTag: string | null;
+  managerDiscordId: string;
+  managerDiscordUsername: string | null;
+  managerDisplayName: string | null;
+  roleId: string;
+  roleName: string;
+  grantedAt: string;
+  expiresAt: string;
+  createdByDiscordId: string;
+  createdByLabel: string | null;
+  sourceChannelId: string;
+  sourceMessageId: string;
+  roleAddedByBot: boolean;
+};
+export type RoleRemovalRequestKind = "auto-registration" | "winner";
+export type RoleRemovalRequest = {
+  id: string;
+  kind: RoleRemovalRequestKind;
+  grantId: string | null;
+  groupId: string | null;
+  qualificationId: string | null;
+  teamId: string;
+  teamName: string;
+  teamTag: string | null;
+  managerDiscordId: string;
+  roleId: string;
+  roleName: string;
+  requestedAt: string;
+  requestedBy: string | null;
 };
 export type RoleAccessWindowSnapshot = {
   opensAt: Date | null;
@@ -791,6 +922,90 @@ export function playConfirmationCleanupWindow(
   };
 }
 
+export function playConfirmationCloseWindow(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+): PlayConfirmationCloseWindow {
+  const schedule = parseWeeklyConfirmationSchedule(config);
+  if (schedule.length === 0) {
+    return {
+      configured: false,
+      closesAt: null,
+      nextClosesAt: null,
+      opensAt: null,
+      mode: "none",
+      timeZone: null,
+    };
+  }
+
+  const timeZone = configuredTimeZone(config);
+  const currentParts = zonedDateParts(now, timeZone);
+  const intervals = weeklyConfirmationIntervals(
+    schedule,
+    timeZone,
+    currentParts,
+  );
+  const previousInterval = intervals
+    .filter((interval) => interval.closesAt <= now)
+    .at(-1);
+  const nextInterval = intervals.find((interval) => interval.closesAt > now);
+
+  return {
+    configured: true,
+    closesAt: previousInterval?.closesAt ?? null,
+    nextClosesAt: nextInterval?.closesAt ?? null,
+    opensAt: previousInterval?.opensAt ?? nextInterval?.opensAt ?? null,
+    mode: "weekly",
+    timeZone,
+  };
+}
+
+export function playCancellationCleanupWindow(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+) {
+  const schedule = parseWeeklyConfirmationSchedule(config);
+  if (schedule.length === 0) {
+    return {
+      configured: false,
+      cleanupAt: null,
+      nextCleanupAt: null,
+      noBanUntilAt: null,
+      banUntilAt: null,
+      mode: "none" as const,
+      timeZone: null,
+    };
+  }
+
+  const timeZone = configuredTimeZone(config);
+  const currentParts = zonedDateParts(now, timeZone);
+  const intervals = weeklyConfirmationIntervals(
+    schedule,
+    timeZone,
+    currentParts,
+  );
+  const previousInterval = intervals
+    .filter((interval) => interval.cleanupAt <= now)
+    .at(-1);
+  const nextInterval = intervals.find((interval) => interval.cleanupAt > now);
+
+  return {
+    configured: true,
+    cleanupAt: previousInterval?.cleanupAt ?? null,
+    nextCleanupAt: nextInterval?.cleanupAt ?? null,
+    noBanUntilAt: previousInterval?.cancelNoBanUntilAt ?? null,
+    banUntilAt: previousInterval?.cancelBanUntilAt ?? null,
+    mode: "weekly" as const,
+    timeZone,
+  };
+}
+
 export function waitlistPromotionAutoOpenUntil(
   config?:
     | Pick<SessionDiscordConfigResponse, "emojis">
@@ -1143,6 +1358,11 @@ export function parseRoleAccessGroups(
         const managedState = stringValue(record.managedState)
           .trim()
           .toLowerCase();
+        const qualificationMode =
+          stringValue(record.qualificationMode).trim().toLowerCase() ===
+          "winner"
+            ? "winner"
+            : "none";
         return {
           id,
           name: stringValue(record.name).trim() || `Access Group ${index + 1}`,
@@ -1164,12 +1384,91 @@ export function parseRoleAccessGroups(
               ? managedState
               : "",
           managedMessageId: stringValue(record.managedMessageId).trim(),
+          qualificationMode,
+          winnerSourceSessionId: stringValue(record.winnerSourceSessionId).trim(),
+          winnerSourceSessionName: stringValue(record.winnerSourceSessionName).trim(),
+          winnerTopCount: integerFromUnknown(record.winnerTopCount, 1, 1, 25),
+          winnerDurationDays: integerFromUnknown(
+            record.winnerDurationDays,
+            1,
+            1,
+            365,
+          ),
+          winnerRemoveRoleOnExpiry: booleanFromUnknown(
+            record.winnerRemoveRoleOnExpiry,
+            true,
+          ),
+          winnerLastSyncedAt: stringValue(record.winnerLastSyncedAt).trim(),
+          winnerQualifications: parseWinnerQualifications(
+            record.winnerQualifications,
+          ),
         };
       })
       .filter((entry): entry is RoleAccessGroup => Boolean(entry));
   } catch {
     return [];
   }
+}
+
+function parseWinnerQualifications(value: unknown): WinnerQualification[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry): WinnerQualification | null => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return null;
+      }
+      const record = entry as Record<string, unknown>;
+      const id = stringValue(record.id).trim();
+      const sourceSessionId = stringValue(record.sourceSessionId).trim();
+      const teamId = stringValue(record.teamId).trim();
+      const teamName = stringValue(record.teamName).trim();
+      const managerDiscordIds = Array.isArray(record.managerDiscordIds)
+        ? record.managerDiscordIds
+            .map((managerId) => stringValue(managerId).trim())
+            .filter(Boolean)
+        : [];
+      const grantedAt = stringValue(record.grantedAt).trim();
+      const expiresAt = stringValue(record.expiresAt).trim();
+      const roleId = stringValue(record.roleId).trim();
+      if (
+        !id ||
+        !sourceSessionId ||
+        !teamId ||
+        !teamName ||
+        managerDiscordIds.length === 0 ||
+        !grantedAt ||
+        !expiresAt ||
+        !roleId
+      ) {
+        return null;
+      }
+      return {
+        id,
+        sourceSessionId,
+        teamId,
+        teamName,
+        teamTag: stringValue(record.teamTag).trim() || null,
+        managerDiscordIds,
+        rank: integerFromUnknown(record.rank, 1, 1, 1000),
+        roleId,
+        roleName: stringValue(record.roleName).trim(),
+        grantedAt,
+        expiresAt,
+        totalPoints:
+          typeof record.totalPoints === "number" &&
+          Number.isFinite(record.totalPoints)
+            ? record.totalPoints
+            : null,
+        totalKills:
+          typeof record.totalKills === "number" &&
+          Number.isFinite(record.totalKills)
+            ? record.totalKills
+            : null,
+      };
+    })
+    .filter((entry): entry is WinnerQualification => Boolean(entry));
 }
 
 export function roleAccessGroupWindow(
@@ -1282,6 +1581,264 @@ export function parseAutoRegistrationConfig(
   };
 }
 
+export function parseTeamLogoReminderConfig(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+): TeamLogoReminderConfig {
+  const emojis = emojiMap(config);
+  return {
+    enabled: emojis?.teamLogoReminderEnabled?.trim() === "true",
+    weeklySchedule: emojis?.teamLogoReminderWeeklySchedule?.trim() ?? "",
+    timeZone: emojis?.teamLogoReminderTimeZone?.trim() ?? "",
+    intervalMinutes: integerFromUnknown(
+      emojis?.teamLogoReminderIntervalMinutes,
+      30,
+      1,
+      180,
+    ),
+    maxMessages: integerFromUnknown(emojis?.teamLogoReminderMaxMessages, 6, 1, 24),
+    messageText:
+      emojis?.teamLogoReminderMessageText?.trim() ||
+      DEFAULT_DISCORD_EMOJIS.teamLogoReminderMessageText,
+  };
+}
+
+function stringOrNull(value: unknown) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || null;
+}
+
+function parseAutoRegistrationGrantEntry(
+  value: unknown,
+): AutoRegistrationGrant | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const id = stringValue(record.id).trim();
+  const teamId = stringValue(record.teamId).trim();
+  const teamName = stringValue(record.teamName).trim();
+  const managerDiscordId = stringValue(record.managerDiscordId).trim();
+  const roleId = stringValue(record.roleId).trim();
+  const grantedAt = stringValue(record.grantedAt).trim();
+  const expiresAt = stringValue(record.expiresAt).trim();
+  const createdByDiscordId = stringValue(record.createdByDiscordId).trim();
+  const sourceChannelId = stringValue(record.sourceChannelId).trim();
+  const sourceMessageId = stringValue(record.sourceMessageId).trim();
+  if (
+    !id ||
+    !teamId ||
+    !teamName ||
+    !managerDiscordId ||
+    !roleId ||
+    !grantedAt ||
+    !expiresAt ||
+    !createdByDiscordId ||
+    !sourceChannelId ||
+    !sourceMessageId ||
+    Number.isNaN(Date.parse(grantedAt)) ||
+    Number.isNaN(Date.parse(expiresAt))
+  ) {
+    return null;
+  }
+  return {
+    id,
+    teamId,
+    teamName,
+    teamTag: stringOrNull(record.teamTag),
+    managerDiscordId,
+    managerDiscordUsername: stringOrNull(record.managerDiscordUsername),
+    managerDisplayName: stringOrNull(record.managerDisplayName),
+    roleId,
+    roleName: stringValue(record.roleName).trim(),
+    grantedAt,
+    expiresAt,
+    createdByDiscordId,
+    createdByLabel: stringOrNull(record.createdByLabel),
+    sourceChannelId,
+    sourceMessageId,
+    roleAddedByBot: record.roleAddedByBot === true,
+  };
+}
+
+export function parseAutoRegistrationGrants(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+): AutoRegistrationGrant[] {
+  const raw = emojiMap(config)?.autoRegistrationGrants?.trim();
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object"
+        ? (parsed as { grants?: unknown }).grants
+        : null;
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+    return entries
+      .map(parseAutoRegistrationGrantEntry)
+      .filter((entry): entry is AutoRegistrationGrant => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+export function activeAutoRegistrationGrants(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+) {
+  const nowMs = now.getTime();
+  return parseAutoRegistrationGrants(config).filter(
+    (grant) => Date.parse(grant.expiresAt) > nowMs,
+  );
+}
+
+export function serializeAutoRegistrationGrants(
+  grants: AutoRegistrationGrant[],
+) {
+  const clean = grants
+    .map((grant) => ({
+      ...grant,
+      teamTag: grant.teamTag?.trim() || null,
+      managerDiscordUsername: grant.managerDiscordUsername?.trim() || null,
+      managerDisplayName: grant.managerDisplayName?.trim() || null,
+      roleName: grant.roleName?.trim() || "",
+      createdByLabel: grant.createdByLabel?.trim() || null,
+    }))
+    .filter(
+      (grant) =>
+        grant.id &&
+        grant.teamId &&
+        grant.teamName &&
+        grant.managerDiscordId &&
+        grant.roleId &&
+        grant.expiresAt,
+    );
+  return clean.length ? JSON.stringify({ grants: clean }) : "";
+}
+
+function normalizeRoleRemovalRequestKind(
+  value: unknown,
+): RoleRemovalRequestKind | null {
+  const clean = stringValue(value).trim().toLowerCase();
+  return clean === "auto-registration" || clean === "winner" ? clean : null;
+}
+
+function parseRoleRemovalRequestEntry(
+  value: unknown,
+): RoleRemovalRequest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const id = stringValue(record.id).trim();
+  const kind = normalizeRoleRemovalRequestKind(record.kind);
+  const teamId = stringValue(record.teamId).trim();
+  const teamName = stringValue(record.teamName).trim();
+  const managerDiscordId = stringValue(record.managerDiscordId).trim();
+  const roleId = stringValue(record.roleId).trim();
+  const requestedAt = stringValue(record.requestedAt).trim();
+  if (
+    !id ||
+    !kind ||
+    !teamId ||
+    !teamName ||
+    !managerDiscordId ||
+    !roleId ||
+    !requestedAt ||
+    Number.isNaN(Date.parse(requestedAt))
+  ) {
+    return null;
+  }
+  return {
+    id,
+    kind,
+    grantId: stringOrNull(record.grantId),
+    groupId: stringOrNull(record.groupId),
+    qualificationId: stringOrNull(record.qualificationId),
+    teamId,
+    teamName,
+    teamTag: stringOrNull(record.teamTag),
+    managerDiscordId,
+    roleId,
+    roleName: stringValue(record.roleName).trim(),
+    requestedAt,
+    requestedBy: stringOrNull(record.requestedBy),
+  };
+}
+
+export function parseRoleRemovalRequests(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+): RoleRemovalRequest[] {
+  const raw = emojiMap(config)?.roleRemovalRequests?.trim();
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object"
+        ? (parsed as { requests?: unknown }).requests
+        : null;
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    return entries
+      .map(parseRoleRemovalRequestEntry)
+      .filter((entry): entry is RoleRemovalRequest => {
+        if (!entry || seen.has(entry.id)) {
+          return false;
+        }
+        seen.add(entry.id);
+        return true;
+      });
+  } catch {
+    return [];
+  }
+}
+
+export function serializeRoleRemovalRequests(
+  requests: RoleRemovalRequest[],
+) {
+  const clean = requests
+    .map((request) => ({
+      ...request,
+      grantId: request.grantId?.trim() || null,
+      groupId: request.groupId?.trim() || null,
+      qualificationId: request.qualificationId?.trim() || null,
+      teamTag: request.teamTag?.trim() || null,
+      roleName: request.roleName?.trim() || "",
+      requestedBy: request.requestedBy?.trim() || null,
+    }))
+    .filter(
+      (request) =>
+        request.id &&
+        (request.kind === "auto-registration" || request.kind === "winner") &&
+        request.teamId &&
+        request.teamName &&
+        request.managerDiscordId &&
+        request.roleId &&
+        request.requestedAt,
+    );
+  return clean.length ? JSON.stringify({ requests: clean }) : "";
+}
+
 export function autoRegistrationWindow(
   config?:
     | Pick<SessionDiscordConfigResponse, "emojis">
@@ -1318,6 +1875,79 @@ export function autoRegistrationWindow(
   }
 
   const timeZone = configuredAutoRegistrationTimeZone(autoConfig, config);
+  const currentParts = zonedDateParts(now, timeZone);
+  const intervals = weeklyRegistrationIntervals(
+    schedule,
+    timeZone,
+    currentParts,
+  );
+  const activeInterval = intervals.find(
+    (interval) => interval.opensAt <= now && now < interval.closesAt,
+  );
+  if (activeInterval) {
+    return {
+      opensAt: activeInterval.opensAt,
+      closesAt: activeInterval.closesAt,
+      configured: true,
+      state: "open",
+      allowsAction: true,
+      mode: "weekly",
+      timeZone,
+    };
+  }
+
+  const nextInterval = intervals.find((interval) => interval.opensAt > now);
+  const previousInterval = intervals
+    .filter((interval) => interval.closesAt <= now)
+    .at(-1);
+
+  return {
+    opensAt: nextInterval?.opensAt ?? null,
+    closesAt: previousInterval?.closesAt ?? null,
+    configured: true,
+    state: "closed",
+    allowsAction: false,
+    mode: "weekly",
+    timeZone,
+  };
+}
+
+export function teamLogoReminderWindow(
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+  now = new Date(),
+): RoleAccessWindowSnapshot {
+  const reminderConfig = parseTeamLogoReminderConfig(config);
+  if (!reminderConfig.enabled) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: false,
+      state: "closed",
+      allowsAction: false,
+      mode: "off",
+      timeZone: null,
+    };
+  }
+
+  const schedule = parseWeeklyRoleAccessScheduleText(
+    reminderConfig.weeklySchedule,
+  );
+  if (schedule.length === 0) {
+    return {
+      opensAt: null,
+      closesAt: null,
+      configured: false,
+      state: "closed",
+      allowsAction: false,
+      mode: "off",
+      timeZone: null,
+    };
+  }
+
+  const timeZone = configuredTeamLogoReminderTimeZone(reminderConfig, config);
   const currentParts = zonedDateParts(now, timeZone);
   const intervals = weeklyRegistrationIntervals(
     schedule,
@@ -1795,6 +2425,8 @@ type WeeklyConfirmationEntry = {
   closeTime: ParsedDailyTime;
   waitlistStartTime: ParsedDailyTime | null;
   cleanupTime: ParsedDailyTime | null;
+  cancelNoBanUntilTime: ParsedDailyTime | null;
+  cancelBanUntilTime: ParsedDailyTime | null;
 };
 type WeeklyRegistrationEntry = {
   dayIndex: number;
@@ -1906,6 +2538,13 @@ function parseWeeklyConfirmationSchedule(
           parseDailyTime(stringValue(day.cleanup)) ||
           parseDailyTime(stringValue(day.cleanupTime)) ||
           closeTime;
+        const cancelNoBanUntilTime =
+          parseDailyTime(stringValue(day.cancelNoBanUntil)) ||
+          parseDailyTime(stringValue(day.cancelGraceUntil)) ||
+          parseDailyTime(stringValue(day.noBanUntil));
+        const cancelBanUntilTime =
+          parseDailyTime(stringValue(day.cancelBanUntil)) ||
+          parseDailyTime(stringValue(day.banUntil));
         if (dayIndex === undefined || !enabled || !openTime || !closeTime) {
           return null;
         }
@@ -1915,6 +2554,8 @@ function parseWeeklyConfirmationSchedule(
           closeTime,
           waitlistStartTime,
           cleanupTime,
+          cancelNoBanUntilTime,
+          cancelBanUntilTime,
         };
       })
       .filter((entry): entry is WeeklyConfirmationEntry => Boolean(entry));
@@ -2100,6 +2741,8 @@ function weeklyRegistrationIntervals(
       ...entry,
       waitlistStartTime: null,
       cleanupTime: entry.closeTime,
+      cancelNoBanUntilTime: null,
+      cancelBanUntilTime: null,
     })),
     timeZone,
     currentParts,
@@ -2119,6 +2762,8 @@ function weeklyConfirmationIntervals(
     closesAt: Date;
     waitlistStartsAt: Date | null;
     cleanupAt: Date;
+    cancelNoBanUntilAt: Date | null;
+    cancelBanUntilAt: Date | null;
   }> = [];
   for (let offset = -7; offset <= 14; offset += 1) {
     const openDate = shiftedLocalDate(
@@ -2155,6 +2800,13 @@ function weeklyConfirmationIntervals(
         entry.closeTime.hour,
         entry.closeTime.minute,
       );
+      const cleanupTime = entry.cleanupTime ?? entry.closeTime;
+      const cleanupLocalDate = shiftedLocalDate(
+        closeDate.year,
+        closeDate.month,
+        closeDate.day,
+        cleanupTime.minutes < entry.closeTime.minutes ? 1 : 0,
+      );
       intervals.push({
         opensAt,
         closesAt,
@@ -2166,12 +2818,30 @@ function weeklyConfirmationIntervals(
               entry.waitlistStartTime,
             )
           : null,
-        cleanupAt: zonedTimeAfterReference(
+        cleanupAt: zonedDateTimeToDate(
           timeZone,
-          closeDate,
-          entry.closeTime,
-          entry.cleanupTime ?? entry.closeTime,
+          cleanupLocalDate.year,
+          cleanupLocalDate.month,
+          cleanupLocalDate.day,
+          cleanupTime.hour,
+          cleanupTime.minute,
         ),
+        cancelNoBanUntilAt: entry.cancelNoBanUntilTime
+          ? zonedTimeAfterReference(
+              timeZone,
+              cleanupLocalDate,
+              cleanupTime,
+              entry.cancelNoBanUntilTime,
+            )
+          : null,
+        cancelBanUntilAt: entry.cancelBanUntilTime
+          ? zonedTimeAfterReference(
+              timeZone,
+              cleanupLocalDate,
+              cleanupTime,
+              entry.cancelBanUntilTime,
+            )
+          : null,
       });
     }
   }
@@ -2434,6 +3104,26 @@ function configuredAutoRegistrationTimeZone(
   const emojis = emojiMap(config);
   const timeZone =
     autoConfig.timeZone.trim() || emojis?.registrationTimeZone?.trim() || "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+function configuredTeamLogoReminderTimeZone(
+  reminderConfig: Pick<TeamLogoReminderConfig, "timeZone">,
+  config?:
+    | Pick<SessionDiscordConfigResponse, "emojis">
+    | DiscordEmojiMap
+    | null,
+) {
+  const emojis = emojiMap(config);
+  const timeZone =
+    reminderConfig.timeZone.trim() ||
+    emojis?.registrationTimeZone?.trim() ||
+    "UTC";
   try {
     new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
     return timeZone;
