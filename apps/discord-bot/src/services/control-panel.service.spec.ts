@@ -92,6 +92,206 @@ test("ban controls accept match-name aliases for match numbers", () => {
   assert.equal(service.parseOptionalMatchNumber("m5"), 5);
 });
 
+test("ban control exposes the staff-only conditional registration modal", async () => {
+  let shownModal: any = null;
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1" },
+      config: { organizationId: "org-1", emojis: {} },
+    }),
+  };
+  const { interaction } = makeStaffInteraction({
+    customId: "banctl:conditional:session-1",
+    showModal: async (modal: any) => {
+      shownModal = modal.toJSON();
+    },
+  });
+
+  const service = new ControlPanelService(sessionService as any);
+  assert.equal(await service.handleButton(interaction as any), true);
+  assert.equal(
+    shownModal.custom_id,
+    "banctl-modal:conditional:session-1",
+  );
+  assert.equal(shownModal.title, "Conditional Team Registration");
+  assert.deepEqual(
+    shownModal.components.map(
+      (row: any) => row.components[0].custom_id,
+    ),
+    [
+      "conditional-team",
+      "conditional-managers",
+      "conditional-matches",
+      "conditional-reason",
+    ],
+  );
+});
+
+test("conditional registration previews exact bans then confirms with the same idempotent snapshot", async () => {
+  const managerId = "111111111111111111";
+  let previewPayload: any = null;
+  let confirmPayload: any = null;
+  const preview = {
+    eligible: true as const,
+    recovery: false,
+    confirmationToken: "signed-preview-token",
+    sessionId: "session-1",
+    team: {
+      id: "team-1",
+      name: "Banned Team",
+      tag: "BAN",
+      logoUrl: null,
+      countryCode: null,
+      region: null,
+    },
+    proposedSlotNumber: 7,
+    existingRegistration: null,
+    requiredMatchCount: 4,
+    managerDiscordUserIds: [managerId],
+    teamBans: [
+      {
+        id: "team-ban-1",
+        scope: "SESSION" as const,
+        sessionId: "session-1",
+        matchId: null,
+        reason: "No show",
+        note: null,
+        expiresAt: null,
+        createdAt: "2026-08-04T00:00:00.000Z",
+        updatedAt: "2026-08-04T00:00:00.000Z",
+      },
+    ],
+    managerBans: [
+      {
+        id: "manager-ban-1",
+        discordUserId: managerId,
+        scope: "SESSION" as const,
+        sessionId: "session-1",
+        matchId: null,
+        reason: "No show",
+        note: null,
+        expiresAt: null,
+        createdAt: "2026-08-04T00:00:00.000Z",
+        updatedAt: "2026-08-04T00:00:00.000Z",
+      },
+    ],
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1" },
+      config: {
+        organizationId: "org-1",
+        sessionId: "session-1",
+        guildId: "guild-1",
+        maxManagersPerTeam: 2,
+        emojis: {},
+      },
+    }),
+    withOrganization: async (
+      _organizationId: string,
+      fn: () => Promise<unknown>,
+    ) => fn(),
+    previewConditionalBannedTeamRegistration: async (
+      _sessionId: string,
+      payload: unknown,
+    ) => {
+      previewPayload = payload;
+      return preview;
+    },
+    createConditionalBannedTeamRegistration: async (
+      _sessionId: string,
+      payload: unknown,
+    ) => {
+      confirmPayload = payload;
+      return {
+        idempotent: false,
+        recovered: false,
+        registration: {
+          id: "registration-1",
+          teamId: "team-1",
+          team: preview.team,
+          slotNumber: 7,
+        },
+        enrollment: {
+          id: "enrollment-1",
+          sessionId: "session-1",
+          registrationId: "registration-1",
+          teamId: "team-1",
+          status: "ACTIVE",
+          managerDiscordUserIds: [managerId],
+          requiredMatchCount: 4,
+        },
+        roleSync: {
+          checkedManagers: 1,
+          addedAccessRoles: 2,
+          restoredBanRoles: 0,
+        },
+      };
+    },
+  };
+  const fields = new Map([
+    ["conditional-team", "BAN"],
+    ["conditional-managers", `<@${managerId}>`],
+    ["conditional-matches", "4"],
+    ["conditional-reason", "Staff recovery path"],
+  ]);
+  const { interaction: modalInteraction, edits } = makeStaffInteraction({
+    customId: "banctl-modal:conditional:session-1",
+    guild: {
+      id: "guild-1",
+      members: {
+        fetch: async () => ({
+          user: { bot: false },
+          permissions: { has: () => true },
+          roles: { cache: { some: () => false } },
+        }),
+      },
+    },
+    fields: {
+      getTextInputValue: (customId: string) => fields.get(customId) ?? "",
+    },
+    deferReply: async () => undefined,
+  });
+
+  const service = new ControlPanelService(sessionService as any);
+  assert.equal(await service.handleModalSubmit(modalInteraction as any), true);
+  assert.deepEqual(previewPayload, {
+    teamQuery: "BAN",
+    managerDiscordUserIds: [managerId],
+    requiredMatchCount: 4,
+  });
+  const previewReply = edits[0] as any;
+  assert.match(previewReply.content, /Exact team bans to release/);
+  assert.match(previewReply.content, new RegExp(`<@${managerId}>`));
+  const confirmCustomId =
+    previewReply.components[0].components[0].data.custom_id;
+
+  const { interaction: confirmInteraction, edits: confirmEdits } =
+    makeStaffInteraction({
+      customId: confirmCustomId,
+      guild: {
+        id: "guild-1",
+        members: {
+          fetch: async () => ({
+            user: { bot: false },
+            permissions: { has: () => true },
+            roles: { cache: { some: () => false } },
+          }),
+        },
+      },
+    });
+  assert.equal(await service.handleButton(confirmInteraction as any), true);
+  assert.equal(confirmPayload.confirmationToken, "signed-preview-token");
+  assert.equal(confirmPayload.teamId, "team-1");
+  assert.deepEqual(confirmPayload.managerDiscordUserIds, [managerId]);
+  assert.equal(confirmPayload.requiredMatchCount, 4);
+  assert.match(confirmPayload.requestKey, /^[0-9a-f-]{36}$/);
+  assert.match(
+    (confirmEdits[0] as any).content,
+    /Conditional registration active/,
+  );
+});
+
 test("waitlist remove button posts stable confirmation button ids", async () => {
   let updated = false;
   const sessionService = {
@@ -342,9 +542,8 @@ test("result control panel exposes text and ban rule settings", async () => {
   assert.ok(fieldNames.includes("Ban Defaults"));
   assert.ok(fieldNames.includes("No-Show Rule Format"));
   assert.match(
-    panel.embeds[0].data.fields.find(
-      (field: any) => field.name === "Results",
-    ).value,
+    panel.embeds[0].data.fields.find((field: any) => field.name === "Results")
+      .value,
     /Final post: not saved yet/,
   );
   assert.match(
@@ -839,6 +1038,7 @@ test("result edit modal saves saved backup rows when live match is gone", async 
     ],
   };
   let updateArgs: unknown[] | null = null;
+  let rebuildArgs: unknown[] | null = null;
   const sessionService = {
     findScrimForDiscordChannel: async () => context,
     withOrganization: async (
@@ -860,6 +1060,10 @@ test("result edit modal saves saved backup rows when live match is gone", async 
         })),
       };
     },
+    rebuildOverallResultBackupFromDiscord: async (...args: unknown[]) => {
+      rebuildArgs = args;
+      return null;
+    },
   };
   const service = new ControlPanelService(sessionService as any);
   let shownModal: any = null;
@@ -879,10 +1083,19 @@ test("result edit modal saves saved backup rows when live match is gone", async 
   assert.ok(shownModal);
   assert.equal(shownModal.components[0].components[0].value, "1");
   assert.equal(shownModal.components[1].components[0].value, "9");
-  assert.equal(shownModal.components[2].components[0].custom_id, "player-kills");
+  assert.equal(
+    shownModal.components[2].components[0].custom_id,
+    "player-kills",
+  );
   assert.match(shownModal.components[2].components[0].value, /Alpha=5/);
-  assert.equal(shownModal.components[3].components[0].custom_id, "placement-points");
-  assert.equal(shownModal.components[4].components[0].custom_id, "total-points");
+  assert.equal(
+    shownModal.components[3].components[0].custom_id,
+    "placement-points",
+  );
+  assert.equal(
+    shownModal.components[4].components[0].custom_id,
+    "total-points",
+  );
 
   const values = new Map<string, string>([
     ["placement", "2"],
@@ -947,6 +1160,7 @@ test("result edit modal saves saved backup rows when live match is gone", async 
     },
   ]);
   assert.equal(swappedRow?.placement, 1);
+  assert.deepEqual(rebuildArgs, ["session-1"]);
   assert.match((edits[0] as any).content, /Result row saved/);
   assert.match((edits[0] as any).content, /Player kills updated: 2/);
   assert.match((edits[0] as any).content, /Final post: not saved yet/);
@@ -1089,7 +1303,9 @@ test("result edit modal saves placement kills player kills and refreshes final p
         fetch: async (channelId: string) => ({
           id: channelId,
           send: async () => {
-            throw new Error("Result edit should refresh the stored final post.");
+            throw new Error(
+              "Result edit should refresh the stored final post.",
+            );
           },
           messages: {
             fetch: async (messageId: string) => ({
@@ -1483,10 +1699,7 @@ test("result no-show rules accept days suffix for total misses", () => {
     },
   ]);
   assert.equal(
-    service.noShowRuleLines(
-      { emojis: { noShowBanRules } },
-      "TOTAL_MISSES",
-    ),
+    service.noShowRuleLines({ emojis: { noShowBanRules } }, "TOTAL_MISSES"),
     "2=12d session | Missed {misses} match(es) in {session}",
   );
 });

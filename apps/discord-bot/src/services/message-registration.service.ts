@@ -23,6 +23,7 @@ import {
   TextInputStyle,
   type User,
 } from "discord.js";
+import { createHash } from "crypto";
 import type {
   ApplyNoShowAutoBansResponse,
   MatchSlotResponse,
@@ -40,6 +41,8 @@ import type {
   ApplyResultsDiscordResponse,
   AutomaticResultPreviewResponse,
   DiscordNoShowTeamBanCommand,
+  DiscordRegistrationMemberInput,
+  DiscordSlotBanCommand,
   DiscordTeamLogoSource,
   DiscordSessionService,
   DiscordTeamBanCommand,
@@ -51,6 +54,7 @@ import type {
 } from "./session.service";
 import type { ControlPanelService } from "./control-panel.service";
 import { configuredDiscordEmoji } from "./discord-emojis";
+import { fetchRemoteRasterImage } from "../security/remote-image";
 
 const REGISTER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%register\b/i;
 const ARENZYRA_SESSION_TOPIC_PATTERN =
@@ -69,6 +73,9 @@ const CLOSE_WAITLIST_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?[!%](?:close|closed)(?:-|\s+)waitlist\s*$/i;
 const ADD_MANAGER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%manager\b/i;
 const REMOVE_MANAGER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%remove\b/i;
+const AUTO_REGISTRATION_REMOVE_COMMAND_PATTERN =
+  /^(?:<@!?\d+>\s*)?%autoremove\b/i;
+const WINNER_REMOVE_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%winnerremove\b/i;
 const LOGO_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%logo\b/i;
 const SYNC_OLD_LOGOS_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?%sync-old-logos(?:\s+(\d{1,4}))?\s*$/i;
@@ -92,6 +99,7 @@ const UNBAN_TEAM_COMMAND_PATTERN =
   /^(?:<@!?\d+>\s*)?%(?:unban-team|team-unban)\b/i;
 const UNBAN_MANAGER_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%unban(?:\s|$)/i;
 const BAN_LIST_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%(?:ban-list|team-bans)\b/i;
+const SLOT_BAN_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%ban\s*(\d{1,3})(?!\d)\b/i;
 const BAN_FLOW_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%ban\b/i;
 const RESULT_SUMMARY_COMMAND_PATTERN = /^(?:<@!?\d+>\s*)?%result-summary\b/i;
 const CONFIRM_SLOT_COMMAND_PATTERN =
@@ -101,6 +109,8 @@ const SLOT_STATUS_COMMAND_PATTERN =
 const FREE_SLOT_QUERY_PATTERN = /\bfree\s+slots?\b|\bslots?\s+free\b/i;
 const DISCORD_USER_MENTION_PATTERN = /<@!?\d+>/;
 const DISCORD_USER_MENTION_CAPTURE_PATTERN = /<@!?(\d{17,22})>/g;
+const DISCORD_FORMATTING_CONTROL_PATTERN =
+  /[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 const RESULT_GAME_CODE_PATTERN =
   /(?:^|[\s,;:])(?:game|match|round|g|m)\s*(?:(?:no|num|number)\.?\s*)?[-#]?\s*(\d{1,3})(?=$|[\s,;:!.?()\-])/i;
 const MAX_LOGO_BYTES = 8 * 1024 * 1024;
@@ -134,17 +144,14 @@ const WAITLIST_PROMOTION_STATE_CONFIRMATION_PATTERN =
   /Waitlist promotion is (?:open|closed)/i;
 const CHANNEL_ACTIVITY_STATE_CONFIRMATION_PATTERN =
   /Arenzyra bot is now (?:active|paused) in this channel\./i;
-const IMAGE_EXTENSIONS: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-};
 const AUTO_RESULT_PENDING_TTL_MS = 2 * 60 * 60 * 1000;
 const AUTO_RESULT_BUTTON_PREFIX = "result:auto:";
 const AUTO_NO_SHOW_BAN_CONFIRMATION_MS = 60_000;
 const FINAL_NO_SHOW_BAN_REVIEW_MS = 15 * 60_000;
 const MANUAL_BAN_FLOW_PREFIX = "banflow:";
 const MANUAL_BAN_FLOW_TTL_MS = 5 * 60_000;
+const AUTO_REGISTRATION_GRANT_FLOW_PREFIX = "autoreggrant:";
+const AUTO_REGISTRATION_GRANT_FLOW_TTL_MS = 5 * 60_000;
 const IDP_DM_REPLY_BUTTON_PREFIX = "idpdm:reply:";
 const IDP_DM_REPLY_MODAL_PREFIX = "idpdm:modal:";
 const IDP_DM_REPLY_INPUT_ID = "idpdm_reply";
@@ -193,6 +200,8 @@ type ParsedTournamentRoster = {
 };
 type ParsedLogoMessage = {
   teamName: string;
+  tag: string | null;
+  query: string;
 };
 type ParsedPlayerPhotoMessage = {
   uid: string;
@@ -288,6 +297,17 @@ type AutoResultPending = {
   expiresAt: number;
   processing?: boolean;
   completed?: boolean;
+  conditionalFinalPostReceipt?: {
+    channelId: string;
+    messageId: string;
+    resultSnapshotId: string;
+    resultSnapshotHash: string;
+  };
+};
+
+type FinalResultPostArtifact = {
+  content: string;
+  files: Array<{ name: string; buffer: Buffer }>;
 };
 type PendingAutoNoShowBanAction = {
   userId: string;
@@ -320,12 +340,37 @@ type PendingManualBanFlow = {
   command: DiscordTeamBanCommand;
   expiresAt: number;
 };
+type PendingAutoRegistrationGrantFlow = {
+  userId: string;
+  sessionId: string;
+  sessionName: string | null;
+  sourceChannelId: string;
+  sourceMessageId: string;
+  promptMessageId: string | null;
+  config: SessionDiscordConfigResponse;
+  teamName: string;
+  tag: string;
+  manager: {
+    discordUserId: string;
+    discordUsername?: string | null;
+    displayName?: string | null;
+    role?: "LEADER" | "PLAYER";
+  };
+  logoUrl: string | null;
+  logoUpload: TeamLogoUpload | null;
+  logoSource: DiscordTeamLogoSource | null;
+  expiresAt: number;
+};
 
 function limitDiscordContent(content: string) {
   if (content.length <= 1900) {
     return content;
   }
   return `${content.slice(0, 1870)}\n\nOutput truncated. Use the web dashboard for the full view.`;
+}
+
+function normalizeDiscordMessageContent(content: string) {
+  return content.replace(DISCORD_FORMATTING_CONTROL_PATTERN, "");
 }
 
 export class MessageRegistrationService {
@@ -341,6 +386,10 @@ export class MessageRegistrationService {
   private readonly pendingManualBanFlows = new Map<
     string,
     PendingManualBanFlow
+  >();
+  private readonly pendingAutoRegistrationGrantFlows = new Map<
+    string,
+    PendingAutoRegistrationGrantFlow
   >();
   private readonly slotStatusReplyCooldowns = new Map<string, number>();
   private readonly processingRegistrationMessageIds = new Set<string>();
@@ -983,7 +1032,7 @@ export class MessageRegistrationService {
     message: Message,
     resolved: ResolvedProductionDiscordChannelResponse,
   ): Promise<boolean> {
-    const content = message.content.trim();
+    const content = normalizeDiscordMessageContent(message.content).trim();
     const deleteSetIndex = this.parseProductionSetDeleteCommand(content);
     if (deleteSetIndex) {
       return this.handleProductionDeleteSetMessage(
@@ -1152,6 +1201,93 @@ export class MessageRegistrationService {
       config,
       placement,
     );
+  }
+
+  private async customRoleRegistrationAccesses(
+    requesterDiscordId: string,
+    guild: Message["guild"],
+    config: SessionDiscordConfigResponse,
+    placement: "normal" | "vip",
+  ): Promise<
+    Array<{ group: { id: string } | null; winnerQualified: boolean }>
+  > {
+    const checker = (
+      this.sessionService as unknown as {
+        customRoleRegistrationAccesses?: DiscordSessionService["customRoleRegistrationAccesses"];
+      }
+    ).customRoleRegistrationAccesses;
+    if (typeof checker === "function") {
+      return checker.call(
+        this.sessionService,
+        requesterDiscordId,
+        guild,
+        config,
+        placement,
+      );
+    }
+    return (await this.userHasCustomRoleRegistrationAccess(
+      requesterDiscordId,
+      guild,
+      config,
+      placement,
+    ))
+      ? [{ group: null, winnerQualified: false }]
+      : [];
+  }
+
+  private async userHasConfiguredRegistrationRole(
+    requesterDiscordId: string,
+    guild: Message["guild"],
+    config: SessionDiscordConfigResponse,
+  ) {
+    const checker = (
+      this.sessionService as unknown as {
+        userHasConfiguredRegistrationRole?: DiscordSessionService["userHasConfiguredRegistrationRole"];
+      }
+    ).userHasConfiguredRegistrationRole;
+    if (typeof checker !== "function") {
+      return true;
+    }
+    return checker.call(this.sessionService, requesterDiscordId, guild, config);
+  }
+
+  private async syncWinnerRoleAccessForSourceSession(
+    guild: Message["guild"],
+    sessionId: string,
+    sourceRunFallbackId?: string | null,
+  ) {
+    const syncer = (
+      this.sessionService as unknown as {
+        syncWinnerRoleAccessForSourceSession?: DiscordSessionService["syncWinnerRoleAccessForSourceSession"];
+      }
+    ).syncWinnerRoleAccessForSourceSession;
+    if (typeof syncer !== "function") {
+      return;
+    }
+    await syncer.call(this.sessionService, guild, sessionId, {
+      sourceRunFallbackId,
+    });
+  }
+
+  private async rebuildOverallResultBackupForSourceSession(sessionId: string) {
+    const rebuilder = (
+      this.sessionService as unknown as {
+        rebuildOverallResultBackupFromDiscord?: (
+          sessionId: string,
+        ) => Promise<{ id: string } | null>;
+      }
+    ).rebuildOverallResultBackupFromDiscord;
+    if (typeof rebuilder !== "function") {
+      return null;
+    }
+    return rebuilder.call(this.sessionService, sessionId).catch((error) => {
+      console.warn(
+        `Overall result backup rebuild failed session=${sessionId}: ${toFriendlyApiError(
+          error,
+        )}`,
+      );
+      return null;
+    });
   }
 
   private async userHasEarlyAccessRegistrationAccess(
@@ -1507,6 +1643,7 @@ export class MessageRegistrationService {
     return (
       BAN_MISSING_COMMAND_PATTERN.test(content) ||
       BAN_TEAM_COMMAND_PATTERN.test(content) ||
+      SLOT_BAN_COMMAND_PATTERN.test(content) ||
       BAN_FLOW_COMMAND_PATTERN.test(content) ||
       IDP_DM_COMMAND_PATTERN.test(content) ||
       OPEN_WAITLIST_COMMAND_PATTERN.test(content) ||
@@ -1533,6 +1670,77 @@ export class MessageRegistrationService {
       Boolean(this.detectNoCommandRegistrationMode(content)) ||
       REGISTER_COMMAND_PATTERN.test(content)
     );
+  }
+
+  private messageIsArenzyraCommand(content: string) {
+    return (
+      START_CHANNEL_COMMAND_PATTERN.test(content) ||
+      STOP_CHANNEL_COMMAND_PATTERN.test(content) ||
+      BAN_MISSING_COMMAND_PATTERN.test(content) ||
+      BAN_TEAM_COMMAND_PATTERN.test(content) ||
+      SLOT_BAN_COMMAND_PATTERN.test(content) ||
+      BAN_FLOW_COMMAND_PATTERN.test(content) ||
+      IDP_DM_COMMAND_PATTERN.test(content) ||
+      OPEN_WAITLIST_COMMAND_PATTERN.test(content) ||
+      CLOSE_WAITLIST_COMMAND_PATTERN.test(content) ||
+      OPEN_REGISTRATION_COMMAND_PATTERN.test(content) ||
+      CLOSE_REGISTRATION_COMMAND_PATTERN.test(content) ||
+      ADD_MANAGER_COMMAND_PATTERN.test(content) ||
+      REMOVE_MANAGER_COMMAND_PATTERN.test(content) ||
+      AUTO_REGISTRATION_REMOVE_COMMAND_PATTERN.test(content) ||
+      WINNER_REMOVE_COMMAND_PATTERN.test(content) ||
+      UNBAN_TEAM_COMMAND_PATTERN.test(content) ||
+      UNBAN_MANAGER_COMMAND_PATTERN.test(content) ||
+      BAN_LIST_COMMAND_PATTERN.test(content) ||
+      RESULT_SUMMARY_COMMAND_PATTERN.test(content) ||
+      CONFIRM_SLOT_COMMAND_PATTERN.test(content) ||
+      SLOT_STATUS_COMMAND_PATTERN.test(content) ||
+      SYNC_OLD_LOGOS_COMMAND_PATTERN.test(content) ||
+      SYNC_OLD_PLAYER_PHOTOS_COMMAND_PATTERN.test(content) ||
+      LOGO_COMMAND_PATTERN.test(content) ||
+      PLAYER_PHOTO_COMMAND_PATTERN.test(content) ||
+      CLEAN_CHANNEL_COMMAND_PATTERN.test(content) ||
+      CLEAN_WAITLIST_COMMAND_PATTERN.test(content) ||
+      CLEAN_SCRIM_ROLES_COMMAND_PATTERN.test(content) ||
+      CLEAN_ALL_SLOTS_COMMAND_PATTERN.test(content) ||
+      CLEAN_COMMAND_PATTERN.test(content) ||
+      DELETE_PRODUCTION_SET_COMMAND_PATTERN.test(content) ||
+      REGISTER_COMMAND_PATTERN.test(content)
+    );
+  }
+
+  private async ignoreCommandOutsideConfiguredChannel(message: Message) {
+    if (!message.guild) {
+      return false;
+    }
+
+    const resolver = (
+      this.sessionService as unknown as {
+        findConfiguredScrimForDiscordChannel?: DiscordSessionService["findConfiguredScrimForDiscordChannel"];
+      }
+    ).findConfiguredScrimForDiscordChannel;
+    if (typeof resolver !== "function") {
+      return false;
+    }
+
+    const resolved = await resolver
+      .call(
+        this.sessionService,
+        message.guild.id,
+        message.channel.id,
+        this.channelTopic(message.channel),
+      )
+      .catch((error) => {
+        console.warn(
+          `[DiscordGuard] failed to verify configured command channel=${message.channel.id} guild=${message.guild?.id}: ${String(error)}`,
+        );
+        return null;
+      });
+    if (resolved) {
+      return false;
+    }
+
+    return true;
   }
 
   private isFreeSlotStatusQuery(content: string) {
@@ -1562,13 +1770,20 @@ export class MessageRegistrationService {
       return false;
     }
 
-    const content = message.content.trim();
+    const content = normalizeDiscordMessageContent(message.content).trim();
     const productionResolved = await this.resolveProductionDiscordContext(
       message,
       content,
     );
     if (productionResolved) {
       return this.handleProductionDiscordMessage(message, productionResolved);
+    }
+
+    if (
+      this.messageIsArenzyraCommand(content) &&
+      (await this.ignoreCommandOutsideConfiguredChannel(message))
+    ) {
+      return true;
     }
 
     if (STOP_CHANNEL_COMMAND_PATTERN.test(content)) {
@@ -1615,6 +1830,14 @@ export class MessageRegistrationService {
       return this.handleRegistrationStateMessage(message, "closed");
     }
 
+    if (AUTO_REGISTRATION_REMOVE_COMMAND_PATTERN.test(content)) {
+      return this.handleStoredAccessRemoveMessage(message, "auto-registration");
+    }
+
+    if (WINNER_REMOVE_COMMAND_PATTERN.test(content)) {
+      return this.handleStoredAccessRemoveMessage(message, "winner");
+    }
+
     if (ADD_MANAGER_COMMAND_PATTERN.test(content)) {
       return this.handleManagerTransferMessage(message, "add");
     }
@@ -1641,6 +1864,10 @@ export class MessageRegistrationService {
 
     if (BAN_LIST_COMMAND_PATTERN.test(content)) {
       return this.handleBanListMessage(message);
+    }
+
+    if (SLOT_BAN_COMMAND_PATTERN.test(content)) {
+      return this.handleSlotBanMessage(message);
     }
 
     if (BAN_FLOW_COMMAND_PATTERN.test(content)) {
@@ -1718,6 +1945,11 @@ export class MessageRegistrationService {
     }
 
     if (REGISTER_COMMAND_PATTERN.test(content)) {
+      const autoRegistrationGrantHandled =
+        await this.handleAutoRegistrationGrantMessage(message);
+      if (autoRegistrationGrantHandled) {
+        return true;
+      }
       const waitlistHandled =
         await this.handleWaitlistPromotionMessage(message);
       if (waitlistHandled) {
@@ -1916,7 +2148,7 @@ export class MessageRegistrationService {
   }
 
   private async handleIdpDmForwardMessage(message: Message): Promise<boolean> {
-    const content = message.content.trim();
+    const content = normalizeDiscordMessageContent(message.content).trim();
     if (
       !message.guild ||
       !this.messageHasIdpForwardableContent(message) ||
@@ -2319,6 +2551,110 @@ export class MessageRegistrationService {
     return true;
   }
 
+  private storedAccessRemoveUsage(
+    kind: "auto-registration" | "winner",
+  ): string {
+    return kind === "auto-registration"
+      ? "Use `%autoremove @manager` inside a configured session channel."
+      : "Use `%winnerremove @manager` inside a configured session channel.";
+  }
+
+  private async handleStoredAccessRemoveMessage(
+    message: Message,
+    kind: "auto-registration" | "winner",
+  ): Promise<boolean> {
+    if (!message.guild) {
+      await message.reply({
+        content: this.storedAccessRemoveUsage(kind),
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const resolved = await this.sessionService.findScrimForDiscordChannel(
+      message.guild.id,
+      message.channel.id,
+      this.channelTopic(message.channel),
+    );
+    if (!resolved) {
+      await message.reply({
+        content: this.storedAccessRemoveUsage(kind),
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      await message.reply({
+        content:
+          kind === "auto-registration"
+            ? "Only Arenzyra staff can remove auto-registration access."
+            : "Only Arenzyra staff can remove winner access.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    let managers: Array<{ discordUserId: string }>;
+    try {
+      managers = await this.parseMentionedManagers(message, {
+        maxManagersPerTeam: 1,
+      });
+    } catch (error) {
+      await message.reply({
+        content:
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : this.storedAccessRemoveUsage(kind),
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+    const manager = managers[0];
+    if (!manager || managers.length !== 1) {
+      await message.reply({
+        content: this.storedAccessRemoveUsage(kind),
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const audit = {
+      actorDiscordId: message.author.id,
+      actorLabel: message.author.tag,
+      sourceChannelId: message.channel.id,
+      sessionName: resolved.session.name,
+    };
+    try {
+      const result = await this.withOrganization(
+        resolved.config.organizationId,
+        () =>
+          kind === "auto-registration"
+            ? this.sessionService.removeAutoRegistrationAccessFromDiscord(
+                message.guild!,
+                resolved.session.id,
+                manager.discordUserId,
+                audit,
+              )
+            : this.sessionService.removeWinnerAccessFromDiscord(
+                message.guild!,
+                resolved.session.id,
+                manager.discordUserId,
+                audit,
+              ),
+      );
+      await message.reply({
+        content: result,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      await message.reply({
+        content: toFriendlyApiError(error),
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
   private managerTransferUsage(action: "add" | "remove") {
     return [
       "Use this format:",
@@ -2337,7 +2673,8 @@ export class MessageRegistrationService {
       action === "add"
         ? ADD_MANAGER_COMMAND_PATTERN
         : REMOVE_MANAGER_COMMAND_PATTERN;
-    const lines = message.content
+    const normalizedContent = normalizeDiscordMessageContent(message.content);
+    const lines = normalizedContent
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
@@ -2497,7 +2834,42 @@ export class MessageRegistrationService {
     }
 
     this.pruneExpiredAutoResults();
-    const pending = this.pendingAutoResults.get(parsed.sourceMessageId);
+    let pending = this.pendingAutoResults.get(parsed.sourceMessageId);
+    if (!pending && parsed.action === "refresh") {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        pending = await this.restoreAutoResultReviewFromSource(
+          interaction,
+          parsed.sourceMessageId,
+        );
+        this.pendingAutoResults.set(parsed.sourceMessageId, pending);
+      } catch (error) {
+        const reason =
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Send the screenshot again.";
+        await interaction.editReply({
+          content: `This result preview expired and could not be restored.\n${reason}`,
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      }
+
+      if (!this.hasInteractionStaffAccess(interaction, pending.config)) {
+        await interaction.editReply({
+          content: "Only Arenzyra staff can refresh results.",
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      }
+
+      await this.refreshAutoResultDashboard(interaction, pending);
+      await interaction.editReply({
+        content: "Result review panel restored and re-read from screenshots.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
     if (!pending) {
       await interaction.reply({
         content: "This result preview expired. Send the screenshot again.",
@@ -2540,9 +2912,22 @@ export class MessageRegistrationService {
 
     if (parsed.action === "refresh") {
       await interaction.deferReply({ ephemeral: true });
-      await this.refreshAutoResultDashboard(interaction, pending);
+      try {
+        await this.reparseAutoResultReview(pending);
+        await this.refreshAutoResultDashboard(interaction, pending);
+      } catch (error) {
+        const reason =
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "OCR refresh failed.";
+        await interaction.editReply({
+          content: `Could not re-read the screenshot. Existing review was kept.\n${reason}`,
+          allowedMentions: { parse: [] },
+        });
+        return true;
+      }
       await interaction.editReply({
-        content: "Result review panel refreshed.",
+        content: "Result review panel re-read from screenshots.",
         allowedMentions: { parse: [] },
       });
       return true;
@@ -2576,7 +2961,9 @@ export class MessageRegistrationService {
       return true;
     }
 
-    const issues = this.reviewIssues(pending);
+    const allowMissingPlacements =
+      parsed.action === "apply-noshow" || parsed.action === "final";
+    const issues = this.reviewIssues(pending, { allowMissingPlacements });
     if (issues.length > 0) {
       await interaction.reply({
         content: `Cannot apply yet:\n${issues.map((issue) => `- ${issue}`).join("\n")}`,
@@ -2614,6 +3001,7 @@ export class MessageRegistrationService {
         resultReset,
         resultResetFailed,
         finalNoShowBanReviewStatus,
+        conditionalBanFinalization,
       } = await this.withOrganization(
         pending.config.organizationId,
         async () => {
@@ -2624,6 +3012,12 @@ export class MessageRegistrationService {
             {
               markMissingSlotsNoShow:
                 parsed.action === "apply-noshow" || parsed.action === "final",
+              noShowSlotNumbers:
+                parsed.action === "apply-noshow" || parsed.action === "final"
+                  ? this.noShowCandidateSlots(pending).map(
+                      (slot) => slot.slotNumber,
+                    )
+                  : undefined,
             },
           );
           const matchResultChannelId = this.matchResultPostChannelId(
@@ -2645,40 +3039,100 @@ export class MessageRegistrationService {
           const postedManager = postedManagerResult.posted;
 
           let postedResults = false;
+          let conditionalSnapshotRequired = false;
+          let finalPostedMessageId: string | null = null;
+          let finalPostReceipt: {
+            channelId: string;
+            messageId: string;
+            resultSnapshotId: string;
+            resultSnapshotHash: string;
+          } | null = null;
           if (parsed.action === "final") {
-            const finalResult = await this.sessionService.buildFinalResultPost(
-              pending.matchId,
-              pending.config,
-            );
-            const postedResultsResult =
-              await this.postResultToConfiguredChannel(
-                interaction,
-                overallResultChannelId,
-                finalResult,
-                {
-                  matchId: pending.matchId,
-                  replacePreviousWidgets: true,
-                  widgetGroup: "final",
-                },
-              );
-            postedResults = postedResultsResult.posted;
-            if (
-              postedResultsResult.channelId &&
-              postedResultsResult.messageId
-            ) {
-              await this.sessionService
-                .rememberFinalResultPost(
+            if (pending.conditionalFinalPostReceipt) {
+              // A previous attempt already posted the final message but failed
+              // during API/Discord reconciliation. Reuse its durable receipt so
+              // the idempotent finalization and role cleanup can safely retry.
+              finalPostReceipt = pending.conditionalFinalPostReceipt;
+              conditionalSnapshotRequired = true;
+              finalPostedMessageId = finalPostReceipt.messageId;
+              postedResults = true;
+            } else {
+              if (!interaction.guild) {
+                throw new Error(
+                  "Final result cannot be sealed without the Discord server context.",
+                );
+              }
+              const finalBackup =
+                await this.rebuildOverallResultBackupForSourceSession(
                   pending.sessionId,
-                  postedResultsResult.channelId,
-                  postedResultsResult.messageId,
-                )
-                .catch((error) => {
-                  console.warn(
-                    `Final result post memory failed session=${pending.sessionId}: ${String(
-                      error,
-                    )}`,
-                  );
-                });
+                );
+              const preparedSnapshot =
+                await this.sessionService.prepareConditionalBanFinalSnapshot(
+                  pending.sessionId,
+                  interaction.guild,
+                  pending.config,
+                  pending.matchId,
+                );
+              const finalResult =
+                await this.sessionService.buildFinalResultPost(
+                  pending.matchId,
+                  pending.config,
+                );
+              const finalPostArtifact = preparedSnapshot.required
+                ? this.finalResultPostArtifact(finalResult, pending.matchId)
+                : null;
+              const sealedSnapshot = preparedSnapshot.required
+                ? await this.sessionService.sealConditionalBanFinalSnapshot(
+                    pending.sessionId,
+                    preparedSnapshot,
+                    this.finalResultPostArtifactManifest(finalPostArtifact!),
+                  )
+                : null;
+              conditionalSnapshotRequired = preparedSnapshot.required;
+              const postedResultsResult =
+                await this.postResultToConfiguredChannel(
+                  interaction,
+                  overallResultChannelId,
+                  finalResult,
+                  {
+                    matchId: pending.matchId,
+                    replacePreviousWidgets: true,
+                    widgetGroup: "final",
+                    ...(finalPostArtifact
+                      ? { artifact: finalPostArtifact }
+                      : {}),
+                  },
+                );
+              postedResults = postedResultsResult.posted;
+              finalPostedMessageId = postedResultsResult.messageId;
+              if (
+                postedResultsResult.channelId &&
+                postedResultsResult.messageId
+              ) {
+                if (sealedSnapshot) {
+                  finalPostReceipt = {
+                    channelId: postedResultsResult.channelId,
+                    messageId: postedResultsResult.messageId,
+                    resultSnapshotId: sealedSnapshot.id,
+                    resultSnapshotHash: sealedSnapshot.snapshotHash,
+                  };
+                  pending.conditionalFinalPostReceipt = finalPostReceipt;
+                }
+                await this.sessionService
+                  .rememberFinalResultPost(
+                    pending.sessionId,
+                    postedResultsResult.channelId,
+                    postedResultsResult.messageId,
+                    finalResult.backupId ?? finalBackup?.id,
+                  )
+                  .catch((error) => {
+                    console.warn(
+                      `Final result post memory failed session=${pending.sessionId}: ${String(
+                        error,
+                      )}`,
+                    );
+                  });
+              }
             }
           }
 
@@ -2688,6 +3142,56 @@ export class MessageRegistrationService {
               interaction,
               pending,
             );
+          }
+
+          let conditionalFinalization: Awaited<
+            ReturnType<
+              DiscordSessionService["finalizeConditionalBannedTeamRegistrations"]
+            >
+          > | null = null;
+          if (
+            parsed.action === "final" &&
+            postedResults &&
+            conditionalSnapshotRequired
+          ) {
+            if (!interaction.guild || !finalPostReceipt) {
+              throw new Error(
+                "Final result was sent without a durable Discord message receipt; conditional bans were not finalized and result data was kept.",
+              );
+            }
+            try {
+              conditionalFinalization =
+                await this.sessionService.finalizeConditionalBannedTeamRegistrations(
+                  pending.sessionId,
+                  interaction.guild,
+                  pending.config,
+                  {
+                    channelId: finalPostReceipt.channelId,
+                    messageId: finalPostReceipt.messageId,
+                    sourceMatchId: pending.matchId,
+                    resultSnapshotId: finalPostReceipt.resultSnapshotId,
+                    resultSnapshotHash: finalPostReceipt.resultSnapshotHash,
+                  },
+                );
+            } catch (error) {
+              if (this.isConditionalFinalSnapshotMismatch(error)) {
+                pending.conditionalFinalPostReceipt = undefined;
+              }
+              throw error;
+            }
+          }
+          if (parsed.action === "final" && postedResults) {
+            await this.syncWinnerRoleAccessForSourceSession(
+              interaction.guild,
+              pending.sessionId,
+              finalPostedMessageId,
+            ).catch((error) => {
+              console.warn(
+                `Winner access sync after sealed finalization failed session=${pending.sessionId}: ${String(
+                  error,
+                )}`,
+              );
+            });
           }
 
           let resetResult: SessionResultResetResponse | null = null;
@@ -2724,6 +3228,7 @@ export class MessageRegistrationService {
             resultReset: resetResult,
             resultResetFailed: resetFailed,
             finalNoShowBanReviewStatus: finalBanReview?.status ?? null,
+            conditionalBanFinalization: conditionalFinalization,
           };
         },
       );
@@ -2731,18 +3236,26 @@ export class MessageRegistrationService {
       pending.completed = true;
       pending.processing = false;
       this.pendingAutoResults.delete(parsed.sourceMessageId);
-      const resultControlPanelStatus = await this.controlPanelService
-        ?.postOrUpdateResultControlPanel(interaction.guild, pending.sessionId, {
-          organizationId: pending.config.organizationId,
-        })
-        .catch((error) => {
-          console.warn(
-            `Result control panel update failed session=${pending.sessionId}: ${String(
-              error,
-            )}`,
-          );
-          return null;
-        });
+      const shouldUpdateResultControlPanel =
+        parsed.action === "final" && finalPostedToResults;
+      const resultControlPanelStatus = shouldUpdateResultControlPanel
+        ? await this.controlPanelService
+            ?.postOrUpdateResultControlPanel(
+              interaction.guild,
+              pending.sessionId,
+              {
+                organizationId: pending.config.organizationId,
+              },
+            )
+            .catch((error) => {
+              console.warn(
+                `Result control panel update failed session=${pending.sessionId}: ${String(
+                  error,
+                )}`,
+              );
+              return null;
+            })
+        : null;
       const completionComponents: Array<ActionRowBuilder<ButtonBuilder>> = [];
       const statusLines = [
         result.content,
@@ -2780,6 +3293,18 @@ export class MessageRegistrationService {
         }
         if (finalNoShowBanReviewStatus) {
           statusLines.push(finalNoShowBanReviewStatus);
+        }
+        if (conditionalBanFinalization?.response.enrollments.length) {
+          const notCompleted =
+            conditionalBanFinalization.response.enrollments.length -
+            conditionalBanFinalization.completedEnrollments;
+          statusLines.push(
+            `Conditional ban review: ${conditionalBanFinalization.completedEnrollments} team${
+              conditionalBanFinalization.completedEnrollments === 1 ? "" : "s"
+            } completed, ${notCompleted} kept banned; ${conditionalBanFinalization.removedBanRoles} Discord ban role${
+              conditionalBanFinalization.removedBanRoles === 1 ? "" : "s"
+            } removed.`,
+          );
         }
       }
 
@@ -2827,6 +3352,10 @@ export class MessageRegistrationService {
             : "",
           parsed.action === "final" && finalNoShowBanReviewStatus
             ? finalNoShowBanReviewStatus
+            : "",
+          parsed.action === "final" &&
+          conditionalBanFinalization?.response.enrollments.length
+            ? `Conditional ban finalization: ${conditionalBanFinalization.completedEnrollments}/${conditionalBanFinalization.response.enrollments.length} enrollment(s) completed; ${conditionalBanFinalization.removedBanRoles} ban role(s) removed; ${conditionalBanFinalization.keptProtectedManagers} manager(s) kept protected`
             : "",
         ],
         color: 0x22c55e,
@@ -2884,6 +3413,7 @@ export class MessageRegistrationService {
       matchId?: string | null;
       replacePreviousWidgets?: boolean;
       widgetGroup?: "match" | "final";
+      artifact?: FinalResultPostArtifact;
     } = {},
   ): Promise<{
     posted: boolean;
@@ -2902,12 +3432,19 @@ export class MessageRegistrationService {
       return { posted: false, channelId: targetId, messageId: null };
     }
 
+    const artifact = opts.artifact;
     const sent = await (channel as GuildTextBasedChannel).send({
-      content: this.resultPostContent(
-        result.publicContent ?? result.content,
-        opts.matchId,
-      ),
-      files: this.resultAttachments(result),
+      content:
+        artifact?.content ??
+        this.resultPostContent(
+          result.publicContent ?? result.content,
+          opts.matchId,
+        ),
+      files: artifact
+        ? artifact.files.map(
+            (file) => new AttachmentBuilder(file.buffer, { name: file.name }),
+          )
+        : this.resultAttachments(result),
       allowedMentions: { parse: [] },
     });
     if (opts.replacePreviousWidgets) {
@@ -2972,6 +3509,53 @@ export class MessageRegistrationService {
   ) {
     void matchId;
     return limitDiscordContent(this.stripResultMatchMarkers(content));
+  }
+
+  private finalResultPostArtifact(
+    result: ApplyResultsDiscordResponse,
+    matchId: string | null | undefined,
+  ): FinalResultPostArtifact {
+    const files = result.imageFiles?.length
+      ? result.imageFiles.map((file) => ({
+          name: file.name.trim(),
+          buffer: file.buffer,
+        }))
+      : result.imageBuffer
+        ? [{ name: "result.png", buffer: result.imageBuffer }]
+        : [];
+    for (const file of files) {
+      if (!file.name || file.name.length > 160) {
+        throw new Error(
+          "Final result attachment has an invalid Discord filename and cannot be sealed.",
+        );
+      }
+    }
+    return {
+      content: this.resultPostContent(
+        result.publicContent ?? result.content,
+        matchId,
+      ),
+      files,
+    };
+  }
+
+  private finalResultPostArtifactManifest(artifact: FinalResultPostArtifact) {
+    const sha256 = (value: string | Buffer) =>
+      createHash("sha256").update(value).digest("hex");
+    return {
+      contentSha256: sha256(artifact.content),
+      files: artifact.files.map((file) => ({
+        name: file.name,
+        size: file.buffer.length,
+        sha256: sha256(file.buffer),
+      })),
+    };
+  }
+
+  private isConditionalFinalSnapshotMismatch(error: unknown) {
+    return /final result (?:snapshot|data).*(?:changed|no longer matches|fresh snapshot|post again)/i.test(
+      toFriendlyApiError(error),
+    );
   }
 
   private stripResultMatchMarkers(content: string) {
@@ -3187,6 +3771,15 @@ export class MessageRegistrationService {
   async handleStringSelectMenu(
     interaction: StringSelectMenuInteraction,
   ): Promise<boolean> {
+    const autoRegistrationGrantDuration =
+      this.parseAutoRegistrationGrantDurationSelectId(interaction.customId);
+    if (autoRegistrationGrantDuration) {
+      return this.handleAutoRegistrationGrantDurationSelect(
+        interaction,
+        autoRegistrationGrantDuration,
+      );
+    }
+
     const manualBanDuration = this.parseManualBanDurationSelectId(
       interaction.customId,
     );
@@ -3239,6 +3832,15 @@ export class MessageRegistrationService {
     const idpDmReply = this.parseIdpDmReplyModalId(interaction.customId);
     if (idpDmReply) {
       return this.handleIdpDmReplyModal(interaction, idpDmReply);
+    }
+
+    const autoRegistrationGrantDays =
+      this.parseAutoRegistrationGrantDaysModalId(interaction.customId);
+    if (autoRegistrationGrantDays) {
+      return this.handleAutoRegistrationGrantDaysModal(
+        interaction,
+        autoRegistrationGrantDays,
+      );
     }
 
     const manualBanReason = this.parseManualBanReasonModalId(
@@ -3490,6 +4092,7 @@ export class MessageRegistrationService {
       const row: ReviewedResultRow = {
         ...entry,
         include,
+        ...(include ? {} : { noShowAction: "NO_BAN" }),
         ...(duplicateReasons.length
           ? {
               autoSkipped: true,
@@ -3522,6 +4125,8 @@ export class MessageRegistrationService {
       rows.push(row);
     }
 
+    this.autoSkipRowsDuplicatedByAppliedRows(rows);
+
     rows.push(
       ...this.missingOfficialSlotPlaceholders(preview, {
         representedSlotIds,
@@ -3533,6 +4138,57 @@ export class MessageRegistrationService {
     this.sortReviewedRows(rows);
 
     return rows;
+  }
+
+  private autoSkipRowsDuplicatedByAppliedRows(rows: ReviewedResultRow[]) {
+    const appliedSlots = new Map<string, ReviewedResultRow>();
+    const appliedTeams = new Map<string, ReviewedResultRow>();
+
+    for (const row of rows) {
+      if (!row.include) {
+        continue;
+      }
+      if (row.slotId) {
+        appliedSlots.set(row.slotId, row);
+      }
+      if (row.teamId) {
+        appliedTeams.set(row.teamId, row);
+      }
+    }
+
+    for (const row of rows) {
+      if (row.include || row.officialPlaceholder) {
+        continue;
+      }
+
+      const duplicateReasons: string[] = [];
+      if (row.slotId) {
+        const owner = appliedSlots.get(row.slotId);
+        if (owner) {
+          duplicateReasons.push(
+            `duplicate official slot ${owner.slotNumber ?? row.slotNumber ?? "unknown"} resolved by P${owner.position}`,
+          );
+        }
+      }
+      if (row.teamId) {
+        const owner = appliedTeams.get(row.teamId);
+        if (owner) {
+          duplicateReasons.push(
+            `duplicate team ${owner.tag || owner.teamName || row.tag} resolved by P${owner.position}`,
+          );
+        }
+      }
+
+      if (!duplicateReasons.length) {
+        continue;
+      }
+
+      const existingReason = row.autoSkipReason?.trim();
+      row.autoSkipped = true;
+      row.autoSkipReason = existingReason
+        ? `${existingReason}; ${duplicateReasons.join("; ")}`
+        : duplicateReasons.join("; ");
+    }
   }
 
   private reconcileOfficialPlaceholderRows(
@@ -3625,6 +4281,7 @@ export class MessageRegistrationService {
           status: "UNRESOLVED",
           reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
           include: false,
+          noShowAction: "BAN",
           officialPlaceholder: true,
           ocrPlayerNames: [],
           confidence: 0,
@@ -3643,11 +4300,11 @@ export class MessageRegistrationService {
     const slot = row.slotNumber ? `S${row.slotNumber}` : "no slot";
     const status = row.include
       ? "apply"
-      : row.autoSkipped
-        ? "auto-skip"
-        : row.officialPlaceholder && !row.edited
-          ? "missing"
-          : "skip";
+      : row.noShowAction === "BAN"
+        ? "skip+ban"
+        : row.autoSkipped
+          ? "skip/no-ban auto"
+          : "skip/no-ban";
     const position =
       row.officialPlaceholder && !row.edited ? "P?" : `P${row.position}`;
     const edited = row.edited ? " edited" : "";
@@ -3660,11 +4317,14 @@ export class MessageRegistrationService {
   private reviewedRowLine(row: ReviewedResultRow, index: number) {
     const mark = row.include
       ? "[apply]"
-      : row.autoSkipped
-        ? "[auto-skip]"
-        : "[skip]";
+      : row.noShowAction === "BAN"
+        ? "[skip+ban]"
+        : row.autoSkipped
+          ? "[skip/no-ban auto-skip]"
+          : "[skip/no-ban]";
     const slot = row.slotNumber ? `slot ${row.slotNumber}` : "no slot";
     const players = this.playerKillsSummary(row.players);
+    const playerCompleteness = this.playerKillsCompletenessSummary(row);
     const reason =
       row.autoSkipped && row.autoSkipReason
         ? ` (${row.autoSkipReason})`
@@ -3685,7 +4345,7 @@ export class MessageRegistrationService {
         ? ` | conf ${Math.round(Math.max(0, Math.min(1, row.confidence)) * 100)}%`
         : "";
     const edited = row.edited ? " edited" : "";
-    return `${mark} ${index + 1}) ${position} ${row.tag} ${slot} - ${row.kills} kills${players}${ocrTag}${evidence}${confidence}${edited}${reason}`;
+    return `${mark} ${index + 1}) ${position} ${row.tag} ${slot} - ${row.kills} kills${players}${playerCompleteness}${ocrTag}${evidence}${confidence}${edited}${reason}`;
   }
 
   private reviewRowDisplay(row: ReviewedResultRow) {
@@ -3713,12 +4373,46 @@ export class MessageRegistrationService {
     return `${label} is skipped. Edit it to map a slot or confirm skip.`;
   }
 
-  private reviewIssues(pending: AutoResultPending) {
+  private isConfirmedSkippedResultRow(row: ReviewedResultRow) {
+    return (
+      !row.include &&
+      (row.skipConfirmed === true ||
+        row.edited === true ||
+        row.autoSkipped === true)
+    );
+  }
+
+  private resultPlacementReviewRows(rows: ReviewedResultRow[]) {
+    return rows.filter(
+      (row) =>
+        row.include ||
+        (this.isConfirmedSkippedResultRow(row) &&
+          !row.officialPlaceholder &&
+          !this.isAutoSkippedDuplicateResultRow(row)),
+    );
+  }
+
+  private isAutoSkippedDuplicateResultRow(row: ReviewedResultRow) {
+    return (
+      row.autoSkipped === true &&
+      /\bduplicate (?:official slot|team)\b/i.test(row.autoSkipReason ?? "")
+    );
+  }
+
+  private reviewIssues(
+    pending: AutoResultPending,
+    opts: { allowMissingPlacements?: boolean } = {},
+  ) {
     this.reconcileOfficialPlaceholderRows(pending);
     const issues: string[] = [];
     const included = pending.rows.filter((row) => row.include);
     if (!included.length) {
-      issues.push("No rows are selected to apply.");
+      const hasNoShowOnlyCandidates =
+        opts.allowMissingPlacements === true &&
+        this.noShowCandidateSlots(pending).length > 0;
+      if (!hasNoShowOnlyCandidates) {
+        issues.push("No rows are selected to apply.");
+      }
       return issues;
     }
 
@@ -3732,7 +4426,7 @@ export class MessageRegistrationService {
         if (row.officialPlaceholder) {
           continue;
         }
-        if (!row.edited && !row.autoSkipped) {
+        if (!this.isConfirmedSkippedResultRow(row)) {
           issues.push(this.skippedReviewIssue(row, label));
         }
         continue;
@@ -3785,7 +4479,11 @@ export class MessageRegistrationService {
       }
     }
 
-    const missingPlacements = this.missingResultPlacements(included);
+    const missingPlacements = opts.allowMissingPlacements
+      ? []
+      : this.missingResultPlacements(
+          this.resultPlacementReviewRows(pending.rows),
+        );
     if (missingPlacements.length) {
       issues.push(
         `Missing placement row(s): ${this.formatPlacementList(missingPlacements)}. Edit a skipped OCR row, use Add Row, or resend the complete result screenshots before applying.`,
@@ -3897,6 +4595,7 @@ export class MessageRegistrationService {
     this.reconcileOfficialPlaceholderRows(pending);
     const issues = this.reviewIssues(pending);
     const missingOfficialSlots = this.missingOfficialSlots(pending);
+    const noShowCandidates = this.noShowCandidateSlots(pending);
     const lines = [
       issues.length > 0 ? "Fix before apply:" : "Ready to apply.",
       ...issues.map((issue) => `- ${issue}`),
@@ -3914,6 +4613,14 @@ export class MessageRegistrationService {
         ...missingOfficialSlots.map(
           (slot) => `- ${this.officialSlotLabel(slot)}`,
         ),
+      );
+    }
+
+    if (noShowCandidates.length > 0) {
+      lines.push(
+        "",
+        `Selected ban-count slots (${noShowCandidates.length}):`,
+        ...noShowCandidates.map((slot) => `- ${this.officialSlotLabel(slot)}`),
       );
     }
 
@@ -3967,7 +4674,22 @@ export class MessageRegistrationService {
   }
 
   private noShowCandidateSlots(pending: AutoResultPending) {
-    return this.missingOfficialSlots(pending);
+    const selectedBanSlots = new Set(
+      pending.rows
+        .filter(
+          (row) =>
+            !row.include &&
+            row.noShowAction === "BAN" &&
+            Number.isInteger(row.slotNumber),
+        )
+        .map((row) => row.slotNumber as number),
+    );
+    if (!selectedBanSlots.size) {
+      return [];
+    }
+    return this.missingOfficialSlots(pending).filter((slot) =>
+      selectedBanSlots.has(slot.slotNumber),
+    );
   }
 
   private configuredNoShowBanScope(
@@ -4009,7 +4731,6 @@ export class MessageRegistrationService {
 
   private formatFinalNoShowAutoBanStatus(
     response: ApplyNoShowAutoBansResponse,
-    report?: { posted: boolean; channelId: string | null },
   ) {
     const skipped =
       response.skippedAlreadyBanned +
@@ -4019,19 +4740,6 @@ export class MessageRegistrationService {
       `Automatic no-show rules applied: ${response.createdTeamBans} team ban(s), ${response.createdManagerBans} manager ban(s).`,
       `No-show candidates: ${response.candidateTeamCount}. Rules configured: ${response.rulesConfigured}.`,
     ];
-    if ((response.createdBans ?? []).length > 0) {
-      if (report?.posted && report.channelId) {
-        lines.push(`Banned teams report posted to <#${report.channelId}>.`);
-      } else if (report?.channelId) {
-        lines.push(
-          `Banned teams report could not be posted to <#${report.channelId}>.`,
-        );
-      } else {
-        lines.push(
-          "Banned teams report not posted: bans channel is not configured.",
-        );
-      }
-    }
     if (response.serverActionDetails?.length) {
       lines.push(...response.serverActionDetails);
     }
@@ -4078,88 +4786,6 @@ export class MessageRegistrationService {
           : "permanent";
       return `- ${label}${tag}: managers ${managers}; missed ${missed}; reason: ${ban.reason}; duration: ${duration}`;
     });
-  }
-
-  private formatFinalNoShowAutoBanReport(
-    pending: AutoResultPending,
-    response: ApplyNoShowAutoBansResponse,
-    mentionableManagerIds = new Set<string>(),
-  ) {
-    const skipped =
-      response.skippedAlreadyBanned +
-      response.skippedProtected +
-      response.skippedNoRule;
-    const lines = [
-      "Automatic no-show rules applied",
-      `Match: ${pending.matchLabel}`,
-      `Team bans: ${response.createdTeamBans}`,
-      `Manager bans: ${response.createdManagerBans}`,
-      `No-show candidates: ${response.candidateTeamCount}`,
-      `Rules configured: ${response.rulesConfigured}`,
-    ];
-    if (response.serverActionDetails?.length) {
-      lines.push(...response.serverActionDetails);
-    }
-    if (skipped > 0) {
-      lines.push(
-        `Skipped: ${response.skippedAlreadyBanned} already banned, ${response.skippedProtected} protected, ${response.skippedNoRule} without matching rule.`,
-      );
-    }
-    const createdBanLines = this.formatFinalNoShowAutoBanLines(
-      response,
-      mentionableManagerIds,
-    );
-    if (createdBanLines.length > 0) {
-      lines.push("", "Banned teams:", ...createdBanLines);
-    }
-    return limitDiscordContent(lines.join("\n"));
-  }
-
-  private async postFinalNoShowAutoBanReport(
-    interaction: ButtonInteraction,
-    pending: AutoResultPending,
-    response: ApplyNoShowAutoBansResponse,
-  ) {
-    const channelId = pending.config.bansChannelId?.trim() || null;
-    if (
-      !interaction.guild ||
-      !channelId ||
-      !(response.createdBans ?? []).length
-    ) {
-      return { posted: false, channelId };
-    }
-
-    try {
-      const channel = await interaction.guild.channels
-        .fetch(channelId)
-        .catch(() => null);
-      if (!channel?.isTextBased() || channel.isDMBased()) {
-        return { posted: false, channelId };
-      }
-      const mentionableManagerIds = await this.validatedGuildUserMentionIds(
-        interaction.guild,
-        (response.createdBans ?? []).flatMap(
-          (ban) => ban.managerDiscordUserIds ?? [],
-        ),
-      );
-      const content = this.formatFinalNoShowAutoBanReport(
-        pending,
-        response,
-        mentionableManagerIds,
-      );
-      await (channel as GuildTextBasedChannel).send({
-        content,
-        allowedMentions: this.allowedUserMentionsFromContent(content),
-      });
-      return { posted: true, channelId };
-    } catch (error) {
-      console.warn(
-        `Final no-show auto-ban report failed session=${pending.sessionId} channel=${channelId}: ${String(
-          error,
-        )}`,
-      );
-      return { posted: false, channelId };
-    }
   }
 
   private async logFinalNoShowAutoBans(
@@ -4211,15 +4837,10 @@ export class MessageRegistrationService {
         return this.createFinalNoShowBanReview(interaction, pending);
       }
 
-      const report = await this.postFinalNoShowAutoBanReport(
-        interaction,
-        pending,
-        response,
-      );
       await this.logFinalNoShowAutoBans(interaction, pending, response);
       return {
         posted: false,
-        status: this.formatFinalNoShowAutoBanStatus(response, report),
+        status: this.formatFinalNoShowAutoBanStatus(response),
       };
     } catch (error) {
       const failure =
@@ -4251,6 +4872,65 @@ export class MessageRegistrationService {
       throw new Error("Ban days must be between 1 and 365.");
     }
     return days;
+  }
+
+  private configuredSlotBanDurationDays(config: SessionDiscordConfigResponse) {
+    const slotRaw = config.emojis?.slotBanDefaultDurationDays?.trim();
+    const raw =
+      slotRaw || (config.emojis?.banDefaultDurationDays ?? "3").trim();
+    if (!raw || /^(permanent|perm|none|0)$/i.test(raw)) {
+      return null;
+    }
+    const match = /^(\d{1,3})(?:d|day|days)?$/i.exec(raw);
+    if (!match) {
+      throw new Error("Ban days must be a number from 1 to 365 or permanent.");
+    }
+    const days = Number.parseInt(match[1], 10);
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      throw new Error("Ban days must be between 1 and 365.");
+    }
+    return days;
+  }
+
+  private configuredSlotBanScope(
+    config: SessionDiscordConfigResponse,
+    explicitScope: ParsedBanOptions["scope"],
+  ): DiscordSlotBanCommand["scope"] {
+    if (explicitScope === "TEAM" || explicitScope === "SESSION") {
+      return explicitScope;
+    }
+    const raw =
+      config.emojis?.slotBanDefaultScope?.trim() ||
+      config.emojis?.banDefaultScope?.trim() ||
+      "SESSION";
+    return raw.toUpperCase() === "TEAM" ? "TEAM" : "SESSION";
+  }
+
+  private configuredSlotBanServerAction(config: SessionDiscordConfigResponse) {
+    const raw = config.emojis?.slotBanServerAction?.trim();
+    return raw ? this.parseBanServerAction(raw) : null;
+  }
+
+  private slotBanReason(
+    parsed: ParsedBanOptions,
+    config: SessionDiscordConfigResponse,
+  ) {
+    const inlineReason = parsed.remaining
+      .replace(/<@!?\d+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const explicit = parsed.reason?.trim() || inlineReason;
+    if (explicit) {
+      return explicit.slice(0, 500);
+    }
+
+    const configured =
+      config.emojis?.slotBanDefaultReason?.trim() ||
+      config.emojis?.banDefaultReason?.trim();
+    if (configured && !/^manual discord(?: manager)? ban$/i.test(configured)) {
+      return configured.slice(0, 500);
+    }
+    return "Didn't Show Up";
   }
 
   private noShowBanCommandForAutoResult(
@@ -5014,21 +5694,38 @@ export class MessageRegistrationService {
     const missingPlaceholderCount = pending.rows.filter(
       (row) => !row.include && row.officialPlaceholder,
     ).length;
-    const issues = this.reviewIssues(pending);
+    const strictIssues = this.reviewIssues(pending);
+    const noShowIssues = this.reviewIssues(pending, {
+      allowMissingPlacements: true,
+    });
+    const noShowReady = noShowIssues.length === 0;
     const missingOfficialSlots = this.missingOfficialSlots(pending);
-    const noShowCandidates = missingOfficialSlots;
+    const noShowCandidates = this.noShowCandidateSlots(pending);
+    const playerKillWarning = this.playerKillWarningSummary(pending);
+    const status =
+      strictIssues.length === 0
+        ? "Status: ready to apply"
+        : noShowReady
+          ? "Status: ready for Apply + Ban Count / Final"
+          : "Status: cannot apply yet";
+    const statusDetails =
+      strictIssues.length === 0
+        ? "No blocking issues found."
+        : strictIssues
+            .slice(0, 5)
+            .map((issue) => `- ${issue}`)
+            .join("\n");
     const lines = [
       "Result Review Panel",
       `Manage ${pending.matchLabel}`,
       `Source: ${this.autoResultSourceLink(pending)}`,
       "",
-      issues.length > 0 ? "Status: cannot apply yet" : "Status: ready to apply",
-      issues.length > 0
-        ? issues
-            .slice(0, 5)
-            .map((issue) => `- ${issue}`)
-            .join("\n")
-        : "No blocking issues found.",
+      status,
+      statusDetails,
+      playerKillWarning,
+      noShowReady && strictIssues.length > 0
+        ? "Missing placement gaps are allowed in ban-count mode; only rows edited to ban are counted as no-show."
+        : null,
       "",
       pending.imageUrls.length > 1
         ? `Images: ${pending.imageUrls.length}`
@@ -5053,7 +5750,7 @@ export class MessageRegistrationService {
       "3 Apply + Ban Count",
       "4 Final result",
       "Final result applies enabled no-show rules, or opens a review when no rules are enabled.",
-      "Clear cancels this review. Refresh rechecks the current edits.",
+      "Clear cancels this review. Refresh re-reads the original screenshots and replaces OCR rows.",
       "",
       "Use the menu to edit a row when a blocker is shown.",
     ].filter((line): line is string => line !== null);
@@ -5066,9 +5763,11 @@ export class MessageRegistrationService {
   ) {
     const pages = this.autoResultDetailPages(pending);
     const pageIndex = Math.max(0, Math.min(pages.length - 1, requestedPage));
+    const playerKillWarning = this.playerKillWarningSummary(pending);
     const lines = [
       `Preview details for ${pending.matchLabel}`,
       pages.length > 1 ? `Page ${pageIndex + 1}/${pages.length}` : null,
+      playerKillWarning,
       "",
       ...pages[pageIndex],
     ].filter((line): line is string => line !== null);
@@ -5099,7 +5798,7 @@ export class MessageRegistrationService {
           .setDisabled(pageIndex <= 0),
         new ButtonBuilder()
           .setCustomId(
-            `${AUTO_RESULT_BUTTON_PREFIX}preview-page:${pending.sourceMessageId}:${pageIndex}`,
+            `${AUTO_RESULT_BUTTON_PREFIX}preview-current:${pending.sourceMessageId}:${pageIndex}`,
           )
           .setLabel(`Page ${pageIndex + 1}/${pageCount}`)
           .setStyle(ButtonStyle.Secondary)
@@ -5140,6 +5839,58 @@ export class MessageRegistrationService {
     return ` | players: ${this.truncateOptionText(`${summary}${more}`, 96)}`;
   }
 
+  private playerKillTotal(
+    players?: Array<{ name: string; kills: number }> | null,
+  ) {
+    return (players ?? []).reduce((sum, player) => {
+      if (!Number.isInteger(player.kills) || player.kills < 0) {
+        return sum;
+      }
+      return sum + player.kills;
+    }, 0);
+  }
+
+  private hasIncompletePlayerKills(row: ReviewedResultRow) {
+    if (
+      !row.include ||
+      !Number.isInteger(row.kills) ||
+      row.kills <= 0 ||
+      row.status !== "OK"
+    ) {
+      return false;
+    }
+
+    return this.playerKillTotal(row.players) !== row.kills;
+  }
+
+  private playerKillsCompletenessSummary(row: ReviewedResultRow) {
+    if (!this.hasIncompletePlayerKills(row)) {
+      return "";
+    }
+    return ` | player total ${this.playerKillTotal(row.players)}/${row.kills}`;
+  }
+
+  private playerKillWarningSummary(pending: Pick<AutoResultPending, "rows">) {
+    const rows = pending.rows.filter((row) =>
+      this.hasIncompletePlayerKills(row),
+    );
+    if (!rows.length) {
+      return null;
+    }
+
+    const examples = rows
+      .slice(0, 5)
+      .map((row) => {
+        const slot = Number.isInteger(row.slotNumber)
+          ? `S${row.slotNumber}`
+          : "no slot";
+        return `${slot} ${row.tag} ${this.playerKillTotal(row.players)}/${row.kills}`;
+      })
+      .join(", ");
+    const more = rows.length > 5 ? `, +${rows.length - 5} more` : "";
+    return `Warning: ${rows.length} team(s) have incomplete player kills (${examples}${more}). MVP/top fraggers may be incomplete.`;
+  }
+
   private formatPlayerKillsInput(
     players?: Array<{ name: string; kills: number }> | null,
   ) {
@@ -5161,6 +5912,10 @@ export class MessageRegistrationService {
     if (!pending.rows.length) {
       return [];
     }
+    const strictIssues = this.reviewIssues(pending);
+    const noShowIssues = this.reviewIssues(pending, {
+      allowMissingPlacements: true,
+    });
 
     const components: Array<
       ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>
@@ -5170,7 +5925,13 @@ export class MessageRegistrationService {
         .setLabel(this.reviewedRowLabel(row, index))
         .setDescription(
           this.truncateOptionText(
-            `${row.include ? "Apply" : "Skip"} row. Select to edit.`,
+            `${
+              row.include
+                ? "Apply row"
+                : row.noShowAction === "BAN"
+                  ? "Skip row, count ban"
+                  : "Skip row, no ban"
+            }. Select to edit.`,
             100,
           ),
         )
@@ -5204,21 +5965,21 @@ export class MessageRegistrationService {
           )
           .setLabel("2 Apply")
           .setStyle(ButtonStyle.Success)
-          .setDisabled(this.reviewIssues(pending).length > 0),
+          .setDisabled(strictIssues.length > 0),
         new ButtonBuilder()
           .setCustomId(
             `${AUTO_RESULT_BUTTON_PREFIX}apply-noshow:${pending.sourceMessageId}`,
           )
           .setLabel("3 Apply + Ban Count")
           .setStyle(ButtonStyle.Danger)
-          .setDisabled(this.reviewIssues(pending).length > 0),
+          .setDisabled(noShowIssues.length > 0),
         new ButtonBuilder()
           .setCustomId(
             `${AUTO_RESULT_BUTTON_PREFIX}final:${pending.sourceMessageId}`,
           )
           .setLabel("4 Final")
           .setStyle(ButtonStyle.Primary)
-          .setDisabled(this.reviewIssues(pending).length > 0),
+          .setDisabled(noShowIssues.length > 0),
       ),
     );
 
@@ -5262,26 +6023,27 @@ export class MessageRegistrationService {
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder()
             .setCustomId("include")
-            .setLabel("Apply this row? yes/no")
+            .setLabel("Row action: yes, no, skip")
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
-            .setValue(row.include ? "yes" : "no"),
+            .setValue(row.include ? "yes" : row.skipConfirmed ? "skip" : "no"),
         ),
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder()
-            .setCustomId("position")
-            .setLabel("Placement")
+            .setCustomId("ban")
+            .setLabel("Ban count: ban or no ban")
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
-            .setValue(String(row.position)),
+            .setValue(row.noShowAction === "BAN" ? "ban" : "no ban"),
         ),
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder()
-            .setCustomId("kills")
-            .setLabel("Kills")
+            .setCustomId("score")
+            .setLabel("Placement, kills")
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
-            .setValue(String(row.kills)),
+            .setPlaceholder("Example: 2, 8")
+            .setValue(`${row.position}, ${row.kills}`),
         ),
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder()
@@ -5348,13 +6110,80 @@ export class MessageRegistrationService {
       );
   }
 
-  private parseYesNo(value: string) {
+  private parseReviewedRowAction(value: string) {
     const normalized = value.trim().toLowerCase();
-    if (["yes", "y", "true", "1", "apply", "include"].includes(normalized)) {
-      return true;
+    const compact = normalized.replace(/[\s_-]+/g, "");
+    if (["yes", "y", "true", "1", "apply", "include"].includes(compact)) {
+      return "APPLY" as const;
     }
-    if (["no", "n", "false", "0", "skip", "ignore"].includes(normalized)) {
-      return false;
+    if (["skip", "ignore"].includes(compact)) {
+      return "SKIP" as const;
+    }
+    if (["no", "n", "false", "0", "exclude"].includes(compact)) {
+      return "NO" as const;
+    }
+    return null;
+  }
+
+  private parseReviewedNoShowAction(value: string) {
+    const normalized = value.trim().toLowerCase();
+    const compact = normalized.replace(/[\s_-]+/g, "");
+    if (
+      [
+        "ban",
+        "noshow",
+        "no-show",
+        "no show",
+        "missing",
+        "absent",
+        "missed",
+        "didntshow",
+        "didn'tshow",
+      ].includes(normalized) ||
+      ["ban", "noshow", "missing", "absent", "missed", "didntshow"].includes(
+        compact,
+      )
+    ) {
+      return "BAN" as const;
+    }
+    if (
+      [
+        "no",
+        "n",
+        "false",
+        "0",
+        "skip",
+        "ignore",
+        "noban",
+        "no ban",
+        "no-ban",
+        "unban",
+        "do not ban",
+        "dontban",
+        "don'tban",
+      ].includes(normalized) ||
+      [
+        "noban",
+        "unban",
+        "skip",
+        "ignore",
+        "no",
+        "n",
+        "false",
+        "0",
+        "donotban",
+        "dontban",
+      ].includes(compact)
+    ) {
+      return "NO_BAN" as const;
+    }
+    return null;
+  }
+
+  private parseLegacyReviewedRowAction(value: string) {
+    const noShowAction = this.parseReviewedNoShowAction(value);
+    if (noShowAction) {
+      return { rowAction: "SKIP" as const, noShowAction };
     }
     return null;
   }
@@ -5365,6 +6194,50 @@ export class MessageRegistrationService {
       return { ok: false as const, error: `${label} must be a whole number.` };
     }
     return { ok: true as const, value: parsed };
+  }
+
+  private parsePlacementKillsInput(
+    scoreValue: string,
+    positionValue: string,
+    killsValue: string,
+  ) {
+    const score = scoreValue.trim();
+    if (!score) {
+      const position = this.parseNonNegativeInteger(positionValue, "Placement");
+      if (!position.ok || position.value < 1) {
+        return { ok: false as const, error: "Placement must be 1 or higher." };
+      }
+      const kills = this.parseNonNegativeInteger(killsValue, "Kills");
+      if (!kills.ok) {
+        return kills;
+      }
+      return {
+        ok: true as const,
+        position: position.value,
+        kills: kills.value,
+      };
+    }
+
+    const numbers = score.match(/\d+/g)?.map((value) => Number(value)) ?? [];
+    if (
+      numbers.length < 2 ||
+      !Number.isInteger(numbers[0]) ||
+      !Number.isInteger(numbers[1]) ||
+      numbers[0] < 1 ||
+      numbers[1] < 0
+    ) {
+      return {
+        ok: false as const,
+        error:
+          "Placement, kills must include placement and kills, like `2, 8`.",
+      };
+    }
+
+    return {
+      ok: true as const,
+      position: numbers[0],
+      kills: numbers[1],
+    };
   }
 
   private modalTextValue(
@@ -5464,32 +6337,44 @@ export class MessageRegistrationService {
     pending: AutoResultPending,
     current: ReviewedResultRow,
   ): { ok: true; row: ReviewedResultRow } | { ok: false; error: string } {
-    const include = this.parseYesNo(
-      this.modalTextValue(interaction, "include"),
-    );
-    if (include === null) {
-      return { ok: false, error: "Apply this row must be yes or no." };
+    const actionInput = this.modalTextValue(interaction, "include");
+    let action = this.parseReviewedRowAction(actionInput);
+    let noShowAction =
+      this.parseReviewedNoShowAction(this.modalTextValue(interaction, "ban")) ??
+      current.noShowAction ??
+      "NO_BAN";
+    if (action === null) {
+      const legacy = this.parseLegacyReviewedRowAction(actionInput);
+      if (legacy) {
+        action = legacy.rowAction;
+        noShowAction = legacy.noShowAction;
+      }
+    }
+    if (action === null) {
+      return {
+        ok: false,
+        error: "Row action must be one of: yes, no, skip.",
+      };
+    }
+    if (!noShowAction) {
+      return {
+        ok: false,
+        error: "Ban count must be one of: ban, no ban.",
+      };
     }
 
-    const position = this.parseNonNegativeInteger(
+    const score = this.parsePlacementKillsInput(
+      this.modalTextValue(interaction, "score"),
       this.modalTextValue(interaction, "position"),
-      "Placement",
-    );
-    if (!position.ok || position.value < 1) {
-      return { ok: false, error: "Placement must be 1 or higher." };
-    }
-
-    const kills = this.parseNonNegativeInteger(
       this.modalTextValue(interaction, "kills"),
-      "Kills",
     );
-    if (!kills.ok) {
-      return kills;
+    if (!score.ok) {
+      return score;
     }
 
     const players = this.parsePlayerKillsInput(
       this.modalTextValue(interaction, "players"),
-      kills.value,
+      score.kills,
     );
     if (!players.ok) {
       return players;
@@ -5499,20 +6384,73 @@ export class MessageRegistrationService {
     const {
       autoSkipped: _autoSkipped,
       autoSkipReason: _autoSkipReason,
+      noShowAction: _noShowAction,
       ...currentWithoutAutoSkip
     } = current;
-    if (!include) {
+    if (action !== "APPLY") {
+      let officialSlotPatch:
+        | Pick<
+            ReviewedResultRow,
+            "slotId" | "teamId" | "slotNumber" | "tag" | "teamName"
+          >
+        | undefined;
+      if (noShowAction === "BAN") {
+        const slotNumberResult = this.parseNonNegativeInteger(
+          slotInput || String(current.slotNumber ?? ""),
+          "Official slot number",
+        );
+        if (!slotNumberResult.ok || slotNumberResult.value < 1) {
+          return {
+            ok: false,
+            error: "Official slot number is required when banning a row.",
+          };
+        }
+
+        const slot = this.findSlotByNumber(pending, slotNumberResult.value);
+        const canKeepCurrentSlot =
+          current.slotNumber === slotNumberResult.value &&
+          current.slotId &&
+          current.teamId;
+        if (!slot && !canKeepCurrentSlot) {
+          return {
+            ok: false,
+            error: `Slot ${slotNumberResult.value} was not found in the official slot list.`,
+          };
+        }
+
+        const slotId = slot?.id ?? current.slotId;
+        const teamId = slot?.teamId ?? current.teamId;
+        if (!slotId || !teamId) {
+          return {
+            ok: false,
+            error: `Slot ${slotNumberResult.value} does not have a registered team.`,
+          };
+        }
+
+        officialSlotPatch = {
+          slotId,
+          teamId,
+          slotNumber: slotNumberResult.value,
+          tag: slot?.team?.tag?.trim() || current.tag,
+          teamName: slot?.team?.name?.trim() || current.teamName || null,
+        };
+      }
+
       return {
         ok: true,
         row: {
           ...currentWithoutAutoSkip,
           include: false,
-          position: position.value,
-          kills: kills.value,
+          skipConfirmed: true,
+          noShowAction,
+          position: score.position,
+          kills: score.kills,
           players: players.players,
           ocrTag: current.ocrTag ?? current.tag,
           ocrPlayerNames: current.ocrPlayerNames ?? current.playerNames ?? [],
           edited: true,
+          ...(officialSlotPatch ?? {}),
+          ...(noShowAction === "BAN" ? { officialPlaceholder: false } : {}),
         },
       };
     }
@@ -5555,8 +6493,9 @@ export class MessageRegistrationService {
         ...currentWithoutAutoSkip,
         include: true,
         edited: true,
-        position: position.value,
-        kills: kills.value,
+        skipConfirmed: false,
+        position: score.position,
+        kills: score.kills,
         players: players.players,
         ocrTag: current.ocrTag ?? current.tag,
         ocrPlayerNames: current.ocrPlayerNames ?? current.playerNames ?? [],
@@ -5657,6 +6596,159 @@ export class MessageRegistrationService {
       components: this.autoResultComponents(pending),
       allowedMentions: { parse: [] },
     });
+  }
+
+  private async reparseAutoResultReview(pending: AutoResultPending) {
+    const preview = await this.withOrganization(
+      pending.config.organizationId,
+      () =>
+        this.sessionService.previewAutomaticResultScreenshot(
+          pending.sessionId,
+          pending.imageUrls.length ? pending.imageUrls : pending.imageUrl,
+          "results",
+          pending.config,
+          { matchId: pending.matchId },
+        ),
+    );
+    const rows = this.toReviewedRows(preview);
+    if (!rows.length) {
+      throw new Error("No usable result rows detected from screenshot.");
+    }
+
+    pending.matchId = preview.matchId;
+    pending.matchLabel = preview.matchLabel;
+    pending.imageUrl = preview.imageUrl;
+    pending.imageUrls = preview.imageUrls?.length
+      ? preview.imageUrls
+      : pending.imageUrls;
+    pending.rows = rows;
+    pending.slots = preview.slots ?? pending.slots;
+    pending.expiresAt = Date.now() + AUTO_RESULT_PENDING_TTL_MS;
+  }
+
+  private autoResultSourceTarget(
+    panelMessage: Message,
+    sourceMessageId: string,
+  ) {
+    const link = panelMessage.content.match(
+      /discord\.com\/channels\/(\d{10,25})\/(\d{10,25})\/(\d{10,25})/,
+    );
+    if (link) {
+      return {
+        guildId: link[1],
+        channelId: link[2],
+        messageId: link[3],
+      };
+    }
+    return {
+      guildId: panelMessage.guild?.id ?? null,
+      channelId: panelMessage.channel.id,
+      messageId: sourceMessageId,
+    };
+  }
+
+  private async fetchAutoResultSourceMessage(
+    interaction: Pick<ButtonInteraction, "client" | "message">,
+    sourceMessageId: string,
+  ): Promise<Message> {
+    const target = this.autoResultSourceTarget(
+      interaction.message,
+      sourceMessageId,
+    );
+    const channelClient = (
+      interaction.client as unknown as {
+        channels?: { fetch?: (channelId: string) => Promise<unknown> };
+      }
+    )?.channels;
+    const fetchChannel = channelClient?.fetch;
+    if (!fetchChannel || !target.channelId) {
+      throw new Error("Could not find the original screenshot channel.");
+    }
+
+    const channel = (await fetchChannel
+      .call(channelClient, target.channelId)
+      .catch(() => null)) as GuildTextBasedChannel | null;
+    if (!channel?.isTextBased() || channel.isDMBased()) {
+      throw new Error("Original screenshot channel is not readable.");
+    }
+    if (target.guildId && channel.guild.id !== target.guildId) {
+      throw new Error("Original screenshot server did not match the review.");
+    }
+
+    const sourceMessage = await channel.messages
+      .fetch(target.messageId)
+      .catch(() => null);
+    if (!sourceMessage) {
+      throw new Error("Original screenshot message was not found.");
+    }
+    return sourceMessage;
+  }
+
+  private async restoreAutoResultReviewFromSource(
+    interaction: ButtonInteraction,
+    sourceMessageId: string,
+  ): Promise<AutoResultPending> {
+    const sourceMessage = await this.fetchAutoResultSourceMessage(
+      interaction,
+      sourceMessageId,
+    );
+    if (!sourceMessage.guild) {
+      throw new Error("Original screenshot message is not in a server.");
+    }
+
+    const resolved = await this.sessionService.findScrimForDiscordChannel(
+      sourceMessage.guild.id,
+      sourceMessage.channel.id,
+      this.channelTopic(sourceMessage.channel),
+    );
+    if (!resolved || resolved.channelKind !== "screenshots") {
+      throw new Error(
+        "Original screenshot channel is not configured for results.",
+      );
+    }
+
+    const matchNumber = this.parseResultGameCode(sourceMessage.content);
+    if (!matchNumber) {
+      throw new Error("Original screenshot message is missing a game code.");
+    }
+
+    const imageUrls = this.findImageUrls(sourceMessage);
+    if (!imageUrls.length) {
+      throw new Error("Original screenshot message has no readable images.");
+    }
+
+    const preview = await this.withOrganization(
+      resolved.config.organizationId,
+      () =>
+        this.sessionService.previewAutomaticResultScreenshot(
+          resolved.session.id,
+          imageUrls,
+          "results",
+          resolved.config,
+          { matchNumber },
+        ),
+    );
+    const rows = this.toReviewedRows(preview);
+    if (!rows.length) {
+      throw new Error("No usable result rows detected from screenshot.");
+    }
+
+    return {
+      sessionId: resolved.session.id,
+      matchId: preview.matchId,
+      matchLabel: preview.matchLabel,
+      imageUrl: preview.imageUrl,
+      imageUrls: preview.imageUrls?.length ? preview.imageUrls : imageUrls,
+      sourceGuildId: sourceMessage.guild.id,
+      sourceMessageId: sourceMessage.id,
+      sourceChannelId: sourceMessage.channel.id,
+      dashboardChannelId: interaction.channelId,
+      dashboardMessageId: interaction.message.id,
+      config: resolved.config,
+      rows,
+      slots: preview.slots ?? [],
+      expiresAt: Date.now() + AUTO_RESULT_PENDING_TTL_MS,
+    };
   }
 
   private async updateAutoResultPanels(
@@ -6198,7 +7290,7 @@ export class MessageRegistrationService {
       const pendingSource = this.toDiscordTeamLogoSource(
         message,
         parsed.teamName,
-        null,
+        parsed.tag,
         logoSource,
       );
 
@@ -6206,7 +7298,7 @@ export class MessageRegistrationService {
         resolved.config.organizationId,
         () =>
           this.sessionService.updateTeamLogoFromDiscord(
-            parsed.teamName,
+            parsed.query,
             logoUpload,
             resolved.config,
             pendingSource,
@@ -6229,7 +7321,7 @@ export class MessageRegistrationService {
         sourceChannelId: message.channel.id,
         sessionId: resolved.session.id,
         sessionName: resolved.session.name,
-        team: { name: parsed.teamName },
+        team: { name: parsed.teamName, tag: parsed.tag },
         status: "saved",
         details: reply,
         color: 0x22c55e,
@@ -6656,6 +7748,136 @@ export class MessageRegistrationService {
     return true;
   }
 
+  private async handleSlotBanMessage(message: Message): Promise<boolean> {
+    if (!message.guild) {
+      await message.reply("Use `%ban3` inside the Discord server.");
+      return true;
+    }
+
+    const match = SLOT_BAN_COMMAND_PATTERN.exec(message.content.trim());
+    const slotNumber = Number.parseInt(match?.[1] ?? "", 10);
+    if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 100) {
+      await message.reply({
+        content: "Use `%ban3` to ban and remove the team in slot 3.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const resolved = await this.sessionService.findScrimForDiscordChannel(
+      message.guild.id,
+      message.channel.id,
+      this.channelTopic(message.channel),
+    );
+    if (!resolved) {
+      await message.reply({
+        content: "Use `%ban3` inside a configured scrim Discord channel.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      await message.reply({
+        content: "Only Arenzyra staff can ban and remove slot teams.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    let parsed: ParsedBanOptions;
+    try {
+      parsed = this.parseBanCommand(message, SLOT_BAN_COMMAND_PATTERN, {
+        inferMatchScope: false,
+      });
+    } catch (error) {
+      await message.reply({
+        content:
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Use `%ban3 + reason` or `%ban3 days=3 + reason`.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (
+      parsed.scope === "MATCH" ||
+      parsed.matchNumbers.length > 0 ||
+      parsed.allMatches
+    ) {
+      await message.reply({
+        content:
+          "`%ban3` is slot-wise and does not support match scope. Use `scope=session` or `scope=all-sessions`.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+    if (parsed.sessionSelectors.length > 0) {
+      await message.reply({
+        content:
+          "`%ban3` uses the current scrim slot. Use `scope=session` or `scope=all-sessions`, not selected sessions.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    let days: number | null;
+    let serverAction: DiscordTeamBanServerAction | null;
+    try {
+      days = parsed.days ?? this.configuredSlotBanDurationDays(resolved.config);
+      serverAction =
+        parsed.serverAction ??
+        this.configuredSlotBanServerAction(resolved.config);
+    } catch (error) {
+      await message.reply({
+        content:
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Slot ban defaults are not configured correctly.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const command: DiscordSlotBanCommand = {
+      sessionId: resolved.session.id,
+      slotNumber,
+      scope: this.configuredSlotBanScope(resolved.config, parsed.scope),
+      days,
+      reason: this.slotBanReason(parsed, resolved.config),
+      note: `Created from Discord %ban${slotNumber} command: ${
+        message.url ?? message.id
+      }`,
+      serverAction,
+    };
+
+    try {
+      const result = await this.withOrganization(
+        resolved.config.organizationId,
+        () =>
+          this.sessionService.createSlotBanFromDiscord(command, message.guild, {
+            actorDiscordId: message.author.id,
+            actorLabel: message.author.tag,
+            sourceChannelId: message.channel.id,
+            sessionName: resolved.session.name,
+          }),
+      );
+      await message.reply({
+        content: limitDiscordContent(result),
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      await message.reply({
+        content:
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Slot ban failed.",
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
   private async handleBanFlowMessage(message: Message): Promise<boolean> {
     if (!message.guild) {
       await message.reply("Use `%ban` inside the Discord server.");
@@ -7053,6 +8275,338 @@ export class MessageRegistrationService {
       return target.label?.trim() || `Team ${target.teamId}`;
     }
     return target.query;
+  }
+
+  private autoRegistrationGrantPrompt(
+    pending: PendingAutoRegistrationGrantFlow,
+  ) {
+    return limitDiscordContent(
+      [
+        "Auto-registration access prepared.",
+        pending.sessionName ? `Session: ${pending.sessionName}` : null,
+        `Team: ${pending.teamName} (${pending.tag})`,
+        `Manager: <@${pending.manager.discordUserId}>`,
+        "",
+        "Choose how long this manager should keep the auto-registration role.",
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n"),
+    );
+  }
+
+  private autoRegistrationGrantDurationSelectRow(token: string) {
+    return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`${AUTO_REGISTRATION_GRANT_FLOW_PREFIX}duration:${token}`)
+        .setPlaceholder("Choose access duration")
+        .addOptions(
+          new StringSelectMenuOptionBuilder().setLabel("1 day").setValue("1"),
+          new StringSelectMenuOptionBuilder().setLabel("7 days").setValue("7"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("30 days")
+            .setValue("30"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("90 days")
+            .setValue("90"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Custom days")
+            .setDescription("Enter 1 to 365 days.")
+            .setValue("custom"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Cancel")
+            .setValue("cancel"),
+        ),
+    );
+  }
+
+  private storePendingAutoRegistrationGrantFlow(
+    pending: PendingAutoRegistrationGrantFlow,
+  ) {
+    const token = `${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    this.pendingAutoRegistrationGrantFlows.set(token, pending);
+    setTimeout(() => {
+      this.pendingAutoRegistrationGrantFlows.delete(token);
+    }, AUTO_REGISTRATION_GRANT_FLOW_TTL_MS).unref?.();
+    return token;
+  }
+
+  private prunePendingAutoRegistrationGrantFlows() {
+    const now = Date.now();
+    for (const [token, pending] of this.pendingAutoRegistrationGrantFlows) {
+      if (pending.expiresAt <= now) {
+        this.pendingAutoRegistrationGrantFlows.delete(token);
+      }
+    }
+  }
+
+  private parseAutoRegistrationGrantDurationSelectId(customId: string) {
+    if (!customId.startsWith(AUTO_REGISTRATION_GRANT_FLOW_PREFIX)) {
+      return null;
+    }
+    const [, action, token] = customId.split(":");
+    if (action !== "duration" || !/^[a-z0-9-]{8,40}$/i.test(token ?? "")) {
+      return null;
+    }
+    return { token };
+  }
+
+  private parseAutoRegistrationGrantDaysModalId(customId: string) {
+    if (!customId.startsWith(AUTO_REGISTRATION_GRANT_FLOW_PREFIX)) {
+      return null;
+    }
+    const [, action, token] = customId.split(":");
+    if (action !== "days" || !/^[a-z0-9-]{8,40}$/i.test(token ?? "")) {
+      return null;
+    }
+    return { token };
+  }
+
+  private autoRegistrationGrantDaysModal(token: string) {
+    const modal = new ModalBuilder()
+      .setCustomId(`${AUTO_REGISTRATION_GRANT_FLOW_PREFIX}days:${token}`)
+      .setTitle("Auto Registration Duration");
+    const daysInput = new TextInputBuilder()
+      .setCustomId("days")
+      .setLabel("How many days?")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("Example: 14")
+      .setRequired(true)
+      .setMaxLength(3);
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(daysInput),
+    );
+    return modal;
+  }
+
+  private parseAutoRegistrationGrantDays(value: string) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 365) {
+      throw new Error("Enter a duration from 1 to 365 days.");
+    }
+    return Math.trunc(parsed);
+  }
+
+  private async editAutoRegistrationGrantPrompt(
+    interaction: StringSelectMenuInteraction | ModalSubmitInteraction,
+    pending: PendingAutoRegistrationGrantFlow,
+    content: string,
+  ) {
+    if (!pending.promptMessageId) {
+      return;
+    }
+    const channel = interaction.channel as
+      | {
+          messages?: {
+            fetch?: (messageId: string) => Promise<Message | null>;
+          };
+        }
+      | null
+      | undefined;
+    const prompt = await channel?.messages
+      ?.fetch?.(pending.promptMessageId)
+      .catch(() => null);
+    await prompt
+      ?.edit({
+        content: limitDiscordContent(content),
+        components: [],
+        allowedMentions: { parse: [] },
+      })
+      .catch(() => undefined);
+  }
+
+  private async finishAutoRegistrationGrantFlow(
+    interaction: StringSelectMenuInteraction | ModalSubmitInteraction,
+    token: string,
+    pending: PendingAutoRegistrationGrantFlow,
+    durationDays: number,
+  ) {
+    if (!interaction.guild) {
+      throw new Error("Run this action inside the Discord server.");
+    }
+    const guild = interaction.guild;
+    this.pendingAutoRegistrationGrantFlows.delete(token);
+    const content = await this.withOrganization(
+      pending.config.organizationId,
+      () =>
+        this.sessionService.grantAutoRegistrationAccessFromDiscord(
+          guild,
+          pending.sessionId,
+          {
+            teamName: pending.teamName,
+            tag: pending.tag,
+            manager: pending.manager,
+            durationDays,
+            logoUrl: pending.logoUpload ? null : pending.logoUrl,
+            logoUpload: pending.logoUpload,
+            logoSource: pending.logoSource,
+            audit: {
+              actorDiscordId: interaction.user.id,
+              actorLabel: interaction.user.tag,
+              sourceChannelId: pending.sourceChannelId,
+              sourceMessageId: pending.sourceMessageId,
+              sessionName: pending.sessionName,
+            },
+          },
+        ),
+    );
+    await this.editAutoRegistrationGrantPrompt(interaction, pending, content);
+    return content;
+  }
+
+  private async handleAutoRegistrationGrantDurationSelect(
+    interaction: StringSelectMenuInteraction,
+    parsed: { token: string },
+  ): Promise<boolean> {
+    this.prunePendingAutoRegistrationGrantFlows();
+    const pending = this.pendingAutoRegistrationGrantFlows.get(parsed.token);
+    if (!pending) {
+      await interaction.update({
+        content:
+          "This auto-registration request expired. Send `%register` again.",
+        components: [],
+      });
+      return true;
+    }
+    if (pending.userId !== interaction.user.id) {
+      await interaction.reply({
+        content:
+          "Only the staff member who started this request can finish it.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (!this.hasInteractionStaffAccess(interaction, pending.config)) {
+      await interaction.reply({
+        content: "Only Arenzyra staff can grant auto-registration access.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    const choice = interaction.values[0];
+    if (choice === "cancel") {
+      this.pendingAutoRegistrationGrantFlows.delete(parsed.token);
+      await interaction.update({
+        content: "Auto-registration access grant cancelled.",
+        components: [],
+      });
+      return true;
+    }
+    if (choice === "custom") {
+      await interaction.showModal(
+        this.autoRegistrationGrantDaysModal(parsed.token),
+      );
+      return true;
+    }
+
+    let durationDays: number;
+    try {
+      durationDays = this.parseAutoRegistrationGrantDays(choice ?? "");
+    } catch (error) {
+      await interaction.reply({
+        content: error instanceof Error ? error.message : String(error),
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    await interaction.deferUpdate();
+    await this.editAutoRegistrationGrantPrompt(
+      interaction,
+      pending,
+      "Granting auto-registration access...",
+    );
+    try {
+      await this.finishAutoRegistrationGrantFlow(
+        interaction,
+        parsed.token,
+        pending,
+        durationDays,
+      );
+    } catch (error) {
+      const content =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Auto-registration access grant failed.";
+      await this.editAutoRegistrationGrantPrompt(interaction, pending, content);
+    }
+    return true;
+  }
+
+  private async handleAutoRegistrationGrantDaysModal(
+    interaction: ModalSubmitInteraction,
+    parsed: { token: string },
+  ): Promise<boolean> {
+    this.prunePendingAutoRegistrationGrantFlows();
+    const pending = this.pendingAutoRegistrationGrantFlows.get(parsed.token);
+    if (!pending) {
+      await interaction.reply({
+        content:
+          "This auto-registration request expired. Send `%register` again.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (pending.userId !== interaction.user.id) {
+      await interaction.reply({
+        content:
+          "Only the staff member who started this request can finish it.",
+        ephemeral: true,
+      });
+      return true;
+    }
+    if (!this.hasInteractionStaffAccess(interaction, pending.config)) {
+      await interaction.reply({
+        content: "Only Arenzyra staff can grant auto-registration access.",
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    let durationDays: number;
+    try {
+      durationDays = this.parseAutoRegistrationGrantDays(
+        this.modalTextValue(interaction, "days"),
+      );
+    } catch (error) {
+      await interaction.reply({
+        content: error instanceof Error ? error.message : String(error),
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    await this.editAutoRegistrationGrantPrompt(
+      interaction,
+      pending,
+      "Granting auto-registration access...",
+    );
+    try {
+      const content = await this.finishAutoRegistrationGrantFlow(
+        interaction,
+        parsed.token,
+        pending,
+        durationDays,
+      );
+      await interaction.editReply({
+        content: limitDiscordContent(content),
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      const content =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Auto-registration access grant failed.";
+      await this.editAutoRegistrationGrantPrompt(interaction, pending, content);
+      await interaction.editReply({
+        content,
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
   }
 
   private manualBanFlowPrompt(
@@ -7682,6 +9236,123 @@ export class MessageRegistrationService {
     return this.handleRegisterMessage(message, inputMode, resolved);
   }
 
+  private async handleAutoRegistrationGrantMessage(
+    message: Message,
+  ): Promise<boolean> {
+    if (!message.guild) {
+      return false;
+    }
+
+    const resolver = (
+      this.sessionService as unknown as {
+        findScrimForAutoRegistrationGrantChannel?: DiscordSessionService["findScrimForAutoRegistrationGrantChannel"];
+      }
+    ).findScrimForAutoRegistrationGrantChannel;
+    if (typeof resolver !== "function") {
+      return false;
+    }
+
+    const resolved = await resolver
+      .call(
+        this.sessionService,
+        message.guild.id,
+        message.channel.id,
+        this.channelTopic(message.channel),
+      )
+      .catch(() => null);
+    if (!resolved) {
+      return false;
+    }
+
+    if (!this.hasStaffAccess(message, resolved.config)) {
+      await message.reply({
+        content: "Only Arenzyra staff can grant auto-registration access here.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (
+      resolved.config.emojis?.autoRegistrationEnabled !== "true" ||
+      !resolved.config.emojis?.autoRegistrationRoleId?.trim()
+    ) {
+      await message.reply({
+        content:
+          "Enable Auto Registration and select an Auto Register Role for this session before using this channel.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    try {
+      const parsed = await this.parseRegisterMessage(
+        message,
+        "SCRIM",
+        resolved.config,
+      );
+      const managers = await this.parseMentionedManagers(message, {
+        maxManagersPerTeam: 1,
+      });
+      const manager = managers[0];
+      if (!manager) {
+        throw new Error("Mention exactly 1 manager in this grant message.");
+      }
+      const logoUpload = await this.loadLogoUpload(parsed.logoUrl);
+      const pending: PendingAutoRegistrationGrantFlow = {
+        userId: message.author.id,
+        sessionId: resolved.session.id,
+        sessionName: resolved.session.name,
+        sourceChannelId: message.channel.id,
+        sourceMessageId: message.id,
+        promptMessageId: null,
+        config: resolved.config,
+        teamName: parsed.teamName,
+        tag: parsed.tag,
+        manager,
+        logoUrl: parsed.logoUrl,
+        logoUpload,
+        logoSource: parsed.logoSource
+          ? this.toDiscordTeamLogoSource(
+              message,
+              parsed.teamName,
+              parsed.tag,
+              parsed.logoSource,
+            )
+          : null,
+        expiresAt: Date.now() + AUTO_REGISTRATION_GRANT_FLOW_TTL_MS,
+      };
+      const token = this.storePendingAutoRegistrationGrantFlow(pending);
+      const prompt = await message.reply({
+        content: this.autoRegistrationGrantPrompt(pending),
+        components: [this.autoRegistrationGrantDurationSelectRow(token)],
+        allowedMentions: { parse: [] },
+      });
+      pending.promptMessageId = prompt.id;
+      return true;
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "Auto-registration access grant failed.";
+      await this.sendDiscordActionLog(message.guild, resolved.config, {
+        action: "Auto registration grant rejected",
+        actorDiscordId: message.author.id,
+        actorLabel: message.author.tag,
+        sourceChannelId: message.channel.id,
+        sessionId: resolved.session.id,
+        sessionName: resolved.session.name,
+        status: "rejected",
+        reason,
+        color: 0xef4444,
+      }).catch(() => undefined);
+      await message.reply({
+        content: reason,
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+  }
+
   private async handleWaitlistPromotionMessage(
     message: Message,
   ): Promise<boolean> {
@@ -7909,26 +9580,100 @@ export class MessageRegistrationService {
             resolved.config,
           );
           const staffAccess = this.hasStaffAccess(message, resolved.config);
-          const placementAccess = !staffAccess
-            ? await this.userHasCustomRoleRegistrationAccess(
+          const registrationChannelPromotion = (
+            this.sessionService as unknown as {
+              promoteWaitlistedTeamFromRegistrationChannel?: (
+                requesterDiscordId: string,
+                requesterLabel: string | null,
+                rawTag: string,
+                rawName: string,
+                members: DiscordRegistrationMemberInput[],
+                guild: Message["guild"],
+                sessionId: string,
+                audit?: {
+                  actorDiscordId: string;
+                  actorLabel: string;
+                  sourceChannelId: string;
+                  sessionName: string;
+                },
+              ) => Promise<string | null>;
+            }
+          ).promoteWaitlistedTeamFromRegistrationChannel;
+          if (
+            inputMode === "SCRIM" &&
+            parsed.placement !== "VIP" &&
+            resolved.accepting &&
+            typeof registrationChannelPromotion === "function"
+          ) {
+            const promotionMembers = await this.parseMentionedManagers(
+              message,
+              resolved.config,
+            );
+            const promotion = await registrationChannelPromotion.call(
+              this.sessionService,
+              message.author.id,
+              message.author.tag,
+              parsed.tag,
+              parsed.teamName,
+              promotionMembers,
+              message.guild,
+              resolved.session.id,
+              {
+                actorDiscordId: message.author.id,
+                actorLabel: message.author.tag,
+                sourceChannelId: message.channel.id,
+                sessionName: resolved.session.name,
+              },
+            );
+            if (promotion) {
+              await finishRegistrationReaction(
+                this.registrationResultReaction("registered", resolved.config),
+                resolved.config,
+              );
+              await message.reply({
+                content: promotion,
+                allowedMentions: { parse: [] },
+              });
+              return true;
+            }
+          }
+          const customRoleAccesses = !staffAccess
+            ? await this.customRoleRegistrationAccesses(
                 message.author.id,
                 message.guild,
                 resolved.config,
                 parsed.placement === "VIP" ? "vip" : "normal",
               )
-            : false;
+            : [];
+          const placementAccess = customRoleAccesses.length > 0;
+          const nonWinnerCustomAccess = customRoleAccesses.find(
+            (entry) => !entry.winnerQualified,
+          );
+          const winnerCustomAccess = customRoleAccesses.find(
+            (entry) => entry.winnerQualified && entry.group?.id,
+          );
           const customVipAccess =
             parsed.placement === "VIP" && !staffAccess
               ? placementAccess
               : false;
+          const activeVipAccessRole = !staffAccess
+            ? await this.userHasVipRegistrationAccess(
+                message.author.id,
+                message.guild,
+                resolved.config,
+              )
+            : false;
+          const roleVipAccess =
+            parsed.placement === "VIP" && !staffAccess
+              ? activeVipAccessRole
+              : false;
           const vipAccess =
             parsed.placement === "VIP" && !staffAccess
-              ? customVipAccess ||
-                (await this.userHasVipRegistrationAccess(
-                  message.author.id,
-                  message.guild,
-                  resolved.config,
-                ))
+              ? customVipAccess || roleVipAccess
+              : false;
+          const vipRoleNormalAccess =
+            parsed.placement !== "VIP" && !staffAccess
+              ? activeVipAccessRole
               : false;
           const activeEarlyAccessRole =
             !staffAccess && parsed.placement !== "VIP"
@@ -7944,6 +9689,26 @@ export class MessageRegistrationService {
             !resolved.accepting && !staffAccess
               ? customEarlyAccess || activeEarlyAccessRole
               : false;
+          const configuredRegistrationRoleAccess = staffAccess
+            ? true
+            : await this.userHasConfiguredRegistrationRole(
+                message.author.id,
+                message.guild,
+                resolved.config,
+              );
+          const customAccessNeeded =
+            !staffAccess &&
+            placementAccess &&
+            !nonWinnerCustomAccess &&
+            ((parsed.placement === "VIP" && !roleVipAccess) ||
+              (parsed.placement !== "VIP" &&
+                !resolved.accepting &&
+                !activeEarlyAccessRole &&
+                !vipRoleNormalAccess) ||
+              !configuredRegistrationRoleAccess);
+          const winnerAccessGroupId = customAccessNeeded
+            ? (winnerCustomAccess?.group?.id ?? null)
+            : null;
           if (parsed.placement === "VIP" && !staffAccess && !vipAccess) {
             await finishRegistrationReaction(
               this.registrationRejectReaction(resolved.config),
@@ -7969,7 +9734,8 @@ export class MessageRegistrationService {
             !resolved.accepting &&
             !staffAccess &&
             !earlyAccess &&
-            !vipAccess
+            !vipAccess &&
+            !vipRoleNormalAccess
           ) {
             const modeLabel = this.registrationModeLabel(resolved.config);
             await finishRegistrationReaction(
@@ -8005,6 +9771,7 @@ export class MessageRegistrationService {
             requesterDiscordId: string;
             registrationWindowBypass?: boolean;
             registrationRoleBypass?: boolean;
+            winnerAccessGroupId?: string | null;
             tournamentRosterJson?: Record<string, unknown>;
             logoSource?: DiscordTeamLogoSource | null;
             audit?: {
@@ -8015,9 +9782,16 @@ export class MessageRegistrationService {
             };
           } = {
             requesterDiscordId: message.author.id,
-            registrationWindowBypass: earlyAccess || vipAccess,
+            registrationWindowBypass:
+              earlyAccess ||
+              vipAccess ||
+              (!resolved.accepting && vipRoleNormalAccess),
             registrationRoleBypass:
-              placementAccess || activeEarlyAccessRole || vipAccess,
+              placementAccess ||
+              activeEarlyAccessRole ||
+              vipAccess ||
+              vipRoleNormalAccess,
+            winnerAccessGroupId,
           };
           if (this.canSendDiscordActionLog()) {
             registrationOptions.audit = {
@@ -8179,6 +9953,11 @@ export class MessageRegistrationService {
         });
       }
       await message.reply("Only Arenzyra staff can clean a channel.");
+      return true;
+    }
+
+    if (resolved?.config.logChannelId?.trim() === textChannel.id) {
+      await message.reply("Log channels are protected and cannot be cleaned.");
       return true;
     }
 
@@ -8888,6 +10667,7 @@ export class MessageRegistrationService {
       [
         emojis.managedRegistrationPanelMessageId,
         emojis.managedRegistrationStatusMessageId,
+        emojis.managedWaitlistPromotionMessageId,
         emojis.managedSlotListMessageId,
         emojis.managedWaitlistMessageId,
         emojis.managedConfirmationMessageId,
@@ -9318,7 +11098,8 @@ export class MessageRegistrationService {
     inputMode: RegistrationInputMode,
     config?: SessionDiscordConfigResponse | null,
   ): Promise<ParsedRegisterMessage> {
-    const lines = message.content
+    const normalizedContent = normalizeDiscordMessageContent(message.content);
+    const lines = normalizedContent
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
@@ -9331,7 +11112,7 @@ export class MessageRegistrationService {
 
     const fields =
       inputMode === "EVENT"
-        ? message.content
+        ? normalizedContent
             .split("|")
             .map((entry) => entry.trim())
             .filter(Boolean)
@@ -9343,8 +11124,12 @@ export class MessageRegistrationService {
       );
     }
 
-    const teamName = fields[0].trim();
-    const tag = fields[1].trim();
+    let teamName = fields[0].trim();
+    let tag = fields[1].trim();
+    if (inputMode === "SCRIM") {
+      teamName = this.cleanScrimRegistrationLabel(teamName, "teamName");
+      tag = this.cleanScrimRegistrationLabel(tag, "tag");
+    }
     if (!teamName || !tag) {
       throw new Error(
         inputMode === "EVENT" ? this.eventUsageMessage() : this.usageMessage(),
@@ -9375,7 +11160,9 @@ export class MessageRegistrationService {
     }
 
     const requiredMainPlayers = this.tournamentMainPlayersRequired(config);
-    const lines = this.registrationTextWithoutUrls(message.content)
+    const lines = this.registrationTextWithoutUrls(
+      normalizeDiscordMessageContent(message.content),
+    )
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
@@ -9756,6 +11543,18 @@ export class MessageRegistrationService {
     return { placement: "NORMAL" as const, fields };
   }
 
+  private cleanScrimRegistrationLabel(
+    value: string,
+    field: "teamName" | "tag",
+  ) {
+    const labels =
+      field === "teamName"
+        ? ["team\\s*name", "teamname"]
+        : ["team\\s*tag", "teamtag", "tag"];
+    const pattern = new RegExp(`^(?:${labels.join("|")})\\s*[:：-]\\s*`, "i");
+    return value.trim().replace(pattern, "").trim();
+  }
+
   private parseLogoMessage(message: Message): ParsedLogoMessage {
     const content = message.content.replace(/https?:\/\/\S+/gi, " ");
     const lines = content
@@ -9767,18 +11566,48 @@ export class MessageRegistrationService {
     const fields = commandLine
       ? [commandLine, ...lines.slice(1)]
       : lines.slice(1);
-    const teamName = fields
+    let teamName = fields
       .join(" ")
       .replace(/\s+/g, " ")
       .trim()
       .replace(/^"|"$/g, "")
       .trim();
+    let tag: string | null = null;
+
+    const pipeIndex = teamName.indexOf("|");
+    if (pipeIndex >= 0) {
+      const namePart = teamName.slice(0, pipeIndex).trim();
+      const tagPart = teamName
+        .slice(pipeIndex + 1)
+        .split("|")[0]
+        ?.trim();
+      if (namePart && tagPart) {
+        teamName = namePart.replace(/^"|"$/g, "").trim();
+        tag = tagPart.replace(/^"|"$/g, "").trim() || null;
+      }
+    }
+
+    const display = /^(.+?)\s*\(([^()]{1,32})\)\s*$/.exec(teamName);
+    if (display && !tag) {
+      teamName = display[1].trim();
+      tag = display[2].trim();
+    }
+
+    const bracket = /^\[([^\]]{1,15})\]\s+(.+)$/.exec(teamName);
+    if (bracket && !tag) {
+      tag = bracket[1].trim();
+      teamName = bracket[2].trim();
+    }
 
     if (!teamName) {
       throw new Error(this.logoUsageMessage());
     }
 
-    return { teamName };
+    return {
+      teamName,
+      tag,
+      query: tag ? `${teamName} (${tag})` : teamName,
+    };
   }
 
   private parsePlayerPhotoMessage(
@@ -10033,28 +11862,13 @@ export class MessageRegistrationService {
       return null;
     }
 
-    const response = await fetch(logoUrl);
-    if (!response.ok) {
-      throw new Error("Could not download the team logo.");
-    }
-
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (contentLength > MAX_LOGO_BYTES) {
-      throw new Error("Team logo must be 8 MB or smaller.");
-    }
-
-    const contentType = this.normalizeImageContentType(
-      response.headers.get("content-type"),
-      logoUrl,
-    );
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > MAX_LOGO_BYTES) {
-      throw new Error("Team logo must be 8 MB or smaller.");
-    }
+    const { buffer, contentType } = await fetchRemoteRasterImage(logoUrl, {
+      maxBytes: MAX_LOGO_BYTES,
+    });
 
     return {
       buffer,
-      filename: `team-logo.${IMAGE_EXTENSIONS[contentType]}`,
+      filename: "team-logo.png",
       contentType,
     };
   }
@@ -10066,48 +11880,15 @@ export class MessageRegistrationService {
       return null;
     }
 
-    const response = await fetch(photoUrl);
-    if (!response.ok) {
-      throw new Error("Could not download the player photo.");
-    }
-
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (contentLength > MAX_LOGO_BYTES) {
-      throw new Error("Player photo must be 8 MB or smaller.");
-    }
-
-    const contentType = this.normalizeImageContentType(
-      response.headers.get("content-type"),
-      photoUrl,
-      "Player photo",
-    );
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > MAX_LOGO_BYTES) {
-      throw new Error("Player photo must be 8 MB or smaller.");
-    }
+    const { buffer, contentType } = await fetchRemoteRasterImage(photoUrl, {
+      maxBytes: MAX_LOGO_BYTES,
+    });
 
     return {
       buffer,
-      filename: `player-photo.${IMAGE_EXTENSIONS[contentType]}`,
+      filename: "player-photo.png",
       contentType,
     };
-  }
-
-  private normalizeImageContentType(
-    contentTypeHeader: string | null,
-    logoUrl: string,
-    label = "Team logo",
-  ) {
-    const contentType = contentTypeHeader?.split(";")[0]?.trim().toLowerCase();
-    if (contentType && ALLOWED_LOGO_TYPES.has(contentType)) {
-      return contentType;
-    }
-
-    if (/\.png(?:\?|$)/i.test(logoUrl)) return "image/png";
-    if (/\.jpe?g(?:\?|$)/i.test(logoUrl)) return "image/jpeg";
-    if (/\.webp(?:\?|$)/i.test(logoUrl)) return "image/webp";
-
-    throw new Error(`${label} must be a PNG, JPG, or WEBP image.`);
   }
 
   private usageMessage() {
@@ -10160,6 +11941,11 @@ export class MessageRegistrationService {
   private logoUsageMessage() {
     return [
       "Use this format:",
+      "",
+      "%logo",
+      "Team Name | TAG",
+      "",
+      "or",
       "",
       "%logo",
       "Team Name",

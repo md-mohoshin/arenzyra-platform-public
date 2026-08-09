@@ -23,6 +23,7 @@ export const startScrimCommand = {
     const content = await services.sessionService.startScrim(
       interaction.user.id,
       sessionId,
+      { allowOrganizerOverride: true },
     );
     await interaction.editReply(content);
   },

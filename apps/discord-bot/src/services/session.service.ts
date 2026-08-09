@@ -1,9 +1,13 @@
 import {
   type ApplyNoShowAutoBansResponse,
   type ApplyScreenshotResultsPayload,
+  type ConfirmConditionalBanEnrollmentPayload,
+  type ConfirmConditionalBanEnrollmentResponse,
   type CreateSessionMatchPayload,
   type DiscordConfigResponse,
   type DiscordGuildRemovedResponse,
+  type ConditionalBanFinalSnapshotResponse,
+  type FinalizeConditionalBanEnrollmentsResponse,
   type MatchSlotResponse,
   type MatchResultsResponse,
   type ManualMatchResultRowPayload,
@@ -18,6 +22,7 @@ import {
   type ResolvedDiscordChannelResponse,
   type ResolvedProductionDiscordChannelResponse,
   type ResultBackupDetailResponse,
+  type ResultBackupRenderKind,
   type ResultBackupRowResponse,
   type ResultBackupSummaryResponse,
   type ProductionDiscordChannelKind,
@@ -37,6 +42,10 @@ import {
   type TeamBanScope,
   type TeamLogoUpload,
   type PlayerPhotoUpload,
+  type PreviewConditionalBanEnrollmentPayload,
+  type PreviewConditionalBanEnrollmentResponse,
+  type SealConditionalBanFinalSnapshotPayload,
+  type SealConditionalBanFinalSnapshotResponse,
   type UpsertProductionDiscordTeamResponse,
   type UpdateMatchResultPayload,
   type UpdateResultBackupRowPayload,
@@ -51,11 +60,17 @@ import {
   ArenzyraApiClient,
   toFriendlyApiError,
 } from "../api/api-client";
+import { fetchRemoteRasterImage } from "../security/remote-image";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   EmbedBuilder,
+  MessageFlags,
   MessageType,
   PermissionFlagsBits,
+  type ButtonInteraction,
   type Client,
   type Guild,
   type GuildMember,
@@ -74,9 +89,15 @@ import {
   type ScrimDiscordSetup,
 } from "./scrim-discord-setup.service";
 import {
+  createSessionOwnershipStore,
+  type SessionOwnershipStoreLike,
+} from "./session-ownership.store";
+import {
   configuredButtonEmoji,
+  activeAutoRegistrationGrants,
   autoRegistrationWindow,
   confirmationDisplayMode,
+  playConfirmationCloseWindow,
   playConfirmationCleanupWindow,
   playConfirmationControlMode,
   playConfirmationReactionsEnabled,
@@ -87,16 +108,25 @@ import {
   registrationWindowStatusTextForSession,
   parseRoleAccessGroups,
   parseAutoRegistrationConfig,
+  parseAutoRegistrationGrants,
+  parseTeamLogoReminderConfig,
+  parseRoleRemovalRequests,
   resolveDiscordEmoji,
   roleAccessGroupWindow,
   roleAccessWindow,
+  serializeAutoRegistrationGrants,
+  serializeRoleRemovalRequests,
   slotListMarker,
+  teamLogoReminderWindow,
   waitlistPromotionWindowForSession,
+  type AutoRegistrationGrant,
   type DiscordEmojiKey,
   type PlayControlMode,
   type RoleAccessGroup,
   type RoleAccessGroupMode,
+  type RoleRemovalRequest,
   type AutoRegistrationConfig,
+  type WinnerQualification,
 } from "./discord-emojis";
 import {
   allowedMentionsForOrganizerText,
@@ -104,8 +134,57 @@ import {
 } from "./discord-allowed-mentions";
 
 const EM_DASH = "\u2014";
+// The API does not expose map catalogs on a session response. Keep this
+// package-local contract aligned with each game's authoritative default map
+// while using the session's API-owned game key to prevent cross-game guesses.
+const SESSION_MATCH_DEFAULT_MAP_BY_GAME = Object.freeze({
+  PUBG_MOBILE: "ERANGEL",
+  FREE_FIRE: "BERMUDA",
+  VALORANT: "ASCENT",
+  CRICKET: "CRICKET_T20",
+  CALL_OF_DUTY: "CODM_ISOLATED",
+  CS2: null,
+  DOTA2: null,
+  LOL: null,
+  FORTNITE: null,
+  MLBB: null,
+} satisfies Record<string, string | null>);
+
+function sessionMatchGamePayload(
+  session: SessionResponse,
+): CreateSessionMatchPayload {
+  // The API's documented legacy contract treats sessions without a game as
+  // PUBG Mobile. Keep that compatibility limited to an actually missing key;
+  // non-empty unknown keys still fail closed below.
+  const gameKey =
+    String(session.game?.key ?? "")
+      .trim()
+      .toUpperCase() || "PUBG_MOBILE";
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      SESSION_MATCH_DEFAULT_MAP_BY_GAME,
+      gameKey,
+    )
+  ) {
+    throw new Error(
+      `Session game ${gameKey} is not supported by this bot version.`,
+    );
+  }
+
+  const map =
+    SESSION_MATCH_DEFAULT_MAP_BY_GAME[
+      gameKey as keyof typeof SESSION_MATCH_DEFAULT_MAP_BY_GAME
+    ];
+  return {
+    gameKey,
+    ...(map ? { map } : {}),
+  };
+}
+
 const DEFAULT_RESULT_SUMMARY_ROW_TEMPLATE =
   "{position}. {teamName} - {totalPoints} pts ({kills} kills)";
+const DEFAULT_MATCH_RESULT_MESSAGE_TEMPLATE = "{title}\n{rows}";
+const DEFAULT_MATCH_RESULT_POST_TEMPLATE = "{message}";
 const LEGACY_FINAL_RESULT_MESSAGE_TEMPLATE =
   "{trophy} Final Results\n\nChampion: {winner}\n\nTop teams:\n{winners}";
 const LEGACY_FINAL_RESULT_WINNER_ROW_TEMPLATE =
@@ -115,6 +194,8 @@ const DEFAULT_FINAL_RESULT_MESSAGE_TEMPLATE =
 const DEFAULT_FINAL_RESULT_WINNER_ROW_TEMPLATE =
   "{winnerEmoji} **{winnerTitle}:** {teamName} - {points} pts ({kills} kills)";
 const DEFAULT_FINAL_RESULT_POST_TEMPLATE = "{message}";
+const DEFAULT_WAITLIST_PROMOTION_OPEN_MESSAGE_TEXT =
+  "{role} A normal slot is available for {session}. Register in the waitlist channel before it closes {closesRelative}.";
 const FINAL_RESULT_SECOND_PLACE_EMOJI = "\uD83E\uDD48";
 const FINAL_RESULT_THIRD_PLACE_EMOJI = "\uD83E\uDD49";
 const LEGACY_RESULT_SUMMARY_ROW_TEMPLATES = new Set([
@@ -127,6 +208,24 @@ const LEGACY_FINAL_RESULT_MESSAGE_TEMPLATES = new Set([
 const LEGACY_FINAL_RESULT_WINNER_ROW_TEMPLATES = new Set([
   normalizeFinalResultTemplate(LEGACY_FINAL_RESULT_WINNER_ROW_TEMPLATE),
 ]);
+const MATCH_RESULT_RENDER_CARDS: Array<{
+  kind: MatchRenderKind;
+  name: string;
+}> = [
+  { kind: "match-result", name: "match-result.png" },
+  { kind: "overall-ranking", name: "overall-ranking.png" },
+  { kind: "top-mvp", name: "top-mvp.png" },
+  { kind: "top-fraggers", name: "top-fraggers.png" },
+];
+const FINAL_RESULT_RENDER_CARDS: Array<{
+  kind: MatchRenderKind;
+  name: string;
+}> = [
+  { kind: "overall-ranking", name: "overall-ranking.png" },
+  { kind: "overall-top-mvp", name: "overall-top-mvp.png" },
+  { kind: "overall-top-fraggers", name: "overall-top-fraggers.png" },
+  { kind: "match-schedule", name: "match-schedule.png" },
+];
 const SLOT_LIST_START = 3;
 const BACKGROUND_SYNC_DELAY_MS = 750;
 const COPIED_EVENT_SOURCE_REFRESH_DELAY_MS = 500;
@@ -145,6 +244,9 @@ const CONFIRMATION_CLOSE_CLEANUP_GRACE_MS = 30 * 60_000;
 const CONFIRMATION_WAITLIST_GRACE_DEFAULT_MINUTES = 30;
 const CONFIRMATION_WAITLIST_GRACE_MINUTES_MIN = 5;
 const CONFIRMATION_WAITLIST_GRACE_MINUTES_MAX = 180;
+const CANCELLATION_CLEANUP_DELAY_DEFAULT_MINUTES = 10;
+const CANCELLATION_CLEANUP_DELAY_MINUTES_MIN = 0;
+const CANCELLATION_CLEANUP_DELAY_MINUTES_MAX = 180;
 const ACTIVE_DISCORD_RECONCILE_INITIAL_DELAY_MS = 5_000;
 const ACTIVE_DISCORD_RECONCILE_INTERVAL_MS = 30_000;
 const ACTIVE_DISCORD_RECONCILE_FULL_INTERVAL_MS = 5 * 60_000;
@@ -160,14 +262,11 @@ const STAFF_ROLE_NAMES = [
 ];
 const PENDING_TEAM_LOGOS_KEY = "pendingTeamLogos";
 const MAX_PENDING_TEAM_LOGOS = 250;
+const PENDING_LOGO_BACKFILL_MAX_PER_SYNC = 12;
+const PENDING_LOGO_BACKFILL_FAILURE_TTL_MS = 30 * 60_000;
 const MAX_LOGO_BYTES = 8 * 1024 * 1024;
 const PLAY_STATUS_NOTE_PREFIX = "ARENZYRA_PLAY_STATUS:";
 const ALLOWED_LOGO_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
-const IMAGE_EXTENSIONS: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-};
 
 function normalizeFinalResultTemplate(value: string) {
   return value.trim().replace(/\r\n/g, "\n");
@@ -175,6 +274,7 @@ function normalizeFinalResultTemplate(value: string) {
 const AUTO_CLEANUP_DEFAULT_LIMIT = 100;
 const AUTO_CLEANUP_ALL_LIMIT = 500;
 const AUTO_CLEANUP_MAX_LIMIT = 1_000;
+const DISCORD_BAN_LIST_LIMIT = 5_000;
 const AUTO_CLEANUP_GRACE_MINUTES = 30;
 const AUTO_CLEANUP_STARTUP_CATCHUP_GRACE_MINUTES = 5;
 const DISCORD_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -193,6 +293,7 @@ export type ApplyResultsDiscordResponse = {
   content: string;
   publicContent?: string;
   noShowCount?: number;
+  backupId?: string;
   imageBuffer?: Buffer;
   imageFiles?: Array<{
     name: string;
@@ -203,6 +304,7 @@ export type ApplyResultsDiscordResponse = {
 export type AutomaticResultScreenshotMode = "results" | "slot-map";
 
 export type AutomaticResultScreenshotOptions = {
+  matchId?: string | null;
   matchNumber?: number | null;
 };
 
@@ -251,9 +353,13 @@ export type AutomaticResultPreviewResponse = {
   slots?: MatchSlotResponse[];
 };
 
+export type ReviewedResultNoShowAction = "BAN" | "NO_BAN";
+
 export type ReviewedResultRow = ScreenshotPreviewEntry & {
   include: boolean;
   edited?: boolean;
+  skipConfirmed?: boolean;
+  noShowAction?: ReviewedResultNoShowAction;
   autoSkipped?: boolean;
   autoSkipReason?: string | null;
   officialPlaceholder?: boolean;
@@ -278,11 +384,33 @@ export type ResultSummaryConfigPatch =
   | { action: "row"; value: string }
   | { action: "reset" };
 
-type DiscordRegistrationMemberInput = {
+export type DiscordRegistrationMemberInput = {
   discordUserId: string;
   discordUsername?: string | null;
   displayName?: string | null;
   role?: "LEADER" | "PLAYER";
+};
+type AutoRegistrationAccessGrantInput = {
+  teamName: string;
+  tag: string;
+  manager: DiscordRegistrationMemberInput;
+  durationDays: number;
+  logoUrl?: string | null;
+  logoUpload?: TeamLogoUpload | null;
+  logoSource?: DiscordTeamLogoSource | null;
+  audit: DiscordActionAuditContext & {
+    actorDiscordId: string;
+    sourceMessageId: string;
+  };
+};
+
+type AutoRegistrationCandidate = {
+  entry: DiscordManagedTeamResponse;
+  index: number;
+  managerIds: string[];
+  matchedManagerId: string;
+  grant?: AutoRegistrationGrant;
+  usesStoredGrantTeam?: boolean;
 };
 
 type RegisterTeamAndJoinOptions = {
@@ -292,6 +420,7 @@ type RegisterTeamAndJoinOptions = {
   tournamentRosterJson?: Record<string, unknown>;
   registrationWindowBypass?: boolean;
   registrationRoleBypass?: boolean;
+  winnerAccessGroupId?: string | null;
   audit?: DiscordActionAuditContext;
   backgroundDiscordSync?: boolean;
   onSessionRegistration?: (
@@ -307,11 +436,31 @@ type RegisterTeamAndJoinSessionResult = {
   config: SessionDiscordConfigResponse;
 };
 
+export type CustomRoleRegistrationAccess = {
+  group: RoleAccessGroup;
+  winnerQualified: boolean;
+};
+
 export type DiscordActionAuditContext = {
   actorDiscordId?: string | null;
   actorLabel?: string | null;
   sourceChannelId?: string | null;
   sessionName?: string | null;
+};
+
+export type ConditionalBanEnrollmentRoleSyncResult = {
+  checkedManagers: number;
+  addedAccessRoles: number;
+  restoredBanRoles: number;
+};
+
+export type ConditionalBanFinalizationDiscordResult = {
+  response: FinalizeConditionalBanEnrollmentsResponse;
+  completedEnrollments: number;
+  completedManagers: number;
+  removedBanRoles: number;
+  keptProtectedManagers: number;
+  missingManagers: number;
 };
 
 export type DiscordActionLogParams = DiscordActionAuditContext & {
@@ -331,6 +480,7 @@ export type DiscordActionLogParams = DiscordActionAuditContext & {
 };
 
 type RegistrationStatusAnnouncementState = "open" | "closed";
+type WaitlistPromotionAnnouncementState = "open" | "closed";
 type AccessAnnouncementKind = "earlyAccess" | "vipAccess";
 type AccessAnnouncementState = "open" | "closed";
 type AccessWindowSnapshot = {
@@ -405,9 +555,22 @@ export type DiscordTeamBanCommand = {
   reason?: string | null;
   note?: string | null;
   serverAction?: DiscordTeamBanServerAction | null;
+  roleIds?: string[] | null;
+  skipRegistrationRemoval?: boolean;
 };
 
 export type DiscordTeamBanServerAction = "NONE" | "ROLE" | "DISCORD_BAN";
+
+export type DiscordSlotBanCommand = {
+  sessionId: string;
+  slotNumber: number;
+  scope: TeamBanScope;
+  days?: number | null;
+  reason?: string | null;
+  note?: string | null;
+  serverAction?: DiscordTeamBanServerAction | null;
+  roleIds?: string[] | null;
+};
 
 export type DiscordTeamBanPreview = {
   team: TeamSummary | null;
@@ -426,6 +589,22 @@ type DiscordManagerBanTarget = {
 type DiscordBanSessionTarget = {
   id: string;
   name: string | null;
+};
+
+type SlotBanDiscordSideEffectContext = {
+  guild?: Guild | null;
+  config: SessionDiscordConfigResponse | null;
+  input: DiscordSlotBanCommand;
+  audit: DiscordActionAuditContext;
+  team: TeamSummary | null;
+  managers: DiscordManagerBanTarget[];
+  sessionTargets: DiscordBanSessionTarget[];
+  reason: string;
+  expiresAt: string | null;
+  roleIds: string[];
+  action: string;
+  status: string;
+  details: string[];
 };
 
 export type DiscordNoShowTeamBanCommand = {
@@ -542,6 +721,7 @@ type AutoCleanupChannelKey =
   | "registrations"
   | "waitlist"
   | "idp"
+  | "publicChat"
   | "manager"
   | "transfer"
   | "roles";
@@ -564,6 +744,19 @@ type AutoCleanupSchedule = {
 type RegistrationPlayStatus = {
   status: "CONFIRM" | "NOT_PLAYING";
   discordUserId: string | null;
+  updatedAt: Date | null;
+};
+
+type CancellationCleanupPhase =
+  | "pre-close"
+  | "post-close"
+  | "post-close-late-registration";
+
+type CancellationCleanupDecision = {
+  phase: CancellationCleanupPhase;
+  cancelledAt: Date;
+  dueAt: Date;
+  createBan: boolean;
 };
 
 type ConfirmationReminderConfig = {
@@ -583,6 +776,8 @@ type ConfirmationReminderState = {
   lastSentAt: number;
   lastMessageId?: string;
 };
+
+type TeamLogoReminderState = ConfirmationReminderState;
 
 type ScrimRoleCleanupResult = {
   mode: ScrimRoleCleanupMode;
@@ -620,10 +815,22 @@ const AUTO_CLEANUP_CHANNELS: Array<{
   { key: "slots", label: "Slot Channel Messages" },
   { key: "waitlist", label: "Waitlist" },
   { key: "idp", label: "IDP" },
+  { key: "publicChat", label: "Public Chat" },
   { key: "manager", label: "Manager Chat" },
   { key: "transfer", label: "Transfer Roles" },
   { key: "roles", label: "Scrim Roles" },
 ];
+const AUTO_CLEANUP_FULL_SESSION_BUTTON_PREFIX = "autoclean:full";
+const AUTO_CLEANUP_FULL_SESSION_WARNING_RUN_KEY =
+  "autoCleanupFullSessionWarningRunKey";
+const AUTO_CLEANUP_FULL_SESSION_WARNING_MESSAGE_ID =
+  "autoCleanupFullSessionWarningMessageId";
+const AUTO_CLEANUP_FULL_SESSION_LAST_RUN_KEY =
+  "autoCleanupFullSessionLastRunKey";
+const AUTO_CLEANUP_FULL_SESSION_LAST_RUN_STATUS =
+  "autoCleanupFullSessionLastRunStatus";
+const AUTO_CLEANUP_FULL_SESSION_LAST_RUN_BY = "autoCleanupFullSessionLastRunBy";
+const AUTO_CLEANUP_FULL_SESSION_LAST_RUN_AT = "autoCleanupFullSessionLastRunAt";
 
 type PendingTeamLogoRecord = DiscordTeamLogoSource & {
   key: string;
@@ -661,6 +868,17 @@ type QueuedDiscordSyncOptions = {
   delayMs?: number;
 };
 
+const WINNER_ROLE_LIFECYCLE_EMOJI_KEY = "winnerRoleLifecycle";
+const WINNER_RUN_KEY_PATTERN = /^wr-[a-f0-9]{18}$/;
+const WINNER_QUALIFICATION_ID_PATTERN = /^wq2-([a-f0-9]{18})-[a-f0-9]{18}$/;
+
+type WinnerRoleLifecycleGroup = {
+  groupId: string;
+  sourceSessionId: string;
+  lastRunKey: string;
+  lastRunGrantedAt: string;
+};
+
 type DiscordSessionApi = Pick<
   ArenzyraApiClient,
   | "applyNoShowAutoBansForMatch"
@@ -672,6 +890,11 @@ type DiscordSessionApi = Pick<
   | "createProductionDiscordSet"
   | "createTeamBan"
   | "createNoShowTeamBans"
+  | "confirmConditionalBanEnrollment"
+  | "getConditionalBanRoleProtection"
+  | "finalizeConditionalBanEnrollments"
+  | "prepareConditionalBanFinalSnapshot"
+  | "sealConditionalBanFinalSnapshot"
   | "getDiscordConfig"
   | "getDiscordChannelPause"
   | "getMatchRenderImage"
@@ -697,6 +920,7 @@ type DiscordSessionApi = Pick<
   | "mapScreenshotSlots"
   | "previewScreenshotResults"
   | "previewNoShowTeamBans"
+  | "previewConditionalBanEnrollment"
   | "registerDiscordTeam"
   | "registerTeam"
   | "refreshDiscordSourceImports"
@@ -714,6 +938,7 @@ type DiscordSessionApi = Pick<
   | "syncOldDiscordPlayerPhotos"
   | "syncSessionMatchSlots"
   | "updateSession"
+  | "updateTeam"
   | "updateMatchResult"
   | "updateManualMatchResults"
   | "updateResultBackupRows"
@@ -737,8 +962,8 @@ type DiscordSessionApi = Pick<
 export class DiscordSessionService {
   private readonly apiClient: DiscordSessionApi;
   private readonly scrimDiscordSetup: ScrimDiscordSetupService;
+  private readonly sessionOwnershipStore: SessionOwnershipStoreLike;
 
-  // Temporary creator tracking until Discord users are linked to backend users.
   private readonly sessionCreatorById = new Map<string, string>();
   private readonly queuedDiscordSyncs = new Map<string, QueuedDiscordSync>();
   private readonly copiedEventSourceRefreshTimers = new Map<
@@ -758,6 +983,10 @@ export class DiscordSessionService {
     string,
     NodeJS.Timeout[]
   >();
+  private readonly cancellationCleanupTimers = new Map<
+    string,
+    NodeJS.Timeout[]
+  >();
   private readonly registrationWindowSignatures = new Map<string, string>();
   private readonly registrationStatusAnnouncementLocks = new Set<string>();
   private readonly registrationStatusAnnouncementWaiters = new Map<
@@ -770,14 +999,27 @@ export class DiscordSessionService {
   >();
   private autoCleanupStartedAt = Date.now();
   private readonly autoCleanupRunKeys = new Set<string>();
+  private readonly pendingFullSessionCleanupRunKeys = new Set<string>();
   private readonly confirmationCloseCleanupRunKeys = new Set<string>();
+  private readonly accessRoleMutationQueues = new Map<
+    string,
+    Promise<unknown>
+  >();
   private readonly confirmationReminderStates = new Map<
     string,
     ConfirmationReminderState
   >();
+  private readonly teamLogoReminderStates = new Map<
+    string,
+    TeamLogoReminderState
+  >();
+  private confirmationWindowRefreshTimer: NodeJS.Timeout | null = null;
+  private activeDiscordSessionReconcileStartupTimer: NodeJS.Timeout | null =
+    null;
   private activeDiscordSessionReconcileTimer: NodeJS.Timeout | null = null;
   private activeDiscordSessionReconcileRunning = false;
   private activeDiscordSessionLastFullSyncAt = 0;
+  private expiredBanRoleCleanupStartupTimer: NodeJS.Timeout | null = null;
   private expiredBanRoleCleanupTimer: NodeJS.Timeout | null = null;
   private expiredBanRoleCleanupRunning = false;
   private readonly managerMentionMemberCache = new Map<
@@ -788,13 +1030,16 @@ export class DiscordSessionService {
     string,
     GuildOrganizationCacheEntry
   >();
+  private readonly pendingLogoBackfillFailures = new Map<string, number>();
 
   constructor(
     apiClient: DiscordSessionApi = new ArenzyraApiClient(),
     scrimDiscordSetup = new ScrimDiscordSetupService(),
+    sessionOwnershipStore = createSessionOwnershipStore(),
   ) {
     this.apiClient = apiClient;
     this.scrimDiscordSetup = scrimDiscordSetup;
+    this.sessionOwnershipStore = sessionOwnershipStore;
   }
 
   withOrganization<T>(
@@ -1826,6 +2071,371 @@ export class DiscordSessionService {
     return result;
   }
 
+  async previewConditionalBannedTeamRegistration(
+    sessionId: string,
+    payload: PreviewConditionalBanEnrollmentPayload,
+  ): Promise<PreviewConditionalBanEnrollmentResponse> {
+    return this.apiClient.previewConditionalBanEnrollment(sessionId, payload);
+  }
+
+  async createConditionalBannedTeamRegistration(
+    sessionId: string,
+    payload: ConfirmConditionalBanEnrollmentPayload,
+    guild: Guild | null,
+    config?: SessionDiscordConfigResponse | null,
+  ): Promise<
+    ConfirmConditionalBanEnrollmentResponse & {
+      roleSync: ConditionalBanEnrollmentRoleSyncResult;
+    }
+  > {
+    if (!guild) {
+      throw new Error(
+        "Conditional banned-team registration must be confirmed inside the configured Discord server.",
+      );
+    }
+    const response = await this.apiClient.confirmConditionalBanEnrollment(
+      sessionId,
+      payload,
+    );
+    const roleSync = await this.syncConditionalBannedRegistrationRoles(
+      guild,
+      sessionId,
+      response,
+      config,
+    );
+    // The API registration is durable at this point. Refresh the managed slot,
+    // check-in, and access-role state immediately under the exact organization
+    // context so the new slot does not wait for an unrelated later sync.
+    this.syncDiscordScrimStateInBackground(guild, sessionId, {
+      organizationId: response.enrollment.organizationId,
+      activeTeamIds: [response.registration.teamId],
+      extraDiscordUserIds: response.enrollment.managerDiscordUserIds,
+      fastMessageRefresh: true,
+      skipFullSync: true,
+      delayMs: 0,
+    });
+    return { ...response, roleSync };
+  }
+
+  async syncConditionalBannedRegistrationRoles(
+    guild: Guild,
+    sessionId: string,
+    response: ConfirmConditionalBanEnrollmentResponse,
+    _config?: SessionDiscordConfigResponse | null,
+  ): Promise<ConditionalBanEnrollmentRoleSyncResult> {
+    if (
+      response.enrollment.sessionId !== sessionId ||
+      response.enrollment.registrationId !== response.registration.id ||
+      response.enrollment.teamId !== response.registration.teamId ||
+      response.enrollment.status !== "ACTIVE"
+    ) {
+      throw new Error(
+        "Conditional banned-team registration response is inconsistent.",
+      );
+    }
+    if (
+      (response.registration.status !== "CONFIRMED" &&
+        response.registration.status !== "CHECKED_IN") ||
+      response.registration.slotNumber === null
+    ) {
+      throw new Error(
+        "Conditional banned-team registration did not receive a confirmed slot.",
+      );
+    }
+
+    const managerDiscordUserIds = this.uniqueStrings(
+      response.enrollment.managerDiscordUserIds,
+    );
+    if (!managerDiscordUserIds.length) {
+      throw new Error(
+        "Conditional banned-team registration has no snapshotted managers.",
+      );
+    }
+
+    const result: ConditionalBanEnrollmentRoleSyncResult = {
+      checkedManagers: 0,
+      addedAccessRoles: 0,
+      restoredBanRoles: 0,
+    };
+    for (const discordUserId of managerDiscordUserIds) {
+      await this.runAccessRoleMutationExclusive(
+        guild.id,
+        discordUserId,
+        async () => {
+          // Re-read every authorization input while holding the same member
+          // mutation queue used by ban-role and access-role reconciliation.
+          // A ban committed before this point blocks the grant; a ban committed
+          // afterwards queues its Discord reconciliation behind this task.
+          const plan = await this.conditionalBanRoleGrantState(
+            guild,
+            sessionId,
+            response,
+            managerDiscordUserIds,
+            discordUserId,
+          );
+          // Establish (or re-establish) ban protection before granting Slot/IDP.
+          // A later access-role failure therefore cannot leave an unprotected
+          // conditional registration with Discord access.
+          for (const role of plan.banRoles) {
+            if (!plan.member.roles.cache.has(role.id)) {
+              await plan.member.roles.add(
+                role.id,
+                `Arenzyra conditional banned-team ban preservation ${sessionId}`,
+              );
+              result.restoredBanRoles += 1;
+            }
+          }
+          for (const roleId of plan.accessRoleIds) {
+            if (!plan.member.roles.cache.has(roleId)) {
+              await plan.member.roles.add(
+                roleId,
+                `Arenzyra conditional banned-team slot access ${sessionId}`,
+              );
+              result.addedAccessRoles += 1;
+            }
+          }
+          result.checkedManagers += 1;
+        },
+      );
+    }
+
+    return result;
+  }
+
+  async prepareConditionalBanFinalSnapshot(
+    sessionId: string,
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+    sourceMatchId: string,
+  ): Promise<ConditionalBanFinalSnapshotResponse> {
+    const cleanSourceMatchId = sourceMatchId.trim();
+    if (
+      config.sessionId !== sessionId ||
+      (config.guildId && config.guildId !== guild.id)
+    ) {
+      throw new Error(
+        "Conditional ban final snapshot belongs to a different Discord session or server.",
+      );
+    }
+    if (!cleanSourceMatchId) {
+      throw new Error(
+        "Conditional ban final snapshot requires an applied source match.",
+      );
+    }
+    return this.apiClient.prepareConditionalBanFinalSnapshot(sessionId, {
+      guildId: guild.id,
+      sourceMatchId: cleanSourceMatchId,
+    });
+  }
+
+  async sealConditionalBanFinalSnapshot(
+    sessionId: string,
+    snapshot: Pick<
+      Extract<ConditionalBanFinalSnapshotResponse, { required: true }>,
+      "id" | "resultStateHash"
+    >,
+    artifact: Pick<
+      SealConditionalBanFinalSnapshotPayload,
+      "contentSha256" | "files"
+    >,
+  ): Promise<SealConditionalBanFinalSnapshotResponse> {
+    const snapshotId = snapshot.id.trim();
+    const resultStateHash = snapshot.resultStateHash.trim().toLowerCase();
+    if (!snapshotId || !/^[a-f0-9]{64}$/.test(resultStateHash)) {
+      throw new Error(
+        "Conditional ban final snapshot cannot be sealed without a valid result-state hash.",
+      );
+    }
+    return this.apiClient.sealConditionalBanFinalSnapshot(sessionId, {
+      snapshotId,
+      resultStateHash,
+      contentSha256: artifact.contentSha256,
+      files: artifact.files,
+    });
+  }
+
+  async finalizeConditionalBannedTeamRegistrations(
+    sessionId: string,
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+    finalPost: {
+      channelId: string;
+      messageId: string;
+      sourceMatchId: string;
+      resultSnapshotId: string;
+      resultSnapshotHash: string;
+    },
+  ): Promise<ConditionalBanFinalizationDiscordResult> {
+    if (
+      config.sessionId !== sessionId ||
+      (config.guildId && config.guildId !== guild.id)
+    ) {
+      throw new Error(
+        "Conditional ban finalization belongs to a different Discord session or server.",
+      );
+    }
+    const channelId = finalPost.channelId.trim();
+    const messageId = finalPost.messageId.trim();
+    const sourceMatchId = finalPost.sourceMatchId.trim();
+    const resultSnapshotId = finalPost.resultSnapshotId.trim();
+    const resultSnapshotHash = finalPost.resultSnapshotHash.trim();
+    if (
+      !channelId ||
+      !messageId ||
+      !sourceMatchId ||
+      !resultSnapshotId ||
+      !/^[a-f0-9]{64}$/i.test(resultSnapshotHash)
+    ) {
+      throw new Error(
+        "Conditional ban finalization requires the successful final-result Discord post and its sealed result snapshot.",
+      );
+    }
+
+    const response = await this.apiClient.finalizeConditionalBanEnrollments(
+      sessionId,
+      {
+        requestKey: `discord-final:${sessionId}:${messageId}`,
+        guildId: guild.id,
+        channelId,
+        messageId,
+        sourceMatchId,
+        resultSnapshotId,
+        resultSnapshotHash: resultSnapshotHash.toLowerCase(),
+      },
+    );
+    const completed = response.enrollments.filter(
+      (enrollment) => enrollment.status === "COMPLETED",
+    );
+    const completedManagerIds = this.uniqueStrings(
+      completed.flatMap((enrollment) => enrollment.managerDiscordUserIds),
+    );
+    const result: ConditionalBanFinalizationDiscordResult = {
+      response,
+      completedEnrollments: completed.length,
+      completedManagers: completedManagerIds.length,
+      removedBanRoles: 0,
+      keptProtectedManagers: 0,
+      missingManagers: 0,
+    };
+    if (!completed.length || !completedManagerIds.length) {
+      return result;
+    }
+
+    const roles = await this.configuredAllBanRolesStrict(guild, config);
+    if (!roles.length) {
+      return result;
+    }
+    const configuredAccessRoleIds = new Set(
+      this.uniqueRoleIds([
+        config.slotRoleId,
+        config.idpRoleId,
+        config.waitlistRoleId,
+        config.earlyAccessRoleId,
+        config.vipAccessRoleId,
+        ...(config.registrationRoleIds ?? []),
+        ...(config.specialRegistrationRoleIds ?? []),
+        ...(config.manageRoleIds ?? []),
+        ...(config.vipRoleIds ?? []),
+      ]),
+    );
+    const protectedByTeamBan = new Set<string>();
+    for (const enrollment of response.enrollments) {
+      // A remaining team ban protects every manager of that team. Manager-ban
+      // protection is user-specific and must be rechecked per Discord member
+      // inside the mutation queue below; never let one co-manager's ban keep
+      // every other co-manager's ban role.
+      if (enrollment.remainingActiveTeamBanIds.length > 0) {
+        for (const discordUserId of enrollment.managerDiscordUserIds) {
+          protectedByTeamBan.add(discordUserId);
+        }
+      }
+    }
+    for (const discordUserId of completedManagerIds) {
+      if (protectedByTeamBan.has(discordUserId)) {
+        result.keptProtectedManagers += 1;
+        continue;
+      }
+      const protectedRoleIds = new Set<string>();
+      for (const role of roles) {
+        if (configuredAccessRoleIds.has(role.id)) {
+          protectedRoleIds.add(role.id);
+        }
+      }
+      let keptProtected = protectedRoleIds.size > 0;
+      const removed = await this.removeConfiguredBanRolesFromMember(
+        guild,
+        config,
+        discordUserId,
+        `Arenzyra conditional ban requirements completed ${sessionId}`,
+        {
+          roles,
+          protectedRoleIds,
+          strictMemberFetch: true,
+          refreshProtectedRoleIds: async (_member, candidateRoles) => {
+            // This callback executes inside the per-member mutation queue.
+            // Recheck both team and manager protection immediately before any
+            // role removal so a concurrent ban cannot be erased by finalization.
+            const [freshConfig, freshMatches] = await Promise.all([
+              this.apiClient.getSessionDiscordConfig(sessionId),
+              this.apiClient.listSessionMatches(sessionId),
+            ]);
+            if (
+              freshConfig.enabled !== true ||
+              freshConfig.sessionId !== sessionId ||
+              freshConfig.guildId !== guild.id
+            ) {
+              keptProtected = true;
+              return new Set(candidateRoles.map((role) => role.id));
+            }
+            const refreshed = await this.activeDiscordBanProtectedRoleIdsStrict(
+              guild,
+              freshConfig,
+              sessionId,
+              new Set(freshMatches.map((match) => match.id)),
+              discordUserId,
+              candidateRoles,
+            );
+            if (refreshed.size > 0) {
+              keptProtected = true;
+              return refreshed;
+            }
+            const freshAccessRoleIds = new Set(
+              this.uniqueRoleIds([
+                freshConfig.slotRoleId,
+                freshConfig.idpRoleId,
+                freshConfig.waitlistRoleId,
+                freshConfig.earlyAccessRoleId,
+                freshConfig.vipAccessRoleId,
+                ...(freshConfig.registrationRoleIds ?? []),
+                ...(freshConfig.specialRegistrationRoleIds ?? []),
+                ...(freshConfig.manageRoleIds ?? []),
+                ...(freshConfig.vipRoleIds ?? []),
+              ]),
+            );
+            for (const role of candidateRoles) {
+              if (freshAccessRoleIds.has(role.id)) {
+                refreshed.add(role.id);
+              }
+            }
+            if (refreshed.size > 0) {
+              keptProtected = true;
+            }
+            return refreshed;
+          },
+        },
+      );
+      if (keptProtected) {
+        result.keptProtectedManagers += 1;
+      }
+      result.removedBanRoles += removed.removed;
+      if (removed.missing) {
+        result.missingManagers += 1;
+      }
+    }
+
+    return result;
+  }
+
   private truncateLogText(value: string, maxLength: number) {
     const trimmed = value.trim();
     if (trimmed.length <= maxLength) {
@@ -2394,18 +3004,9 @@ export class DiscordSessionService {
 
     try {
       const runSync = async () => {
-        const fastUpdated = fastMessageRefresh
-          ? await this.syncVisibleDiscordMessagesFast(
-              sync.guild,
-              sync.sessionId,
-            )
-          : false;
-        if (requiresFullSync || (fastMessageRefresh && !fastUpdated)) {
-          await this.syncDiscordScrimState(sync.guild, sync.sessionId, {
-            removedTeamIds,
-          });
-        } else if (removedTeamIds.length > 0 || activeTeamIds.length > 0) {
-          const rolesUpdated = await this.syncAffectedTeamAccessRoles(
+        let rolesUpdated = true;
+        if (removedTeamIds.length > 0 || activeTeamIds.length > 0) {
+          rolesUpdated = await this.syncAffectedTeamAccessRoles(
             sync.guild,
             sync.sessionId,
             {
@@ -2414,11 +3015,22 @@ export class DiscordSessionService {
               extraDiscordUserIds,
             },
           );
-          if (!rolesUpdated) {
-            await this.syncDiscordScrimState(sync.guild, sync.sessionId, {
-              removedTeamIds,
-            });
-          }
+        }
+        const fastUpdated = fastMessageRefresh
+          ? await this.syncVisibleDiscordMessagesFast(
+              sync.guild,
+              sync.sessionId,
+            )
+          : false;
+        if (
+          requiresFullSync ||
+          (fastMessageRefresh && !fastUpdated) ||
+          !rolesUpdated
+        ) {
+          await this.syncDiscordScrimState(sync.guild, sync.sessionId, {
+            removedTeamIds,
+            extraDiscordUserIds,
+          });
         }
         if (removedTeamIds.length > 0) {
           await this.restoreActiveBanRolesForRemovedTeams(
@@ -2658,6 +3270,180 @@ export class DiscordSessionService {
     return `[${tag}] ${name}${manager ? ` ${manager}` : ""}`;
   }
 
+  private managerDisplayByTeamIdForSlotSnapshot(
+    registrations: SessionRegistrationResponse[],
+    memberCache: Map<string, TeamMemberSummary[]>,
+  ) {
+    const entries = registrations.map((registration) => {
+      const mentions: string[] = [];
+      const seenDiscordUserIds = new Set<string>();
+      const snapshotDiscordUserIds =
+        this.managerSnapshotDiscordUserIds(registration);
+      const memberDiscordUserIds = snapshotDiscordUserIds.length
+        ? []
+        : (memberCache.get(registration.teamId) ?? [])
+            .filter((member) => this.isActiveLeaderMember(member))
+            .slice()
+            .sort((left, right) => {
+              const leftRoleRank = left.role === "LEADER" ? 0 : 1;
+              const rightRoleRank = right.role === "LEADER" ? 0 : 1;
+              if (leftRoleRank !== rightRoleRank) {
+                return leftRoleRank - rightRoleRank;
+              }
+              return (
+                Date.parse(left.createdAt || "") -
+                Date.parse(right.createdAt || "")
+              );
+            })
+            .map((member) => member.discordUserId?.trim())
+            .filter((discordUserId): discordUserId is string =>
+              Boolean(discordUserId),
+            );
+
+      for (const discordUserId of [
+        ...snapshotDiscordUserIds,
+        ...memberDiscordUserIds,
+      ]) {
+        if (seenDiscordUserIds.has(discordUserId)) {
+          continue;
+        }
+        seenDiscordUserIds.add(discordUserId);
+        mentions.push(this.managerClickableLabel(discordUserId));
+      }
+
+      return mentions.length > 0
+        ? ([registration.teamId, mentions.join(" ")] as const)
+        : null;
+    });
+
+    return new Map(
+      entries.filter((entry): entry is readonly [string, string] =>
+        Boolean(entry),
+      ),
+    );
+  }
+
+  private slotSnapshotLogChunks(
+    headerLines: string[],
+    rowLines: string[],
+    maxLength = 1900,
+  ) {
+    const chunks: string[] = [];
+    let current = [...headerLines];
+
+    for (const rowLine of rowLines) {
+      const line = this.truncateLogText(rowLine, 500);
+      const next = [...current, line];
+      if (
+        next.join("\n").length > maxLength &&
+        current.length > headerLines.length
+      ) {
+        chunks.push(current.join("\n"));
+        current = [
+          `${headerLines[0]} (continued)`,
+          ...headerLines.slice(1),
+          line,
+        ];
+        continue;
+      }
+      current = next;
+    }
+
+    if (current.length > headerLines.length) {
+      chunks.push(current.join("\n"));
+    }
+
+    return chunks;
+  }
+
+  private async sendCleanedSlotListSnapshotLog(
+    guild: Guild | null | undefined,
+    config:
+      | (Pick<SessionDiscordConfigResponse, "logChannelId"> &
+          Partial<Pick<SessionDiscordConfigResponse, "emojis">>)
+      | null
+      | undefined,
+    params: {
+      title: string;
+      sessionId: string;
+      sessionName?: string | null;
+      registrations: SessionRegistrationResponse[];
+      removedSlots?: number[];
+    },
+  ) {
+    const logChannelId = config?.logChannelId?.trim();
+    if (!guild || !logChannelId || params.registrations.length === 0) {
+      return;
+    }
+
+    const logChannel = await this.fetchAutoCleanupChannel(
+      guild,
+      logChannelId,
+    ).catch(() => null);
+    if (!logChannel) {
+      return;
+    }
+
+    const needsMemberLookup = params.registrations.some(
+      (registration) =>
+        this.managerSnapshotDiscordUserIds(registration).length === 0,
+    );
+    const memberCache = needsMemberLookup
+      ? await this.loadTeamMembersForSync(
+          params.registrations.map((registration) => registration.teamId),
+        )
+      : new Map<string, TeamMemberSummary[]>();
+    const managerByTeamId = this.managerDisplayByTeamIdForSlotSnapshot(
+      params.registrations,
+      memberCache,
+    );
+    const rows = params.registrations
+      .map((registration, index) => ({
+        registration,
+        slotNumber: registration.slotNumber ?? params.removedSlots?.[index],
+      }))
+      .sort((left, right) => {
+        const leftSlot = left.slotNumber ?? Number.MAX_SAFE_INTEGER;
+        const rightSlot = right.slotNumber ?? Number.MAX_SAFE_INTEGER;
+        if (leftSlot !== rightSlot) {
+          return leftSlot - rightSlot;
+        }
+        return left.registration.id.localeCompare(right.registration.id);
+      });
+    const rowLines = rows.map(({ registration, slotNumber }) => {
+      const slotLabel =
+        typeof slotNumber === "number" && Number.isFinite(slotNumber)
+          ? `#${slotNumber}`
+          : "#?";
+      return `${slotLabel} ${this.formatTeamSlotRow(
+        registration,
+        managerByTeamId.get(registration.teamId),
+      )}`;
+    });
+    const sessionLabel = params.sessionName?.trim() || params.sessionId;
+    const headerLines = [
+      params.title,
+      `Session: ${sessionLabel}`,
+      params.sessionName?.trim() ? `Session ID: ${params.sessionId}` : null,
+      `Removed teams: ${params.registrations.length}`,
+      "",
+      "Removed slot list:",
+    ].filter((line): line is string => line !== null);
+
+    for (const content of this.slotSnapshotLogChunks(headerLines, rowLines)) {
+      await logChannel
+        .send({
+          content,
+          allowedMentions: { parse: [] },
+        })
+        .catch((error) => {
+          console.warn(
+            `Discord slot cleanup snapshot log failed: ${String(error)}`,
+          );
+        });
+    }
+  }
+
   private sortBySlotOrWaitlist(
     registrations: SessionRegistrationResponse[],
   ): SessionRegistrationResponse[] {
@@ -2891,6 +3677,9 @@ export class DiscordSessionService {
     config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
   ) {
     const raw = config?.emojis?.resultSummaryCount?.trim() ?? "";
+    if (!raw) {
+      return 3;
+    }
     const parsed = Number(raw);
     if (!Number.isInteger(parsed)) {
       return 3;
@@ -2931,12 +3720,61 @@ export class DiscordSessionService {
       : configured;
   }
 
+  private matchResultMessageTemplate(
+    config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
+  ) {
+    return this.resultPostTemplate(
+      config?.emojis?.matchResultMessageTemplate,
+      DEFAULT_MATCH_RESULT_MESSAGE_TEMPLATE,
+    );
+  }
+
+  private matchResultPostTemplate(
+    config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
+  ) {
+    return this.resultPostTemplate(
+      config?.emojis?.matchResultPostTemplate,
+      DEFAULT_MATCH_RESULT_POST_TEMPLATE,
+    );
+  }
+
+  private resultPostTemplate(
+    configured: string | null | undefined,
+    fallback: string,
+  ) {
+    const normalized = configured
+      ? normalizeFinalResultTemplate(configured)
+      : "";
+    return normalized || fallback;
+  }
+
   private renderResultSummaryTemplate(
     template: string,
     values: Record<string, string>,
   ) {
-    return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key: string) =>
-      Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match,
+    return template.replace(
+      /\{([^{}\r\n]{1,64})\}/g,
+      (match, rawKey: string) => {
+        const key = rawKey.trim();
+        if (Object.prototype.hasOwnProperty.call(values, key)) {
+          return values[key];
+        }
+
+        const normalizedKey = key.replace(/\s+/g, " ").toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(values, normalizedKey)) {
+          return values[normalizedKey];
+        }
+
+        const topMatch = normalizedKey.match(/^top\s*([1-9]\d?)$/);
+        if (topMatch) {
+          const topKey = `top${Math.trunc(Number(topMatch[1]))}`;
+          return Object.prototype.hasOwnProperty.call(values, topKey)
+            ? values[topKey]
+            : match;
+        }
+
+        return match;
+      },
     );
   }
 
@@ -3128,11 +3966,35 @@ export class DiscordSessionService {
   private buildReviewedApplyPayload(
     matchId: string,
     rows: ReviewedResultRow[],
-    opts: { markMissingSlotsNoShow?: boolean } = {},
+    opts: {
+      markMissingSlotsNoShow?: boolean;
+      noShowSlotNumbers?: number[];
+    } = {},
   ): ApplyScreenshotResultsPayload {
+    const noShowSlotNumbers = (opts.noShowSlotNumbers ?? [])
+      .filter((slotNumber) => Number.isInteger(slotNumber) && slotNumber > 0)
+      .filter(
+        (slotNumber, index, values) => values.indexOf(slotNumber) === index,
+      );
+    const reviewedMissingPlacements = rows
+      .filter(
+        (row) =>
+          !row.include &&
+          row.skipConfirmed === true &&
+          !row.officialPlaceholder &&
+          Number.isInteger(row.position) &&
+          row.position > 0,
+      )
+      .map((row) => row.position)
+      .filter((position, index, values) => values.indexOf(position) === index);
     return {
       matchId,
-      ...(opts.markMissingSlotsNoShow ? { markMissingSlotsNoShow: true } : {}),
+      ...(!opts.markMissingSlotsNoShow && reviewedMissingPlacements.length
+        ? { reviewedMissingPlacements }
+        : {}),
+      ...(opts.markMissingSlotsNoShow
+        ? { markMissingSlotsNoShow: true, noShowSlotNumbers }
+        : {}),
       results: rows
         .filter((entry) => entry.include)
         .map((entry) => ({
@@ -3162,6 +4024,15 @@ export class DiscordSessionService {
     entries: ResultSummaryEntry[],
     config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
   ): string[] {
+    return this.resultSummaryEntries(entries, config).map((entry, index) =>
+      this.formatResultSummaryEntry(entry, index + 1, config),
+    );
+  }
+
+  private resultSummaryEntries(
+    entries: ResultSummaryEntry[],
+    config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
+  ): ResultSummaryEntry[] {
     const limit = this.resultSummaryCount(config);
     if (limit <= 0) {
       return [];
@@ -3169,16 +4040,81 @@ export class DiscordSessionService {
     return entries
       .slice()
       .sort((left, right) => left.position - right.position)
-      .slice(0, limit)
-      .map((entry, index) =>
-        this.formatResultSummaryEntry(entry, index + 1, config),
-      );
+      .slice(0, limit);
+  }
+
+  private matchResultPublicContent(
+    matchId: string,
+    entries: ResultSummaryEntry[],
+    config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
+  ) {
+    const topEntries = this.resultSummaryEntries(entries, config);
+    const rows = topEntries.map((entry, index) =>
+      this.formatResultSummaryEntry(entry, index + 1, config),
+    );
+    const rowsText = rows.join("\n");
+    const title = this.resultSummaryTitle(config);
+    const winner = topEntries[0] ?? null;
+    const winnerName =
+      winner?.teamName?.trim() || winner?.tag?.trim() || "No winner available";
+    const winnerTag = winner?.tag?.trim() || winnerName;
+    const winnerKills =
+      winner && Number.isFinite(winner.kills)
+        ? String(Math.max(0, Math.trunc(winner.kills)))
+        : "0";
+    const winnerPlacementPoints =
+      winner && Number.isFinite(winner.placementPoints ?? NaN)
+        ? String(Math.max(0, Math.trunc(winner.placementPoints ?? 0)))
+        : "0";
+    const winnerPoints =
+      winner && Number.isFinite(winner.totalPoints ?? NaN)
+        ? String(Math.max(0, Math.trunc(winner.totalPoints ?? 0)))
+        : winnerKills;
+    const values = {
+      matchId,
+      title,
+      summaryTitle: title,
+      rows: rowsText,
+      results: rowsText,
+      topTeams: rowsText,
+      rowCount: String(rows.length),
+      winner: winnerName,
+      winnerName,
+      winnerTag,
+      winnerRank: winner ? "1" : "",
+      winnerPosition: winner ? String(winner.position) : "",
+      winnerKills,
+      winnerPlacementPoints,
+      winnerPoints,
+      winnerTotalPoints: winnerPoints,
+      ...this.finalWinnerIndexedPlaceholderValues(rows),
+      trophy: this.emoji("trophy", config),
+      fire: this.emoji("fire", config),
+      chart: this.emoji("chart", config),
+    };
+    const message = this.renderResultSummaryTemplate(
+      this.matchResultMessageTemplate(config),
+      values,
+    ).trim();
+    const body = message || title;
+    const rendered = this.renderResultSummaryTemplate(
+      this.matchResultPostTemplate(config),
+      {
+        ...values,
+        message: body,
+        publicContent: body,
+      },
+    ).trim();
+    return rendered || body;
   }
 
   private finalResultWinnerCount(
     config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
   ) {
     const raw = config?.emojis?.finalResultWinnerCount?.trim() ?? "";
+    if (!raw) {
+      return 3;
+    }
     const parsed = Number(raw);
     if (!Number.isInteger(parsed)) {
       return 3;
@@ -3281,6 +4217,22 @@ export class DiscordSessionService {
     if (rank === 2) return FINAL_RESULT_SECOND_PLACE_EMOJI;
     if (rank === 3) return FINAL_RESULT_THIRD_PLACE_EMOJI;
     return this.emoji("chart", config);
+  }
+
+  private finalWinnerIndexedPlaceholderValues(winnerRows: string[]) {
+    const values: Record<string, string> = {};
+    for (let rank = 1; rank <= 20; rank += 1) {
+      const row = winnerRows[rank - 1]?.trim() ?? "";
+      values[`top${rank}`] = row;
+      values[`top ${rank}`] = row;
+    }
+
+    if (!winnerRows.length) {
+      values.top1 = "No standings available yet.";
+      values["top 1"] = values.top1;
+    }
+
+    return values;
   }
 
   private finalStandingTeamLabel(team: FinalStandingEntry | null | undefined) {
@@ -3443,6 +4395,7 @@ export class DiscordSessionService {
       winnerMatchesPlayed,
       winners: winnersText,
       topTeams: winnersText,
+      ...this.finalWinnerIndexedPlaceholderValues(winnerRows),
       trophy: this.emoji("trophy", config),
       fire: this.emoji("fire", config),
       chart: this.emoji("chart", config),
@@ -3525,6 +4478,7 @@ export class DiscordSessionService {
       winnerMatchesPlayed: "",
       winners: winnersText,
       topTeams: winnersText,
+      ...this.finalWinnerIndexedPlaceholderValues(winnerRows),
       trophy: this.emoji("trophy", config),
       fire: this.emoji("fire", config),
       chart: this.emoji("chart", config),
@@ -3561,6 +4515,58 @@ export class DiscordSessionService {
     return this.apiClient.getResultBackup(backup.id);
   }
 
+  private async latestOverallResultBackupOrNull(sessionId: string) {
+    return this.latestOverallResultBackup(sessionId).catch((error) => {
+      if (!/No final result backup found/i.test(toFriendlyApiError(error))) {
+        console.warn(
+          `Final result backup lookup failed session=${sessionId}: ${toFriendlyApiError(
+            error,
+          )}`,
+        );
+      }
+      return null;
+    });
+  }
+
+  private async freshOverallResultBackupOrNull(sessionId: string) {
+    const rebuilt = await this.rebuildOverallResultBackupFromDiscord(
+      sessionId,
+    ).catch((error) => {
+      console.warn(
+        `Final result backup rebuild failed session=${sessionId}: ${toFriendlyApiError(
+          error,
+        )}`,
+      );
+      return null;
+    });
+    return rebuilt ?? this.latestOverallResultBackupOrNull(sessionId);
+  }
+
+  private async buildResultBackupImageFiles(
+    backupId: string,
+    renderCards: Array<{ kind: MatchRenderKind; name: string }>,
+  ) {
+    const files: Array<{ name: string; buffer: Buffer }> = [];
+    for (const card of renderCards) {
+      try {
+        files.push({
+          name: card.name,
+          buffer: await this.apiClient.getResultBackupRenderImage(
+            backupId,
+            card.kind as ResultBackupRenderKind,
+          ),
+        });
+      } catch (error) {
+        throw new Error(
+          `Final result widget render failed for ${card.kind}: ${toFriendlyApiError(
+            error,
+          )}`,
+        );
+      }
+    }
+    return files;
+  }
+
   async buildFinalResultBackupPost(
     sessionId: string,
     config?:
@@ -3574,47 +4580,43 @@ export class DiscordSessionService {
       sessionId,
     });
     const content = publicContent;
-
-    try {
-      const buffer = await this.apiClient.getResultBackupRenderImage(
-        backup.id,
-        "overall-ranking",
-      );
+    const renderCards = this.finalResultRenderCards(config);
+    if (!renderCards.length) {
       return {
         content,
         publicContent,
         backupId: backup.id,
-        imageBuffer: buffer,
-        imageFiles: [{ name: "overall-ranking.png", buffer }],
-      };
-    } catch (error) {
-      console.warn(
-        `Result backup render failed backup=${backup.id}: ${toFriendlyApiError(
-          error,
-        )}`,
-      );
-      return {
-        content: `${content}\n\nImage generation failed.`,
-        publicContent,
-        backupId: backup.id,
       };
     }
+
+    const imageFiles = await this.buildResultBackupImageFiles(
+      backup.id,
+      renderCards,
+    );
+    return {
+      content,
+      publicContent,
+      backupId: backup.id,
+      imageBuffer: imageFiles[0]?.buffer,
+      imageFiles,
+    };
   }
 
   private async buildResultImageFiles(
     matchId: string,
-    renderCards: Array<{ kind: MatchRenderKind; name: string }> = [
-      { kind: "match-result", name: "match-result.png" },
-      { kind: "overall-ranking", name: "overall-ranking.png" },
-      { kind: "top-mvp", name: "top-mvp.png" },
-      { kind: "top-fraggers", name: "top-fraggers.png" },
-    ],
+    renderCards: Array<{
+      kind: MatchRenderKind;
+      name: string;
+    }> = MATCH_RESULT_RENDER_CARDS,
   ): Promise<
     Array<{
       name: string;
       buffer: Buffer;
     }>
   > {
+    if (!renderCards.length) {
+      return [];
+    }
     const settled = await Promise.allSettled(
       renderCards.map(async (card) => ({
         name: card.name,
@@ -3636,6 +4638,54 @@ export class DiscordSessionService {
     });
   }
 
+  private selectedResultRenderCards(
+    config: Pick<SessionDiscordConfigResponse, "emojis"> | null | undefined,
+    key: "matchResultImageCards" | "finalResultImageCards",
+    defaults: Array<{ kind: MatchRenderKind; name: string }>,
+  ) {
+    const raw = config?.emojis?.[key]?.trim() ?? "";
+    if (!raw) {
+      return defaults;
+    }
+    const normalized = raw.toLowerCase();
+    if (/^(?:none|off|false|0)$/i.test(normalized)) {
+      return [];
+    }
+    const byKind = new Map(defaults.map((card) => [card.kind, card]));
+    const selected = raw
+      .split(/[\s,;|]+/g)
+      .map((value) => value.trim().toLowerCase())
+      .filter(
+        (value, index, values) =>
+          Boolean(value) && values.indexOf(value) === index,
+      )
+      .flatMap((value) => {
+        const card = byKind.get(value as MatchRenderKind);
+        return card ? [card] : [];
+      });
+    return selected.length ? selected : defaults;
+  }
+
+  private matchResultRenderCards(
+    config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
+  ) {
+    return this.selectedResultRenderCards(
+      config,
+      "matchResultImageCards",
+      MATCH_RESULT_RENDER_CARDS,
+    );
+  }
+
+  private finalResultRenderCards(
+    config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
+  ) {
+    return this.selectedResultRenderCards(
+      config,
+      "finalResultImageCards",
+      FINAL_RESULT_RENDER_CARDS,
+    );
+  }
+
   async buildFinalResultPost(
     matchId: string,
     config?:
@@ -3643,12 +4693,8 @@ export class DiscordSessionService {
           Partial<Pick<SessionDiscordConfigResponse, "sessionId">>)
       | null,
   ): Promise<ApplyResultsDiscordResponse> {
-    const imageFiles = await this.buildResultImageFiles(matchId, [
-      { kind: "overall-ranking", name: "overall-ranking.png" },
-      { kind: "overall-top-mvp", name: "overall-top-mvp.png" },
-      { kind: "overall-top-fraggers", name: "overall-top-fraggers.png" },
-      { kind: "match-schedule", name: "match-schedule.png" },
-    ]);
+    const renderCards = this.finalResultRenderCards(config);
+    const imageFiles = await this.buildResultImageFiles(matchId, renderCards);
     const publicContent = await this.finalResultPublicContent(matchId, config);
     const content = publicContent;
 
@@ -3658,6 +4704,13 @@ export class DiscordSessionService {
         publicContent,
         imageFiles,
         imageBuffer: imageFiles[0]?.buffer,
+      };
+    }
+
+    if (!renderCards.length) {
+      return {
+        content,
+        publicContent,
       };
     }
 
@@ -3741,6 +4794,67 @@ export class DiscordSessionService {
     return this.logoNameTokens(savedNameKey).some((token) =>
       requestedTokens.has(token),
     );
+  }
+
+  private pendingLogoRecordTagKey(record: PendingTeamLogoRecord) {
+    return this.normalizeLogoKey(record.tagKey || record.tag);
+  }
+
+  private pendingLogoRecordNameKey(record: PendingTeamLogoRecord) {
+    return this.normalizeLogoKey(record.key || record.teamName);
+  }
+
+  private pendingLogoRecordHasConflictingTag(
+    record: PendingTeamLogoRecord,
+    tagKey: string,
+  ) {
+    const recordTagKey = this.pendingLogoRecordTagKey(record);
+    return Boolean(recordTagKey && tagKey && recordTagKey !== tagKey);
+  }
+
+  private pendingLogoRecordMatchesTag(
+    record: PendingTeamLogoRecord,
+    tagKey: string,
+  ) {
+    if (!tagKey) {
+      return false;
+    }
+
+    const recordTagKey = this.pendingLogoRecordTagKey(record);
+    if (recordTagKey) {
+      return false;
+    }
+
+    const recordNameKey = this.pendingLogoRecordNameKey(record);
+    if (!recordNameKey) {
+      return false;
+    }
+    if (recordNameKey === tagKey) {
+      return true;
+    }
+
+    const tagCompact = tagKey.replace(/\s+/g, "");
+    if (tagCompact.length < 3) {
+      return false;
+    }
+
+    const recordTokens = recordNameKey.split(/\s+/).filter(Boolean);
+    if (recordTokens.includes(tagCompact)) {
+      return true;
+    }
+
+    const recordCompact = recordNameKey.replace(/\s+/g, "");
+    return (
+      recordCompact.startsWith(tagCompact) || recordCompact.endsWith(tagCompact)
+    );
+  }
+
+  private uniquePendingLogoRecordMatch(
+    records: Iterable<PendingTeamLogoRecord>,
+    predicate: (record: PendingTeamLogoRecord) => boolean,
+  ) {
+    const matches = [...records].filter(predicate);
+    return matches.length === 1 ? matches[0] : null;
   }
 
   private configuredLogoChannelIds(
@@ -3927,21 +5041,39 @@ export class DiscordSessionService {
     config: SessionDiscordConfigResponse,
   ) {
     const records = this.parsePendingTeamLogos(config);
+    const allRecords = Object.values(records);
     const nameKey = this.normalizeLogoKey(teamName);
+    const tagKey = this.normalizeLogoKey(tag ?? "");
     if (nameKey && records[nameKey]) {
-      return records[nameKey];
+      const record = records[nameKey];
+      const recordTagKey = this.pendingLogoRecordTagKey(record);
+      if (!recordTagKey || !tagKey || recordTagKey === tagKey) {
+        return record;
+      }
     }
 
-    const tagKey = this.normalizeLogoKey(tag ?? "");
     if (tagKey) {
-      const byTag = Object.values(records).find(
+      const exactTag = this.uniquePendingLogoRecordMatch(
+        allRecords,
         (record) =>
-          (record.tagKey === tagKey || record.key === tagKey) &&
-          this.logoNamesLookRelated(nameKey, record.key),
+          this.pendingLogoRecordMatchesTag(record, tagKey) &&
+          !this.pendingLogoRecordHasConflictingTag(record, tagKey),
       );
-      if (byTag) {
-        return byTag;
+      if (exactTag) {
+        return exactTag;
       }
+    }
+
+    const relatedByName = this.uniquePendingLogoRecordMatch(
+      allRecords,
+      (record) =>
+        this.logoNamesLookRelated(
+          nameKey,
+          this.pendingLogoRecordNameKey(record),
+        ) && !this.pendingLogoRecordHasConflictingTag(record, tagKey),
+    );
+    if (relatedByName) {
+      return relatedByName;
     }
 
     return null;
@@ -3986,6 +5118,22 @@ export class DiscordSessionService {
     }
 
     return null;
+  }
+
+  private async pendingLogoRecordForTeam(
+    teamName: string,
+    tag: string | null | undefined,
+    config: SessionDiscordConfigResponse,
+  ) {
+    const localRecord = this.pendingLogoForTeam(teamName, tag, config);
+    if (localRecord) {
+      return localRecord;
+    }
+    return this.pendingLogoForTeamAcrossActiveGuildSessions(
+      teamName,
+      tag,
+      config,
+    );
   }
 
   async queueVisibleDiscordScrimRefreshForActiveGuildSessions(
@@ -4092,7 +5240,67 @@ export class DiscordSessionService {
     return name && tag ? { name, tag } : null;
   }
 
-  private async resolveTeamByNameOrTag(query: string): Promise<TeamSummary> {
+  private activeLogoRegistration(registration: SessionRegistrationResponse) {
+    return (
+      Boolean(registration.team) &&
+      registration.status !== "REMOVED" &&
+      registration.status !== "DECLINED" &&
+      !registration.removedAt
+    );
+  }
+
+  private async resolveTeamBySessionRegistration(
+    candidates: TeamSummary[],
+    sessionId: string | null | undefined,
+    displayLookup: { name: string; tag: string } | null,
+    normalizedName: string,
+    normalizedTag: string,
+  ): Promise<TeamSummary | null> {
+    const cleanSessionId = sessionId?.trim();
+    if (!cleanSessionId || candidates.length < 2) {
+      return null;
+    }
+
+    const candidateIds = new Set(candidates.map((team) => team.id));
+    const registrations = await this.apiClient
+      .listRegistrations(cleanSessionId)
+      .catch(() => [] as SessionRegistrationResponse[]);
+    const matches = new Map<string, TeamSummary>();
+
+    for (const registration of registrations) {
+      const team = registration.team;
+      if (
+        !team ||
+        !candidateIds.has(team.id) ||
+        !this.activeLogoRegistration(registration)
+      ) {
+        continue;
+      }
+
+      const name = this.normalizeLookupText(team.name);
+      const tag = this.normalizeTag(team.tag ?? "");
+      const matched = displayLookup
+        ? name === normalizedName && tag.length > 0 && tag === normalizedTag
+        : name === normalizedName || (tag.length > 0 && tag === normalizedTag);
+      if (!matched) {
+        continue;
+      }
+
+      matches.set(team.id, {
+        id: team.id,
+        name: team.name,
+        tag: team.tag,
+        logoUrl: team.logoUrl,
+      });
+    }
+
+    return matches.size === 1 ? [...matches.values()][0] : null;
+  }
+
+  private async resolveTeamByNameOrTag(
+    query: string,
+    sessionId?: string | null,
+  ): Promise<TeamSummary> {
     const cleaned = query.trim().replace(/^"|"$/g, "").trim();
     if (!cleaned) {
       throw new Error(
@@ -4118,6 +5326,16 @@ export class DiscordSessionService {
       return exact[0];
     }
     if (exact.length > 1) {
+      const sessionMatch = await this.resolveTeamBySessionRegistration(
+        exact,
+        sessionId,
+        displayLookup,
+        normalized,
+        compact,
+      );
+      if (sessionMatch) {
+        return sessionMatch;
+      }
       throw new Error(
         `${this.emoji("warning")} Multiple teams match "${cleaned}": ${exact
           .slice(0, 5)
@@ -4157,7 +5375,9 @@ export class DiscordSessionService {
   ): Promise<string> {
     let team: TeamSummary | null = null;
     try {
-      team = await this.resolveTeamByNameOrTag(query);
+      const sessionId =
+        config && "sessionId" in config ? config.sessionId : null;
+      team = await this.resolveTeamByNameOrTag(query, sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
@@ -4376,6 +5596,67 @@ export class DiscordSessionService {
     return { team, managers: [...managers.values()] };
   }
 
+  private async resolveManagersForSlotRegistration(
+    registration: SessionRegistrationResponse,
+  ): Promise<{
+    team: TeamSummary;
+    managers: DiscordManagerBanTarget[];
+  }> {
+    const team = registration.team
+      ? {
+          id: registration.team.id,
+          name: registration.team.name,
+          tag: registration.team.tag,
+          logoUrl: registration.team.logoUrl,
+        }
+      : await this.resolveTeamById(
+          registration.teamId,
+          this.resolveTeamLabel(registration),
+        );
+    const members = await this.apiClient
+      .listTeamMembers(team.id)
+      .catch(() => [] as TeamMemberSummary[]);
+    const active = members.filter((member) => this.isActiveTeamMember(member));
+    const leaders = active.filter((member) => member.role === "LEADER");
+    const selected = leaders.length ? leaders : active;
+    const managers = new Map<string, DiscordManagerBanTarget>();
+    const addManager = (
+      discordUserId: string | null | undefined,
+      discordUsername?: string | null,
+      displayName?: string | null,
+    ) => {
+      const cleanDiscordUserId = discordUserId?.trim();
+      if (!cleanDiscordUserId || managers.has(cleanDiscordUserId)) {
+        return;
+      }
+      managers.set(cleanDiscordUserId, {
+        discordUserId: cleanDiscordUserId,
+        discordUsername: discordUsername ?? null,
+        displayName: displayName ?? null,
+      });
+    };
+    for (const member of selected) {
+      addManager(
+        member.discordUserId,
+        member.discordUsername,
+        member.displayName,
+      );
+    }
+    addManager(registration.leaderDiscordUserId, null, null);
+    for (const managerDiscordUserId of registration.managerDiscordUserIds ??
+      []) {
+      addManager(managerDiscordUserId, null, null);
+    }
+    if (!managers.size) {
+      throw new Error(
+        `${this.emoji("reject")} ${this.formatTeamSummary(
+          team,
+        )} has no linked Discord manager to ban.`,
+      );
+    }
+    return { team, managers: [...managers.values()] };
+  }
+
   private async resolveTeamById(
     teamId: string,
     fallbackLabel?: string | null,
@@ -4463,43 +5744,25 @@ export class DiscordSessionService {
 
   private resultMatchCreatePayload(
     matchNumber: number,
-    fallback: boolean,
+    session: SessionResponse,
   ): CreateSessionMatchPayload {
     return {
       name: `Game ${matchNumber}`,
       matchNumber,
       dataMode: "MANUAL",
       dataSource: "MANUAL",
-      ...(fallback ? { gameKey: "PUBG_MOBILE", map: "ERANGEL" } : {}),
+      ...sessionMatchGamePayload(session),
     };
-  }
-
-  private missingGameOrMapError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message.toLowerCase() : "";
-    return (
-      message.includes("gamekey is required") ||
-      message.includes("map is required")
-    );
   }
 
   private async createResultMatchForGameCode(
     sessionId: string,
     matchNumber: number,
   ): Promise<SessionMatchResponse> {
-    try {
-      return await this.apiClient.createSessionMatch(
-        sessionId,
-        this.resultMatchCreatePayload(matchNumber, false),
-      );
-    } catch (error) {
-      if (!this.missingGameOrMapError(error)) {
-        throw error;
-      }
-    }
-
+    const session = await this.apiClient.getSession(sessionId);
     return this.apiClient.createSessionMatch(
       sessionId,
-      this.resultMatchCreatePayload(matchNumber, true),
+      this.resultMatchCreatePayload(matchNumber, session),
     );
   }
 
@@ -4524,6 +5787,18 @@ export class DiscordSessionService {
     options: AutomaticResultScreenshotOptions = {},
   ): Promise<{ match: SessionMatchResponse; created: boolean }> {
     const matches = await this.apiClient.listSessionMatches(sessionId);
+    const matchId = options.matchId?.trim() || null;
+    if (matchId) {
+      const existing = matches.find((match) => match.id === matchId);
+      if (!existing) {
+        throw new Error("Selected result match is no longer available.");
+      }
+      return {
+        match: await this.ensureResultMatchSlots(sessionId, existing),
+        created: false,
+      };
+    }
+
     const matchNumber =
       typeof options.matchNumber === "number" &&
       Number.isInteger(options.matchNumber) &&
@@ -4728,6 +6003,29 @@ export class DiscordSessionService {
     return [...resolved.values()];
   }
 
+  private async activeDiscordScrimSessionIdsForGuild(guildId: string) {
+    const cleanGuildId = guildId.trim();
+    if (!cleanGuildId) {
+      return [];
+    }
+    const sessions = (await this.apiClient.listSessions()).filter(
+      (session) => session.type === "SCRIM" && session.status !== "ARCHIVED",
+    );
+    const configs = await Promise.all(
+      sessions.map((session) =>
+        this.apiClient.getSessionDiscordConfig(session.id),
+      ),
+    );
+    return this.uniqueStrings(
+      configs
+        .filter(
+          (candidate) =>
+            candidate.enabled !== false && candidate.guildId === cleanGuildId,
+        )
+        .map((candidate) => candidate.sessionId),
+    );
+  }
+
   private banExpiresAt(days: number | null | undefined): string | null {
     if (!days || !Number.isFinite(days) || days <= 0) {
       return null;
@@ -4797,15 +6095,10 @@ export class DiscordSessionService {
     });
   }
 
-  private noShowCreatedManagerTargets(
+  private noShowManagerTargets(
     response: NoShowTeamBanResponse,
   ): DiscordManagerBanTarget[] {
-    const createdTeamIds = new Set(
-      response.createdBans.map((ban) => ban.teamId).filter(Boolean),
-    );
-    const managers = response.teams
-      .filter((entry) => createdTeamIds.has(entry.teamId))
-      .flatMap((entry) => entry.managers ?? []);
+    const managers = response.teams.flatMap((entry) => entry.managers ?? []);
     return [
       ...new Map(
         managers
@@ -5001,19 +6294,32 @@ export class DiscordSessionService {
       managers.map((manager) => manager.discordUserId),
     );
     return managers
-      .map((manager) => this.banChannelManagerLabel(manager, mentionableIds))
+      .map((manager) => this.banListManagerLabel(manager, mentionableIds))
       .join(", ");
+  }
+
+  private banListTeamLabel(
+    team:
+      | {
+          id?: string | null;
+          name?: string | null;
+          tag?: string | null;
+        }
+      | null
+      | undefined,
+  ) {
+    const tag = team?.tag?.trim() || "-";
+    const name = team?.name?.trim() || team?.id || "Unknown team";
+    return `**\`[${tag}]\` ${name}**`;
   }
 
   private banListTeamLine(
     ban: TeamBanResponse,
     managerMentions: string | null | undefined,
   ) {
-    const tag = ban.team?.tag?.trim() || "-";
-    const name = ban.team?.name?.trim() || ban.teamId;
     const reason = ban.reason?.trim() || "Banned";
     const duration = this.banListDaysLeft(ban.expiresAt);
-    return `> **\`[${tag}]\` ${name}** (${reason})${
+    return `> ${this.banListTeamLabel(ban.team ?? { id: ban.teamId })} (${reason})${
       duration ? ` \`${duration}\`` : ""
     }${managerMentions ? ` | Manager: ${managerMentions}` : ""}`;
   }
@@ -5056,6 +6362,30 @@ export class DiscordSessionService {
     );
   }
 
+  private discordUserMentionIdsFromContent(content: string) {
+    return this.uniqueStrings(
+      Array.from(content.matchAll(/<@!?(\d{15,25})>/g)).map(
+        (match) => match[1],
+      ),
+    );
+  }
+
+  private managerBanMentionIds(
+    managers: readonly {
+      discordUserId?: string | null;
+    }[] = [],
+  ) {
+    return this.uniqueStrings(
+      managers
+        .map((manager) => manager.discordUserId?.trim())
+        .filter(
+          (discordUserId): discordUserId is string =>
+            typeof discordUserId === "string" &&
+            /^\d{15,25}$/.test(discordUserId),
+        ),
+    );
+  }
+
   private banChannelManagerLabel(
     manager: {
       discordUserId?: string | null;
@@ -5063,18 +6393,52 @@ export class DiscordSessionService {
       displayName?: string | null;
     },
     mentionableIds: Set<string>,
+    options: {
+      alwaysShowTextFallback?: boolean;
+      suppressMention?: boolean;
+      textFirst?: boolean;
+      suppressUnvalidatedMention?: boolean;
+    } = {},
   ) {
     const discordUserId = manager.discordUserId?.trim();
-    if (discordUserId && mentionableIds.has(discordUserId)) {
-      return this.managerClickableLabel(discordUserId);
+    if (discordUserId && /^\d{15,25}$/.test(discordUserId)) {
+      const mention = this.managerClickableLabel(discordUserId);
+      const mentionable = mentionableIds.has(discordUserId);
+      const fallback = this.plainDiscordManagerLabel(manager);
+      if (options.suppressMention) {
+        return fallback;
+      }
+      if (mentionable && !options.alwaysShowTextFallback) {
+        return mention;
+      }
+      if (!mentionable && options.suppressUnvalidatedMention) {
+        return fallback;
+      }
+      return options.textFirst
+        ? `${fallback} (${mention})`
+        : `${mention} (${fallback})`;
     }
     return this.plainDiscordManagerLabel(manager);
+  }
+
+  private banListManagerLabel(
+    manager: {
+      discordUserId?: string | null;
+      discordUsername?: string | null;
+      displayName?: string | null;
+    },
+    mentionableIds: Set<string>,
+  ) {
+    return this.banChannelManagerLabel(manager, mentionableIds, {
+      alwaysShowTextFallback: true,
+    });
   }
 
   private managerBanListLine(
     ban: ManagerBanResponse,
     resolvedDisplayName: string | null | undefined,
     mentionableIds = new Set<string>(),
+    teamLabels: string[] = [],
   ) {
     const label =
       this.cleanBanListLabel(resolvedDisplayName) ||
@@ -5085,7 +6449,7 @@ export class DiscordSessionService {
     const duration = ban.expiresAt
       ? ` \`${this.banListDaysLeft(ban.expiresAt)}\``
       : "";
-    const managerLabel = this.banChannelManagerLabel(
+    const managerLabel = this.banListManagerLabel(
       {
         discordUserId: ban.discordUserId,
         discordUsername: ban.discordUsername,
@@ -5093,7 +6457,12 @@ export class DiscordSessionService {
       },
       mentionableIds,
     );
-    return `> ${managerLabel} (${reason})${duration}`;
+    const teamSummary = teamLabels.length
+      ? `${teamLabels.length === 1 ? "Team" : "Teams"}: ${teamLabels
+          .slice(0, 3)
+          .join(", ")}${teamLabels.length > 3 ? ", ..." : ""} | `
+      : "";
+    return `> ${teamSummary}Manager: ${managerLabel} (${reason})${duration}`;
   }
 
   private splitDiscordManagedContent(
@@ -5126,8 +6495,13 @@ export class DiscordSessionService {
     guild?: Guild | null,
   ) {
     const [bans, managerBans, matches] = await Promise.all([
-      this.apiClient.listTeamBans({ active: true }),
-      this.apiClient.listManagerBans({ active: true }).catch(() => []),
+      this.apiClient.listTeamBans({
+        active: true,
+        limit: DISCORD_BAN_LIST_LIMIT,
+      }),
+      this.apiClient
+        .listManagerBans({ active: true, limit: DISCORD_BAN_LIST_LIMIT })
+        .catch(() => []),
       sessionId
         ? this.apiClient
             .listSessionMatches(sessionId)
@@ -5153,12 +6527,57 @@ export class DiscordSessionService {
       : managerBans;
 
     const managerMentionsByTeamId = new Map<string, string>();
+    const teamLabelsByManagerId = new Map<string, string[]>();
+    const allowedMentionUserIds = new Set<string>();
+    const reparseMentionUserIds = new Set<string>();
     await this.runLimited(relevant, 5, async (ban) => {
+      const members = await this.apiClient
+        .listTeamMembers(ban.teamId)
+        .catch(() => [] as TeamMemberSummary[]);
+      const active = members.filter((member) =>
+        this.isActiveTeamMember(member),
+      );
+      const leaders = active.filter((member) => member.role === "LEADER");
+      const managers = (leaders.length ? leaders : active)
+        .filter((member) => /^\d{15,25}$/.test(member.discordUserId))
+        .slice(0, 3);
+      for (const discordUserId of this.managerBanMentionIds(managers)) {
+        allowedMentionUserIds.add(discordUserId);
+      }
+      const mentionableIds = await this.validatedManagerMentionIds(
+        guild,
+        managers.map((manager) => manager.discordUserId),
+      );
+      for (const discordUserId of mentionableIds) {
+        reparseMentionUserIds.add(discordUserId);
+      }
       managerMentionsByTeamId.set(
         ban.teamId,
-        await this.teamManagerBanMentionSummary(ban.teamId, guild),
+        managers
+          .map((manager) => this.banListManagerLabel(manager, mentionableIds))
+          .join(", "),
       );
+      const teamLabel = this.banListTeamLabel(ban.team ?? { id: ban.teamId });
+      for (const manager of managers) {
+        const labels = teamLabelsByManagerId.get(manager.discordUserId) ?? [];
+        if (!labels.includes(teamLabel)) {
+          labels.push(teamLabel);
+          teamLabelsByManagerId.set(manager.discordUserId, labels);
+        }
+      }
     });
+    const mentionableManagerBanIds = await this.validatedManagerMentionIds(
+      guild,
+      relevantManagerBans.map((ban) => ban.discordUserId),
+    );
+    for (const discordUserId of mentionableManagerBanIds) {
+      reparseMentionUserIds.add(discordUserId);
+    }
+    for (const discordUserId of this.managerBanMentionIds(
+      relevantManagerBans,
+    )) {
+      allowedMentionUserIds.add(discordUserId);
+    }
     const managerDisplayNameByUserId = new Map<string, string>();
     if (guild) {
       await this.runLimited(
@@ -5233,14 +6652,19 @@ export class DiscordSessionService {
         this.managerBanListLine(
           ban,
           managerDisplayNameByUserId.get(ban.discordUserId),
-          new Set<string>(),
+          mentionableManagerBanIds,
+          teamLabelsByManagerId.get(ban.discordUserId) ?? [],
         ),
       ),
     ].filter((line): line is string => line !== null);
-    return this.splitDiscordManagedContent(
-      lines,
-      this.banListMarker(sessionId),
-    );
+    return {
+      messages: this.splitDiscordManagedContent(
+        lines,
+        this.banListMarker(sessionId),
+      ),
+      allowedMentionUserIds: [...allowedMentionUserIds],
+      reparseMentionUserIds: [...reparseMentionUserIds],
+    };
   }
 
   private async refreshDiscordBanListMessage(
@@ -5258,11 +6682,8 @@ export class DiscordSessionService {
         return;
       }
       const textChannel = channel as GuildTextBasedChannel;
-      const messages = await this.buildDiscordBanListMessages(
-        config,
-        sessionId,
-        guild,
-      );
+      const { messages, allowedMentionUserIds, reparseMentionUserIds } =
+        await this.buildDiscordBanListMessages(config, sessionId, guild);
       if (!messages.length) {
         return;
       }
@@ -5270,23 +6691,57 @@ export class DiscordSessionService {
         .split(/\s+/g)
         .map((id) => id.trim())
         .filter(Boolean);
+      const allowedMentionUserIdSet = new Set(allowedMentionUserIds);
+      const reparseMentionUserIdSet = new Set(reparseMentionUserIds);
       const nextIds: string[] = [];
       for (const [index, content] of messages.entries()) {
+        const renderedContent = limitDiscordContent(content);
+        const mentionUserIds = this.discordUserMentionIdsFromContent(
+          renderedContent,
+        )
+          .filter((discordUserId) => allowedMentionUserIdSet.has(discordUserId))
+          .slice(0, 100);
+        const allowedMentions = mentionUserIds.length
+          ? { parse: [] as const, users: mentionUserIds }
+          : { parse: [] as const };
         const existingId = storedIds[index];
         const existing = existingId
           ? await textChannel.messages.fetch(existingId).catch(() => null)
           : null;
         if (existing && existing.author.id === guild.client.user?.id) {
+          const normalizedExistingContent = (existing.content ?? "").replace(
+            /\u200B+$/u,
+            "",
+          );
+          const needsMentionReparse = mentionUserIds.some(
+            (discordUserId) =>
+              reparseMentionUserIdSet.has(discordUserId) &&
+              !existing.mentions?.users?.has?.(discordUserId),
+          );
+          if (
+            normalizedExistingContent === renderedContent &&
+            !needsMentionReparse
+          ) {
+            nextIds.push(existing.id);
+            continue;
+          }
+          const editContent =
+            normalizedExistingContent === renderedContent && needsMentionReparse
+              ? (existing.content ?? "").endsWith("\u200B")
+                ? renderedContent
+                : `${renderedContent}\u200B`
+              : renderedContent;
           await existing.edit({
-            content: limitDiscordContent(content),
-            allowedMentions: allowedMentionsForOrganizerText(content),
+            content: editContent,
+            allowedMentions,
           });
           nextIds.push(existing.id);
           continue;
         }
         const sent = await textChannel.send({
-          content: limitDiscordContent(content),
-          allowedMentions: allowedMentionsForOrganizerText(content),
+          content: renderedContent,
+          allowedMentions,
+          flags: MessageFlags.SuppressNotifications,
         });
         nextIds.push(sent.id);
       }
@@ -5418,9 +6873,8 @@ export class DiscordSessionService {
     input: DiscordTeamBanCommand,
     config: SessionDiscordConfigResponse | null,
   ): DiscordTeamBanServerAction {
-    const explicit = this.normalizedBanServerAction(input.serverAction);
-    if (explicit !== "NONE") {
-      return explicit;
+    if (input.serverAction !== undefined && input.serverAction !== null) {
+      return this.normalizedBanServerAction(input.serverAction);
     }
     const configured = this.normalizedBanServerAction(
       config?.emojis?.banServerAction,
@@ -5497,12 +6951,19 @@ export class DiscordSessionService {
     return this.configuredTemporaryBanRoleIds(config);
   }
 
+  private configuredSlotBanRoleIds(
+    config: SessionDiscordConfigResponse | null,
+  ): string[] {
+    return this.parseConfiguredRoleIds(config?.emojis?.slotBanRoleIds);
+  }
+
   private configuredAllBanRoleIds(
     config: SessionDiscordConfigResponse | null,
   ): string[] {
     return this.uniqueRoleIds([
       ...this.configuredTemporaryBanRoleIds(config),
       ...this.parseConfiguredRoleIds(config?.emojis?.permanentBanRoleIds),
+      ...this.configuredSlotBanRoleIds(config),
       ...(config?.bannedRoleId ? [config.bannedRoleId] : []),
     ]);
   }
@@ -5600,7 +7061,13 @@ export class DiscordSessionService {
     guild: Guild,
     config: SessionDiscordConfigResponse | null,
     permanent: boolean,
+    roleIds?: string[] | null,
   ): Promise<Role[]> {
+    const requestedRoleIds = this.uniqueRoleIds(roleIds ?? []);
+    if (requestedRoleIds.length > 0) {
+      return this.liveGuildRolesById(guild, requestedRoleIds);
+    }
+
     const role = await this.configuredBanRoleForAction(
       guild,
       config,
@@ -5615,7 +7082,7 @@ export class DiscordSessionService {
     managers: DiscordManagerBanTarget[],
     action: DiscordTeamBanServerAction,
     reason: string,
-    options: { permanent: boolean },
+    options: { permanent: boolean; roleIds?: string[] | null },
   ): Promise<string[]> {
     if (!guild || action === "NONE") {
       return [];
@@ -5637,6 +7104,7 @@ export class DiscordSessionService {
         guild,
         config,
         options.permanent,
+        options.roleIds,
       );
       if (!roles.length) {
         return [
@@ -5647,24 +7115,30 @@ export class DiscordSessionService {
       let applied = 0;
       let failed = 0;
       for (const manager of activeMembers) {
-        const guildMember = await guild.members
-          .fetch(manager.discordUserId)
-          .catch(() => null);
-        if (!guildMember) {
-          failed += 1;
-          continue;
-        }
-        let memberFailed = false;
-        for (const role of roles) {
-          await guildMember.roles.add(role, reason).catch(() => {
-            memberFailed = true;
-          });
-        }
-        if (memberFailed) {
-          failed += 1;
-        } else {
-          applied += 1;
-        }
+        await this.runAccessRoleMutationExclusive(
+          guild.id,
+          manager.discordUserId,
+          async () => {
+            const guildMember = await guild.members
+              .fetch({ user: manager.discordUserId, force: true })
+              .catch(() => null);
+            if (!guildMember) {
+              failed += 1;
+              return;
+            }
+            let memberFailed = false;
+            for (const role of roles) {
+              await guildMember.roles.add(role, reason).catch(() => {
+                memberFailed = true;
+              });
+            }
+            if (memberFailed) {
+              failed += 1;
+            } else {
+              applied += 1;
+            }
+          },
+        );
       }
       const roleNames = roles.map((role) => role.name).join(", ");
       return [
@@ -5696,13 +7170,14 @@ export class DiscordSessionService {
   private async configuredBanRolesForActiveBans(
     guild: Guild,
     config: SessionDiscordConfigResponse | null,
-    bans: ManagerBanResponse[],
+    bans: Array<Pick<ManagerBanResponse, "scope" | "sessionId" | "expiresAt">>,
     sessionId: string,
+    options: { includeMatchScope?: boolean } = {},
   ): Promise<Role[]> {
     let needsTemporaryRoles = false;
     let needsPermanentRoles = false;
     for (const ban of bans) {
-      if (ban.scope === "MATCH") {
+      if (ban.scope === "MATCH" && options.includeMatchScope !== true) {
         continue;
       }
       if (ban.scope === "SESSION" && ban.sessionId !== sessionId) {
@@ -5784,51 +7259,59 @@ export class DiscordSessionService {
       targetUserIds,
       ROLE_SYNC_CONCURRENCY,
       async (discordUserId) => {
-        const activeBans = await this.activeManagerBansForRestore(
+        await this.runAccessRoleMutationExclusive(
+          guild.id,
           discordUserId,
-          sessionId,
-          matchIds,
-        );
-        if (!activeBans.length) {
-          return;
-        }
-        result.checkedManagers += 1;
-        const roles = await this.configuredBanRolesForActiveBans(
-          guild,
-          config,
-          activeBans,
-          sessionId,
-        );
-        if (!roles.length) {
-          return;
-        }
+          async () => {
+            const activeBans = await this.activeManagerBansForRestore(
+              discordUserId,
+              sessionId,
+              matchIds,
+            );
+            if (!activeBans.length) {
+              return;
+            }
+            result.checkedManagers += 1;
+            const roles = await this.configuredBanRolesForActiveBans(
+              guild,
+              config,
+              activeBans,
+              sessionId,
+            );
+            if (!roles.length) {
+              return;
+            }
 
-        const member = await guild.members
-          .fetch({ user: discordUserId, force: true })
-          .catch(() => guild.members.fetch(discordUserId).catch(() => null));
-        if (!member) {
-          result.missingMembers += 1;
-          return;
-        }
-
-        const missingRoles = roles.filter(
-          (role) => !member.roles.cache.has(role.id),
-        );
-        for (const role of missingRoles) {
-          await member.roles
-            .add(role, reason)
-            .then(() => {
-              result.restoredRoles += 1;
-            })
-            .catch((error) => {
-              result.failed += 1;
-              console.warn(
-                `Active manager ban role restore failed for ${discordUserId}: ${String(
-                  error,
-                )}`,
+            const member = await guild.members
+              .fetch({ user: discordUserId, force: true })
+              .catch(() =>
+                guild.members.fetch(discordUserId).catch(() => null),
               );
-            });
-        }
+            if (!member) {
+              result.missingMembers += 1;
+              return;
+            }
+
+            const missingRoles = roles.filter(
+              (role) => !member.roles.cache.has(role.id),
+            );
+            for (const role of missingRoles) {
+              await member.roles
+                .add(role, reason)
+                .then(() => {
+                  result.restoredRoles += 1;
+                })
+                .catch((error) => {
+                  result.failed += 1;
+                  console.warn(
+                    `Active manager ban role restore failed for ${discordUserId}: ${String(
+                      error,
+                    )}`,
+                  );
+                });
+            }
+          },
+        );
       },
     );
 
@@ -5905,6 +7388,7 @@ export class DiscordSessionService {
     const roleIds = this.uniqueRoleIds([
       ...this.parseConfiguredRoleIds(config?.emojis?.banRoleIds),
       ...this.parseConfiguredRoleIds(config?.emojis?.permanentBanRoleIds),
+      ...this.configuredSlotBanRoleIds(config),
       config?.bannedRoleId,
     ]);
     const roles = await this.liveGuildRolesById(guild, roleIds);
@@ -5917,8 +7401,237 @@ export class DiscordSessionService {
     );
   }
 
+  private async configuredAllBanRolesStrict(
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+  ): Promise<Role[]> {
+    const roleIds = this.uniqueRoleIds([
+      ...this.parseConfiguredRoleIds(config.emojis?.banRoleIds),
+      ...this.parseConfiguredRoleIds(config.emojis?.permanentBanRoleIds),
+      ...this.configuredSlotBanRoleIds(config),
+      config.bannedRoleId,
+    ]);
+    const roles: Role[] = [];
+    for (const roleId of roleIds) {
+      const cached = guild.roles.cache.get(roleId);
+      if (cached) {
+        roles.push(cached);
+        continue;
+      }
+      const fetched = await guild.roles.fetch(roleId);
+      if (fetched && "id" in fetched) {
+        roles.push(fetched as Role);
+      }
+    }
+    if (roles.length > 0) {
+      return roles;
+    }
+
+    const roleNames = this.configuredBanRoleNames(config);
+    if (!roleNames.length) {
+      return [];
+    }
+    await guild.roles.fetch();
+    return roleNames
+      .map((roleName) =>
+        guild.roles.cache.find((entry) => entry.name === roleName),
+      )
+      .filter((role): role is Role => Boolean(role));
+  }
+
+  private async conditionalBanRoleGrantState(
+    guild: Guild,
+    sessionId: string,
+    response: ConfirmConditionalBanEnrollmentResponse,
+    managerDiscordUserIds: string[],
+    discordUserId: string,
+  ): Promise<{
+    member: GuildMember;
+    accessRoleIds: string[];
+    banRoles: Role[];
+  }> {
+    // The interaction config and API confirmation both predate the Discord
+    // mutation. Load the authoritative state again inside the member mutex.
+    const [resolvedConfig, registrations, matches] = await Promise.all([
+      this.apiClient.getSessionDiscordConfig(sessionId),
+      this.apiClient.listRegistrations(sessionId),
+      this.apiClient.listSessionMatches(sessionId),
+    ]);
+    if (
+      resolvedConfig.enabled !== true ||
+      resolvedConfig.sessionId !== sessionId ||
+      resolvedConfig.guildId !== guild.id
+    ) {
+      throw new Error(
+        "Conditional banned-team registration belongs to a disabled, different, or moved Discord session.",
+      );
+    }
+
+    const expectedManagerIds = [...managerDiscordUserIds].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    const liveRegistration = registrations.find(
+      (registration) => registration.id === response.registration.id,
+    );
+    const liveManagerIds = liveRegistration
+      ? this.uniqueStrings(liveRegistration.managerDiscordUserIds).sort(
+          (left, right) => left.localeCompare(right),
+        )
+      : [];
+    if (
+      !liveRegistration ||
+      liveRegistration.teamId !== response.enrollment.teamId ||
+      (liveRegistration.status !== "CONFIRMED" &&
+        liveRegistration.status !== "CHECKED_IN") ||
+      liveRegistration.slotNumber === null ||
+      liveRegistration.leaderDiscordUserId !== expectedManagerIds[0] ||
+      liveManagerIds.length !== expectedManagerIds.length ||
+      !liveManagerIds.every(
+        (managerId, index) => managerId === expectedManagerIds[index],
+      ) ||
+      !expectedManagerIds.includes(discordUserId)
+    ) {
+      throw new Error(
+        "Conditional banned-team registration is no longer live or its bound manager snapshot changed.",
+      );
+    }
+
+    const slotRoleId = resolvedConfig.slotRoleId?.trim();
+    const idpRoleId = resolvedConfig.idpRoleId?.trim();
+    if (!slotRoleId || !idpRoleId) {
+      throw new Error(
+        "Slot and IDP roles are not configured for this Discord session.",
+      );
+    }
+    const accessRoleIds = this.uniqueRoleIds([slotRoleId, idpRoleId]);
+    const accessibleRoles = await this.liveGuildRolesById(guild, accessRoleIds);
+    if (accessibleRoles.length !== accessRoleIds.length) {
+      throw new Error(
+        "The bot cannot see every configured Slot and IDP role for this session.",
+      );
+    }
+
+    const liveMatchIds = new Set(matches.map((match) => match.id));
+    const [allActiveTeamBans, activeManagerBanEntries] = await Promise.all([
+      this.apiClient.listTeamBans({
+        active: true,
+        teamId: response.enrollment.teamId,
+        limit: 5_000,
+      }),
+      Promise.all(
+        expectedManagerIds.map(async (managerId) => ({
+          managerId,
+          bans: await this.apiClient.listManagerBans({
+            active: true,
+            discordUserId: managerId,
+            limit: 5_000,
+          }),
+        })),
+      ),
+    ]);
+    const linkedTeamBanIds = new Set(response.enrollment.teamBanIds);
+    const linkedManagerBanIds = new Set(response.enrollment.managerBanIds);
+    const applicableActiveTeamBans = allActiveTeamBans.filter((ban) =>
+      this.managerBanAppliesToSession(ban, sessionId, liveMatchIds),
+    );
+    const unlinkedTeamBan = applicableActiveTeamBans.find(
+      (ban) => !linkedTeamBanIds.has(ban.id),
+    );
+    if (unlinkedTeamBan) {
+      throw new Error(
+        `A new applicable team ban (${unlinkedTeamBan.id}) was added after conditional enrollment confirmation.`,
+      );
+    }
+    const activeLinkedTeamBans = applicableActiveTeamBans.filter((ban) =>
+      linkedTeamBanIds.has(ban.id),
+    );
+
+    let hasAnyActiveLinkedBan = activeLinkedTeamBans.length > 0;
+    let activeManagerBansForMember: ManagerBanResponse[] = [];
+    for (const entry of activeManagerBanEntries) {
+      const applicable = entry.bans.filter((ban) =>
+        this.managerBanAppliesToSession(ban, sessionId, liveMatchIds),
+      );
+      const unlinked = applicable.find(
+        (ban) => !linkedManagerBanIds.has(ban.id),
+      );
+      if (unlinked) {
+        throw new Error(
+          `A new applicable manager ban (${unlinked.id}) was added for Discord user ${entry.managerId} after conditional enrollment confirmation.`,
+        );
+      }
+      const activeLinked = applicable.filter((ban) =>
+        linkedManagerBanIds.has(ban.id),
+      );
+      if (activeLinked.length > 0) {
+        hasAnyActiveLinkedBan = true;
+      }
+      if (entry.managerId === discordUserId) {
+        activeManagerBansForMember = activeLinked;
+      }
+    }
+    if (!hasAnyActiveLinkedBan) {
+      throw new Error(
+        "The conditional ban snapshot is no longer active for this team or its managers.",
+      );
+    }
+
+    const [teamBanRoles, managerBanRoles] = await Promise.all([
+      activeLinkedTeamBans.length
+        ? this.configuredBanRolesForActiveBans(
+            guild,
+            resolvedConfig,
+            activeLinkedTeamBans,
+            sessionId,
+            { includeMatchScope: true },
+          )
+        : Promise.resolve([] as Role[]),
+      activeManagerBansForMember.length
+        ? this.configuredBanRolesForActiveBans(
+            guild,
+            resolvedConfig,
+            activeManagerBansForMember,
+            sessionId,
+            { includeMatchScope: true },
+          )
+        : Promise.resolve([] as Role[]),
+    ]);
+    let banRoles = [
+      ...new Map(
+        [...teamBanRoles, ...managerBanRoles].map((role) => [role.id, role]),
+      ).values(),
+    ];
+    if (
+      (activeLinkedTeamBans.length > 0 ||
+        activeManagerBansForMember.length > 0) &&
+      !banRoles.length
+    ) {
+      // MATCH bans do not have a session-specific role mapping. Preserve the
+      // configured ban protection instead of granting access without one.
+      banRoles = await this.configuredAllBanRoles(guild, resolvedConfig);
+    }
+    if (
+      (activeLinkedTeamBans.length > 0 ||
+        activeManagerBansForMember.length > 0) &&
+      !banRoles.length
+    ) {
+      throw new Error(
+        "The bot cannot resolve the configured banned role for this session.",
+      );
+    }
+
+    const member = await guild.members.fetch({
+      user: discordUserId,
+      force: true,
+    });
+    return { member, accessRoleIds, banRoles };
+  }
+
   private managerBanAppliesToSession(
-    ban: Pick<ManagerBanResponse, "scope" | "sessionId" | "matchId">,
+    ban: Pick<
+      ManagerBanResponse | TeamBanResponse,
+      "scope" | "sessionId" | "matchId"
+    >,
     sessionId: string,
     matchIds: Set<string>,
   ) {
@@ -5958,40 +7671,335 @@ export class DiscordSessionService {
     );
   }
 
+  private async activeManagerBanProtectedRoleIds(
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+    sessionId: string,
+    matchIds: Set<string>,
+    discordUserId: string,
+    currentRoles: Role[],
+  ): Promise<Set<string>> {
+    const active = await this.apiClient
+      .listManagerBans({ active: true, discordUserId })
+      .catch(() => [] as ManagerBanResponse[]);
+    const protectedRoleIds = new Set<string>();
+    if (!active.length) {
+      return protectedRoleIds;
+    }
+
+    const addRoles = (roles: Role[]) => {
+      for (const role of roles) {
+        protectedRoleIds.add(role.id);
+      }
+    };
+    const configBySessionId = new Map<
+      string,
+      SessionDiscordConfigResponse | null
+    >([[sessionId, config]]);
+    if (config.sessionId !== sessionId) {
+      configBySessionId.set(config.sessionId, config);
+    }
+
+    for (const ban of active) {
+      if (
+        ban.scope === "TEAM" ||
+        this.managerBanAppliesToSession(ban, sessionId, matchIds)
+      ) {
+        addRoles(currentRoles);
+        continue;
+      }
+
+      if (!ban.sessionId) {
+        continue;
+      }
+
+      if (!configBySessionId.has(ban.sessionId)) {
+        configBySessionId.set(
+          ban.sessionId,
+          await this.apiClient
+            .getSessionDiscordConfig(ban.sessionId)
+            .catch(() => null),
+        );
+      }
+      const targetConfig = configBySessionId.get(ban.sessionId);
+      if (!targetConfig || targetConfig.guildId !== config.guildId) {
+        continue;
+      }
+
+      const configuredRoleIds = ban.expiresAt
+        ? this.configuredTemporaryBanRoleIds(targetConfig)
+        : this.configuredPermanentBanRoleIds(targetConfig);
+      const configuredRoles = await this.liveGuildRolesById(
+        guild,
+        this.uniqueRoleIds([
+          ...configuredRoleIds,
+          ...this.configuredSlotBanRoleIds(targetConfig),
+        ]),
+      );
+      if (configuredRoles.length > 0) {
+        addRoles(configuredRoles);
+      } else {
+        addRoles(
+          await this.configuredBanRoles(guild, targetConfig, !ban.expiresAt),
+        );
+      }
+    }
+
+    return protectedRoleIds;
+  }
+
+  private async activeManagerBanProtectedRoleIdsStrict(
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+    sessionId: string,
+    matchIds: Set<string>,
+    discordUserId: string,
+    currentRoles: Role[],
+  ): Promise<Set<string>> {
+    const active = await this.apiClient.listManagerBans({
+      active: true,
+      discordUserId,
+      limit: 5_000,
+    });
+    const protectedRoleIds = new Set<string>();
+    if (!active.length) {
+      return protectedRoleIds;
+    }
+
+    const addRoles = (roles: Role[]) => {
+      for (const role of roles) {
+        protectedRoleIds.add(role.id);
+      }
+    };
+    const configBySessionId = new Map<string, SessionDiscordConfigResponse>([
+      [sessionId, config],
+    ]);
+    if (config.sessionId !== sessionId) {
+      configBySessionId.set(config.sessionId, config);
+    }
+
+    for (const ban of active) {
+      if (
+        ban.scope === "TEAM" ||
+        this.managerBanAppliesToSession(ban, sessionId, matchIds)
+      ) {
+        addRoles(currentRoles);
+        continue;
+      }
+      if (!ban.sessionId) {
+        // The API says an active protection remains but did not provide enough
+        // scope to prove it belongs to another Discord server. Keep the role.
+        addRoles(currentRoles);
+        continue;
+      }
+
+      if (!configBySessionId.has(ban.sessionId)) {
+        configBySessionId.set(
+          ban.sessionId,
+          await this.apiClient.getSessionDiscordConfig(ban.sessionId),
+        );
+      }
+      const targetConfig = configBySessionId.get(ban.sessionId);
+      if (!targetConfig) {
+        addRoles(currentRoles);
+        continue;
+      }
+      if (!targetConfig.guildId || !config.guildId) {
+        addRoles(currentRoles);
+        continue;
+      }
+      if (targetConfig.guildId !== config.guildId) {
+        continue;
+      }
+
+      const configuredRoleIds = this.uniqueRoleIds([
+        ...(ban.expiresAt
+          ? this.configuredTemporaryBanRoleIds(targetConfig)
+          : this.configuredPermanentBanRoleIds(targetConfig)),
+        ...this.configuredSlotBanRoleIds(targetConfig),
+        targetConfig.bannedRoleId,
+      ]);
+      const configuredRoleIdSet = new Set(configuredRoleIds);
+      const directlySharedRoles = currentRoles.filter((role) =>
+        configuredRoleIdSet.has(role.id),
+      );
+      if (directlySharedRoles.length > 0) {
+        addRoles(directlySharedRoles);
+        continue;
+      }
+
+      const configuredNames = new Set(
+        this.configuredBanRoleNames(targetConfig),
+      );
+      addRoles(currentRoles.filter((role) => configuredNames.has(role.name)));
+    }
+
+    return protectedRoleIds;
+  }
+
+  private async activeDiscordBanProtectedRoleIdsStrict(
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+    sessionId: string,
+    matchIds: Set<string>,
+    discordUserId: string,
+    currentRoles: Role[],
+  ): Promise<Set<string>> {
+    const protection = await this.apiClient.getConditionalBanRoleProtection(
+      sessionId,
+      {
+        guildId: guild.id,
+        discordUserId,
+      },
+    );
+    if (
+      protection.sessionId !== sessionId ||
+      protection.guildId !== guild.id ||
+      protection.discordUserId !== discordUserId
+    ) {
+      throw new Error(
+        "Conditional ban role protection response is inconsistent.",
+      );
+    }
+    const protectedRoleIds = new Set<string>();
+    const addRoles = (roles: Role[]) => {
+      for (const role of roles) protectedRoleIds.add(role.id);
+    };
+    const configBySessionId = new Map<string, SessionDiscordConfigResponse>([
+      [sessionId, config],
+    ]);
+    for (const ban of [...protection.teamBans, ...protection.managerBans]) {
+      if (
+        ban.scope === "TEAM" ||
+        this.managerBanAppliesToSession(ban, sessionId, matchIds)
+      ) {
+        addRoles(currentRoles);
+        continue;
+      }
+      if (!ban.targetSessionId) {
+        throw new Error(
+          "Active Discord ban protection has no resolvable target session.",
+        );
+      }
+      if (!configBySessionId.has(ban.targetSessionId)) {
+        configBySessionId.set(
+          ban.targetSessionId,
+          await this.apiClient.getSessionDiscordConfig(ban.targetSessionId),
+        );
+      }
+      const targetConfig = configBySessionId.get(ban.targetSessionId)!;
+      if (targetConfig.guildId !== guild.id) {
+        throw new Error(
+          "Active Discord ban protection resolved to a different guild.",
+        );
+      }
+      const configuredRoleIds = new Set(
+        this.uniqueRoleIds([
+          ...(ban.expiresAt
+            ? this.configuredTemporaryBanRoleIds(targetConfig)
+            : this.configuredPermanentBanRoleIds(targetConfig)),
+          ...this.configuredSlotBanRoleIds(targetConfig),
+          targetConfig.bannedRoleId,
+        ]),
+      );
+      const directlyShared = currentRoles.filter((role) =>
+        configuredRoleIds.has(role.id),
+      );
+      if (directlyShared.length > 0) {
+        addRoles(directlyShared);
+        continue;
+      }
+      const configuredNames = new Set(
+        this.configuredBanRoleNames(targetConfig),
+      );
+      addRoles(currentRoles.filter((role) => configuredNames.has(role.name)));
+    }
+    return protectedRoleIds;
+  }
+
   private async removeConfiguredBanRolesFromMember(
     guild: Guild,
     config: SessionDiscordConfigResponse,
     discordUserId: string,
     reason: string,
+    options: {
+      roles?: Role[];
+      protectedRoleIds?: Set<string>;
+      strictMemberFetch?: boolean;
+      refreshProtectedRoleIds?: (
+        member: GuildMember,
+        roles: Role[],
+      ) => Promise<Set<string>>;
+    } = {},
   ) {
-    const roles = await this.configuredAllBanRoles(guild, config);
+    const roles =
+      options.roles ?? (await this.configuredAllBanRoles(guild, config));
     if (!roles.length) {
       return { removed: 0, missing: false, failed: false };
     }
+    const baselineProtectedRoleIds =
+      options.protectedRoleIds ?? new Set<string>();
+    return this.runAccessRoleMutationExclusive(
+      guild.id,
+      discordUserId,
+      async () => {
+        let member: GuildMember | null;
+        if (options.strictMemberFetch) {
+          try {
+            member = await guild.members.fetch({
+              user: discordUserId,
+              force: true,
+            });
+          } catch (error) {
+            const code = (error as { code?: unknown } | null)?.code;
+            if (code === 10007 || code === "10007") {
+              member = null;
+            } else {
+              throw error;
+            }
+          }
+        } else {
+          member = await this.forceFetchGuildMember(guild, discordUserId);
+        }
+        if (!member) {
+          return { removed: 0, missing: true, failed: false };
+        }
 
-    const member = await guild.members
-      .fetch({ user: discordUserId, force: true })
-      .catch(() => guild.members.fetch(discordUserId).catch(() => null));
-    if (!member) {
-      return { removed: 0, missing: true, failed: false };
-    }
-
-    const roleIds = roles
-      .filter((role) => member.roles.cache.has(role.id))
-      .map((role) => role.id);
-    if (!roleIds.length) {
-      return { removed: 0, missing: false, failed: false };
-    }
-
-    await member.roles.remove(roleIds, reason).catch((error) => {
-      console.warn(
-        `Expired manager ban role remove failed for ${discordUserId}: ${String(
-          error,
-        )}`,
-      );
-      throw error;
-    });
-    return { removed: roleIds.length, missing: false, failed: false };
+        const protectedRoleIds = new Set(baselineProtectedRoleIds);
+        if (options.refreshProtectedRoleIds) {
+          const refreshed = await options.refreshProtectedRoleIds(
+            member,
+            roles,
+          );
+          for (const roleId of refreshed) {
+            protectedRoleIds.add(roleId);
+          }
+        }
+        const roleIds = roles
+          .filter(
+            (role) =>
+              member.roles.cache.has(role.id) && !protectedRoleIds.has(role.id),
+          )
+          .map((role) => role.id);
+        let removed = 0;
+        for (const roleId of roleIds) {
+          await member.roles.remove(roleId, reason).then(
+            () => {
+              removed += 1;
+            },
+            (error) => {
+              console.warn(
+                `Expired manager ban role remove failed for ${discordUserId} role=${roleId}: ${String(
+                  error,
+                )}`,
+              );
+              throw error;
+            },
+          );
+        }
+        return { removed, missing: false, failed: false };
+      },
+    );
   }
 
   private async removeRevokedBanRolesFromMembers(
@@ -6036,34 +8044,45 @@ export class DiscordSessionService {
         continue;
       }
 
-      const matches = await this.apiClient
-        .listSessionMatches(target.id)
-        .catch(() => [] as SessionMatchResponse[]);
+      const roles = await this.configuredAllBanRoles(guild, targetConfig);
+      if (!roles.length) {
+        continue;
+      }
+      const matches = await this.apiClient.listSessionMatches(target.id);
       const matchIds = new Set(matches.map((match) => match.id));
-
       await this.runLimited(
         targetUserIds,
         ROLE_SYNC_CONCURRENCY,
         async (discordUserId) => {
           result.checkedMembers += 1;
-          if (
-            await this.memberHasActiveRelevantManagerBan(
-              discordUserId,
-              target.id,
-              matchIds,
-            )
-          ) {
-            result.keptActive += 1;
-            return;
-          }
-
+          let keptProtected = false;
           try {
             const removed = await this.removeConfiguredBanRolesFromMember(
               guild,
               targetConfig,
               discordUserId,
               reason,
+              {
+                roles,
+                strictMemberFetch: true,
+                refreshProtectedRoleIds: async (_member, candidateRoles) => {
+                  const protectedRoleIds =
+                    await this.activeDiscordBanProtectedRoleIdsStrict(
+                      guild,
+                      targetConfig,
+                      target.id,
+                      matchIds,
+                      discordUserId,
+                      candidateRoles,
+                    );
+                  keptProtected = protectedRoleIds.size > 0;
+                  return protectedRoleIds;
+                },
+              },
             );
+            if (keptProtected) {
+              result.keptActive += 1;
+            }
             result.removedRoles += removed.removed;
             if (removed.missing) {
               result.missingMembers += 1;
@@ -6166,39 +8185,54 @@ export class DiscordSessionService {
     return "All active bans";
   }
 
-  private async sendDiscordBanChannelContent(
+  private async sendDiscordLogChannelContent(
     guild: Guild | null | undefined,
-    config: Pick<SessionDiscordConfigResponse, "bansChannelId"> | null,
+    config: Pick<SessionDiscordConfigResponse, "logChannelId"> | null,
     content: string,
+    options: {
+      enabled?: boolean;
+      mentionUserIds?: Iterable<string>;
+    } = {},
   ) {
-    const channelId = config?.bansChannelId?.trim();
-    if (!guild || !channelId) {
-      return;
-    }
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-    if (!channel?.isTextBased() || channel.isDMBased()) {
+    if (!options.enabled || !guild || !config?.logChannelId) {
       return;
     }
 
+    const channel = await guild.channels
+      .fetch(config.logChannelId)
+      .catch(() => null);
+    if (!channel || !channel.isTextBased() || channel.isDMBased()) {
+      return;
+    }
+
+    const mentionUserIds = this.uniqueStrings([
+      ...(options.mentionUserIds ?? []),
+      ...this.discordUserMentionIdsFromContent(content),
+    ]).filter((userId) => /^\d{15,25}$/.test(userId));
     await (channel as GuildTextBasedChannel)
       .send({
         content: limitDiscordContent(content),
-        allowedMentions: allowedMentionsForOrganizerText(content),
+        allowedMentions: mentionUserIds.length
+          ? { users: mentionUserIds }
+          : { parse: [] },
       })
       .catch((error) => {
-        console.warn(`Discord ban channel notice failed: ${String(error)}`);
+        console.warn(
+          `Discord log channel ban notice send failed: ${String(error)}`,
+        );
       });
   }
 
-  private async sendDiscordBanChannelNotice(
+  private async sendDiscordBanLogNotice(
     guild: Guild | null | undefined,
-    config: Pick<SessionDiscordConfigResponse, "bansChannelId"> | null,
+    config: Pick<SessionDiscordConfigResponse, "logChannelId"> | null,
     params: DiscordBanChannelNoticeParams,
   ) {
     const mentionableIds = await this.validatedManagerMentionIds(
       guild,
       (params.managers ?? []).map((manager) => manager.discordUserId),
     );
+    const managerMentionIds = this.managerBanMentionIds(params.managers);
     const lines = [
       `**${params.title}**`,
       params.team ? `Team: ${this.formatTeamSummary(params.team)}` : null,
@@ -6217,12 +8251,15 @@ export class DiscordSessionService {
       params.status ? `Status: ${params.status}` : null,
     ].filter((line): line is string => Boolean(line));
 
-    await this.sendDiscordBanChannelContent(guild, config, lines.join("\n"));
+    await this.sendDiscordLogChannelContent(guild, config, lines.join("\n"), {
+      enabled: true,
+      mentionUserIds: managerMentionIds,
+    });
   }
 
-  private async sendDiscordNoShowBanChannelNotice(
+  private async sendDiscordNoShowBanLogNotice(
     guild: Guild | null | undefined,
-    config: Pick<SessionDiscordConfigResponse, "bansChannelId"> | null,
+    config: Pick<SessionDiscordConfigResponse, "logChannelId"> | null,
     params: DiscordNoShowBanChannelNoticeParams,
   ) {
     const mentionableIds = await this.validatedManagerMentionIds(
@@ -6256,7 +8293,7 @@ export class DiscordSessionService {
       teamLines.push(`- +${teams.length - 10} more`);
     }
 
-    await this.sendDiscordBanChannelContent(
+    await this.sendDiscordLogChannelContent(
       guild,
       config,
       [
@@ -6305,18 +8342,22 @@ export class DiscordSessionService {
       input.scope === "SESSION"
         ? await this.resolveDiscordBanSessionTargets(input, config)
         : [];
-    const activeBans = (
-      await Promise.all(
-        managers.map((manager) =>
-          this.apiClient
-            .listManagerBans({
-              active: true,
-              discordUserId: manager.discordUserId,
-            })
-            .catch(() => [] as ManagerBanResponse[]),
-        ),
-      )
-    ).flat();
+    const activeBans = team
+      ? await this.apiClient
+          .listTeamBans({ active: true, teamId: team.id })
+          .catch(() => [] as TeamBanResponse[])
+      : (
+          await Promise.all(
+            managers.map((manager) =>
+              this.apiClient
+                .listManagerBans({
+                  active: true,
+                  discordUserId: manager.discordUserId,
+                })
+                .catch(() => [] as ManagerBanResponse[]),
+            ),
+          )
+        ).flat();
     const reason = input.reason?.trim() || "Manual Discord ban";
     const normalizedCommand: DiscordTeamBanCommand = {
       ...input,
@@ -6345,7 +8386,7 @@ export class DiscordSessionService {
       config,
     );
     const lines = [
-      `${this.emoji("ban", config)} Manager ban preview`,
+      `${this.emoji("ban", config)} ${team ? "Team" : "Manager"} ban preview`,
       team ? `Team: ${this.formatTeamSummary(team)}` : null,
       `Manager(s): ${managers
         .map((manager) => this.managerBanTargetLabel(manager))
@@ -6400,11 +8441,23 @@ export class DiscordSessionService {
       input.scope === "SESSION"
         ? await this.resolveDiscordBanSessionTargets(input, config)
         : [];
+    const syncSessionIds = this.uniqueStrings(
+      input.scope === "TEAM" && guild
+        ? [
+            ...(await this.activeDiscordScrimSessionIdsForGuild(guild.id)),
+            input.sessionId ?? "",
+          ]
+        : input.scope === "SESSION"
+          ? sessionTargets.map((session) => session.id)
+          : input.sessionId
+            ? [input.sessionId]
+            : [],
+    );
     const serverAction = this.configuredBanServerAction(input, config);
     const expiresAt = this.banExpiresAt(input.days);
 
     try {
-      const created: ManagerBanResponse[] = [];
+      const created: Array<TeamBanResponse | ManagerBanResponse> = [];
       const sessionCreateTargets =
         input.scope === "SESSION"
           ? sessionTargets
@@ -6413,22 +8466,39 @@ export class DiscordSessionService {
 
       for (const sessionTarget of sessionCreateTargets) {
         try {
-          const records = await this.apiClient.createManagerBan({
-            teamId: team?.id ?? undefined,
-            discordUserIds: team
-              ? undefined
-              : managers.map((manager) => manager.discordUserId),
-            discordUserId: team ? undefined : managers[0]?.discordUserId,
-            discordUsername: team ? undefined : managers[0]?.discordUsername,
-            displayName: team ? undefined : managers[0]?.displayName,
-            scope: input.scope,
-            sessionId:
-              input.scope === "SESSION" ? (sessionTarget?.id ?? null) : null,
-            matchIds: input.scope === "MATCH" ? matchIds : undefined,
-            reason,
-            note: input.note?.trim() || "Created from Discord command",
-            expiresAt,
-          });
+          const records = team
+            ? await this.apiClient.createTeamBan({
+                teamId: team.id,
+                scope: input.scope,
+                sessionId:
+                  input.scope === "SESSION"
+                    ? (sessionTarget?.id ?? null)
+                    : null,
+                matchIds: input.scope === "MATCH" ? matchIds : undefined,
+                reason,
+                note: input.note?.trim() || "Created from Discord command",
+                expiresAt,
+                skipRegistrationRemoval: input.skipRegistrationRemoval
+                  ? true
+                  : undefined,
+              })
+            : await this.apiClient.createManagerBan({
+                discordUserIds: managers.map(
+                  (manager) => manager.discordUserId,
+                ),
+                discordUserId: managers[0]?.discordUserId,
+                discordUsername: managers[0]?.discordUsername,
+                displayName: managers[0]?.displayName,
+                scope: input.scope,
+                sessionId:
+                  input.scope === "SESSION"
+                    ? (sessionTarget?.id ?? null)
+                    : null,
+                matchIds: input.scope === "MATCH" ? matchIds : undefined,
+                reason,
+                note: input.note?.trim() || "Created from Discord command",
+                expiresAt,
+              });
           created.push(...records);
         } catch (error) {
           if (
@@ -6442,13 +8512,18 @@ export class DiscordSessionService {
         }
       }
 
-      const syncSessionIds =
-        input.scope === "SESSION"
-          ? sessionTargets.map((session) => session.id)
-          : input.sessionId
-            ? [input.sessionId]
-            : [];
-      if (guild && input.scope !== "MATCH" && team) {
+      const savedAction = team ? "Team ban saved" : "Manager ban saved";
+      const serverActionDetails = await this.applyDiscordBanServerAction(
+        guild,
+        config,
+        managers,
+        serverAction,
+        reason,
+        { permanent: !expiresAt, roleIds: input.roleIds },
+      );
+
+      const shouldSyncRemovedAccess = true;
+      if (guild && shouldSyncRemovedAccess) {
         const managerDiscordUserIds = managers
           .map((m) => m.discordUserId)
           .filter(Boolean);
@@ -6457,29 +8532,16 @@ export class DiscordSessionService {
           ROLE_SYNC_CONCURRENCY,
           async (sessionId) => {
             await this.syncDiscordScrimState(guild, sessionId, {
-              removedTeamIds: [team.id],
+              removedTeamIds: team ? [team.id] : [],
+              extraDiscordUserIds: managerDiscordUserIds,
             }).catch((error) => {
               console.warn(
-                `Discord state sync after team ban failed: ${toFriendlyApiError(error)}`,
+                `Discord state sync after ${team ? "team" : "manager"} ban failed: ${toFriendlyApiError(error)}`,
               );
             });
-            if (managerDiscordUserIds.length > 0) {
-              this.syncDiscordScrimStateInBackground(guild, sessionId, {
-                extraDiscordUserIds: managerDiscordUserIds,
-              });
-            }
           },
         );
       }
-
-      const serverActionDetails = await this.applyDiscordBanServerAction(
-        guild,
-        config,
-        managers,
-        serverAction,
-        reason,
-        { permanent: !expiresAt },
-      );
 
       const targetLines = created.length
         ? created.map(
@@ -6492,7 +8554,7 @@ export class DiscordSessionService {
         );
       }
       await this.sendDiscordActionLog(guild, config, {
-        action: "Manager ban saved",
+        action: savedAction,
         actorDiscordId: audit.actorDiscordId,
         actorLabel: audit.actorLabel,
         sourceChannelId: audit.sourceChannelId,
@@ -6510,7 +8572,7 @@ export class DiscordSessionService {
         reason,
         details: [
           `Scope: ${input.scope}`,
-          `Manager: ${managers
+          `Manager${managers.length === 1 ? "" : "s"}: ${managers
             .map((manager) => this.managerBanTargetLabel(manager))
             .join(", ")}`,
           input.days
@@ -6527,8 +8589,8 @@ export class DiscordSessionService {
         sessionTargets,
         input.sessionId,
       );
-      await this.sendDiscordBanChannelNotice(guild, config, {
-        title: "Manager ban saved",
+      await this.sendDiscordBanLogNotice(guild, config, {
+        title: savedAction,
         team,
         managers,
         scope: input.scope,
@@ -6541,10 +8603,10 @@ export class DiscordSessionService {
           : "already banned",
       });
       return [
-        `${this.emoji("ban", config)} Manager ban saved${
+        `${this.emoji("ban", config)} ${savedAction}${
           team ? ` for ${this.formatTeamSummary(team)}` : ""
         }`,
-        `Manager: ${managers
+        `Manager${managers.length === 1 ? "" : "s"}: ${managers
           .map((manager) => this.managerBanTargetLabel(manager))
           .join(", ")}`,
         `Reason: ${reason}`,
@@ -6560,6 +8622,295 @@ export class DiscordSessionService {
     }
   }
 
+  private queueSlotBanDiscordSideEffects(
+    context: SlotBanDiscordSideEffectContext,
+  ) {
+    void this.runSlotBanDiscordSideEffects(context).catch((error) => {
+      console.warn(
+        `Discord slot ban side effects failed session=${context.input.sessionId} slot=${context.input.slotNumber}: ${toFriendlyApiError(
+          error,
+        )}`,
+      );
+    });
+  }
+
+  private async runSlotBanDiscordSideEffects(
+    context: SlotBanDiscordSideEffectContext,
+  ) {
+    const serverAction = this.configuredBanServerAction(
+      {
+        target: context.team
+          ? {
+              kind: "team-id",
+              teamId: context.team.id,
+              label: context.team.name,
+            }
+          : { kind: "team", query: `slot ${context.input.slotNumber}` },
+        scope: context.input.scope,
+        sessionId: context.input.sessionId,
+        serverAction: context.input.serverAction,
+      },
+      context.config,
+    );
+    let serverActionDetails: string[] = [];
+    try {
+      serverActionDetails = await this.applyDiscordBanServerAction(
+        context.guild,
+        context.config,
+        context.managers,
+        serverAction,
+        context.reason,
+        {
+          permanent: !context.expiresAt,
+          roleIds: context.roleIds,
+        },
+      );
+    } catch (error) {
+      const warning = `Server action failed: ${toFriendlyApiError(error)}`;
+      console.warn(
+        `Discord slot ban server action failed session=${context.input.sessionId} slot=${context.input.slotNumber}: ${warning}`,
+      );
+      serverActionDetails = [warning];
+    }
+
+    await this.sendDiscordActionLog(context.guild, context.config, {
+      action: context.action,
+      actorDiscordId: context.audit.actorDiscordId,
+      actorLabel: context.audit.actorLabel,
+      sourceChannelId: context.audit.sourceChannelId,
+      sessionId: context.input.sessionId,
+      sessionName: context.audit.sessionName,
+      team: context.team,
+      slot: context.input.slotNumber,
+      status: context.status,
+      reason: context.reason,
+      details: [...context.details, ...serverActionDetails],
+      color: 0xef4444,
+    }).catch((error) => {
+      console.warn(
+        `Discord action log failed for slot ban ${context.input.sessionId}: ${String(
+          error,
+        )}`,
+      );
+    });
+
+    await this.refreshDiscordBanListsForSessionTargets(
+      context.guild,
+      context.config,
+      context.sessionTargets,
+      context.input.sessionId,
+    );
+    await this.sendDiscordBanLogNotice(context.guild, context.config, {
+      title: context.action,
+      team: context.team,
+      managers: context.managers,
+      scope: context.input.scope,
+      sessionTargets: context.sessionTargets,
+      sessionName: context.audit.sessionName,
+      duration: this.simpleBanDurationLabel(
+        context.input.days,
+        context.expiresAt,
+      ),
+      reason: context.reason,
+      status: context.status,
+    });
+  }
+
+  async createSlotBanFromDiscord(
+    input: DiscordSlotBanCommand,
+    guild?: Guild | null,
+    audit: DiscordActionAuditContext = {},
+  ): Promise<string> {
+    if (input.scope === "MATCH") {
+      throw new Error("Slot bans do not support match scope.");
+    }
+
+    try {
+      const [registrations, config] = await Promise.all([
+        this.apiClient.listRegistrations(input.sessionId),
+        this.apiClient
+          .getSessionDiscordConfig(input.sessionId)
+          .catch(() => null),
+      ]);
+      const registration =
+        registrations.find(
+          (entry) =>
+            entry.slotNumber === input.slotNumber &&
+            entry.status !== "REMOVED" &&
+            !entry.removedAt,
+        ) ?? null;
+
+      if (!registration) {
+        return `${this.emoji("reject", config)} No team is assigned to slot #${input.slotNumber}`;
+      }
+
+      const teamLabel = this.resolveTeamLabel(registration);
+      const reason = input.reason?.trim() || "Didn't Show Up";
+      const note =
+        input.note?.trim() ||
+        `Created from Discord slot ban command for slot #${input.slotNumber}`;
+      const roleIds =
+        input.roleIds !== undefined
+          ? this.uniqueRoleIds(input.roleIds ?? [])
+          : this.configuredSlotBanRoleIds(config);
+      const expiresAt = this.banExpiresAt(input.days);
+      const { team, managers } =
+        await this.resolveManagersForSlotRegistration(registration);
+      const sessionTargets =
+        input.scope === "SESSION"
+          ? [
+              {
+                id: input.sessionId,
+                name: audit.sessionName ?? null,
+              },
+            ]
+          : [];
+      const created: Array<TeamBanResponse | ManagerBanResponse> = [];
+      let banResult: string;
+      let sideEffectAction = "Team ban saved";
+      let sideEffectStatus = "";
+      let sideEffectDetails: string[];
+
+      try {
+        const records = await this.apiClient.createTeamBan({
+          teamId: team.id,
+          scope: input.scope,
+          sessionId: input.scope === "SESSION" ? input.sessionId : null,
+          reason,
+          note,
+          expiresAt,
+          skipRegistrationRemoval: true,
+        });
+        created.push(...records);
+        const targetLines = created.length
+          ? created.map(
+              (ban) => `- ${ban.scope}: ${this.teamBanTargetSummary(ban)}`,
+            )
+          : ["- No new ban was created. Existing active bans were skipped."];
+        sideEffectStatus = created.length
+          ? `${created.length} active ban(s)`
+          : "already banned";
+        sideEffectDetails = [
+          `Scope: ${input.scope}`,
+          `Manager${managers.length === 1 ? "" : "s"}: ${managers
+            .map((manager) => this.managerBanTargetLabel(manager))
+            .join(", ")}`,
+          input.days
+            ? `Duration: ${Math.ceil(input.days)} day(s)`
+            : "Duration: permanent",
+          ...targetLines,
+        ];
+        banResult = [
+          `${this.emoji("ban", config)} Team ban saved for ${this.formatTeamSummary(
+            team,
+          )}`,
+          `Manager${managers.length === 1 ? "" : "s"}: ${managers
+            .map((manager) => this.managerBanTargetLabel(manager))
+            .join(", ")}`,
+          `Reason: ${reason}`,
+          input.days
+            ? `Duration: ${Math.ceil(input.days)} day(s)`
+            : "Duration: permanent",
+          "Discord role, log-channel notice, and ban-list refresh queued.",
+          "",
+          ...targetLines,
+        ].join("\n");
+      } catch (error) {
+        const friendly = toFriendlyApiError(error);
+        if (!/active ban|already exists/i.test(friendly)) {
+          throw error;
+        }
+
+        let managerStatus = "Linked managers already had active manager bans.";
+        if (managers.length > 0) {
+          try {
+            const createdManagers = await this.apiClient.createManagerBan({
+              discordUserIds: managers.map((manager) => manager.discordUserId),
+              discordUserId: managers[0]?.discordUserId,
+              discordUsername: managers[0]?.discordUsername,
+              displayName: managers[0]?.displayName,
+              scope: input.scope,
+              sessionId: input.scope === "SESSION" ? input.sessionId : null,
+              reason,
+              note,
+              expiresAt,
+            });
+            created.push(...createdManagers);
+            managerStatus = createdManagers.length
+              ? `${createdManagers.length} manager ban(s) created for linked manager(s).`
+              : "Linked managers already had active manager bans.";
+          } catch (managerError) {
+            const managerFriendly = toFriendlyApiError(managerError);
+            if (
+              !/active manager ban|active ban|already exists/i.test(
+                managerFriendly,
+              )
+            ) {
+              throw managerError;
+            }
+          }
+        }
+        sideEffectAction = "Slot ban already active";
+        sideEffectStatus = `Slot #${input.slotNumber} cleaned. ${managerStatus}`;
+        sideEffectDetails = [
+          `Scope: ${input.scope}`,
+          `Manager${managers.length === 1 ? "" : "s"}: ${managers
+            .map((manager) => this.managerBanTargetLabel(manager))
+            .join(", ")}`,
+          input.days
+            ? `Duration: ${Math.ceil(input.days)} day(s)`
+            : "Duration: permanent",
+          managerStatus,
+          "Existing team ban kept active.",
+        ];
+        banResult = [
+          `${this.emoji("warning", config)} ${this.formatTeamSummary(
+            team,
+          )} already has an active ${input.scope} team ban.`,
+          managerStatus,
+          "Discord role, log-channel notice, and ban-list refresh queued.",
+        ].join("\n");
+      }
+
+      const cleanResult = await this.cleanSlotFromScrim(
+        input.sessionId,
+        input.slotNumber,
+        guild,
+        audit,
+        {
+          removalReason: `Banned: ${reason}`,
+          note,
+          registrationSnapshot: registration,
+        },
+      );
+
+      this.queueSlotBanDiscordSideEffects({
+        guild,
+        config,
+        input,
+        audit,
+        team,
+        managers,
+        sessionTargets,
+        reason,
+        expiresAt,
+        roleIds,
+        action: sideEffectAction,
+        status: sideEffectStatus,
+        details: sideEffectDetails,
+      });
+
+      return [
+        `${this.emoji("ban", config)} Slot #${input.slotNumber} processed for ${teamLabel}.`,
+        banResult,
+        "",
+        cleanResult,
+      ].join("\n");
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
+  }
+
   async createNoShowTeamBansFromDiscord(
     input: DiscordNoShowTeamBanCommand,
     guild?: Guild | null,
@@ -6568,33 +8919,31 @@ export class DiscordSessionService {
     const config = await this.apiClient
       .getSessionDiscordConfig(input.sessionId)
       .catch(() => null);
+    const syncSessionIds = this.uniqueStrings(
+      input.scope === "TEAM" && guild
+        ? [
+            ...(await this.activeDiscordScrimSessionIdsForGuild(guild.id)),
+            input.sessionId,
+          ]
+        : [input.sessionId],
+    );
     try {
       const expiresAt = this.banExpiresAt(input.days);
       const response = await this.apiClient.createNoShowTeamBans(
         this.noShowBanPayload(input),
       );
-      const createdTeamIds = response.createdBans.map((ban) => ban.teamId);
-      const createdManagerTargets = this.noShowCreatedManagerTargets(response);
-      const createdManagerIds = createdManagerTargets.map(
-        (target) => target.discordUserId,
+      const affectedTeamIds = this.uniqueStrings(
+        response.teams.map((entry) => entry.teamId),
       );
-      if (guild && input.scope !== "MATCH" && createdTeamIds.length > 0) {
-        this.syncDiscordScrimStateInBackground(guild, input.sessionId, {
-          organizationId: config?.organizationId,
-          removedTeamIds: createdTeamIds,
-          extraDiscordUserIds: createdManagerIds,
-          cleanupTeamIds: createdTeamIds,
-          fastMessageRefresh: true,
-          skipFullSync: true,
-          delayMs: 0,
-        });
-        this.reconcileScrimRolesInBackground(guild, input.sessionId);
-      }
+      const affectedManagerTargets = this.noShowManagerTargets(response);
+      const affectedManagerIds = this.uniqueStrings(
+        affectedManagerTargets.map((manager) => manager.discordUserId),
+      );
 
       const serverActionDetails = await this.applyDiscordBanServerAction(
         guild,
         config,
-        createdManagerTargets,
+        affectedManagerTargets,
         this.configuredBanServerAction(
           {
             target: { kind: "manager", discordUserId: "" },
@@ -6606,6 +8955,23 @@ export class DiscordSessionService {
         response.reason,
         { permanent: !expiresAt },
       );
+      if (guild && affectedTeamIds.length > 0) {
+        // Reconcile after the ban role is reasserted. This also heals duplicate
+        // retries where the API removed a stale conditional registration but
+        // returned no newly-created TeamBan row.
+        for (const sessionId of syncSessionIds) {
+          this.syncDiscordScrimStateInBackground(guild, sessionId, {
+            organizationId: config?.organizationId,
+            removedTeamIds: affectedTeamIds,
+            extraDiscordUserIds: affectedManagerIds,
+            cleanupTeamIds: affectedTeamIds,
+            fastMessageRefresh: true,
+            skipFullSync: true,
+            delayMs: 0,
+          });
+          this.reconcileScrimRolesInBackground(guild, sessionId);
+        }
+      }
       await this.refreshDiscordBanListMessage(guild, config, input.sessionId);
 
       await this.sendDiscordActionLog(guild, config, {
@@ -6629,7 +8995,7 @@ export class DiscordSessionService {
         ],
         color: 0xef4444,
       });
-      await this.sendDiscordNoShowBanChannelNotice(guild, config, {
+      await this.sendDiscordNoShowBanLogNotice(guild, config, {
         response,
         input,
         sessionName: audit.sessionName,
@@ -6675,41 +9041,69 @@ export class DiscordSessionService {
         : [];
 
     try {
-      let bans = (
-        await Promise.all(
-          managers.map((manager) =>
-            this.apiClient.listManagerBans({
-              active: true,
-              discordUserId: manager.discordUserId,
-            }),
-          ),
-        )
-      ).flat();
-      if (input.scope) {
-        bans = bans.filter((ban) => ban.scope === input.scope);
-      }
-      if (input.scope === "SESSION" && input.sessionId) {
-        const targetSessionIds = new Set(
-          sessionTargets.length
-            ? sessionTargets.map((session) => session.id)
-            : [input.sessionId],
-        );
-        bans = bans.filter(
-          (ban) => ban.sessionId && targetSessionIds.has(ban.sessionId),
-        );
-      }
-      if (input.scope === "MATCH") {
-        const matchIds = await this.resolveBanMatchIds(
-          input.sessionId,
-          input.matchNumbers,
-          input.allMatches,
-        );
-        const matchIdSet = new Set(matchIds);
-        bans = bans.filter((ban) => ban.matchId && matchIdSet.has(ban.matchId));
-      }
+      const matchIds =
+        input.scope === "MATCH"
+          ? await this.resolveBanMatchIds(
+              input.sessionId,
+              input.matchNumbers,
+              input.allMatches,
+            )
+          : [];
+      const filterByRequestedScope = <
+        T extends {
+          scope: TeamBanScope;
+          sessionId: string | null;
+          matchId: string | null;
+        },
+      >(
+        records: T[],
+      ) => {
+        let filtered = records;
+        if (input.scope) {
+          filtered = filtered.filter((ban) => ban.scope === input.scope);
+        }
+        if (input.scope === "SESSION" && input.sessionId) {
+          const targetSessionIds = new Set(
+            sessionTargets.length
+              ? sessionTargets.map((session) => session.id)
+              : [input.sessionId],
+          );
+          filtered = filtered.filter(
+            (ban) => ban.sessionId && targetSessionIds.has(ban.sessionId),
+          );
+        }
+        if (input.scope === "MATCH") {
+          const matchIdSet = new Set(matchIds);
+          filtered = filtered.filter(
+            (ban) => ban.matchId && matchIdSet.has(ban.matchId),
+          );
+        }
+        return filtered;
+      };
+      const teamBans =
+        team && input.target.kind !== "manager"
+          ? filterByRequestedScope(
+              await this.apiClient.listTeamBans({
+                active: true,
+                teamId: team.id,
+              }),
+            )
+          : [];
+      const managerBans = filterByRequestedScope(
+        (
+          await Promise.all(
+            managers.map((manager) =>
+              this.apiClient.listManagerBans({
+                active: true,
+                discordUserId: manager.discordUserId,
+              }),
+            ),
+          )
+        ).flat(),
+      );
 
-      if (!bans.length) {
-        return `${this.emoji("reject", config)} No active manager ban found for ${
+      if (!teamBans.length && !managerBans.length) {
+        return `${this.emoji("reject", config)} No active team or manager ban found for ${
           team
             ? this.formatTeamSummary(team)
             : managers
@@ -6719,18 +9113,26 @@ export class DiscordSessionService {
       }
 
       const reason = input.reason?.trim() || "Revoked from Discord command";
-      await Promise.all(
-        bans.map((ban) => this.apiClient.revokeManagerBan(ban.id, { reason })),
-      );
-      const affectedDiscordUserIds = this.uniqueStrings(
-        bans.map((ban) => ban.discordUserId),
-      );
+      await Promise.all([
+        ...teamBans.map((ban) =>
+          this.apiClient.revokeTeamBan(ban.id, { reason }),
+        ),
+        ...managerBans.map((ban) =>
+          this.apiClient.revokeManagerBan(ban.id, { reason }),
+        ),
+      ]);
+      const affectedDiscordUserIds = this.uniqueStrings([
+        ...managerBans.map((ban) => ban.discordUserId),
+        ...(teamBans.length
+          ? managers.map((manager) => manager.discordUserId)
+          : []),
+      ]);
       const roleCleanup = await this.removeRevokedBanRolesFromMembers(
         guild,
         config,
         sessionTargets,
         affectedDiscordUserIds,
-        `Arenzyra manager ban revoked ${input.sessionId ?? ""}`.trim(),
+        `Arenzyra ban revoked ${input.sessionId ?? ""}`.trim(),
       );
       if (guild && input.sessionId) {
         void this.syncDiscordScrimState(guild, input.sessionId).catch(
@@ -6757,7 +9159,7 @@ export class DiscordSessionService {
           : [];
 
       await this.sendDiscordActionLog(guild, config, {
-        action: "Manager ban revoked",
+        action: teamBans.length ? "Team ban revoked" : "Manager ban revoked",
         actorDiscordId: audit.actorDiscordId,
         actorLabel: audit.actorLabel,
         sourceChannelId: audit.sourceChannelId,
@@ -6769,9 +9171,11 @@ export class DiscordSessionService {
             .join(", "),
           tag: null,
         },
-        status: `${bans.length} ban(s) revoked`,
+        status: `${teamBans.length} team, ${managerBans.length} manager ban(s) revoked`,
         reason,
         details: [
+          teamBans.length ? `Team bans: ${teamBans.length}` : null,
+          managerBans.length ? `Manager bans: ${managerBans.length}` : null,
           `Manager: ${managers
             .map((manager) => this.managerBanTargetLabel(manager))
             .join(", ")}`,
@@ -6788,21 +9192,15 @@ export class DiscordSessionService {
         sessionTargets,
         input.sessionId,
       );
-      await this.sendDiscordBanChannelNotice(guild, config, {
-        title: "Manager ban revoked",
-        team,
-        managers,
-        scope: input.scope,
-        sessionTargets,
-        sessionName: audit.sessionName,
-        duration: "Revoked now",
-        reason,
-        status: `${bans.length} ban(s) revoked`,
-      });
+      const summary = teamBans.length
+        ? `Revoked ${teamBans.length} active team ban(s) and ${managerBans.length} active manager ban(s)${
+            team ? ` for ${this.formatTeamSummary(team)}` : ""
+          }.`
+        : `Revoked ${managerBans.length} active manager ban(s)${
+            team ? ` for ${this.formatTeamSummary(team)}` : ""
+          }.`;
       return [
-        `${this.emoji("check", config)} Revoked ${bans.length} active manager ban(s)${
-          team ? ` for ${this.formatTeamSummary(team)}` : ""
-        }.`,
+        `${this.emoji("check", config)} ${summary}`,
         `Manager: ${managers
           .map((manager) => this.managerBanTargetLabel(manager))
           .join(", ")}`,
@@ -6821,8 +9219,13 @@ export class DiscordSessionService {
   async listTeamBansForDiscord(sessionId?: string | null): Promise<string> {
     try {
       const [bans, managerBans, config, matches] = await Promise.all([
-        this.apiClient.listTeamBans({ active: true }),
-        this.apiClient.listManagerBans({ active: true }).catch(() => []),
+        this.apiClient.listTeamBans({
+          active: true,
+          limit: DISCORD_BAN_LIST_LIMIT,
+        }),
+        this.apiClient
+          .listManagerBans({ active: true, limit: DISCORD_BAN_LIST_LIMIT })
+          .catch(() => []),
         sessionId
           ? this.apiClient.getSessionDiscordConfig(sessionId).catch(() => null)
           : Promise.resolve(null),
@@ -6958,8 +9361,13 @@ export class DiscordSessionService {
           this.apiClient
             .listSessionMatches(sessionId)
             .catch(() => [] as SessionMatchResponse[]),
-          this.apiClient.listTeamBans({ active: true }),
-          this.apiClient.listManagerBans({ active: true }).catch(() => []),
+          this.apiClient.listTeamBans({
+            active: true,
+            limit: DISCORD_BAN_LIST_LIMIT,
+          }),
+          this.apiClient
+            .listManagerBans({ active: true, limit: DISCORD_BAN_LIST_LIMIT })
+            .catch(() => []),
           this.apiClient
             .listRegistrations(sessionId)
             .catch(() => [] as SessionRegistrationResponse[]),
@@ -7375,17 +9783,6 @@ export class DiscordSessionService {
         ].filter((line): line is string => Boolean(line)),
         color: failures ? 0xf59e0b : 0x22c55e,
       });
-      await this.sendDiscordBanChannelNotice(guild, config, {
-        title: "Ban revoked from result control",
-        team,
-        managers,
-        scope: null,
-        sessionTargets: [{ id: input.sessionId, name: state.sessionName }],
-        sessionName: audit.sessionName ?? state.sessionName,
-        duration: "Revoked now",
-        reason,
-        status: `${revokedTeamBans} team ban(s), ${revokedManagerBans} manager ban(s) revoked`,
-      });
 
       const lines = [
         `${this.emoji("check", config)} Ban target revoked.`,
@@ -7654,6 +10051,59 @@ export class DiscordSessionService {
     return this.requesterHasStaffAccess(requesterDiscordId, guild, config);
   }
 
+  async authorizeStaffCommand(
+    requesterDiscordId: string,
+    guild: Guild | null,
+    sessionId?: string | null,
+  ): Promise<{ allowed: boolean; reason: string | null }> {
+    if (!guild) {
+      return {
+        allowed: false,
+        reason: "This command is only available in a linked Discord server.",
+      };
+    }
+
+    let organizationId: string;
+    try {
+      const resolved = await this.apiClient.resolveDiscordGuild(guild.id);
+      organizationId = resolved.organizationId;
+    } catch {
+      return {
+        allowed: false,
+        reason:
+          "This Discord server is not linked to an Arenzyra organization.",
+      };
+    }
+
+    let config: SessionDiscordConfigResponse | null = null;
+    const normalizedSessionId = String(sessionId || "").trim();
+    if (normalizedSessionId) {
+      try {
+        config = await this.withOrganization(organizationId, () =>
+          this.apiClient.getSessionDiscordConfig(normalizedSessionId),
+        );
+      } catch {
+        return {
+          allowed: false,
+          reason:
+            "That session is not available to the organization linked to this Discord server.",
+        };
+      }
+    }
+
+    const member = await guild.members
+      .fetch(requesterDiscordId)
+      .catch(() => null);
+    if (!member || !this.memberHasStaffAccess(member, config)) {
+      return {
+        allowed: false,
+        reason: "Only Arenzyra staff can use this command.",
+      };
+    }
+
+    return { allowed: true, reason: null };
+  }
+
   private accessWindow(
     config: SessionDiscordConfigResponse | null | undefined,
     kind: AccessAnnouncementKind,
@@ -7692,9 +10142,7 @@ export class DiscordSessionService {
     if (!guild || !roleId) {
       return false;
     }
-    const member = await guild.members
-      .fetch(requesterDiscordId)
-      .catch(() => null);
+    const member = await this.forceFetchGuildMember(guild, requesterDiscordId);
     return member ? member.roles.cache.has(roleId) : false;
   }
 
@@ -7749,10 +10197,28 @@ export class DiscordSessionService {
     placement: "normal" | "vip",
     now = new Date(),
   ) {
+    const matches = await this.customRoleRegistrationAccesses(
+      requesterDiscordId,
+      guild,
+      config,
+      placement,
+      now,
+    );
+    return matches.length > 0;
+  }
+
+  async customRoleRegistrationAccesses(
+    requesterDiscordId: string,
+    guild: Guild | null,
+    config: SessionDiscordConfigResponse | null | undefined,
+    placement: "normal" | "vip",
+    now = new Date(),
+  ): Promise<CustomRoleRegistrationAccess[]> {
     if (!guild || !config) {
-      return false;
+      return [];
     }
     const groups = parseRoleAccessGroups(config);
+    const matches: CustomRoleRegistrationAccess[] = [];
     for (const group of groups) {
       if (
         !group.roleId ||
@@ -7771,10 +10237,1375 @@ export class DiscordSessionService {
           group.roleId,
         )
       ) {
+        matches.push({
+          group,
+          winnerQualified: group.qualificationMode === "winner",
+        });
+      }
+    }
+    return matches;
+  }
+
+  async userHasConfiguredRegistrationRole(
+    requesterDiscordId: string,
+    guild: Guild | null,
+    config: SessionDiscordConfigResponse | null | undefined,
+  ) {
+    const requiredRoleIds = this.configuredRegistrationRoleIds(config ?? null);
+    if (requiredRoleIds.length === 0) {
+      return true;
+    }
+    if (!guild) {
+      return false;
+    }
+    const member = await guild.members
+      .fetch(requesterDiscordId)
+      .catch(() => null);
+    return member ? this.memberHasAnyRole(member, requiredRoleIds) : false;
+  }
+
+  private winnerAccessSourceSessionId(
+    group: Pick<RoleAccessGroup, "winnerSourceSessionId">,
+    fallbackSessionId: string,
+  ) {
+    return group.winnerSourceSessionId?.trim() || fallbackSessionId;
+  }
+
+  private winnerRoleLifecycleGroups(
+    config: Pick<SessionDiscordConfigResponse, "emojis"> | null | undefined,
+  ): WinnerRoleLifecycleGroup[] {
+    const raw = config?.emojis?.[WINNER_ROLE_LIFECYCLE_EMOJI_KEY]?.trim();
+    if (!raw) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw) as { groups?: unknown };
+      if (!Array.isArray(parsed?.groups)) {
+        return [];
+      }
+      return parsed.groups
+        .map((entry): WinnerRoleLifecycleGroup | null => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+            return null;
+          }
+          const record = entry as Record<string, unknown>;
+          const groupId =
+            typeof record.groupId === "string" ? record.groupId.trim() : "";
+          const sourceSessionId =
+            typeof record.sourceSessionId === "string"
+              ? record.sourceSessionId.trim()
+              : "";
+          const lastRunKey =
+            typeof record.lastRunKey === "string"
+              ? record.lastRunKey.trim()
+              : "";
+          const lastRunGrantedAt =
+            typeof record.lastRunGrantedAt === "string"
+              ? record.lastRunGrantedAt.trim()
+              : "";
+          if (
+            !groupId ||
+            !sourceSessionId ||
+            !WINNER_RUN_KEY_PATTERN.test(lastRunKey) ||
+            !Number.isFinite(Date.parse(lastRunGrantedAt))
+          ) {
+            return null;
+          }
+          return {
+            groupId,
+            sourceSessionId,
+            lastRunKey,
+            lastRunGrantedAt,
+          };
+        })
+        .filter((entry): entry is WinnerRoleLifecycleGroup => Boolean(entry));
+    } catch {
+      return [];
+    }
+  }
+
+  private winnerRoleLifecycleJson(groups: WinnerRoleLifecycleGroup[]) {
+    return JSON.stringify({ version: 1, groups });
+  }
+
+  private winnerSourceRunKey(
+    sourceSessionId: string,
+    matchBackups: ResultBackupSummaryResponse[],
+    fallbackIdentity?: string | null,
+  ) {
+    const sourceMatchIds = this.uniqueStrings(
+      matchBackups.map((backup) => backup.sourceMatchId?.trim() ?? ""),
+    ).sort();
+    const identityParts =
+      sourceMatchIds.length > 0
+        ? sourceMatchIds.map((sourceMatchId) => `match:${sourceMatchId}`)
+        : fallbackIdentity?.trim()
+          ? [`fallback:${fallbackIdentity.trim()}`]
+          : [];
+    if (identityParts.length === 0) {
+      return null;
+    }
+    const hash = createHash("sha1")
+      .update(JSON.stringify([sourceSessionId.trim(), ...identityParts]))
+      .digest("hex")
+      .slice(0, 18);
+    return `wr-${hash}`;
+  }
+
+  private winnerQualificationRunKey(
+    qualification: Pick<WinnerQualification, "id">,
+  ) {
+    const match = WINNER_QUALIFICATION_ID_PATTERN.exec(qualification.id.trim());
+    return match ? `wr-${match[1]}` : null;
+  }
+
+  private winnerQualificationId(
+    sourceSessionId: string,
+    teamId: string,
+    roleId: string,
+    managerDiscordIds: string[],
+    sourceRunKey?: string | null,
+  ) {
+    const normalizedRunKey = sourceRunKey?.trim() ?? "";
+    const hash = createHash("sha1")
+      .update(
+        [
+          ...(WINNER_RUN_KEY_PATTERN.test(normalizedRunKey)
+            ? [normalizedRunKey]
+            : []),
+          sourceSessionId.trim(),
+          teamId.trim(),
+          roleId.trim(),
+          ...this.uniqueStrings(managerDiscordIds).sort(),
+        ].join(":"),
+      )
+      .digest("hex")
+      .slice(0, 18);
+    if (WINNER_RUN_KEY_PATTERN.test(normalizedRunKey)) {
+      return `wq2-${normalizedRunKey.slice(3)}-${hash}`;
+    }
+    return `wq-${hash}`;
+  }
+
+  private winnerQualificationIsActive(
+    qualification: Pick<WinnerQualification, "expiresAt">,
+    now = new Date(),
+  ) {
+    const expiresAt = Date.parse(qualification.expiresAt);
+    return Number.isFinite(expiresAt) && expiresAt > now.getTime();
+  }
+
+  private winnerQualificationGrantedAt(
+    qualification: Pick<WinnerQualification, "grantedAt"> | null | undefined,
+    now: Date,
+  ) {
+    const grantedAt = qualification?.grantedAt?.trim();
+    return grantedAt && Number.isFinite(Date.parse(grantedAt))
+      ? grantedAt
+      : now.toISOString();
+  }
+
+  private winnerQualificationExpiresAtForDuration(
+    grantedAt: string,
+    durationDays: number,
+  ) {
+    const grantedAtMs = Date.parse(grantedAt);
+    const durationMs = durationDays * 24 * 60 * 60 * 1000;
+    return new Date(grantedAtMs + durationMs).toISOString();
+  }
+
+  private winnerQualificationWithConfiguredExpiry(
+    qualification: WinnerQualification,
+    durationDays: number,
+    now: Date,
+  ): WinnerQualification {
+    const grantedAt = this.winnerQualificationGrantedAt(qualification, now);
+    const expiresAt = this.winnerQualificationExpiresAtForDuration(
+      grantedAt,
+      durationDays,
+    );
+    return grantedAt === qualification.grantedAt &&
+      expiresAt === qualification.expiresAt
+      ? qualification
+      : { ...qualification, grantedAt, expiresAt };
+  }
+
+  private activeWinnerQualifications(
+    group: Pick<RoleAccessGroup, "winnerDurationDays" | "winnerQualifications">,
+    now = new Date(),
+  ) {
+    return group.winnerQualifications
+      .map((qualification) =>
+        this.winnerQualificationWithConfiguredExpiry(
+          qualification,
+          group.winnerDurationDays,
+          now,
+        ),
+      )
+      .filter((qualification) =>
+        this.winnerQualificationIsActive(qualification, now),
+      );
+  }
+
+  private winnerQualificationStillActiveInGroups(
+    groups: RoleAccessGroup[],
+    roleId: string,
+    managerDiscordId: string,
+    now: Date,
+  ) {
+    return groups.some(
+      (group) =>
+        group.enabled &&
+        group.qualificationMode === "winner" &&
+        group.roleId === roleId &&
+        this.activeWinnerQualifications(group, now).some((qualification) =>
+          qualification.managerDiscordIds.includes(managerDiscordId),
+        ),
+    );
+  }
+
+  private winnerRoleAccessGroupIsSyncable(group: RoleAccessGroup) {
+    return (
+      group.enabled &&
+      group.qualificationMode === "winner" &&
+      group.roleId.trim().length > 0
+    );
+  }
+
+  private async winnerSourceTeamManagerIds(
+    teamId: string,
+    registrations: SessionRegistrationResponse[],
+  ) {
+    const cleanTeamId = teamId.trim();
+    const teamRegistrations = registrations.filter(
+      (entry) => entry.teamId === cleanTeamId,
+    );
+    const activeRegistration = teamRegistrations.find((entry) =>
+      this.activeRegistrationStatus(entry),
+    );
+    const registrationManagers = activeRegistration
+      ? this.managerSnapshotDiscordUserIds(activeRegistration)
+      : [];
+    if (registrationManagers.length > 0) {
+      return registrationManagers;
+    }
+    for (const registration of teamRegistrations) {
+      const snapshotManagers = this.managerSnapshotDiscordUserIds(registration);
+      if (snapshotManagers.length > 0) {
+        return snapshotManagers;
+      }
+    }
+
+    const members = await this.apiClient
+      .listTeamMembers(cleanTeamId)
+      .catch(() => []);
+    return this.uniqueStrings(
+      members
+        .filter((member) => this.isActiveLeaderMember(member))
+        .map((member) => member.discordUserId),
+    );
+  }
+
+  private async buildWinnerQualificationsForGroup(
+    group: RoleAccessGroup,
+    targetSessionId: string,
+    lifecycle: WinnerRoleLifecycleGroup | null,
+    sourceRunFallbackId: string | null,
+    now = new Date(),
+  ): Promise<{
+    qualifications: WinnerQualification[];
+    lifecycle: WinnerRoleLifecycleGroup;
+  } | null> {
+    const sourceSessionId = this.winnerAccessSourceSessionId(
+      group,
+      targetSessionId,
+    );
+    let matchBackupIdentityLookupFailed = false;
+    const [backup, registrations, matchBackups] = await Promise.all([
+      this.freshOverallResultBackupOrNull(sourceSessionId),
+      this.apiClient.listRegistrations(sourceSessionId, {
+        includeDeleted: true,
+      }),
+      this.listEditableResultBackupsForDiscord(sourceSessionId).catch(
+        (error) => {
+          matchBackupIdentityLookupFailed = true;
+          console.warn(
+            `Winner access run identity lookup failed source=${sourceSessionId}: ${String(
+              error,
+            )}`,
+          );
+          return [];
+        },
+      ),
+    ]);
+    if (matchBackupIdentityLookupFailed) {
+      return null;
+    }
+    const standingTeams =
+      backup?.rows
+        ?.filter((row) => row.teamId?.trim())
+        .slice()
+        .sort((left, right) => left.rank - right.rank)
+        .map((row) => ({
+          teamId: row.teamId as string,
+          teamName: row.teamName,
+          tag: row.teamTag,
+          rank: row.rank,
+          totalPoints: row.totalPoints,
+          totalKills: row.kills,
+        })) ??
+      (await this.apiClient.getSessionStandings(sourceSessionId)).teams;
+    if (standingTeams.length === 0) {
+      return null;
+    }
+    const matchingLifecycle =
+      lifecycle?.groupId === group.id &&
+      lifecycle.sourceSessionId === sourceSessionId
+        ? lifecycle
+        : null;
+    const discoveredRunKey = this.winnerSourceRunKey(
+      sourceSessionId,
+      matchBackups,
+      sourceRunFallbackId,
+    );
+    if (
+      matchingLifecycle &&
+      !sourceRunFallbackId &&
+      discoveredRunKey &&
+      discoveredRunKey !== matchingLifecycle.lastRunKey
+    ) {
+      console.log(
+        `Winner access sync deferred for an unfinalized result run source=${sourceSessionId} group=${group.id}`,
+      );
+      return null;
+    }
+    const sourceRunKey =
+      (matchingLifecycle && !sourceRunFallbackId
+        ? matchingLifecycle.lastRunKey
+        : discoveredRunKey) ?? matchingLifecycle?.lastRunKey;
+    if (!sourceRunKey) {
+      console.warn(
+        `Winner access sync skipped because no stable run identity was available source=${sourceSessionId} group=${group.id}`,
+      );
+      return null;
+    }
+
+    const legacyCurrentQualifications = group.winnerQualifications.filter(
+      (qualification) =>
+        qualification.sourceSessionId === sourceSessionId &&
+        !this.winnerQualificationRunKey(qualification),
+    );
+    // Before this lifecycle metadata existed, a winner group could only hold
+    // the latest run. Treat those legacy rows as the current run exactly once.
+    // Recovered/multi-run data is explicitly tagged before activation.
+    const migrateLegacyCurrentRun =
+      !matchingLifecycle && legacyCurrentQualifications.length > 0;
+    const inferredLegacyGrantedAt = legacyCurrentQualifications
+      .map((qualification) => qualification.grantedAt?.trim())
+      .filter(
+        (grantedAt): grantedAt is string =>
+          Boolean(grantedAt) && Number.isFinite(Date.parse(grantedAt)),
+      )
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0];
+    const sameRun = matchingLifecycle?.lastRunKey === sourceRunKey;
+    const runGrantedAt = sameRun
+      ? matchingLifecycle.lastRunGrantedAt
+      : migrateLegacyCurrentRun && inferredLegacyGrantedAt
+        ? inferredLegacyGrantedAt
+        : now.toISOString();
+    const qualificationBelongsToCurrentRun = (
+      qualification: WinnerQualification,
+    ) => {
+      const qualificationRunKey = this.winnerQualificationRunKey(qualification);
+      return (
+        qualification.sourceSessionId === sourceSessionId &&
+        (qualificationRunKey === sourceRunKey ||
+          (migrateLegacyCurrentRun && !qualificationRunKey))
+      );
+    };
+    const normalizedPrevious = group.winnerQualifications.map((qualification) =>
+      this.winnerQualificationWithConfiguredExpiry(
+        qualification,
+        group.winnerDurationDays,
+        now,
+      ),
+    );
+    const retained = normalizedPrevious.filter(
+      (qualification) =>
+        this.winnerQualificationIsActive(qualification, now) &&
+        !qualificationBelongsToCurrentRun(qualification),
+    );
+    const currentRunPrevious = normalizedPrevious.filter(
+      qualificationBelongsToCurrentRun,
+    );
+    const topTeams = standingTeams
+      .filter((team) => team.teamId?.trim())
+      .sort((left, right) => left.rank - right.rank)
+      .slice(0, group.winnerTopCount);
+    const currentRunQualifications: WinnerQualification[] = [];
+
+    for (const team of topTeams) {
+      const previousForTeam = currentRunPrevious.find(
+        (qualification) =>
+          qualification.sourceSessionId === sourceSessionId &&
+          qualification.teamId === team.teamId &&
+          qualification.roleId === group.roleId,
+      );
+      const resolvedManagerDiscordIds = await this.winnerSourceTeamManagerIds(
+        team.teamId,
+        registrations,
+      );
+      const managerDiscordIds = previousForTeam?.managerDiscordIds.length
+        ? previousForTeam.managerDiscordIds
+        : resolvedManagerDiscordIds;
+      if (managerDiscordIds.length === 0) {
+        continue;
+      }
+      const key = this.winnerQualificationId(
+        sourceSessionId,
+        team.teamId,
+        group.roleId,
+        managerDiscordIds,
+        sourceRunKey,
+      );
+      const expiresAt = this.winnerQualificationExpiresAtForDuration(
+        runGrantedAt,
+        group.winnerDurationDays,
+      );
+      if (!this.winnerQualificationIsActive({ expiresAt }, now)) {
+        continue;
+      }
+      currentRunQualifications.push({
+        id: key,
+        sourceSessionId,
+        teamId: team.teamId,
+        teamName: team.teamName?.trim() || team.teamId,
+        teamTag: team.tag?.trim() || null,
+        managerDiscordIds,
+        rank: team.rank,
+        roleId: group.roleId,
+        roleName: group.roleName,
+        grantedAt: runGrantedAt,
+        expiresAt,
+        totalPoints: team.totalPoints,
+        totalKills: team.totalKills,
+      });
+    }
+
+    const qualifications = [
+      ...new Map(
+        [...retained, ...currentRunQualifications].map((qualification) => [
+          qualification.id,
+          qualification,
+        ]),
+      ).values(),
+    ];
+    return {
+      qualifications,
+      lifecycle: {
+        groupId: group.id,
+        sourceSessionId,
+        lastRunKey: sourceRunKey,
+        lastRunGrantedAt: runGrantedAt,
+      },
+    };
+  }
+
+  private async persistRoleAccessGroups(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    groups: RoleAccessGroup[],
+  ) {
+    return this.persistManagedMessageIds(sessionId, config, {
+      roleAccessGroups: this.roleAccessGroupsJson(groups),
+    });
+  }
+
+  private async persistWinnerRoleAccessState(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    groups: RoleAccessGroup[],
+    lifecycleGroups: WinnerRoleLifecycleGroup[],
+  ) {
+    return this.persistManagedMessageIds(sessionId, config, {
+      roleAccessGroups: this.roleAccessGroupsJson(groups),
+      [WINNER_ROLE_LIFECYCLE_EMOJI_KEY]:
+        this.winnerRoleLifecycleJson(lifecycleGroups),
+    });
+  }
+
+  private collectWinnerRoleMembers(
+    groups: RoleAccessGroup[],
+    now: Date,
+    activeOnly: boolean,
+  ) {
+    const roleMembers = new Map<string, Set<string>>();
+    const add = (roleId: string, discordUserId: string) => {
+      const cleanRoleId = roleId.trim();
+      const cleanDiscordUserId = discordUserId.trim();
+      if (!cleanRoleId || !cleanDiscordUserId) {
+        return;
+      }
+      const members = roleMembers.get(cleanRoleId) ?? new Set<string>();
+      members.add(cleanDiscordUserId);
+      roleMembers.set(cleanRoleId, members);
+    };
+
+    for (const group of groups) {
+      if (
+        group.qualificationMode !== "winner" ||
+        !group.roleId.trim() ||
+        (activeOnly && !group.enabled)
+      ) {
+        continue;
+      }
+      const qualifications =
+        activeOnly || !group.winnerRemoveRoleOnExpiry
+          ? this.activeWinnerQualifications(group, now)
+          : group.winnerQualifications;
+      for (const qualification of qualifications) {
+        for (const discordUserId of qualification.managerDiscordIds) {
+          add(group.roleId, discordUserId);
+        }
+      }
+    }
+
+    return roleMembers;
+  }
+
+  private async syncWinnerRoleAccessMembers(
+    guild: Guild | null,
+    sessionId: string,
+    previousGroups: RoleAccessGroup[],
+    nextGroups: RoleAccessGroup[],
+    activeAutoRegistrationGrants: AutoRegistrationGrant[] = [],
+    now = new Date(),
+  ) {
+    if (!guild) {
+      return;
+    }
+    const previousRoleMembers = this.collectWinnerRoleMembers(
+      previousGroups,
+      now,
+      false,
+    );
+    const desiredRoleMembers = this.collectWinnerRoleMembers(
+      nextGroups,
+      now,
+      true,
+    );
+    const roleIds = this.uniqueStrings([
+      ...previousRoleMembers.keys(),
+      ...desiredRoleMembers.keys(),
+    ]);
+
+    for (const roleId of roleIds) {
+      const role =
+        (await guild.roles.fetch(roleId).catch(() => null)) ??
+        guild.roles.cache.get(roleId);
+      if (!role) {
+        continue;
+      }
+      const desired = desiredRoleMembers.get(roleId) ?? new Set<string>();
+      const previous = previousRoleMembers.get(roleId) ?? new Set<string>();
+
+      for (const discordUserId of desired) {
+        await this.runAccessRoleMutationExclusive(
+          guild.id,
+          discordUserId,
+          async () => {
+            const member = await this.forceFetchGuildMember(
+              guild,
+              discordUserId,
+            );
+            if (!member || member.roles.cache.has(roleId)) {
+              return;
+            }
+            await member.roles
+              .add(roleId, "Arenzyra winner access qualification")
+              .catch((error) => {
+                console.warn(
+                  `Winner access role add failed guild=${guild.id} role=${roleId} user=${discordUserId}: ${toFriendlyApiError(
+                    error,
+                  )}`,
+                );
+              });
+          },
+        );
+      }
+
+      for (const discordUserId of previous) {
+        if (desired.has(discordUserId)) {
+          continue;
+        }
+        await this.removeAccessRoleIfUnused(
+          guild,
+          sessionId,
+          roleId,
+          discordUserId,
+          now,
+          "Arenzyra winner access qualification expired",
+          {
+            autoRegistrationGrants: activeAutoRegistrationGrants,
+            winnerGroups: nextGroups,
+          },
+        );
+      }
+    }
+  }
+
+  async syncWinnerRoleAccessForSession(
+    guild: Guild | null,
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    opts: {
+      groupId?: string | null;
+      sourceSessionId?: string | null;
+      sourceRunFallbackId?: string | null;
+      now?: Date;
+    } = {},
+  ) {
+    const cleanSessionId = sessionId.trim();
+    const now = opts.now ?? new Date();
+    const latestConfig = await this.latestSessionDiscordConfig(
+      cleanSessionId,
+      config,
+    );
+    const groups = parseRoleAccessGroups(latestConfig);
+    const lifecycleGroups = this.winnerRoleLifecycleGroups(latestConfig);
+    const lifecycleByGroupId = new Map(
+      lifecycleGroups.map((entry) => [entry.groupId, entry] as const),
+    );
+    const cleanGroupId = opts.groupId?.trim() || null;
+    const cleanSourceSessionId = opts.sourceSessionId?.trim() || null;
+    const sourceRunFallbackId = opts.sourceRunFallbackId?.trim() || null;
+    let changed = false;
+
+    const results = await Promise.all(
+      groups.map(async (group) => {
+        if (
+          !this.winnerRoleAccessGroupIsSyncable(group) ||
+          (cleanGroupId && group.id !== cleanGroupId) ||
+          (cleanSourceSessionId &&
+            this.winnerAccessSourceSessionId(group, cleanSessionId) !==
+              cleanSourceSessionId)
+        ) {
+          return { group, lifecycle: null };
+        }
+
+        const winnerState = await this.buildWinnerQualificationsForGroup(
+          group,
+          cleanSessionId,
+          lifecycleByGroupId.get(group.id) ?? null,
+          sourceRunFallbackId,
+          now,
+        );
+        if (!winnerState) {
+          return { group, lifecycle: null };
+        }
+        const nextGroup: RoleAccessGroup = {
+          ...group,
+          winnerLastSyncedAt: now.toISOString(),
+          winnerQualifications: winnerState.qualifications,
+        };
+        if (JSON.stringify(nextGroup) !== JSON.stringify(group)) {
+          changed = true;
+        }
+        return { group: nextGroup, lifecycle: winnerState.lifecycle };
+      }),
+    );
+
+    const nextGroups = results.map((result) => result.group);
+    const nextLifecycleByGroupId = new Map(
+      lifecycleGroups.map((entry) => [entry.groupId, entry] as const),
+    );
+    for (const result of results) {
+      if (result.lifecycle) {
+        nextLifecycleByGroupId.set(result.lifecycle.groupId, result.lifecycle);
+      }
+    }
+    const groupIds = new Set(groups.map((group) => group.id));
+    const nextLifecycleGroups = [...nextLifecycleByGroupId.values()]
+      .filter((entry) => groupIds.has(entry.groupId))
+      .sort((left, right) => left.groupId.localeCompare(right.groupId));
+    if (
+      this.winnerRoleLifecycleJson(nextLifecycleGroups) !==
+      this.winnerRoleLifecycleJson(
+        lifecycleGroups
+          .filter((entry) => groupIds.has(entry.groupId))
+          .sort((left, right) => left.groupId.localeCompare(right.groupId)),
+      )
+    ) {
+      changed = true;
+    }
+
+    const updatedConfig = changed
+      ? await this.persistWinnerRoleAccessState(
+          cleanSessionId,
+          latestConfig,
+          nextGroups,
+          nextLifecycleGroups,
+        )
+      : latestConfig;
+    await this.syncWinnerRoleAccessMembers(
+      guild,
+      cleanSessionId,
+      groups,
+      nextGroups,
+      activeAutoRegistrationGrants(latestConfig, now),
+      now,
+    );
+    return updatedConfig;
+  }
+
+  async syncWinnerRoleAccessForSourceSession(
+    guild: Guild | null,
+    sourceSessionId: string,
+    opts: { sourceRunFallbackId?: string | null } = {},
+  ) {
+    const cleanSourceSessionId = sourceSessionId.trim();
+    if (!cleanSourceSessionId) {
+      return;
+    }
+    const sessions = await this.apiClient.listSessions().catch((error) => {
+      console.warn(
+        `Winner access source sync could not list sessions for source=${cleanSourceSessionId}: ${String(
+          error,
+        )}`,
+      );
+      return [];
+    });
+
+    for (const session of sessions) {
+      const config = await this.apiClient
+        .getSessionDiscordConfig(session.id)
+        .catch(() => null);
+      if (!config || (guild && config.guildId && config.guildId !== guild.id)) {
+        continue;
+      }
+      const hasSourceGroup = parseRoleAccessGroups(config).some(
+        (group) =>
+          this.winnerRoleAccessGroupIsSyncable(group) &&
+          this.winnerAccessSourceSessionId(group, session.id) ===
+            cleanSourceSessionId,
+      );
+      if (!hasSourceGroup) {
+        continue;
+      }
+      await this.syncWinnerRoleAccessForSession(guild, session.id, config, {
+        sourceSessionId: cleanSourceSessionId,
+        sourceRunFallbackId: opts.sourceRunFallbackId,
+      }).catch((error) => {
+        console.warn(
+          `Winner access source sync failed target=${session.id} source=${cleanSourceSessionId}: ${String(
+            error,
+          )}`,
+        );
+      });
+    }
+  }
+
+  private async assertWinnerRoleRegistrationAllowed(input: {
+    guild: Guild | null;
+    sessionId: string;
+    config: SessionDiscordConfigResponse;
+    winnerAccessGroupId?: string | null;
+    team: Pick<TeamSummary, "id" | "name" | "tag">;
+    managerDiscordUserIds: string[];
+  }) {
+    const groupId = input.winnerAccessGroupId?.trim();
+    if (!groupId) {
+      return input.config;
+    }
+    const config = await this.syncWinnerRoleAccessForSession(
+      input.guild,
+      input.sessionId,
+      input.config,
+      { groupId },
+    );
+    const group = parseRoleAccessGroups(config).find(
+      (entry) =>
+        entry.id === groupId &&
+        entry.enabled &&
+        entry.qualificationMode === "winner",
+    );
+    if (!group) {
+      throw new Error(
+        `${this.emoji("reject", config)} Winner access is not configured for this session.`,
+      );
+    }
+    const activeQualifications = this.activeWinnerQualifications(group);
+    const teamQualifications = activeQualifications.filter(
+      (qualification) => qualification.teamId === input.team.id,
+    );
+    const managerDiscordUserIds = this.uniqueStrings(
+      input.managerDiscordUserIds,
+    );
+    const hasQualifiedManager = teamQualifications.some((qualification) =>
+      managerDiscordUserIds.some((discordUserId) =>
+        qualification.managerDiscordIds.includes(discordUserId),
+      ),
+    );
+    if (hasQualifiedManager) {
+      return config;
+    }
+    for (const managerDiscordUserId of managerDiscordUserIds) {
+      if (
+        await this.requesterHasAccessRole(
+          managerDiscordUserId,
+          input.guild,
+          group.roleId,
+        )
+      ) {
+        return config;
+      }
+    }
+
+    const roleLabel = group.roleName?.trim() || "winner role";
+    if (teamQualifications.length > 0) {
+      throw new Error(
+        `${this.emoji("reject", config)} This ${roleLabel} access is only for the manager who won with this team.`,
+      );
+    }
+    throw new Error(
+      `${this.emoji("reject", config)} This ${roleLabel} access is only for qualified winning teams.`,
+    );
+  }
+
+  private autoRegistrationUsesGrantList(
+    config: SessionDiscordConfigResponse | null | undefined,
+  ) {
+    return Boolean(
+      config?.emojis?.autoRegistrationGrantChannelId?.trim() ||
+      config?.emojis?.autoRegistrationGrants?.trim(),
+    );
+  }
+
+  private sameAutoRegistrationGrantTarget(
+    grant: Pick<
+      AutoRegistrationGrant,
+      "teamId" | "managerDiscordId" | "roleId"
+    >,
+    target: Pick<
+      AutoRegistrationGrant,
+      "teamId" | "managerDiscordId" | "roleId"
+    >,
+  ) {
+    return (
+      grant.teamId === target.teamId &&
+      grant.managerDiscordId === target.managerDiscordId &&
+      grant.roleId === target.roleId
+    );
+  }
+
+  private async persistAutoRegistrationGrants(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    grants: AutoRegistrationGrant[],
+    opts: { resetLastRunKey?: boolean } = {},
+  ) {
+    const latestConfig = await this.latestSessionDiscordConfig(
+      sessionId,
+      config,
+    );
+    const nextGrantValue = serializeAutoRegistrationGrants(grants);
+    const nextEmojis = {
+      ...(latestConfig.emojis ?? {}),
+      autoRegistrationGrants: nextGrantValue,
+      ...(opts.resetLastRunKey ? { autoRegistrationLastRunKey: "" } : {}),
+    };
+    if (
+      latestConfig.emojis?.autoRegistrationGrants === nextGrantValue &&
+      (!opts.resetLastRunKey ||
+        latestConfig.emojis?.autoRegistrationLastRunKey === "")
+    ) {
+      return latestConfig;
+    }
+    return this.apiClient.updateSessionDiscordConfig(sessionId, {
+      emojis: nextEmojis,
+    });
+  }
+
+  private autoRegistrationGrantStillActiveInList(
+    grants: AutoRegistrationGrant[],
+    roleId: string,
+    managerDiscordId: string,
+    now: Date,
+  ) {
+    const nowMs = now.getTime();
+    return grants.some(
+      (grant) =>
+        grant.roleId === roleId &&
+        grant.managerDiscordId === managerDiscordId &&
+        Date.parse(grant.expiresAt) > nowMs,
+    );
+  }
+
+  private async hasActiveAutoRegistrationGrantElsewhere(
+    guildId: string,
+    sessionId: string,
+    roleId: string,
+    managerDiscordId: string,
+    now: Date,
+  ) {
+    const sessions = await this.apiClient.listSessions().catch(() => []);
+    for (const session of sessions) {
+      if (session.id === sessionId) {
+        continue;
+      }
+      const config = await this.apiClient
+        .getSessionDiscordConfig(session.id)
+        .catch(() => null);
+      if (
+        config?.enabled === false ||
+        config?.guildId !== guildId ||
+        !config?.emojis?.autoRegistrationGrants?.trim()
+      ) {
+        continue;
+      }
+      if (
+        this.autoRegistrationGrantStillActiveInList(
+          parseAutoRegistrationGrants(config),
+          roleId,
+          managerDiscordId,
+          now,
+        )
+      ) {
         return true;
       }
     }
     return false;
+  }
+
+  private async hasActiveWinnerQualificationElsewhere(
+    guildId: string,
+    sessionId: string,
+    roleId: string,
+    managerDiscordId: string,
+    now: Date,
+  ) {
+    const sessions = await this.apiClient.listSessions().catch(() => []);
+    for (const session of sessions) {
+      if (session.id === sessionId) {
+        continue;
+      }
+      const config = await this.apiClient
+        .getSessionDiscordConfig(session.id)
+        .catch(() => null);
+      if (
+        config?.enabled === false ||
+        config?.guildId !== guildId ||
+        !config?.emojis?.roleAccessGroups?.trim()
+      ) {
+        continue;
+      }
+      if (
+        this.winnerQualificationStillActiveInGroups(
+          parseRoleAccessGroups(config),
+          roleId,
+          managerDiscordId,
+          now,
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async accessRoleStillRequired(
+    guildId: string,
+    sessionId: string,
+    roleId: string,
+    managerDiscordId: string,
+    now: Date,
+    activeContext: {
+      autoRegistrationGrants?: AutoRegistrationGrant[];
+      winnerGroups?: RoleAccessGroup[];
+    },
+  ) {
+    if (
+      this.autoRegistrationGrantStillActiveInList(
+        activeContext.autoRegistrationGrants ?? [],
+        roleId,
+        managerDiscordId,
+        now,
+      ) ||
+      this.winnerQualificationStillActiveInGroups(
+        activeContext.winnerGroups ?? [],
+        roleId,
+        managerDiscordId,
+        now,
+      )
+    ) {
+      return true;
+    }
+    return (
+      (await this.hasActiveAutoRegistrationGrantElsewhere(
+        guildId,
+        sessionId,
+        roleId,
+        managerDiscordId,
+        now,
+      )) ||
+      (await this.hasActiveWinnerQualificationElsewhere(
+        guildId,
+        sessionId,
+        roleId,
+        managerDiscordId,
+        now,
+      ))
+    );
+  }
+
+  private async removeAccessRoleIfUnused(
+    guild: Guild,
+    sessionId: string,
+    roleId: string,
+    managerDiscordId: string,
+    now: Date,
+    reason: string,
+    activeContext: {
+      autoRegistrationGrants?: AutoRegistrationGrant[];
+      winnerGroups?: RoleAccessGroup[];
+    },
+  ): Promise<"removed" | "kept-active" | "not-present" | "missing" | "failed"> {
+    return this.runAccessRoleMutationExclusive(
+      guild.id,
+      managerDiscordId,
+      async () => {
+        if (
+          await this.accessRoleStillRequired(
+            guild.id,
+            sessionId,
+            roleId,
+            managerDiscordId,
+            now,
+            activeContext,
+          )
+        ) {
+          return "kept-active";
+        }
+        const member = await this.forceFetchGuildMember(
+          guild,
+          managerDiscordId,
+        );
+        if (!member) {
+          return "missing";
+        }
+        if (!member.roles.cache.has(roleId)) {
+          return "not-present";
+        }
+        try {
+          await member.roles.remove(roleId, reason);
+          return "removed";
+        } catch (error) {
+          console.warn(
+            `[DiscordAccessRole] role removal failed guild=${guild.id} session=${sessionId} user=${managerDiscordId} role=${roleId}: ${String(
+              error,
+            )}`,
+          );
+          return "failed";
+        }
+      },
+    );
+  }
+
+  private async runDueAutoRegistrationGrantExpiry(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    now = new Date(),
+  ) {
+    const grants = parseAutoRegistrationGrants(config);
+    if (grants.length === 0) {
+      return config;
+    }
+
+    const nowMs = now.getTime();
+    const active = grants.filter(
+      (grant) => Date.parse(grant.expiresAt) > nowMs,
+    );
+    const expired = grants.filter(
+      (grant) => Date.parse(grant.expiresAt) <= nowMs,
+    );
+    if (expired.length === 0) {
+      return config;
+    }
+
+    let removedRoles = 0;
+    let keptRoles = 0;
+    let failedRoles = 0;
+    for (const grant of expired) {
+      const removal = await this.removeAccessRoleIfUnused(
+        guild,
+        session.id,
+        grant.roleId,
+        grant.managerDiscordId,
+        now,
+        `Arenzyra auto-registration grant expired for ${session.name}`,
+        {
+          autoRegistrationGrants: active,
+          winnerGroups: parseRoleAccessGroups(config),
+        },
+      );
+      if (removal === "removed") {
+        removedRoles += 1;
+      } else if (removal === "failed") {
+        failedRoles += 1;
+      } else {
+        keptRoles += 1;
+      }
+    }
+
+    const updatedConfig = await this.persistAutoRegistrationGrants(
+      session.id,
+      config,
+      active,
+    );
+    await this.sendDiscordActionLog(guild, updatedConfig, {
+      action: "Auto registration grants expired",
+      sessionId: session.id,
+      sessionName: session.name,
+      status: `${expired.length} expired`,
+      details: [
+        `Roles removed: ${removedRoles}`,
+        `Roles kept: ${keptRoles}`,
+        `Role updates failed: ${failedRoles}`,
+        ...expired
+          .slice(0, 10)
+          .map(
+            (grant) =>
+              `${grant.teamTag ?? grant.teamName}: <@${grant.managerDiscordId}>`,
+          ),
+      ],
+      color: failedRoles > 0 ? 0xf59e0b : 0x64748b,
+    }).catch((error) => {
+      console.warn(
+        `[DiscordAutoRegister] grant expiry action log failed session=${session.id}: ${String(
+          error,
+        )}`,
+      );
+    });
+    return updatedConfig;
+  }
+
+  private async persistRoleRemovalRequests(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    requests: RoleRemovalRequest[],
+  ) {
+    const nextValue = serializeRoleRemovalRequests(requests);
+    if ((config.emojis?.roleRemovalRequests ?? "") === nextValue) {
+      return config;
+    }
+    return this.persistManagedMessageIds(sessionId, config, {
+      roleRemovalRequests: nextValue,
+    });
+  }
+
+  private roleRemovalRequestLabel(request: RoleRemovalRequest) {
+    const tag = request.teamTag?.trim();
+    const team = tag ? `${request.teamName} (${tag})` : request.teamName;
+    return `${team}: <@${request.managerDiscordId}>`;
+  }
+
+  private async runDueRoleRemovalRequests(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    now = new Date(),
+  ) {
+    const requests = parseRoleRemovalRequests(config);
+    if (requests.length === 0) {
+      return config;
+    }
+
+    const activeAutoGrants = activeAutoRegistrationGrants(config, now);
+    const winnerGroups = parseRoleAccessGroups(config);
+    const failedRequests: RoleRemovalRequest[] = [];
+    let removedRoles = 0;
+    let keptRoles = 0;
+    let missingRoles = 0;
+    let failedRoles = 0;
+
+    for (const request of requests) {
+      const removal = await this.removeAccessRoleIfUnused(
+        guild,
+        session.id,
+        request.roleId,
+        request.managerDiscordId,
+        now,
+        `Arenzyra manual ${request.kind} access removal for ${session.name}`,
+        {
+          autoRegistrationGrants: activeAutoGrants,
+          winnerGroups,
+        },
+      );
+      if (removal === "removed") {
+        removedRoles += 1;
+      } else if (removal === "failed") {
+        failedRoles += 1;
+        failedRequests.push(request);
+      } else if (removal === "missing" || removal === "not-present") {
+        missingRoles += 1;
+      } else {
+        keptRoles += 1;
+      }
+    }
+
+    const updatedConfig = await this.persistRoleRemovalRequests(
+      session.id,
+      config,
+      failedRequests,
+    );
+    await this.sendDiscordActionLog(guild, updatedConfig, {
+      action: "Manual access role removals processed",
+      sessionId: session.id,
+      sessionName: session.name,
+      status: `${requests.length - failedRequests.length}/${requests.length} processed`,
+      details: [
+        `Roles removed: ${removedRoles}`,
+        `Roles kept because another active access exists: ${keptRoles}`,
+        `Members missing or role already absent: ${missingRoles}`,
+        `Role updates failed and will retry: ${failedRoles}`,
+        ...requests
+          .slice(0, 10)
+          .map((request) => this.roleRemovalRequestLabel(request)),
+      ],
+      color: failedRoles > 0 ? 0xf59e0b : 0x64748b,
+    }).catch((error) => {
+      console.warn(
+        `[DiscordAccessRole] removal request action log failed session=${session.id}: ${String(
+          error,
+        )}`,
+      );
+    });
+    return updatedConfig;
+  }
+
+  private async runDueWinnerRoleAccessExpiry(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    now = new Date(),
+  ) {
+    const groups = parseRoleAccessGroups(config);
+    if (groups.length === 0) {
+      return config;
+    }
+
+    const expired: Array<{
+      group: RoleAccessGroup;
+      qualification: WinnerQualification;
+    }> = [];
+    let changed = false;
+    const nextGroups = groups.map((group) => {
+      if (group.qualificationMode !== "winner") {
+        return group;
+      }
+      let groupChanged = false;
+      const activeQualifications: WinnerQualification[] = [];
+      for (const qualification of group.winnerQualifications) {
+        const normalizedQualification =
+          this.winnerQualificationWithConfiguredExpiry(
+            qualification,
+            group.winnerDurationDays,
+            now,
+          );
+        const active = this.winnerQualificationIsActive(
+          normalizedQualification,
+          now,
+        );
+        if (active) {
+          activeQualifications.push(normalizedQualification);
+        } else {
+          expired.push({ group, qualification: normalizedQualification });
+        }
+        if (!active || normalizedQualification !== qualification) {
+          groupChanged = true;
+          changed = true;
+        }
+      }
+      return groupChanged
+        ? { ...group, winnerQualifications: activeQualifications }
+        : group;
+    });
+    if (!changed) {
+      return config;
+    }
+
+    const updatedConfig = await this.persistRoleAccessGroups(
+      session.id,
+      config,
+      nextGroups,
+    );
+    if (expired.length === 0) {
+      return updatedConfig;
+    }
+
+    const activeAutoGrants = activeAutoRegistrationGrants(config, now);
+    let removedRoles = 0;
+    let keptRoles = 0;
+    let retainedByPolicy = 0;
+    let failedRoles = 0;
+    for (const entry of expired) {
+      if (!entry.group.winnerRemoveRoleOnExpiry) {
+        retainedByPolicy += entry.qualification.managerDiscordIds.length;
+        continue;
+      }
+      for (const managerDiscordId of entry.qualification.managerDiscordIds) {
+        const removal = await this.removeAccessRoleIfUnused(
+          guild,
+          session.id,
+          entry.group.roleId,
+          managerDiscordId,
+          now,
+          `Arenzyra winner access qualification expired for ${session.name}`,
+          {
+            autoRegistrationGrants: activeAutoGrants,
+            winnerGroups: nextGroups,
+          },
+        );
+        if (removal === "removed") {
+          removedRoles += 1;
+        } else if (removal === "failed") {
+          failedRoles += 1;
+        } else {
+          keptRoles += 1;
+        }
+      }
+    }
+
+    await this.sendDiscordActionLog(guild, updatedConfig, {
+      action: "Winner access qualifications expired",
+      sessionId: session.id,
+      sessionName: session.name,
+      status: `${expired.length} qualification(s) expired`,
+      details: [
+        `Roles removed: ${removedRoles}`,
+        `Roles kept: ${keptRoles}`,
+        `Roles retained by configuration: ${retainedByPolicy}`,
+        `Role updates failed: ${failedRoles}`,
+        ...expired.slice(0, 10).map(({ qualification }) => {
+          const tag = qualification.teamTag?.trim();
+          const team = tag
+            ? `${qualification.teamName} (${tag})`
+            : qualification.teamName;
+          return `${team}: ${qualification.managerDiscordIds
+            .map((managerDiscordId) => `<@${managerDiscordId}>`)
+            .join(", ")}`;
+        }),
+      ],
+      color: failedRoles > 0 ? 0xf59e0b : 0x64748b,
+    }).catch((error) => {
+      console.warn(
+        `[DiscordWinnerAccess] expiry action log failed session=${session.id}: ${String(
+          error,
+        )}`,
+      );
+    });
+    return updatedConfig;
   }
 
   private autoRegistrationRunKey(params: {
@@ -7832,18 +11663,24 @@ export class DiscordSessionService {
   private async autoRegistrationEligibleTeams(
     guild: Guild,
     autoConfig: AutoRegistrationConfig,
+    config: SessionDiscordConfigResponse,
     limit: number,
+    now = new Date(),
   ) {
+    if (this.autoRegistrationUsesGrantList(config)) {
+      return this.autoRegistrationEligibleGrantTeams(
+        guild,
+        autoConfig,
+        config,
+        limit,
+        now,
+      );
+    }
     const managedTeams = await this.apiClient.listDiscordManagedTeams(
       [],
       limit,
     );
-    const eligible: Array<{
-      entry: DiscordManagedTeamResponse;
-      index: number;
-      managerIds: string[];
-      matchedManagerId: string;
-    }> = [];
+    const eligible: AutoRegistrationCandidate[] = [];
     await this.runLimited(
       managedTeams.map((entry, index) => ({ entry, index })),
       4,
@@ -7868,6 +11705,245 @@ export class DiscordSessionService {
     return eligible
       .sort((left, right) => left.index - right.index)
       .slice(0, autoConfig.maxTeams);
+  }
+
+  private async autoRegistrationEligibleGrantTeams(
+    guild: Guild,
+    autoConfig: AutoRegistrationConfig,
+    config: SessionDiscordConfigResponse,
+    limit: number,
+    now: Date,
+  ) {
+    const grants = activeAutoRegistrationGrants(config, now).filter(
+      (grant) => grant.roleId === autoConfig.roleId,
+    );
+    if (grants.length === 0) {
+      return [];
+    }
+    const managedTeams = await this.apiClient.listDiscordManagedTeams(
+      [],
+      Math.max(limit, Math.min(1000, grants.length * 5 + 25)),
+    );
+    const managedByTeamId = new Map(
+      managedTeams.map((entry) => [entry.team.id, entry]),
+    );
+    const eligible: AutoRegistrationCandidate[] = [];
+    const seenTeamIds = new Set<string>();
+
+    await this.runLimited(
+      grants.map((grant, index) => ({ grant, index })),
+      4,
+      async ({ grant, index }) => {
+        const directEntry = managedByTeamId.get(grant.teamId) ?? null;
+        const replacementEntry = directEntry
+          ? null
+          : this.autoRegistrationReplacementManagedTeam(grant, managedTeams);
+        const usesStoredGrantTeam = !directEntry && !replacementEntry;
+        const entry =
+          directEntry ??
+          replacementEntry ??
+          this.autoRegistrationStoredGrantTeam(grant);
+        if (!entry) {
+          return;
+        }
+        if (seenTeamIds.has(entry.team.id)) {
+          return;
+        }
+        const managerIds = this.uniqueStrings(
+          entry.managers
+            .filter((manager) => this.isActiveMember(manager))
+            .map((manager) => manager.discordUserId),
+        );
+        if (!managerIds.includes(grant.managerDiscordId)) {
+          return;
+        }
+        const member = await guild.members
+          .fetch(grant.managerDiscordId)
+          .catch(() => null);
+        if (!member?.roles.cache.has(autoConfig.roleId)) {
+          return;
+        }
+        seenTeamIds.add(entry.team.id);
+        eligible.push({
+          entry,
+          index,
+          managerIds,
+          matchedManagerId: grant.managerDiscordId,
+          grant,
+          usesStoredGrantTeam,
+        });
+      },
+    );
+
+    return eligible
+      .sort((left, right) => left.index - right.index)
+      .slice(0, autoConfig.maxTeams);
+  }
+
+  private autoRegistrationReplacementManagedTeam(
+    grant: AutoRegistrationGrant,
+    managedTeams: DiscordManagedTeamResponse[],
+  ) {
+    const normalizedGrantTag = this.normalizeTag(grant.teamTag ?? "");
+    const normalizedGrantName = this.normalizeTeamName(grant.teamName);
+    const managerMatches = managedTeams.filter((entry) =>
+      entry.managers.some(
+        (manager) =>
+          this.isActiveMember(manager) &&
+          manager.discordUserId === grant.managerDiscordId,
+      ),
+    );
+    if (managerMatches.length === 0) {
+      return null;
+    }
+
+    const strictMatches = managerMatches.filter((entry) => {
+      const teamTag = this.normalizeTag(entry.team.tag ?? "");
+      const teamName = this.normalizeTeamName(entry.team.name ?? "");
+      return (
+        normalizedGrantTag !== "" &&
+        normalizedGrantName !== "" &&
+        teamTag === normalizedGrantTag &&
+        teamName === normalizedGrantName
+      );
+    });
+    if (strictMatches.length === 1) {
+      return strictMatches[0];
+    }
+
+    const tagMatches = managerMatches.filter(
+      (entry) =>
+        normalizedGrantTag !== "" &&
+        this.normalizeTag(entry.team.tag ?? "") === normalizedGrantTag,
+    );
+    if (tagMatches.length === 1) {
+      return tagMatches[0];
+    }
+
+    const nameMatches = managerMatches.filter(
+      (entry) =>
+        normalizedGrantName !== "" &&
+        this.normalizeTeamName(entry.team.name ?? "") === normalizedGrantName,
+    );
+    return nameMatches.length === 1 ? nameMatches[0] : null;
+  }
+
+  private autoRegistrationStoredGrantTeam(
+    grant: AutoRegistrationGrant,
+  ): DiscordManagedTeamResponse {
+    return {
+      team: {
+        id: grant.teamId,
+        name: grant.teamName,
+        tag: grant.teamTag,
+      },
+      managers: [
+        {
+          id: `auto-registration-grant:${grant.id}`,
+          teamId: grant.teamId,
+          organizationId: "",
+          discordUserId: grant.managerDiscordId,
+          discordUsername: grant.managerDiscordUsername,
+          displayName: grant.managerDisplayName,
+          role: "LEADER",
+          createdAt: grant.grantedAt,
+          updatedAt: grant.grantedAt,
+          leftAt: null,
+          deletedAt: null,
+        },
+      ],
+    };
+  }
+
+  private autoRegistrationCandidateLabel(candidate: AutoRegistrationCandidate) {
+    const team = candidate.entry.team;
+    return team.tag ?? team.name ?? team.id;
+  }
+
+  private autoRegistrationGrantMemberInputs(
+    grant: AutoRegistrationGrant,
+    managerIds: string[],
+  ): DiscordRegistrationMemberInput[] {
+    const managerDetailsById = new Map(
+      [
+        ...managerIds.map((discordUserId) => ({
+          discordUserId,
+          discordUsername: null as string | null,
+          displayName: null as string | null,
+        })),
+        {
+          discordUserId: grant.managerDiscordId,
+          discordUsername: grant.managerDiscordUsername,
+          displayName: grant.managerDisplayName,
+        },
+      ].map((manager) => [manager.discordUserId, manager]),
+    );
+
+    return this.uniqueStrings([grant.managerDiscordId, ...managerIds]).map(
+      (discordUserId) => {
+        const manager = managerDetailsById.get(discordUserId);
+        return {
+          discordUserId,
+          discordUsername: manager?.discordUsername ?? null,
+          displayName: manager?.displayName ?? null,
+          role: "LEADER" as const,
+        };
+      },
+    );
+  }
+
+  private async resolveAutoRegistrationCandidateTeam(
+    session: SessionResponse,
+    candidate: AutoRegistrationCandidate,
+  ): Promise<{
+    entry: DiscordManagedTeamResponse;
+    managerIds: string[];
+    matchedManagerId: string;
+    recreated: boolean;
+  }> {
+    const grant = candidate.grant;
+    if (!candidate.usesStoredGrantTeam || !grant) {
+      return {
+        entry: candidate.entry,
+        managerIds: candidate.managerIds,
+        matchedManagerId: candidate.matchedManagerId,
+        recreated: false,
+      };
+    }
+
+    const name = grant.teamName.trim();
+    const tag = this.normalizeTag(grant.teamTag ?? "");
+    if (!name || !tag) {
+      throw new Error("Stored auto-registration team name or tag is missing");
+    }
+
+    const response = await this.apiClient.registerDiscordTeam({
+      name,
+      tag,
+      leaderDiscordUserId: grant.managerDiscordId,
+      leaderDiscordUsername: grant.managerDiscordUsername ?? undefined,
+      leaderDisplayName: grant.managerDisplayName ?? undefined,
+      contextSessionId: session.id,
+      members: this.autoRegistrationGrantMemberInputs(
+        grant,
+        candidate.managerIds,
+      ),
+    });
+    const managerIds = this.uniqueStrings(
+      response.members
+        .filter((member) => this.isActiveMember(member))
+        .map((member) => member.discordUserId),
+    );
+
+    return {
+      entry: {
+        team: response.team,
+        managers: response.members,
+      },
+      managerIds: managerIds.length ? managerIds : candidate.managerIds,
+      matchedManagerId: grant.managerDiscordId,
+      recreated: true,
+    };
   }
 
   private autoRegistrationCandidateLimit(autoConfig: AutoRegistrationConfig) {
@@ -7922,44 +11998,61 @@ export class DiscordSessionService {
       await this.autoRegistrationEligibleTeams(
         guild,
         autoConfig,
+        config,
         this.autoRegistrationCandidateLimit(autoConfig),
+        now,
       )
     ).filter(({ entry }) => !activeTeamIds.has(entry.team.id));
 
     const accepted: SessionRegistrationResponse[] = [];
-    const skipped: string[] = [];
+    const skipped: Array<{ message: string; retryable?: boolean }> = [];
     const mutableRegistrations = [...registrations];
+    let retryableSkip = false;
 
     for (const candidate of candidates) {
       if (accepted.length >= autoConfig.maxTeams) {
         break;
       }
-      const team = candidate.entry.team;
+      const label = this.autoRegistrationCandidateLabel(candidate);
       if (
         autoConfig.placement === "normal" &&
         !autoConfig.waitlistFallback &&
         this.nextAvailableNormalSlot(session, mutableRegistrations, config) ===
           null
       ) {
-        skipped.push(`${team.tag ?? team.name}: normal slots full`);
+        skipped.push({ message: `${label}: normal slots full` });
         break;
       }
 
-      const leaderDiscordUserId = candidate.matchedManagerId;
       try {
+        const resolved = await this.resolveAutoRegistrationCandidateTeam(
+          session,
+          candidate,
+        );
+        const team = resolved.entry.team;
+        if (activeTeamIds.has(team.id)) {
+          skipped.push({
+            message: `${team.tag ?? team.name}: already registered`,
+          });
+          continue;
+        }
+        const leaderDiscordUserId = resolved.matchedManagerId;
         const registration = await this.apiClient.registerTeam(session.id, {
           teamId: team.id,
           note: `Auto-registered by Discord role ${role.name} during scheduled window`,
           bypassRegistrationWindow: true,
           placement: autoConfig.placement === "vip" ? "VIP" : "NORMAL",
           leaderDiscordUserId,
-          managerDiscordUserIds: candidate.managerIds,
+          managerDiscordUserIds: resolved.managerIds,
         });
         accepted.push(registration);
         mutableRegistrations.push(registration);
+        activeTeamIds.add(registration.teamId);
       } catch (error) {
         const friendly = toFriendlyApiError(error);
-        skipped.push(`${team.tag ?? team.name}: ${friendly}`);
+        const retryable = /team not found/i.test(friendly);
+        retryableSkip ||= retryable;
+        skipped.push({ message: `${label}: ${friendly}`, retryable });
         if (/VIP slots are full|session full/i.test(friendly)) {
           break;
         }
@@ -8010,7 +12103,10 @@ export class DiscordSessionService {
         config,
         runKey,
       );
-    } else if (candidates.length === 0 || skipped.length > 0) {
+    } else if (
+      candidates.length === 0 ||
+      (skipped.length > 0 && !retryableSkip)
+    ) {
       updatedConfig = await this.persistAutoRegistrationLastRunKey(
         session.id,
         config,
@@ -8033,7 +12129,7 @@ export class DiscordSessionService {
               config,
             )}`,
         ),
-      ...skipped.slice(0, 10).map((entry) => `Skipped ${entry}`),
+      ...skipped.slice(0, 10).map((entry) => `Skipped ${entry.message}`),
     ];
 
     if (accepted.length > 0 || skipped.length > 0 || candidates.length === 0) {
@@ -8306,7 +12402,6 @@ export class DiscordSessionService {
 
         const remainingMs = validationDeadline - Date.now();
         if (remainingMs <= 0) {
-          validGuildMemberIds.add(discordUserId);
           return;
         }
 
@@ -8319,7 +12414,6 @@ export class DiscordSessionService {
           undefined,
         );
         if (member === undefined) {
-          validGuildMemberIds.add(discordUserId);
           return;
         }
         if (member && member.user?.bot !== true) {
@@ -8722,43 +12816,14 @@ export class DiscordSessionService {
     }
   }
 
-  private normalizeImageContentType(
-    contentTypeHeader: string | null | undefined,
-    logoUrl: string,
-  ) {
-    const contentType = contentTypeHeader?.split(";")[0]?.trim().toLowerCase();
-    if (contentType && ALLOWED_LOGO_TYPES.has(contentType)) {
-      return contentType;
-    }
-    if (/\.png(?:\?|$)/i.test(logoUrl)) return "image/png";
-    if (/\.jpe?g(?:\?|$)/i.test(logoUrl)) return "image/jpeg";
-    if (/\.webp(?:\?|$)/i.test(logoUrl)) return "image/webp";
-    throw new Error("Team logo must be a PNG, JPG, or WEBP image.");
-  }
-
   private async downloadLogoUpload(logoUrl: string): Promise<TeamLogoUpload> {
-    const response = await fetch(logoUrl);
-    if (!response.ok) {
-      throw new Error("Could not download the saved team logo.");
-    }
-
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (contentLength > MAX_LOGO_BYTES) {
-      throw new Error("Team logo must be 8 MB or smaller.");
-    }
-
-    const contentType = this.normalizeImageContentType(
-      response.headers.get("content-type"),
-      logoUrl,
-    );
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > MAX_LOGO_BYTES) {
-      throw new Error("Team logo must be 8 MB or smaller.");
-    }
+    const { buffer, contentType } = await fetchRemoteRasterImage(logoUrl, {
+      maxBytes: MAX_LOGO_BYTES,
+    });
 
     return {
       buffer,
-      filename: `team-logo.${IMAGE_EXTENSIONS[contentType]}`,
+      filename: "team-logo.png",
       contentType,
     };
   }
@@ -8803,14 +12868,7 @@ export class DiscordSessionService {
     config: SessionDiscordConfigResponse,
     guild: Guild | null | undefined,
   ): Promise<{ upload: TeamLogoUpload; record: PendingTeamLogoRecord } | null> {
-    let record = this.pendingLogoForTeam(teamName, tag, config);
-    if (!record) {
-      record = await this.pendingLogoForTeamAcrossActiveGuildSessions(
-        teamName,
-        tag,
-        config,
-      );
-    }
+    const record = await this.pendingLogoRecordForTeam(teamName, tag, config);
     if (!record) {
       return null;
     }
@@ -8820,6 +12878,137 @@ export class DiscordSessionService {
       upload: await this.downloadLogoUpload(logoUrl),
       record,
     };
+  }
+
+  private pendingLogoBackfillFailureKey(
+    sessionId: string,
+    teamId: string,
+    record: PendingTeamLogoRecord,
+  ) {
+    return [
+      sessionId,
+      teamId,
+      record.channelId,
+      record.messageId,
+      record.attachmentId ?? record.key,
+    ].join(":");
+  }
+
+  private pendingLogoBackfillIsThrottled(key: string) {
+    const retryAfter = this.pendingLogoBackfillFailures.get(key);
+    if (!retryAfter) {
+      return false;
+    }
+    if (retryAfter > Date.now()) {
+      return true;
+    }
+    this.pendingLogoBackfillFailures.delete(key);
+    return false;
+  }
+
+  private rememberPendingLogoBackfillFailure(key: string) {
+    this.pendingLogoBackfillFailures.set(
+      key,
+      Date.now() + PENDING_LOGO_BACKFILL_FAILURE_TTL_MS,
+    );
+  }
+
+  private activeRegistrationMissingLogo(
+    registration: SessionRegistrationResponse,
+  ) {
+    return (
+      this.activeRegistrationStatus(registration) &&
+      registration.team &&
+      !registration.team.logoUrl?.trim()
+    );
+  }
+
+  private async backfillPendingLogosForRegistrations(
+    guild: Guild | null | undefined,
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    registrations: SessionRegistrationResponse[],
+  ): Promise<SessionRegistrationResponse[]> {
+    if (
+      !config.emojis?.[PENDING_TEAM_LOGOS_KEY]?.trim() &&
+      !config.guildId?.trim()
+    ) {
+      return registrations;
+    }
+
+    const candidates = registrations.filter((registration) =>
+      this.activeRegistrationMissingLogo(registration),
+    );
+    if (candidates.length === 0) {
+      return registrations;
+    }
+
+    let attempted = 0;
+    let backfilled = 0;
+    let failed = 0;
+    for (const registration of candidates) {
+      if (attempted >= PENDING_LOGO_BACKFILL_MAX_PER_SYNC) {
+        break;
+      }
+      const team = registration.team;
+      if (!team) {
+        continue;
+      }
+      const record = await this.pendingLogoRecordForTeam(
+        team.name,
+        team.tag,
+        config,
+      );
+      if (!record) {
+        continue;
+      }
+
+      const failureKey = this.pendingLogoBackfillFailureKey(
+        sessionId,
+        team.id,
+        record,
+      );
+      if (this.pendingLogoBackfillIsThrottled(failureKey)) {
+        continue;
+      }
+
+      attempted += 1;
+      try {
+        const logoUrl = await this.resolvePendingLogoUrl(record, guild);
+        const upload = await this.downloadLogoUpload(logoUrl);
+        const uploaded = await this.apiClient.uploadTeamLogo(team.id, upload);
+        registration.team = {
+          ...team,
+          logoUrl: uploaded.logoUrl,
+        };
+        this.pendingLogoBackfillFailures.delete(failureKey);
+        backfilled += 1;
+      } catch (error) {
+        failed += 1;
+        this.rememberPendingLogoBackfillFailure(failureKey);
+        console.warn(
+          `[DiscordLogoBackfill] failed session=${sessionId} team=${team.id} source=${record.channelId}/${record.messageId}: ${toFriendlyApiError(
+            error,
+          )}`,
+        );
+      }
+    }
+
+    if (backfilled === 0) {
+      return registrations;
+    }
+
+    console.log(
+      `[DiscordLogoBackfill] attached=${backfilled} failed=${failed} session=${sessionId}`,
+    );
+    return this.apiClient.listRegistrations(sessionId).catch((error) => {
+      console.warn(
+        `[DiscordLogoBackfill] registration reload failed session=${sessionId}: ${String(
+          error,
+        )}`,
+      );
+      return registrations;
+    });
   }
 
   private async persistRegistrationLogoSource(params: {
@@ -9098,6 +13287,173 @@ export class DiscordSessionService {
     }
   }
 
+  private resultBackupAggregateKey(row: ResultBackupRowResponse) {
+    return (
+      row.teamId?.trim() ||
+      row.teamTag?.trim().toLowerCase() ||
+      row.teamName?.trim().toLowerCase() ||
+      `rank:${row.rank}`
+    );
+  }
+
+  private compareOverallBackupRows(
+    left: UpdateResultBackupRowPayload,
+    right: UpdateResultBackupRowPayload,
+  ) {
+    const leftPoints = Math.max(0, left.totalPoints ?? 0);
+    const rightPoints = Math.max(0, right.totalPoints ?? 0);
+    if (rightPoints !== leftPoints) {
+      return rightPoints - leftPoints;
+    }
+    const leftWwcd = Math.max(0, left.wwcd ?? 0);
+    const rightWwcd = Math.max(0, right.wwcd ?? 0);
+    if (rightWwcd !== leftWwcd) {
+      return rightWwcd - leftWwcd;
+    }
+    const leftPlacement = Math.max(0, left.placementPoints ?? 0);
+    const rightPlacement = Math.max(0, right.placementPoints ?? 0);
+    if (rightPlacement !== leftPlacement) {
+      return rightPlacement - leftPlacement;
+    }
+    const leftKills = Math.max(0, left.kills ?? 0);
+    const rightKills = Math.max(0, right.kills ?? 0);
+    if (rightKills !== leftKills) {
+      return rightKills - leftKills;
+    }
+    return (left.teamName ?? "").localeCompare(right.teamName ?? "");
+  }
+
+  private resultBackupTimestamp(backup: {
+    updatedAt?: string | null;
+    createdAt?: string | null;
+  }) {
+    return (
+      Date.parse(backup.updatedAt ?? "") ||
+      Date.parse(backup.createdAt ?? "") ||
+      0
+    );
+  }
+
+  private aggregateOverallBackupRows(
+    backups: ResultBackupDetailResponse[],
+  ): UpdateResultBackupRowPayload[] {
+    const aggregates = new Map<
+      string,
+      UpdateResultBackupRowPayload & { matchCount: number }
+    >();
+
+    for (const backup of backups) {
+      for (const row of backup.rows ?? []) {
+        const key = this.resultBackupAggregateKey(row);
+        const existing = aggregates.get(key);
+        if (existing) {
+          existing.wwcd =
+            Math.max(0, existing.wwcd ?? 0) + Math.max(0, row.wwcd ?? 0);
+          existing.placementPoints =
+            Math.max(0, existing.placementPoints ?? 0) +
+            Math.max(0, row.placementPoints ?? 0);
+          existing.kills =
+            Math.max(0, existing.kills ?? 0) + Math.max(0, row.kills ?? 0);
+          existing.totalPoints =
+            Math.max(0, existing.totalPoints ?? 0) +
+            Math.max(0, row.totalPoints ?? 0);
+          existing.matchCount += 1;
+          if (!existing.logoUrl && row.logoUrl) {
+            existing.logoUrl = row.logoUrl;
+          }
+          if (!existing.teamId && row.teamId) {
+            existing.teamId = row.teamId;
+          }
+          if (!existing.teamTag && row.teamTag) {
+            existing.teamTag = row.teamTag;
+          }
+          if (
+            (!existing.teamName || existing.teamName.startsWith("Team ")) &&
+            row.teamName
+          ) {
+            existing.teamName = row.teamName;
+          }
+          continue;
+        }
+
+        aggregates.set(key, {
+          rank: 0,
+          teamId: row.teamId,
+          teamName:
+            row.teamName?.trim() ||
+            row.teamTag?.trim() ||
+            row.teamId?.trim() ||
+            "Team",
+          teamTag: row.teamTag,
+          logoUrl: row.logoUrl,
+          slotNumber: null,
+          placement: null,
+          wwcd: Math.max(0, row.wwcd ?? 0),
+          placementPoints: Math.max(0, row.placementPoints ?? 0),
+          kills: Math.max(0, row.kills ?? 0),
+          totalPoints: Math.max(0, row.totalPoints ?? 0),
+          matchCount: 1,
+        });
+      }
+    }
+
+    return [...aggregates.values()]
+      .sort((left, right) => this.compareOverallBackupRows(left, right))
+      .map(({ matchCount: _matchCount, ...row }, index) => ({
+        ...row,
+        rank: index + 1,
+      }));
+  }
+
+  async rebuildOverallResultBackupFromDiscord(
+    sessionId: string,
+  ): Promise<ResultBackupDetailResponse | null> {
+    try {
+      const overallBackups = await this.apiClient.listResultBackups({
+        sessionId,
+        kind: "OVERALL",
+      });
+      const overallBackup = overallBackups.find(
+        (entry) => entry.kind?.toUpperCase() === "OVERALL",
+      );
+      if (!overallBackup) {
+        return null;
+      }
+
+      const matchBackups =
+        await this.listEditableResultBackupsForDiscord(sessionId);
+      if (matchBackups.length === 0) {
+        return await this.apiClient.getResultBackup(overallBackup.id);
+      }
+
+      const latestMatchTimestamp = Math.max(
+        ...matchBackups.map((backup) => this.resultBackupTimestamp(backup)),
+      );
+      const overallTimestamp = this.resultBackupTimestamp(overallBackup);
+      if (
+        latestMatchTimestamp > 0 &&
+        overallTimestamp > 0 &&
+        overallTimestamp >= latestMatchTimestamp
+      ) {
+        return await this.apiClient.getResultBackup(overallBackup.id);
+      }
+
+      const details = await Promise.all(
+        matchBackups.map((backup) => this.apiClient.getResultBackup(backup.id)),
+      );
+      const rows = this.aggregateOverallBackupRows(details);
+      if (rows.length === 0) {
+        return await this.apiClient.getResultBackup(overallBackup.id);
+      }
+      return await this.apiClient.updateResultBackupRows(
+        overallBackup.id,
+        rows,
+      );
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
+  }
+
   async getMatchResultsForDiscord(
     matchId: string,
   ): Promise<MatchResultsResponse> {
@@ -9243,6 +13599,86 @@ export class DiscordSessionService {
             ),
           };
         }
+      }
+
+      return null;
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
+  }
+
+  async findScrimForAutoRegistrationGrantChannel(
+    guildId: string,
+    channelId: string,
+    channelTopic?: string | null,
+  ): Promise<{
+    session: SessionResponse;
+    config: SessionDiscordConfigResponse;
+  } | null> {
+    try {
+      const activeStatuses = ["DRAFT", "OPEN", "CHECKIN", "LOCKED", "LIVE"];
+      const resolved = await this.resolveDiscordChannel(
+        guildId,
+        channelId,
+        channelTopic,
+      );
+      if (resolved) {
+        const configuredChannel =
+          resolved.config.emojis?.autoRegistrationGrantChannelId?.trim();
+        if (
+          resolved.session.type !== "SCRIM" ||
+          !activeStatuses.includes(resolved.session.status) ||
+          (resolved.channelKind !== "auto-registration" &&
+            configuredChannel !== channelId)
+        ) {
+          return null;
+        }
+        return { session: resolved.session, config: resolved.config };
+      }
+
+      const marker = this.parseDiscordSessionTopic(channelTopic);
+      if (marker?.kind === "auto-registration") {
+        const [session, config] = await Promise.all([
+          this.apiClient.getSession(marker.sessionId).catch(() => null),
+          this.apiClient
+            .getSessionDiscordConfig(marker.sessionId)
+            .catch(() => null),
+        ]);
+        if (
+          session?.type === "SCRIM" &&
+          activeStatuses.includes(session.status) &&
+          config?.enabled !== false &&
+          config?.guildId === guildId
+        ) {
+          return { session, config };
+        }
+      }
+
+      const organizationId = await this.resolveOrganizationIdForGuild(guildId);
+      if (!organizationId) {
+        return null;
+      }
+
+      const sessions = await this.withOrganization(organizationId, () =>
+        this.apiClient.listSessions(),
+      );
+      const candidates = sessions.filter(
+        (session) =>
+          session.type === "SCRIM" && activeStatuses.includes(session.status),
+      );
+
+      for (const session of candidates) {
+        const config = await this.withOrganization(organizationId, () =>
+          this.apiClient.getSessionDiscordConfig(session.id),
+        ).catch(() => null);
+        if (
+          config?.enabled === false ||
+          config?.guildId !== guildId ||
+          config?.emojis?.autoRegistrationGrantChannelId?.trim() !== channelId
+        ) {
+          continue;
+        }
+        return { session, config };
       }
 
       return null;
@@ -9550,8 +13986,13 @@ export class DiscordSessionService {
           ["slot-list", config.slotListChannelId],
           ["waitlist", config.waitlistChannelId],
           ["idp", config.idpChannelId],
+          ["public-chat", config.publicChatChannelId],
           ["manager", config.managerChannelId],
           ["transfer", config.transferChannelId],
+          [
+            "auto-registration",
+            config.emojis?.autoRegistrationGrantChannelId ?? null,
+          ],
           ["manage", config.manageChannelId],
           ["results", config.resultsChannelId],
           ["screenshots", config.screenshotsChannelId],
@@ -9561,6 +14002,87 @@ export class DiscordSessionService {
         const matched = channelMap.find(([, id]) => id === channelId);
         if (matched) {
           return { session, config, channelKind: matched[0] };
+        }
+        if (this.configuredPlayerPhotoChannelIds(config).includes(channelId)) {
+          return { session, config, channelKind: "player-photos" };
+        }
+      }
+
+      return null;
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
+  }
+
+  async findConfiguredScrimForDiscordChannel(
+    guildId: string,
+    channelId: string,
+    channelTopic?: string | null,
+  ): Promise<{
+    session: SessionResponse;
+    config: SessionDiscordConfigResponse;
+    channelKind: string;
+  } | null> {
+    try {
+      const resolved = await this.resolveDiscordChannel(
+        guildId,
+        channelId,
+        channelTopic,
+      );
+      if (resolved) {
+        if (
+          resolved.session.type !== "SCRIM" ||
+          resolved.config.enabled === false ||
+          resolved.config.guildId !== guildId
+        ) {
+          return null;
+        }
+        return {
+          session: resolved.session,
+          config: resolved.config,
+          channelKind: resolved.channelKind,
+        };
+      }
+
+      const organizationId = await this.resolveOrganizationIdForGuild(guildId);
+      if (!organizationId) {
+        return null;
+      }
+
+      const sessions = await this.withOrganization(organizationId, () =>
+        this.apiClient.listSessions(),
+      );
+      const candidates = sessions.filter((session) => session.type === "SCRIM");
+
+      for (const session of candidates) {
+        const config = await this.withOrganization(organizationId, () =>
+          this.apiClient.getSessionDiscordConfig(session.id),
+        ).catch(() => null);
+        if (config?.enabled === false || config?.guildId !== guildId) {
+          continue;
+        }
+
+        const channelMap: Array<[string, string | null | undefined]> = [
+          ["registration", config.registrationChannelId],
+          ["slot-list", config.slotListChannelId],
+          ["waitlist", config.waitlistChannelId],
+          ["idp", config.idpChannelId],
+          ["public-chat", config.publicChatChannelId],
+          ["manager", config.managerChannelId],
+          ["transfer", config.transferChannelId],
+          ["auto-registration", config.emojis?.autoRegistrationGrantChannelId],
+          ["manage", config.manageChannelId],
+          ["results", config.resultsChannelId],
+          ["screenshots", config.screenshotsChannelId],
+          ["bans", config.bansChannelId],
+          ["log", config.logChannelId],
+        ];
+        const matched = channelMap.find(([, id]) => id === channelId);
+        if (matched) {
+          return { session, config, channelKind: matched[0] };
+        }
+        if (this.configuredLogoChannelIds(config).includes(channelId)) {
+          return { session, config, channelKind: "logos" };
         }
         if (this.configuredPlayerPhotoChannelIds(config).includes(channelId)) {
           return { session, config, channelKind: "player-photos" };
@@ -9666,6 +14188,8 @@ export class DiscordSessionService {
       waitlistChannelName: setup.waitlistChannelName,
       idpChannelId: setup.idpChannelId,
       idpChannelName: setup.idpChannelName,
+      publicChatChannelId: setup.publicChatChannelId,
+      publicChatChannelName: setup.publicChatChannelName,
       managerChannelId: setup.managerChannelId,
       managerChannelName: setup.managerChannelName,
       transferChannelId: setup.transferChannelId,
@@ -9694,6 +14218,14 @@ export class DiscordSessionService {
         ...(config?.emojis ?? {}),
         staffRoleId,
         staffRoleName,
+        autoRegistrationGrantChannelId:
+          setup.autoRegistrationGrantChannelId ??
+          config?.emojis?.autoRegistrationGrantChannelId ??
+          "",
+        autoRegistrationGrantChannelName:
+          setup.autoRegistrationGrantChannelName ??
+          config?.emojis?.autoRegistrationGrantChannelName ??
+          "auto-registration",
       },
     };
   }
@@ -10229,6 +14761,246 @@ export class DiscordSessionService {
         ? { managedRegistrationStatusSignature: signature ?? "" }
         : {}),
     });
+  }
+
+  private waitlistPromotionAnnouncementMarker(sessionId: string) {
+    return `arenzyra:${sessionId}:waitlist-promotion`;
+  }
+
+  private waitlistPromotionAnnouncementState(
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    registrations: SessionRegistrationResponse[],
+  ): WaitlistPromotionAnnouncementState {
+    return this.waitlistPromotionAccepting(session, config, registrations)
+      ? "open"
+      : "closed";
+  }
+
+  private storedWaitlistPromotionAnnouncementState(
+    config: SessionDiscordConfigResponse,
+  ): WaitlistPromotionAnnouncementState | null {
+    const value = config.emojis?.managedWaitlistPromotionState
+      ?.trim()
+      .toLowerCase();
+    return value === "open" || value === "closed" ? value : null;
+  }
+
+  private waitlistPromotionOpenMessageText(
+    config: SessionDiscordConfigResponse,
+  ) {
+    return this.configuredRegistrationAnnouncementValue(
+      config,
+      "waitlistPromotionOpenMessageText",
+      DEFAULT_WAITLIST_PROMOTION_OPEN_MESSAGE_TEXT,
+      { allowEmpty: true },
+    );
+  }
+
+  private async fetchWaitlistPromotionAnnouncementChannel(
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+  ) {
+    const channelId = config.waitlistChannelId?.trim();
+    if (!channelId) {
+      return null;
+    }
+
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel?.isTextBased() || channel.isDMBased()) {
+      return null;
+    }
+    return channel as GuildTextBasedChannel;
+  }
+
+  private availableNormalSlots(
+    session: Pick<SessionResponse, "slotCount">,
+    registrations: SessionRegistrationResponse[],
+    config: SessionDiscordConfigResponse,
+  ) {
+    const range = this.slotRangeForSession(session, config);
+    const occupied = new Set(
+      registrations
+        .filter(
+          (registration) =>
+            this.activeRegistrationStatus(registration) &&
+            registration.slotNumber !== null &&
+            registration.slotNumber >= range.startSlot &&
+            registration.slotNumber <= range.endSlot,
+        )
+        .map((registration) => registration.slotNumber),
+    );
+    const freeSlots: number[] = [];
+    for (let slot = range.startSlot; slot <= range.endSlot; slot += 1) {
+      if (!occupied.has(slot)) {
+        freeSlots.push(slot);
+      }
+    }
+    return freeSlots;
+  }
+
+  private renderWaitlistPromotionOpenAnnouncement(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    registrations: SessionRegistrationResponse[],
+  ) {
+    const window = this.waitlistPromotionWindow(session, config);
+    const freeSlots = this.availableNormalSlots(session, registrations, config);
+    const roleId = config.waitlistRoleId?.trim() ?? "";
+    return this.renderConfirmationReminderTemplate(
+      this.waitlistPromotionOpenMessageText(config),
+      {
+        role: roleId ? `<@&${roleId}>` : "",
+        roleName: config.waitlistRoleName ?? "",
+        guild: guild.name,
+        server: guild.name,
+        session: session.name,
+        freeSlot: freeSlots[0] ? String(freeSlots[0]) : "",
+        freeSlots: freeSlots.slice(0, 20).join(", "),
+        freeSlotCount: String(freeSlots.length),
+        opens: this.accessTimestamp(window.opensAt, "f"),
+        opensRelative: this.accessTimestamp(window.opensAt, "R"),
+        closes: this.accessTimestamp(window.closesAt, "f"),
+        closesRelative: this.accessTimestamp(window.closesAt, "R"),
+        timezone: window.timeZone ?? "",
+        success: this.emoji("check", config),
+        reject: this.emoji("reject", config),
+        warning: this.emoji("warning", config),
+        clock: this.emoji("clock", config),
+        slot: this.emoji("slot", config),
+        waitlist: this.emoji("waitlist", config),
+        team: this.emoji("team", config),
+      },
+    );
+  }
+
+  private async sendWaitlistPromotionOpenAnnouncement(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    registrations: SessionRegistrationResponse[],
+  ) {
+    const channel = await this.fetchWaitlistPromotionAnnouncementChannel(
+      guild,
+      config,
+    );
+    if (!channel) {
+      return null;
+    }
+
+    const content = this.renderWaitlistPromotionOpenAnnouncement(
+      guild,
+      session,
+      config,
+      registrations,
+    );
+    if (!content) {
+      return null;
+    }
+
+    const roleId = config.waitlistRoleId?.trim() || null;
+    const marker = this.waitlistPromotionAnnouncementMarker(session.id);
+    const message = limitDiscordContent(content);
+    return channel
+      .send({
+        content: message,
+        allowedMentions: allowedMentionsForOrganizerText(message, {
+          roles: roleId ? [roleId] : [],
+        }),
+      })
+      .catch((error) => {
+        console.warn(
+          `Waitlist promotion announcement send failed for ${marker}: ${String(
+            error,
+          )}`,
+        );
+        return null;
+      });
+  }
+
+  private async persistWaitlistPromotionAnnouncementTracking(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    state: WaitlistPromotionAnnouncementState,
+    messageId?: string | null,
+  ) {
+    return this.persistManagedMessageIds(sessionId, config, {
+      managedWaitlistPromotionState: state,
+      ...(messageId !== undefined
+        ? { managedWaitlistPromotionMessageId: messageId ?? "" }
+        : {}),
+    });
+  }
+
+  private async syncWaitlistPromotionAnnouncement(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    registrations: SessionRegistrationResponse[],
+  ) {
+    const key = this.syncQueueKey(guild, `${session.id}:waitlistPromotion`);
+    const release = await this.acquireRegistrationStatusAnnouncementLock(key);
+    try {
+      const latestConfig = await this.latestSessionDiscordConfig(
+        session.id,
+        config,
+      );
+      const nextState = this.waitlistPromotionAnnouncementState(
+        session,
+        latestConfig,
+        registrations,
+      );
+      const window = this.waitlistPromotionWindow(session, latestConfig);
+      const storedState =
+        this.storedWaitlistPromotionAnnouncementState(latestConfig);
+
+      if (!storedState) {
+        if (!window.configured && nextState === "closed") {
+          return latestConfig;
+        }
+        return this.persistWaitlistPromotionAnnouncementTracking(
+          session.id,
+          latestConfig,
+          nextState,
+        );
+      }
+
+      if (storedState === nextState) {
+        return latestConfig;
+      }
+
+      if (nextState === "closed") {
+        return this.persistWaitlistPromotionAnnouncementTracking(
+          session.id,
+          latestConfig,
+          "closed",
+          "",
+        );
+      }
+
+      const message = await this.sendWaitlistPromotionOpenAnnouncement(
+        guild,
+        session,
+        latestConfig,
+        registrations,
+      );
+      return this.persistWaitlistPromotionAnnouncementTracking(
+        session.id,
+        latestConfig,
+        "open",
+        message?.id ?? "",
+      );
+    } catch (error) {
+      console.warn(
+        `Waitlist promotion announcement failed for ${session.id}: ${String(
+          error,
+        )}`,
+      );
+      return config;
+    } finally {
+      release();
+    }
   }
 
   private accessAnnouncementMarker(
@@ -11214,7 +15986,7 @@ export class DiscordSessionService {
     now = new Date(),
   ) {
     const overrideState = this.waitlistPromotionScheduleOverrideState(config);
-    if (overrideState !== "closed") {
+    if (!overrideState) {
       return { session, config };
     }
 
@@ -11223,15 +15995,21 @@ export class DiscordSessionService {
       config,
       now,
     );
-    if (!scheduledWindow?.allowsAction || !scheduledWindow.opensAt) {
+    if (!scheduledWindow?.configured) {
       return { session, config };
     }
 
     const overrideChangedAt =
       this.waitlistPromotionScheduleOverrideChangedAt(config);
+    const boundary = scheduledWindow.allowsAction
+      ? scheduledWindow.opensAt
+      : scheduledWindow.closesAt;
+    if (!boundary) {
+      return { session, config };
+    }
     if (
       overrideChangedAt &&
-      overrideChangedAt.getTime() >= scheduledWindow.opensAt.getTime()
+      overrideChangedAt.getTime() >= boundary.getTime()
     ) {
       return { session, config };
     }
@@ -11249,7 +16027,7 @@ export class DiscordSessionService {
     );
 
     console.log(
-      `[DiscordSync] weekly waitlist promotion schedule cleared closed override session=${session.id} opensAt=${scheduledWindow.opensAt.toISOString()}`,
+      `[DiscordSync] weekly waitlist promotion schedule cleared ${overrideState} override session=${session.id} boundaryAt=${boundary.toISOString()}`,
     );
     return { session, config: updatedConfig };
   }
@@ -11634,6 +16412,11 @@ export class DiscordSessionService {
         emojis.resultSummaryCount = "3";
         emojis.resultSummaryTitle = "{trophy} Match Results";
         emojis.resultSummaryRowTemplate = DEFAULT_RESULT_SUMMARY_ROW_TEMPLATE;
+        emojis.matchResultMessageTemplate =
+          DEFAULT_MATCH_RESULT_MESSAGE_TEMPLATE;
+        emojis.matchResultPostTemplate = DEFAULT_MATCH_RESULT_POST_TEMPLATE;
+        emojis.matchResultImageCards = "";
+        emojis.finalResultImageCards = "";
       } else if (patch.action === "count") {
         if (
           !Number.isInteger(patch.value) ||
@@ -11675,6 +16458,157 @@ export class DiscordSessionService {
         `Count: ${this.resultSummaryCount(updated)}`,
         `Title: ${updated.emojis.resultSummaryTitle}`,
         `Row: ${updated.emojis.resultSummaryRowTemplate}`,
+      ].join("\n");
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
+  }
+
+  private parseSlotTeamRenameInput(rawName: string, rawTag?: string | null) {
+    let name = rawName.replace(/\s+/g, " ").trim();
+    let tag = rawTag?.replace(/\s+/g, " ").trim() || null;
+
+    if (!tag) {
+      const displayLookup = this.parseTeamDisplayLookup(name);
+      if (displayLookup) {
+        name = displayLookup.name;
+        tag = displayLookup.tag;
+      } else {
+        const pipeMatch = /^(.+?)\s*\|\s*([^|]+)$/.exec(name);
+        if (pipeMatch?.[1]?.trim() && pipeMatch?.[2]?.trim()) {
+          name = pipeMatch[1].trim();
+          tag = pipeMatch[2].trim();
+        }
+      }
+    }
+
+    if (!name) {
+      throw new Error(`${this.emoji("reject")} Team name is required.`);
+    }
+    if (name.length > 80) {
+      throw new Error(
+        `${this.emoji("reject")} Team name must be 80 characters or fewer.`,
+      );
+    }
+
+    return { name, tag };
+  }
+
+  async changeSlotTeamNameFromDiscord(
+    input: {
+      slotNumber: number;
+      name: string;
+      tag?: string | null;
+      channelId: string;
+      channelTopic?: string | null;
+      requesterDiscordId: string;
+      requesterLabel?: string | null;
+    },
+    guild: Guild | null | undefined,
+  ): Promise<string> {
+    if (!guild) {
+      return `${this.emoji("reject")} This command only works inside a Discord server.`;
+    }
+    if (!Number.isInteger(input.slotNumber) || input.slotNumber < 1) {
+      return `${this.emoji("reject")} Use a valid slot number.`;
+    }
+
+    try {
+      const resolved = await this.findScrimForDiscordChannel(
+        guild.id,
+        input.channelId,
+        input.channelTopic,
+      );
+      if (!resolved || resolved.channelKind !== "slot-list") {
+        return `${this.emoji("reject")} Use /changename inside the synced slot-list channel for this scrim.`;
+      }
+
+      const hasStaffAccess = await this.requesterHasStaffAccess(
+        input.requesterDiscordId,
+        guild,
+        resolved.config,
+      );
+      if (!hasStaffAccess) {
+        return `${this.emoji("reject", resolved.config)} Only Arenzyra staff can change slot team names.`;
+      }
+
+      const next = this.parseSlotTeamRenameInput(input.name, input.tag);
+      const registrations = await this.withOrganization(
+        resolved.config.organizationId,
+        () => this.apiClient.listRegistrations(resolved.session.id),
+      );
+      const registration = registrations.find(
+        (candidate) =>
+          this.activeRegistrationStatus(candidate) &&
+          candidate.slotNumber === input.slotNumber,
+      );
+      if (!registration?.team) {
+        return `${this.emoji("reject", resolved.config)} No active team is assigned to slot #${input.slotNumber}.`;
+      }
+
+      const before = registration.team;
+      const oldLabel = this.formatTeamSummary(before);
+      const oldTag = before.tag?.trim() || null;
+      const nextTag = next.tag ?? oldTag;
+      if (before.name.trim() === next.name && oldTag === nextTag) {
+        return `${this.emoji("warning", resolved.config)} Slot #${input.slotNumber} is already ${oldLabel}.`;
+      }
+
+      const payload: { name: string; tag?: string | null } = {
+        name: next.name,
+      };
+      if (next.tag !== null) {
+        payload.tag = next.tag;
+      }
+
+      const updated = await this.withOrganization(
+        resolved.config.organizationId,
+        () => this.apiClient.updateTeam(before.id, payload),
+      );
+      const newLabel = this.formatTeamSummary(updated);
+
+      const refreshed = await this.withOrganization(
+        resolved.config.organizationId,
+        () => this.syncVisibleDiscordMessagesFast(guild, resolved.session.id),
+      );
+      if (!refreshed) {
+        this.queueVisibleDiscordScrimRefresh(
+          guild,
+          resolved.session.id,
+          resolved.config,
+        );
+      }
+
+      void this.sendDiscordActionLog(guild, resolved.config, {
+        action: "Slot team name changed",
+        actorDiscordId: input.requesterDiscordId,
+        actorLabel: input.requesterLabel,
+        sourceChannelId: input.channelId,
+        sessionId: resolved.session.id,
+        sessionName: resolved.session.name,
+        team: updated,
+        slot: input.slotNumber,
+        status: `${oldLabel} -> ${newLabel}`,
+        details: [
+          `Old name: ${before.name}`,
+          `Old tag: ${oldTag ?? "-"}`,
+          `New name: ${updated.name}`,
+          `New tag: ${updated.tag ?? "-"}`,
+        ],
+        color: 0x38bdf8,
+      }).catch((error) => {
+        console.warn(
+          `Discord action log failed for slot team rename ${resolved.session.id}: ${String(
+            error,
+          )}`,
+        );
+      });
+
+      return [
+        `${this.emoji("check", resolved.config)} Slot #${input.slotNumber} team updated.`,
+        `Before: ${oldLabel}`,
+        `After: ${newLabel}`,
+        refreshed ? "Slot list refreshed." : "Slot list refresh queued.",
       ].join("\n");
     } catch (error) {
       throw new Error(toFriendlyApiError(error));
@@ -12176,7 +17110,10 @@ export class DiscordSessionService {
   async syncDiscordScrimState(
     guild: Guild,
     sessionId: string,
-    opts: { removedTeamIds?: string[] } = {},
+    opts: {
+      removedTeamIds?: string[];
+      extraDiscordUserIds?: string[];
+    } = {},
   ): Promise<ScrimDiscordSetup> {
     const totalStartedAt = Date.now();
     console.log(
@@ -12222,6 +17159,13 @@ export class DiscordSessionService {
     );
     this.logTiming(`persist setup session=${sessionId}`, stepStartedAt);
 
+    registrations = await this.backfillPendingLogosForRegistrations(
+      guild,
+      session.id,
+      config,
+      registrations,
+    );
+
     const memberCache = await this.loadTeamMembersForSync([
       ...registrations
         .filter((registration) => this.activeRegistrationStatus(registration))
@@ -12231,14 +17175,17 @@ export class DiscordSessionService {
 
     stepStartedAt = Date.now();
     const removedTeamIds = opts.removedTeamIds ?? [];
-    if (removedTeamIds.length > 0) {
+    const extraDiscordUserIds = opts.extraDiscordUserIds ?? [];
+    if (removedTeamIds.length > 0 || extraDiscordUserIds.length > 0) {
       await this.reconcileTeamSetAccessRoles(
         guild,
         setup,
+        sessionId,
         removedTeamIds,
         registrations,
         this.activeRegistrationByTeam(registrations),
         memberCache,
+        extraDiscordUserIds,
       );
     }
     this.logTiming(`removed role sync session=${sessionId}`, stepStartedAt);
@@ -12248,6 +17195,7 @@ export class DiscordSessionService {
     await this.syncRegistrationAccessRoles(
       guild,
       setup,
+      sessionId,
       registrations,
       memberCache,
     );
@@ -12276,6 +17224,7 @@ export class DiscordSessionService {
         await this.reconcileTeamSetAccessRoles(
           guild,
           setup,
+          sessionId,
           staleRoleTeamIds,
           refreshedRegistrations,
           refreshedActiveByTeamId,
@@ -12342,6 +17291,12 @@ export class DiscordSessionService {
         config,
         messageIds,
       );
+      config = await this.syncWaitlistPromotionAnnouncement(
+        guild,
+        session,
+        config,
+        registrations,
+      );
     } catch (error) {
       console.warn(
         `[DiscordSync] full message sync failed session=${sessionId}: ${String(error)}. Trying slot-list-only refresh.`,
@@ -12361,6 +17316,7 @@ export class DiscordSessionService {
     this.logTiming(`message sync session=${sessionId}`, stepStartedAt);
     this.scheduleCopiedEventSourceImportRefresh(session.id, config);
     this.scheduleConfirmationWindowSync(guild, session.id, config);
+    this.scheduleCancellationCleanupSync(guild, session, config);
     this.scheduleRegistrationWindowSync(guild, session, config);
     this.scheduleWaitlistPromotionWindowSync(guild, session, config);
     this.logTiming(`done session=${sessionId}`, totalStartedAt);
@@ -12402,6 +17358,79 @@ export class DiscordSessionService {
       this.confirmationWindowTimers.set(key, timers);
     } else {
       this.confirmationWindowTimers.delete(key);
+    }
+  }
+
+  private scheduleCancellationCleanupSync(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse | null,
+  ) {
+    const key = this.syncQueueKey(guild, session.id);
+    for (const timer of this.cancellationCleanupTimers.get(key) ?? []) {
+      clearTimeout(timer);
+    }
+
+    if (!config || config.emojis?.playCancellationCleanupEnabled !== "true") {
+      this.cancellationCleanupTimers.delete(key);
+      return;
+    }
+
+    const cleanupWindow = playConfirmationCleanupWindow(config);
+    const closeWindow = playConfirmationCloseWindow(config);
+    const targets = [
+      cleanupWindow.cleanupAt,
+      cleanupWindow.closesAt,
+      cleanupWindow.nextCleanupAt,
+      closeWindow.closesAt,
+      closeWindow.nextClosesAt,
+    ].filter((date): date is Date => Boolean(date));
+    const seen = new Set<number>();
+    const now = Date.now();
+    const timers = targets
+      .filter((date) => {
+        const time = date.getTime();
+        if (seen.has(time)) {
+          return false;
+        }
+        seen.add(time);
+        return true;
+      })
+      .map((date) => date.getTime() - now + 1000)
+      .filter((delay) => delay > 0 && delay <= MAX_CONFIRMATION_WINDOW_TIMER_MS)
+      .map((delay) => {
+        const timer = setTimeout(() => {
+          void this.withOrganization(config.organizationId, async () => {
+            const [freshSession, freshConfig] = await Promise.all([
+              this.apiClient.getSession(session.id),
+              this.apiClient.getSessionDiscordConfig(session.id),
+            ]);
+            await this.applyDueCancellationCleanup(
+              guild,
+              freshSession,
+              freshConfig,
+            );
+            this.scheduleCancellationCleanupSync(
+              guild,
+              freshSession,
+              freshConfig,
+            );
+          }).catch((error) => {
+            console.warn(
+              `[DiscordCancellation] scheduled cleanup failed session=${session.id}: ${String(
+                error,
+              )}`,
+            );
+          });
+        }, delay);
+        timer.unref?.();
+        return timer;
+      });
+
+    if (timers.length > 0) {
+      this.cancellationCleanupTimers.set(key, timers);
+    } else {
+      this.cancellationCleanupTimers.delete(key);
     }
   }
 
@@ -12564,6 +17593,42 @@ export class DiscordSessionService {
     return Math.min(max, Math.max(min, parsed));
   }
 
+  private safeDate(value: string | null | undefined) {
+    if (!value) {
+      return null;
+    }
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private registrationSlotAssignedAt(
+    registration: Pick<
+      SessionRegistrationResponse,
+      "confirmedAt" | "createdAt" | "updatedAt"
+    >,
+  ) {
+    return (
+      this.safeDate(registration.confirmedAt) ??
+      this.safeDate(registration.createdAt) ??
+      this.safeDate(registration.updatedAt)
+    );
+  }
+
+  private registrationAssignedNoLaterThan(
+    registration: Pick<
+      SessionRegistrationResponse,
+      "confirmedAt" | "createdAt" | "updatedAt"
+    >,
+    cutoffIso: string | null | undefined,
+  ) {
+    const cutoff = this.safeDate(cutoffIso);
+    if (!cutoff) {
+      return true;
+    }
+    const assignedAt = this.registrationSlotAssignedAt(registration);
+    return !assignedAt || assignedAt.getTime() <= cutoff.getTime();
+  }
+
   private normalizeDiscordRoleId(value: string | null | undefined) {
     const trimmed = value?.trim() ?? "";
     if (!trimmed) {
@@ -12621,7 +17686,8 @@ export class DiscordSessionService {
   }
 
   private registrationPlayStatus(
-    registration: Pick<SessionRegistrationResponse, "note">,
+    registration: Pick<SessionRegistrationResponse, "note"> &
+      Partial<Pick<SessionRegistrationResponse, "updatedAt">>,
   ): RegistrationPlayStatus | null {
     const marker = registration.note
       ?.split(/\r?\n/)
@@ -12636,10 +17702,16 @@ export class DiscordSessionService {
       ) as {
         status?: unknown;
         discordUserId?: unknown;
+        updatedAt?: unknown;
       };
       if (payload.status !== "CONFIRM" && payload.status !== "NOT_PLAYING") {
         return null;
       }
+      const updatedAt = this.safeDate(
+        typeof payload.updatedAt === "string"
+          ? payload.updatedAt
+          : registration.updatedAt,
+      );
       return {
         status: payload.status,
         discordUserId:
@@ -12647,6 +17719,7 @@ export class DiscordSessionService {
           payload.discordUserId.trim()
             ? payload.discordUserId.trim()
             : null,
+        updatedAt,
       };
     } catch {
       return null;
@@ -12920,6 +17993,379 @@ export class DiscordSessionService {
     ].join(" ");
   }
 
+  private cancellationCleanupEnabled(config: SessionDiscordConfigResponse) {
+    return config.emojis?.playCancellationCleanupEnabled === "true";
+  }
+
+  private cancellationCleanupDelayMinutes(
+    config: SessionDiscordConfigResponse,
+  ) {
+    return Math.round(
+      this.boundedNumber(
+        config.emojis?.playCancellationCleanupDelayMinutes,
+        CANCELLATION_CLEANUP_DELAY_DEFAULT_MINUTES,
+        CANCELLATION_CLEANUP_DELAY_MINUTES_MIN,
+        CANCELLATION_CLEANUP_DELAY_MINUTES_MAX,
+      ),
+    );
+  }
+
+  private cancellationCleanupBanSettings(
+    config: SessionDiscordConfigResponse,
+  ): {
+    scope: TeamBanScope;
+    days: number | null;
+    reasonTemplate: string;
+  } | null {
+    if (config.emojis?.playCancellationCleanupBanEnabled !== "true") {
+      return null;
+    }
+
+    const [rule] = this.parseNoShowAutoBanRulesForDiscord(config);
+    const defaultDays = Math.round(
+      this.boundedNumber(config.emojis?.banDefaultDurationDays, 3, 0, 3650),
+    );
+    const defaultScope =
+      config.emojis?.banDefaultScope === "TEAM" ? "TEAM" : "SESSION";
+    const reasonTemplate =
+      config.emojis?.playCancellationCleanupReason?.trim() ||
+      "Cancelled slot for {session}";
+
+    return {
+      scope: rule?.scope ?? defaultScope,
+      days: rule ? rule.durationDays : defaultDays > 0 ? defaultDays : null,
+      reasonTemplate,
+    };
+  }
+
+  private cancellationCleanupDecision(
+    registration: SessionRegistrationResponse,
+    config: SessionDiscordConfigResponse,
+    now: Date,
+  ): CancellationCleanupDecision | null {
+    const playStatus = this.registrationPlayStatus(registration);
+    if (playStatus?.status !== "NOT_PLAYING") {
+      return null;
+    }
+
+    const cleanupWindow = playConfirmationCleanupWindow(config, now);
+    const closeWindow = playConfirmationCloseWindow(config, now);
+    if (!cleanupWindow.configured || !closeWindow.configured) {
+      return null;
+    }
+
+    const closeAt =
+      cleanupWindow.cleanupAt &&
+      cleanupWindow.closesAt &&
+      cleanupWindow.closesAt >= cleanupWindow.cleanupAt
+        ? cleanupWindow.closesAt
+        : closeWindow.closesAt;
+    if (!closeAt) {
+      return null;
+    }
+
+    const cancelledAt =
+      playStatus.updatedAt ?? this.safeDate(registration.updatedAt) ?? now;
+    const delayMs = this.cancellationCleanupDelayMinutes(config) * 60_000;
+    const cleanupAt =
+      cleanupWindow.cleanupAt && cleanupWindow.cleanupAt < closeAt
+        ? cleanupWindow.cleanupAt
+        : null;
+
+    if (cancelledAt <= closeAt) {
+      return {
+        phase: "pre-close",
+        cancelledAt,
+        dueAt: cleanupAt && cancelledAt < cleanupAt ? cleanupAt : closeAt,
+        createBan: false,
+      };
+    }
+
+    const registeredAt =
+      this.safeDate(registration.createdAt) ??
+      this.safeDate(registration.updatedAt);
+    const registeredBeforeClose = Boolean(
+      registeredAt && registeredAt <= closeAt,
+    );
+
+    return {
+      phase: registeredBeforeClose
+        ? "post-close"
+        : "post-close-late-registration",
+      cancelledAt,
+      dueAt: new Date(cancelledAt.getTime() + delayMs),
+      createBan:
+        registeredBeforeClose &&
+        this.cancellationCleanupBanSettings(config) !== null,
+    };
+  }
+
+  private renderCancellationCleanupReason(
+    template: string,
+    session: Pick<SessionResponse, "name" | "id">,
+    registration: SessionRegistrationResponse,
+    decision: CancellationCleanupDecision,
+  ) {
+    const values: Record<string, string> = {
+      session: session.name || session.id,
+      sessionId: session.id,
+      team: this.resolveTeamLabel(registration),
+      teamName: registration.team?.name?.trim() || registration.teamId,
+      teamTag: registration.team?.tag?.trim() || "",
+      slot:
+        registration.slotNumber !== null ? String(registration.slotNumber) : "",
+      status: "cancelled",
+      phase: decision.phase,
+      cancelledAt: decision.cancelledAt.toISOString(),
+      dueAt: decision.dueAt.toISOString(),
+    };
+    return template
+      .replace(
+        /\{([A-Za-z0-9_]+)\}/g,
+        (match, key: string) => values[key] ?? match,
+      )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 240);
+  }
+
+  private cancellationCleanupNote(
+    decision: CancellationCleanupDecision,
+    registration: SessionRegistrationResponse,
+  ) {
+    return [
+      "Automatic cancellation cleanup.",
+      `Cancelled at: ${decision.cancelledAt.toISOString()}.`,
+      `Due at: ${decision.dueAt.toISOString()}.`,
+      `Phase: ${decision.phase}.`,
+      `Team: ${this.resolveTeamLabel(registration)}.`,
+    ].join(" ");
+  }
+
+  private async applyDueCancellationCleanup(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    now = new Date(),
+  ): Promise<SessionDiscordConfigResponse> {
+    if (!this.cancellationCleanupEnabled(config)) {
+      return config;
+    }
+
+    const registrations = await this.apiClient.listRegistrations(session.id);
+    const decisions = this.playStatusCandidateRegistrations(registrations)
+      .map((registration) => ({
+        registration,
+        decision: this.cancellationCleanupDecision(registration, config, now),
+      }))
+      .filter(
+        (
+          entry,
+        ): entry is {
+          registration: SessionRegistrationResponse & { slotNumber: number };
+          decision: CancellationCleanupDecision;
+        } => Boolean(entry.decision),
+      );
+
+    const due = decisions.filter(
+      (entry) => entry.decision.dueAt.getTime() <= now.getTime(),
+    );
+    if (!due.length) {
+      return config;
+    }
+
+    const memberCache = await this.loadTeamMembersForSync(
+      due.map((entry) => entry.registration.teamId),
+    );
+    const banSettings = this.cancellationCleanupBanSettings(config);
+    const expiresAt = banSettings ? this.banExpiresAt(banSettings.days) : null;
+    const removedRegistrations: SessionRegistrationResponse[] = [];
+    const bannedTeams: Array<{
+      registration: SessionRegistrationResponse;
+      managers: DiscordManagerBanTarget[];
+      decision: CancellationCleanupDecision;
+    }> = [];
+    const activeTeamIds: string[] = [];
+    const serverActionDetails: string[] = [];
+    let failed = 0;
+    let createdBanCount = 0;
+    let alreadyBannedCount = 0;
+
+    for (const { registration, decision } of due) {
+      const managers = this.registrationManagerTargets(
+        registration,
+        memberCache.get(registration.teamId) ?? [],
+      );
+      const reason = this.renderCancellationCleanupReason(
+        decision.createBan
+          ? banSettings?.reasonTemplate || "Cancelled slot for {session}"
+          : config.emojis?.playCancellationCleanupReason ||
+              "Cancelled slot for {session}",
+        session,
+        registration,
+        decision,
+      );
+      const note = this.cancellationCleanupNote(decision, registration);
+
+      try {
+        if (decision.createBan && banSettings) {
+          try {
+            const created = await this.apiClient.createTeamBan({
+              teamId: registration.teamId,
+              scope: banSettings.scope,
+              sessionId:
+                banSettings.scope === "SESSION" ? session.id : undefined,
+              reason,
+              note,
+              expiresAt,
+            });
+            createdBanCount += created.length;
+          } catch (error) {
+            const friendly = toFriendlyApiError(error);
+            if (!friendly.toLowerCase().includes("active ban")) {
+              throw error;
+            }
+            alreadyBannedCount += 1;
+          }
+        }
+
+        const removeResult = await this.apiClient.removeRegistration(
+          session.id,
+          registration.id,
+          {
+            removalReason: reason,
+            note,
+          },
+        );
+        removedRegistrations.push(
+          removeResult.removedRegistration ?? registration,
+        );
+        const promotedRoleSynced = removeResult.promotedRegistration
+          ? await this.syncSessionRegistrationAccessRolesNow(
+              guild,
+              session.id,
+              removeResult.promotedRegistration,
+              "cancellation cleanup promoted team",
+              config,
+            )
+          : false;
+        if (removeResult.promotedRegistration && !promotedRoleSynced) {
+          activeTeamIds.push(removeResult.promotedRegistration.teamId);
+        }
+
+        if (decision.createBan && banSettings) {
+          const details = await this.applyDiscordBanServerAction(
+            guild,
+            config,
+            managers,
+            this.configuredBanServerAction(
+              {
+                target: { kind: "team-id", teamId: registration.teamId },
+                scope: banSettings.scope,
+                sessionId: session.id,
+              },
+              config,
+            ),
+            reason,
+            { permanent: !expiresAt },
+          );
+          serverActionDetails.push(...details);
+          bannedTeams.push({ registration, managers, decision });
+        }
+      } catch (error) {
+        failed += 1;
+        console.warn(
+          `[DiscordCancellation] cleanup failed session=${session.id} registration=${registration.id}: ${String(
+            error,
+          )}`,
+        );
+      }
+    }
+
+    const removedTeamIds = this.uniqueStrings(
+      removedRegistrations.map((registration) => registration.teamId),
+    );
+    const waitlistGrace = await this.maybeOpenWaitlistAfterConfirmationCleanup(
+      guild,
+      session,
+      config,
+      registrations,
+      removedTeamIds,
+      now,
+    );
+    config = waitlistGrace.config;
+
+    if (removedTeamIds.length > 0) {
+      this.syncDiscordScrimStateInBackground(guild, session.id, {
+        organizationId: config.organizationId,
+        removedTeamIds,
+        activeTeamIds,
+        extraDiscordUserIds:
+          this.registrationRoleSyncDiscordUserIds(removedRegistrations),
+        cleanupTeamIds: removedTeamIds,
+        fastMessageRefresh: true,
+        skipFullSync: true,
+        delayMs: 0,
+      });
+      this.reconcileScrimRolesInBackground(guild, session.id);
+    }
+
+    if (banSettings && bannedTeams.length > 0) {
+      await this.refreshDiscordBanListMessage(guild, config, session.id);
+      await this.sendCancellationCleanupBanNotice(guild, config, {
+        session,
+        scope: banSettings.scope,
+        days: banSettings.days,
+        expiresAt,
+        reason: this.renderCancellationCleanupReason(
+          banSettings.reasonTemplate,
+          session,
+          bannedTeams[0].registration,
+          bannedTeams[0].decision,
+        ),
+        teams: bannedTeams,
+        createdCount: createdBanCount,
+        alreadyBannedCount,
+      });
+    }
+
+    await this.sendDiscordActionLog(guild, config, {
+      action:
+        banSettings && bannedTeams.length > 0
+          ? "Cancellation cleanup completed with bans"
+          : "Cancellation cleanup completed",
+      actorLabel: "System",
+      sessionId: session.id,
+      sessionName: session.name,
+      status: `${removedRegistrations.length}/${due.length} cancelled team(s) removed`,
+      reason:
+        due[0] && removedRegistrations.length > 0
+          ? this.renderCancellationCleanupReason(
+              config.emojis?.playCancellationCleanupReason ||
+                "Cancelled slot for {session}",
+              session,
+              due[0].registration,
+              due[0].decision,
+            )
+          : "Cancelled slot cleanup",
+      details: [
+        `Due cancellations: ${due.length}`,
+        `Removed: ${removedRegistrations.length}`,
+        `Penalty bans created: ${createdBanCount}; already banned: ${alreadyBannedCount}`,
+        ...waitlistGrace.details,
+        failed ? `Failed: ${failed}` : null,
+        ...serverActionDetails,
+      ].filter((line): line is string => Boolean(line)),
+      color:
+        createdBanCount > 0 || alreadyBannedCount > 0 ? 0xef4444 : 0xf59e0b,
+    });
+
+    console.log(
+      `[DiscordCancellation] cleanup session=${session.id} removed=${removedRegistrations.length} due=${due.length} bans=${createdBanCount} failed=${failed}`,
+    );
+    return config;
+  }
+
   private async sendConfirmationCleanupBanNotice(
     guild: Guild,
     config: SessionDiscordConfigResponse,
@@ -12952,11 +18398,70 @@ export class DiscordSessionService {
       teamLines.push(`- +${params.teams.length - 10} more`);
     }
 
-    await this.sendDiscordBanChannelContent(
+    await this.sendDiscordLogChannelContent(
       guild,
       config,
       [
         "**Confirmation cleanup bans saved**",
+        `Session: ${params.session.name || params.session.id}`,
+        `Duration: ${this.simpleBanDurationLabel(
+          params.days,
+          params.expiresAt,
+        )}`,
+        `Scope: ${this.simpleBanScopeLabel(
+          params.scope,
+          params.scope === "SESSION"
+            ? [{ id: params.session.id, name: params.session.name }]
+            : [],
+          params.session.name,
+        )}`,
+        `Reason: ${params.reason}`,
+        `Created: ${params.createdCount}`,
+        `Already banned: ${params.alreadyBannedCount}`,
+        "Teams:",
+        ...teamLines,
+      ].join("\n"),
+    );
+  }
+
+  private async sendCancellationCleanupBanNotice(
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+    params: {
+      session: SessionResponse;
+      scope: TeamBanScope;
+      days: number | null;
+      expiresAt: string | null;
+      reason: string;
+      teams: Array<{
+        registration: SessionRegistrationResponse;
+        managers: DiscordManagerBanTarget[];
+        decision: CancellationCleanupDecision;
+      }>;
+      createdCount: number;
+      alreadyBannedCount: number;
+    },
+  ) {
+    if (!params.teams.length) {
+      return;
+    }
+
+    const teamLines = params.teams.slice(0, 10).map((entry) => {
+      return `- ${this.resolveTeamLabel(entry.registration)} | Manager${
+        entry.managers.length === 1 ? "" : "s"
+      }: ${this.simpleBanManagersLabel(entry.managers)} | cancelled during ${
+        entry.decision.phase
+      }`;
+    });
+    if (params.teams.length > 10) {
+      teamLines.push(`- +${params.teams.length - 10} more`);
+    }
+
+    await this.sendDiscordLogChannelContent(
+      guild,
+      config,
+      [
+        "**Cancellation cleanup bans saved**",
         `Session: ${params.session.name || params.session.id}`,
         `Duration: ${this.simpleBanDurationLabel(
           params.days,
@@ -12997,160 +18502,201 @@ export class DiscordSessionService {
       return config;
     }
 
+    const closeWindow = playConfirmationCloseWindow(config, now);
     const cleanupAtIso = cleanupWindow.cleanupAt.toISOString();
-    const closedAtIso = cleanupWindow.closesAt?.toISOString() ?? cleanupAtIso;
-    if (config.emojis?.playConfirmationCleanupLastClosedAt === cleanupAtIso) {
+    const cleanupClosedAtIso =
+      cleanupWindow.closesAt?.toISOString() ?? cleanupAtIso;
+    const cleanupAssignmentCutoffIso = cleanupAtIso;
+    const closeAt = closeWindow.closesAt;
+    const closeAtIso = closeAt?.toISOString() ?? null;
+    const cleanupAgeMs = now.getTime() - cleanupWindow.cleanupAt.getTime();
+    const cleanupAlreadyProcessed =
+      config.emojis?.playConfirmationCleanupLastClosedAt === cleanupAtIso;
+    const cleanupDue =
+      !cleanupAlreadyProcessed &&
+      cleanupAgeMs >= 0 &&
+      cleanupAgeMs <= CONFIRMATION_CLOSE_CLEANUP_GRACE_MS;
+    const cleanupStale =
+      !cleanupAlreadyProcessed &&
+      cleanupAgeMs > CONFIRMATION_CLOSE_CLEANUP_GRACE_MS;
+    const closeAgeMs = closeAt ? now.getTime() - closeAt.getTime() : null;
+    const unconfirmedAlreadyProcessed = Boolean(
+      closeAtIso &&
+      config.emojis?.playConfirmationUnconfirmedCleanupLastClosedAt ===
+        closeAtIso,
+    );
+    const unconfirmedDue = Boolean(
+      closeAt &&
+      closeAtIso &&
+      !unconfirmedAlreadyProcessed &&
+      closeAgeMs !== null &&
+      closeAgeMs >= 0 &&
+      closeAgeMs <= CONFIRMATION_CLOSE_CLEANUP_GRACE_MS,
+    );
+    const unconfirmedStale = Boolean(
+      closeAt &&
+      closeAtIso &&
+      !unconfirmedAlreadyProcessed &&
+      closeAgeMs !== null &&
+      closeAgeMs > CONFIRMATION_CLOSE_CLEANUP_GRACE_MS,
+    );
+    const processedMarkers: Record<string, string> = {};
+    if (cleanupDue || cleanupStale) {
+      processedMarkers.playConfirmationCleanupLastClosedAt = cleanupAtIso;
+    }
+    if ((unconfirmedDue || unconfirmedStale) && closeAtIso) {
+      processedMarkers.playConfirmationUnconfirmedCleanupLastClosedAt =
+        closeAtIso;
+    }
+
+    if (!cleanupDue && !cleanupStale && !unconfirmedDue && !unconfirmedStale) {
       return config;
     }
 
-    const runKey = [guild.id, session.id, cleanupAtIso].join(":");
-    if (this.confirmationCloseCleanupRunKeys.has(runKey)) {
+    const runKey = [
+      guild.id,
+      session.id,
+      cleanupDue ? `cleanup:${cleanupAtIso}` : "",
+      unconfirmedDue && closeAtIso ? `close:${closeAtIso}` : "",
+    ].join(":");
+    if (
+      (cleanupDue || unconfirmedDue) &&
+      this.confirmationCloseCleanupRunKeys.has(runKey)
+    ) {
       return config;
     }
-    this.confirmationCloseCleanupRunKeys.add(runKey);
+    if (cleanupDue || unconfirmedDue) {
+      this.confirmationCloseCleanupRunKeys.add(runKey);
+    }
 
     const markProcessed = () =>
       this.persistManagedMessageIds(session.id, config, {
-        playConfirmationCleanupLastClosedAt: cleanupAtIso,
+        ...processedMarkers,
       });
 
     try {
-      const cleanupAgeMs = now.getTime() - cleanupWindow.cleanupAt.getTime();
-      if (
-        cleanupAgeMs < 0 ||
-        cleanupAgeMs > CONFIRMATION_CLOSE_CLEANUP_GRACE_MS
-      ) {
+      if (cleanupStale || unconfirmedStale) {
         console.log(
-          `[DiscordConfirmation] skipped stale close cleanup session=${session.id} cleanupAt=${cleanupAtIso}`,
+          `[DiscordConfirmation] skipped stale close cleanup session=${session.id} cleanupAt=${cleanupAtIso} closedAt=${closeAtIso ?? "none"}`,
         );
-        this.confirmationCloseCleanupRunKeys.delete(runKey);
-        return await markProcessed();
+        if (!cleanupDue && !unconfirmedDue) {
+          if (cleanupDue || unconfirmedDue) {
+            this.confirmationCloseCleanupRunKeys.delete(runKey);
+          }
+          return await markProcessed();
+        }
       }
 
       const registrations = await this.apiClient.listRegistrations(session.id);
-      const targets = this.playStatusCandidateRegistrations(
-        registrations,
-      ).filter(
-        (registration) =>
-          this.registrationPlayStatus(registration)?.status !== "CONFIRM",
-      );
+      const targetEntries = this.playStatusCandidateRegistrations(registrations)
+        .map((registration) => {
+          const playStatus = this.registrationPlayStatus(registration);
+          if (playStatus?.status === "CONFIRM") {
+            return null;
+          }
+          const timing = cleanupDue
+            ? {
+                closedAtIso: cleanupClosedAtIso,
+                assignmentCutoffIso: cleanupAssignmentCutoffIso,
+              }
+            : unconfirmedDue
+              ? {
+                  closedAtIso: closeAtIso ?? cleanupClosedAtIso,
+                  assignmentCutoffIso: closeAtIso ?? cleanupClosedAtIso,
+                }
+              : null;
+          if (
+            !timing ||
+            !this.registrationAssignedNoLaterThan(
+              registration,
+              timing.assignmentCutoffIso,
+            )
+          ) {
+            return null;
+          }
+          if (playStatus?.status === "NOT_PLAYING") {
+            return {
+              registration,
+              closedAtIso: timing.closedAtIso,
+              statusLabel: "not playing",
+            };
+          }
+          return {
+            registration,
+            closedAtIso: timing.closedAtIso,
+            statusLabel: "unconfirmed",
+          };
+        })
+        .filter(
+          (
+            entry,
+          ): entry is {
+            registration: SessionRegistrationResponse & { slotNumber: number };
+            closedAtIso: string;
+            statusLabel: "not playing" | "unconfirmed";
+          } => Boolean(entry),
+        );
+      const targets = targetEntries.map((entry) => entry.registration);
+      const notPlayingTargetCount = targetEntries.filter(
+        (entry) => entry.statusLabel === "not playing",
+      ).length;
+      const unconfirmedTargetCount = targetEntries.filter(
+        (entry) => entry.statusLabel === "unconfirmed",
+      ).length;
 
       if (!targets.length) {
         console.log(
-          `[DiscordConfirmation] close cleanup no targets session=${session.id} closedAt=${closedAtIso}`,
+          `[DiscordConfirmation] close cleanup no targets session=${session.id} cleanupAt=${cleanupAtIso} closedAt=${closeAtIso ?? cleanupClosedAtIso}`,
         );
         return await markProcessed();
       }
 
-      const memberCache = await this.loadTeamMembersForSync(
-        targets.map((registration) => registration.teamId),
-      );
-      const banSettings = this.confirmationCleanupBanSettings(config);
       const removedRegistrations: SessionRegistrationResponse[] = [];
-      const bannedTeams: Array<{
-        registration: SessionRegistrationResponse;
-        managers: DiscordManagerBanTarget[];
-      }> = [];
       const activeTeamIds: string[] = [];
       let failed = 0;
-      let alreadyBannedCount = 0;
-      let createdBanCount = 0;
-      const serverActionDetails: string[] = [];
       const firstReason = targets[0]
         ? this.renderConfirmationCleanupReason(
-            banSettings?.reasonTemplate ||
-              config.emojis?.playConfirmationCleanupReason ||
+            config.emojis?.playConfirmationCleanupReason ||
               "Missed confirmation for {session}",
             session,
             targets[0],
           )
         : "Missed confirmation";
-      const expiresAt = banSettings
-        ? this.banExpiresAt(banSettings.days)
-        : null;
 
-      for (const registration of targets) {
-        const managers = this.registrationManagerTargets(
-          registration,
-          memberCache.get(registration.teamId) ?? [],
-        );
+      for (const target of targetEntries) {
+        const registration = target.registration;
         const reason = this.renderConfirmationCleanupReason(
-          banSettings?.reasonTemplate ||
-            config.emojis?.playConfirmationCleanupReason ||
+          config.emojis?.playConfirmationCleanupReason ||
             "Missed confirmation for {session}",
           session,
           registration,
         );
-        const note = this.confirmationCleanupNote(closedAtIso, registration);
+        const note = this.confirmationCleanupNote(
+          target.closedAtIso,
+          registration,
+        );
 
         try {
-          if (banSettings) {
-            let created: TeamBanResponse[] = [];
-            try {
-              created = await this.apiClient.createTeamBan({
-                teamId: registration.teamId,
-                scope: banSettings.scope,
-                sessionId:
-                  banSettings.scope === "SESSION" ? session.id : undefined,
-                reason,
-                note,
-                expiresAt,
-              });
-              createdBanCount += created.length;
-            } catch (error) {
-              const friendly = toFriendlyApiError(error);
-              if (!friendly.toLowerCase().includes("active ban")) {
-                throw error;
-              }
-              alreadyBannedCount += 1;
-            }
-            const removeResult: RemoveRegistrationResponse =
-              await this.apiClient.removeRegistration(
+          const result = await this.apiClient.removeRegistration(
+            session.id,
+            registration.id,
+            {
+              removalReason: reason,
+              note,
+            },
+          );
+          removedRegistrations.push(result.removedRegistration ?? registration);
+          const promotedRoleSynced = result.promotedRegistration
+            ? await this.syncSessionRegistrationAccessRolesNow(
+                guild,
                 session.id,
-                registration.id,
-                {
-                  removalReason: reason,
-                  note,
-                },
-              );
-            const details = await this.applyDiscordBanServerAction(
-              guild,
-              config,
-              managers,
-              this.configuredBanServerAction(
-                {
-                  target: { kind: "team-id", teamId: registration.teamId },
-                  scope: banSettings.scope,
-                  sessionId: session.id,
-                },
+                result.promotedRegistration,
+                "confirmation cleanup promoted team",
                 config,
-              ),
-              reason,
-              { permanent: !expiresAt },
-            );
-            serverActionDetails.push(...details);
-            bannedTeams.push({ registration, managers });
-            removedRegistrations.push(
-              removeResult.removedRegistration ?? registration,
-            );
-            if (removeResult.promotedRegistration) {
-              activeTeamIds.push(removeResult.promotedRegistration.teamId);
-            }
-          } else {
-            const result = await this.apiClient.removeRegistration(
-              session.id,
-              registration.id,
-              {
-                removalReason: reason,
-                note,
-              },
-            );
-            removedRegistrations.push(
-              result.removedRegistration ?? registration,
-            );
-            if (result.promotedRegistration) {
-              activeTeamIds.push(result.promotedRegistration.teamId);
-            }
+              )
+            : false;
+          if (result.promotedRegistration && !promotedRoleSynced) {
+            activeTeamIds.push(result.promotedRegistration.teamId);
           }
         } catch (error) {
           failed += 1;
@@ -13191,45 +18737,27 @@ export class DiscordSessionService {
         this.reconcileScrimRolesInBackground(guild, session.id);
       }
 
-      if (banSettings && bannedTeams.length > 0) {
-        await this.refreshDiscordBanListMessage(guild, config, session.id);
-        await this.sendConfirmationCleanupBanNotice(guild, config, {
-          session,
-          scope: banSettings.scope,
-          days: banSettings.days,
-          expiresAt,
-          reason: firstReason,
-          teams: bannedTeams,
-          createdCount: createdBanCount,
-          alreadyBannedCount,
-        });
-      }
-
       await this.sendDiscordActionLog(guild, config, {
-        action: banSettings
-          ? "Confirmation cleanup completed with bans"
-          : "Confirmation cleanup completed",
+        action: "Confirmation cleanup completed",
         actorLabel: "System",
         sessionId: session.id,
         sessionName: session.name,
         status: `${removedRegistrations.length}/${targets.length} team(s) removed`,
         reason: firstReason,
         details: [
-          `Closed at: ${closedAtIso}`,
+          `Closed at: ${closeAtIso ?? cleanupClosedAtIso}`,
           `Cleanup at: ${cleanupAtIso}`,
-          `Not playing or unconfirmed: ${targets.length}`,
-          banSettings
-            ? `Bans created: ${createdBanCount}; already banned: ${alreadyBannedCount}`
-            : "Bans disabled for this cleanup.",
+          `Not playing: ${notPlayingTargetCount}`,
+          `Unconfirmed: ${unconfirmedTargetCount}`,
+          "Bans are not created during cleanup or at confirmation close.",
           ...waitlistGrace.details,
           failed ? `Failed: ${failed}` : null,
-          ...serverActionDetails,
         ].filter((line): line is string => Boolean(line)),
-        color: banSettings ? 0xef4444 : 0xf59e0b,
+        color: 0xf59e0b,
       });
 
       console.log(
-        `[DiscordConfirmation] close cleanup session=${session.id} removed=${removedRegistrations.length} targets=${targets.length} bans=${createdBanCount} failed=${failed} cleanupAt=${cleanupAtIso}`,
+        `[DiscordConfirmation] close cleanup session=${session.id} removed=${removedRegistrations.length} targets=${targets.length} bans=0 failed=${failed} cleanupAt=${cleanupAtIso}`,
       );
       return await markProcessed();
     } catch (error) {
@@ -13332,6 +18860,204 @@ export class DiscordSessionService {
         )}`,
       );
     }
+  }
+
+  private teamLogoReminderWindowKey(
+    window: ReturnType<typeof teamLogoReminderWindow>,
+  ) {
+    return [
+      window.mode,
+      window.opensAt?.toISOString() ?? "open",
+      window.closesAt?.toISOString() ?? "no-close",
+      window.timeZone ?? "",
+    ].join("|");
+  }
+
+  private storedTeamLogoReminderMessageId(
+    config: SessionDiscordConfigResponse,
+    windowKey: string,
+  ) {
+    const storedWindowKey =
+      config.emojis?.managedTeamLogoReminderWindowKey?.trim();
+    if (storedWindowKey !== windowKey) {
+      return undefined;
+    }
+    return config.emojis?.managedTeamLogoReminderMessageId?.trim() || undefined;
+  }
+
+  private async persistTeamLogoReminderMessageId(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    windowKey: string,
+    messageId: string,
+  ) {
+    try {
+      const latestConfig = await this.latestSessionDiscordConfig(
+        sessionId,
+        config,
+      );
+      const nextEmojis = {
+        ...(latestConfig.emojis ?? {}),
+        managedTeamLogoReminderMessageId: messageId,
+        managedTeamLogoReminderWindowKey: windowKey,
+      };
+      if (
+        latestConfig.emojis?.managedTeamLogoReminderMessageId === messageId &&
+        latestConfig.emojis?.managedTeamLogoReminderWindowKey === windowKey
+      ) {
+        return;
+      }
+      await this.apiClient.updateSessionDiscordConfig(sessionId, {
+        emojis: nextEmojis,
+      });
+    } catch (error) {
+      console.warn(
+        `[DiscordLogoReminder] failed to persist reminder message session=${sessionId}: ${String(
+          error,
+        )}`,
+      );
+    }
+  }
+
+  private registrationHasTeamLogo(registration: SessionRegistrationResponse) {
+    return Boolean(registration.team?.logoUrl?.trim());
+  }
+
+  private async runDueTeamLogoReminders(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    now = new Date(),
+  ) {
+    const reminderConfig = parseTeamLogoReminderConfig(config);
+    const stateKey = `${this.syncQueueKey(guild, session.id)}:team-logo`;
+    const window = teamLogoReminderWindow(config, now);
+    if (
+      !reminderConfig.enabled ||
+      !config.managerChannelId ||
+      !window.configured ||
+      !window.allowsAction
+    ) {
+      this.teamLogoReminderStates.delete(stateKey);
+      return;
+    }
+
+    const windowKey = this.teamLogoReminderWindowKey(window);
+    let state = this.teamLogoReminderStates.get(stateKey);
+    if (!state || state.windowKey !== windowKey) {
+      state = {
+        windowKey,
+        sentCount: 0,
+        lastSentAt: 0,
+        lastMessageId: this.storedTeamLogoReminderMessageId(config, windowKey),
+      };
+      this.teamLogoReminderStates.set(stateKey, state);
+    }
+
+    if (state.sentCount >= reminderConfig.maxMessages) {
+      return;
+    }
+    if (
+      state.sentCount > 0 &&
+      now.getTime() - state.lastSentAt < reminderConfig.intervalMinutes * 60_000
+    ) {
+      return;
+    }
+
+    const registrations = await this.apiClient.listRegistrations(session.id);
+    const candidates = registrations
+      .filter(
+        (registration) =>
+          this.activeRegistrationStatus(registration) &&
+          (registration.status === "CONFIRMED" ||
+            registration.status === "CHECKED_IN") &&
+          registration.slotNumber !== null,
+      )
+      .sort((left, right) => (left.slotNumber ?? 0) - (right.slotNumber ?? 0));
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const missing = candidates.filter(
+      (registration) => !this.registrationHasTeamLogo(registration),
+    );
+    if (missing.length === 0) {
+      return;
+    }
+
+    const memberCache = await this.loadTeamMembersForSync(
+      missing.map((registration) => registration.teamId),
+    );
+    const managerMentionByTeamId = await this.managerMentionByTeamIdForGuild(
+      guild,
+      missing,
+      memberCache,
+    );
+    const managerMentions = missing
+      .map((registration) => managerMentionByTeamId.get(registration.teamId))
+      .filter((mention): mention is string => Boolean(mention));
+    const managerMentionUserIds =
+      this.extractDiscordUserIdsFromMentions(managerMentions);
+    const missingTeams = missing
+      .slice(0, 20)
+      .map((registration) => {
+        const slot = registration.slotNumber
+          ? `#${registration.slotNumber} `
+          : "";
+        return `${slot}${this.formatTeamSlotRow(
+          registration,
+          managerMentionByTeamId.get(registration.teamId),
+        )}`;
+      })
+      .join("\n");
+    const values = {
+      managers: managerMentions.join(" "),
+      session: session.name,
+      missingCount: String(missing.length),
+      totalCount: String(candidates.length),
+      missingTeams,
+      closes: this.accessTimestamp(window.closesAt, "f"),
+      closesRelative: this.accessTimestamp(window.closesAt, "R"),
+      timezone: window.timeZone ?? "",
+    };
+    const content = this.renderConfirmationReminderTemplate(
+      reminderConfig.messageText,
+      values,
+    );
+    if (!content) {
+      return;
+    }
+
+    const channel = await this.fetchAutoCleanupChannel(
+      guild,
+      config.managerChannelId,
+    );
+    if (!channel) {
+      return;
+    }
+
+    const previousMessageId = state.lastMessageId;
+    const sentMessage = await channel.send({
+      content,
+      allowedMentions: allowedMentionsForOrganizerText(content, {
+        users: managerMentionUserIds,
+      }),
+    });
+    state.sentCount += 1;
+    state.lastSentAt = now.getTime();
+    state.lastMessageId = sentMessage.id;
+    if (previousMessageId && previousMessageId !== sentMessage.id) {
+      await this.deleteConfirmationReminderMessage(channel, previousMessageId);
+    }
+    await this.persistTeamLogoReminderMessageId(
+      session.id,
+      config,
+      windowKey,
+      sentMessage.id,
+    );
+    console.log(
+      `[DiscordLogoReminder] sent session=${session.id} missing=${missing.length}/${candidates.length} managers=${managerMentionUserIds.length} count=${state.sentCount}`,
+    );
   }
 
   private async runDueConfirmationReminders(
@@ -13650,6 +19376,531 @@ export class DiscordSessionService {
     }
   }
 
+  private rawAutoCleanupScheduleEntries(
+    config: SessionDiscordConfigResponse | null,
+  ) {
+    const value = config?.emojis?.autoCleanupSchedules?.trim();
+    if (!value) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed
+        .filter((entry): entry is Record<string, unknown> =>
+          Boolean(entry && typeof entry === "object"),
+        )
+        .map((entry) => ({ ...entry }));
+    } catch {
+      return [];
+    }
+  }
+
+  private fullSessionCleanupDisabledSchedulesJson(
+    config: SessionDiscordConfigResponse,
+    time: string,
+  ) {
+    const schedules = this.rawAutoCleanupScheduleEntries(config);
+    const updated = schedules.map((entry) => {
+      const channel = String(entry.channel ?? "").trim();
+      const normalizedTime = this.normalizeAutoCleanupTime(entry.time);
+      if (channel === "session" && normalizedTime === time) {
+        return {
+          ...entry,
+          time: normalizedTime,
+          enabled: false,
+        };
+      }
+      return entry;
+    });
+    return JSON.stringify(updated);
+  }
+
+  private autoCleanupRunKey(
+    guildId: string,
+    sessionId: string,
+    channel: AutoCleanupChannelKey,
+    dateKey: string,
+    time: string,
+  ) {
+    return [guildId, sessionId, channel, dateKey, time].join(":");
+  }
+
+  private autoCleanupTimeToken(time: string) {
+    return time.replace(":", "");
+  }
+
+  private autoCleanupTimeFromToken(token: string) {
+    const match = /^(\d{2})(\d{2})$/.exec(token);
+    if (!match) {
+      return "";
+    }
+    return this.normalizeAutoCleanupTime(`${match[1]}:${match[2]}`);
+  }
+
+  private fullSessionCleanupButtonId(
+    action: "confirm" | "disable",
+    sessionId: string,
+    dateKey: string,
+    time: string,
+  ) {
+    return [
+      AUTO_CLEANUP_FULL_SESSION_BUTTON_PREFIX,
+      action,
+      sessionId,
+      dateKey,
+      this.autoCleanupTimeToken(time),
+    ].join(":");
+  }
+
+  private parseFullSessionCleanupButtonId(customId: string): {
+    action: "confirm" | "disable";
+    sessionId: string;
+    dateKey: string;
+    time: string;
+  } | null {
+    const parts = customId.split(":");
+    if (
+      parts.length !== 6 ||
+      `${parts[0]}:${parts[1]}` !== AUTO_CLEANUP_FULL_SESSION_BUTTON_PREFIX
+    ) {
+      return null;
+    }
+
+    const action = parts[2];
+    if (action !== "confirm" && action !== "disable") {
+      return null;
+    }
+
+    const sessionId = parts[3]?.trim();
+    const dateKey = parts[4]?.trim();
+    const time = this.autoCleanupTimeFromToken(parts[5] ?? "");
+    if (!sessionId || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || !time) {
+      return null;
+    }
+
+    return { action, sessionId, dateKey, time };
+  }
+
+  private fullSessionCleanupRunAlreadyHandled(
+    config: SessionDiscordConfigResponse,
+    runKey: string,
+  ) {
+    return config.emojis?.[AUTO_CLEANUP_FULL_SESSION_LAST_RUN_KEY] === runKey;
+  }
+
+  private fullSessionCleanupDueNow(
+    config: SessionDiscordConfigResponse,
+    schedule: AutoCleanupSchedule,
+    dateKey: string,
+    now = new Date(),
+  ) {
+    const timeZone = this.autoCleanupTimeZone(config);
+    const parts = this.autoCleanupZonedParts(now, timeZone);
+    return (
+      this.autoCleanupDateKey(parts) === dateKey &&
+      this.autoCleanupScheduleDue(schedule, parts)
+    );
+  }
+
+  private fullSessionCleanupPromptChannelIds(
+    config: SessionDiscordConfigResponse,
+  ) {
+    const ids = [
+      config.logChannelId,
+      config.manageChannelId,
+      config.slotListChannelId,
+    ]
+      .map((channelId) => channelId?.trim())
+      .filter((channelId): channelId is string => Boolean(channelId));
+    return Array.from(new Set(ids));
+  }
+
+  private async findFullSessionCleanupPromptChannel(
+    guild: Guild,
+    config: SessionDiscordConfigResponse,
+  ) {
+    for (const channelId of this.fullSessionCleanupPromptChannelIds(config)) {
+      const channel = await this.fetchAutoCleanupChannel(
+        guild,
+        channelId,
+      ).catch(() => null);
+      if (channel) {
+        return channel;
+      }
+    }
+    return null;
+  }
+
+  private scheduledFullSessionCleanupPromptContent(
+    session: SessionResponse,
+    schedule: AutoCleanupSchedule,
+    dateKey: string,
+    timeZone: string,
+  ) {
+    return [
+      "WARNING: Scheduled full session cleanup is ready, but it will not run until staff confirms.",
+      `Session: ${session.name}`,
+      `Scheduled time: ${dateKey} ${schedule.time} ${timeZone}`,
+      `Mode: ${schedule.mode}`,
+      `Limit per channel: ${schedule.limit}`,
+      "Impact: this can delete unprotected messages from all configured session channels, including registration, slots, waitlist, IDP, public chat, manager chat, results, screenshots and bans.",
+      "Pinned messages, Arenzyra managed messages and the configured log channel are protected.",
+      "Backups can preserve known slot/result data, but Discord channel messages are not restored automatically.",
+      "Choose Confirm Full Cleanup to run it once now, or Disable Schedule to turn this full-session schedule off.",
+    ].join("\n");
+  }
+
+  private async promptScheduledFullSessionCleanupConfirmation(
+    guild: Guild,
+    session: SessionResponse,
+    config: SessionDiscordConfigResponse,
+    schedule: AutoCleanupSchedule,
+    runKey: string,
+    dateKey: string,
+    timeZone: string,
+  ) {
+    if (this.fullSessionCleanupRunAlreadyHandled(config, runKey)) {
+      this.rememberAutoCleanupRunKey(runKey);
+      return;
+    }
+
+    if (
+      this.pendingFullSessionCleanupRunKeys.has(runKey) ||
+      config.emojis?.[AUTO_CLEANUP_FULL_SESSION_WARNING_RUN_KEY] === runKey
+    ) {
+      this.pendingFullSessionCleanupRunKeys.add(runKey);
+      return;
+    }
+
+    this.pendingFullSessionCleanupRunKeys.add(runKey);
+    const channel = await this.findFullSessionCleanupPromptChannel(
+      guild,
+      config,
+    );
+    if (!channel) {
+      console.warn(
+        `[DiscordCleanup] full session cleanup needs confirmation but no prompt channel is configured session=${session.id}`,
+      );
+      return;
+    }
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          this.fullSessionCleanupButtonId(
+            "confirm",
+            session.id,
+            dateKey,
+            schedule.time,
+          ),
+        )
+        .setLabel("Confirm Full Cleanup")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(
+          this.fullSessionCleanupButtonId(
+            "disable",
+            session.id,
+            dateKey,
+            schedule.time,
+          ),
+        )
+        .setLabel("Disable Schedule")
+        .setStyle(ButtonStyle.Secondary),
+    );
+
+    const message = await channel.send({
+      content: this.scheduledFullSessionCleanupPromptContent(
+        session,
+        schedule,
+        dateKey,
+        timeZone,
+      ),
+      components: [row],
+      allowedMentions: { parse: [] },
+    });
+
+    await this.apiClient
+      .updateSessionDiscordConfig(session.id, {
+        emojis: {
+          ...config.emojis,
+          [AUTO_CLEANUP_FULL_SESSION_WARNING_RUN_KEY]: runKey,
+          [AUTO_CLEANUP_FULL_SESSION_WARNING_MESSAGE_ID]: message.id,
+        },
+      })
+      .catch((error) => {
+        console.warn(
+          `[DiscordCleanup] failed to persist full session cleanup warning session=${session.id}: ${String(error)}`,
+        );
+      });
+  }
+
+  private async replyAutoCleanupButtonEphemeral(
+    interaction: ButtonInteraction,
+    content: string,
+  ) {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+  }
+
+  private async updateAutoCleanupButtonMessage(
+    interaction: ButtonInteraction,
+    content: string,
+  ) {
+    const payload = {
+      content,
+      components: [],
+      allowedMentions: { parse: [] },
+    };
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(payload);
+      return;
+    }
+    await interaction.update(payload);
+  }
+
+  private async updateFullSessionCleanupRunMetadata(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    runKey: string,
+    requesterDiscordId: string,
+    status: "running" | "completed" | "failed",
+  ) {
+    return this.apiClient.updateSessionDiscordConfig(sessionId, {
+      emojis: {
+        ...config.emojis,
+        [AUTO_CLEANUP_FULL_SESSION_LAST_RUN_KEY]: runKey,
+        [AUTO_CLEANUP_FULL_SESSION_LAST_RUN_STATUS]: status,
+        [AUTO_CLEANUP_FULL_SESSION_LAST_RUN_BY]: requesterDiscordId,
+        [AUTO_CLEANUP_FULL_SESSION_LAST_RUN_AT]: new Date().toISOString(),
+      },
+    });
+  }
+
+  private async markFullSessionCleanupRunStatus(
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+    runKey: string,
+    requesterDiscordId: string,
+    status: "completed" | "failed",
+  ) {
+    await this.updateFullSessionCleanupRunMetadata(
+      sessionId,
+      config,
+      runKey,
+      requesterDiscordId,
+      status,
+    ).catch((error) => {
+      console.warn(
+        `[DiscordCleanup] failed to persist full session cleanup status session=${sessionId} status=${status}: ${String(error)}`,
+      );
+    });
+  }
+
+  async handleAutoCleanupConfirmationButton(
+    interaction: ButtonInteraction,
+  ): Promise<boolean> {
+    const parsed = this.parseFullSessionCleanupButtonId(interaction.customId);
+    if (!parsed) {
+      return false;
+    }
+
+    const guild = interaction.guild;
+    if (!guild) {
+      await this.replyAutoCleanupButtonEphemeral(
+        interaction,
+        "This cleanup button can only be used inside the Discord server.",
+      );
+      return true;
+    }
+
+    const config = await this.apiClient.getSessionDiscordConfig(
+      parsed.sessionId,
+    );
+    if (config.guildId && config.guildId !== guild.id) {
+      await this.replyAutoCleanupButtonEphemeral(
+        interaction,
+        "This cleanup button does not belong to this Discord server.",
+      );
+      return true;
+    }
+
+    const hasStaffAccess = await this.requesterHasStaffAccess(
+      interaction.user.id,
+      guild,
+      config,
+    );
+    if (!hasStaffAccess) {
+      await this.replyAutoCleanupButtonEphemeral(
+        interaction,
+        "Only session staff can use this full-session cleanup button.",
+      );
+      return true;
+    }
+
+    const session = await this.apiClient.getSession(parsed.sessionId);
+    const runKey = this.autoCleanupRunKey(
+      guild.id,
+      parsed.sessionId,
+      "session",
+      parsed.dateKey,
+      parsed.time,
+    );
+
+    if (parsed.action === "disable") {
+      await this.apiClient.updateSessionDiscordConfig(parsed.sessionId, {
+        emojis: {
+          ...config.emojis,
+          autoCleanupSchedules: this.fullSessionCleanupDisabledSchedulesJson(
+            config,
+            parsed.time,
+          ),
+          [AUTO_CLEANUP_FULL_SESSION_WARNING_RUN_KEY]: "",
+          [AUTO_CLEANUP_FULL_SESSION_WARNING_MESSAGE_ID]: "",
+          [AUTO_CLEANUP_FULL_SESSION_LAST_RUN_STATUS]: "disabled",
+          [AUTO_CLEANUP_FULL_SESSION_LAST_RUN_BY]: interaction.user.id,
+          [AUTO_CLEANUP_FULL_SESSION_LAST_RUN_AT]: new Date().toISOString(),
+        },
+      });
+      this.rememberAutoCleanupRunKey(runKey);
+      this.pendingFullSessionCleanupRunKeys.delete(runKey);
+      await this.updateAutoCleanupButtonMessage(
+        interaction,
+        [
+          "Full session cleanup schedule disabled.",
+          `Session: ${session.name}`,
+          `Disabled by: <@${interaction.user.id}>`,
+          "Nothing was deleted.",
+        ].join("\n"),
+      );
+      return true;
+    }
+
+    const schedule = this.autoCleanupSchedules(config).find(
+      (entry) => entry.channel === "session" && entry.time === parsed.time,
+    );
+    if (!schedule) {
+      await this.updateAutoCleanupButtonMessage(
+        interaction,
+        [
+          "Full session cleanup was not run because this schedule is no longer enabled.",
+          `Session: ${session.name}`,
+          "Nothing was deleted.",
+        ].join("\n"),
+      );
+      return true;
+    }
+
+    if (
+      this.autoCleanupRunKeys.has(runKey) ||
+      this.fullSessionCleanupRunAlreadyHandled(config, runKey)
+    ) {
+      await this.updateAutoCleanupButtonMessage(
+        interaction,
+        [
+          "Full session cleanup was already handled for this scheduled run.",
+          `Session: ${session.name}`,
+        ].join("\n"),
+      );
+      return true;
+    }
+
+    if (!this.fullSessionCleanupDueNow(config, schedule, parsed.dateKey)) {
+      await this.updateAutoCleanupButtonMessage(
+        interaction,
+        [
+          "This full session cleanup confirmation expired.",
+          `Session: ${session.name}`,
+          "Nothing was deleted. Wait for the next scheduled prompt or run a manual cleanup.",
+        ].join("\n"),
+      );
+      return true;
+    }
+
+    const runningConfig = await this.updateFullSessionCleanupRunMetadata(
+      parsed.sessionId,
+      config,
+      runKey,
+      interaction.user.id,
+      "running",
+    );
+    this.rememberAutoCleanupRunKey(runKey);
+    this.pendingFullSessionCleanupRunKeys.delete(runKey);
+    await this.updateAutoCleanupButtonMessage(
+      interaction,
+      [
+        "Full session cleanup confirmed.",
+        `Session: ${session.name}`,
+        `Confirmed by: <@${interaction.user.id}>`,
+        "Cleanup is running now.",
+      ].join("\n"),
+    );
+
+    try {
+      await this.withOrganization(runningConfig.organizationId, () =>
+        this.cleanScheduledFullSession(guild, session, runningConfig, schedule),
+      );
+      await this.markFullSessionCleanupRunStatus(
+        parsed.sessionId,
+        runningConfig,
+        runKey,
+        interaction.user.id,
+        "completed",
+      );
+      await interaction.message
+        .edit({
+          content: [
+            "Full session cleanup completed.",
+            `Session: ${session.name}`,
+            `Confirmed by: <@${interaction.user.id}>`,
+            "Cleanup details were posted to the configured log channel.",
+          ].join("\n"),
+          components: [],
+          allowedMentions: { parse: [] },
+        })
+        .catch(() => undefined);
+    } catch (error) {
+      await this.markFullSessionCleanupRunStatus(
+        parsed.sessionId,
+        runningConfig,
+        runKey,
+        interaction.user.id,
+        "failed",
+      );
+      console.warn(
+        `[DiscordCleanup] confirmed full session cleanup failed session=${parsed.sessionId}: ${String(error)}`,
+      );
+      await interaction.message
+        .edit({
+          content: [
+            "Full session cleanup failed after confirmation.",
+            `Session: ${session.name}`,
+            "Check bot logs before trying any manual cleanup.",
+          ].join("\n"),
+          components: [],
+          allowedMentions: { parse: [] },
+        })
+        .catch(() => undefined);
+    }
+
+    return true;
+  }
+
   private autoCleanupChannelId(
     config: SessionDiscordConfigResponse,
     channel: AutoCleanupChannelKey,
@@ -13668,6 +19919,8 @@ export class DiscordSessionService {
         return config.waitlistChannelId;
       case "idp":
         return config.idpChannelId;
+      case "publicChat":
+        return config.publicChatChannelId;
       case "manager":
         return config.managerChannelId;
       case "transfer":
@@ -13720,13 +19973,13 @@ export class DiscordSessionService {
       if (!this.autoCleanupScheduleDue(schedule, parts)) {
         continue;
       }
-      const runKey = [
+      const runKey = this.autoCleanupRunKey(
         guild.id,
         session.id,
         schedule.channel,
         dateKey,
         schedule.time,
-      ].join(":");
+      );
       if (this.autoCleanupRunKeys.has(runKey)) {
         continue;
       }
@@ -13747,18 +20000,24 @@ export class DiscordSessionService {
         continue;
       }
 
-      this.rememberAutoCleanupRunKey(runKey);
       if (schedule.channel === "session") {
-        await this.withOrganization(config.organizationId, () =>
-          this.cleanScheduledFullSession(guild, session, config, schedule),
+        await this.promptScheduledFullSessionCleanupConfirmation(
+          guild,
+          session,
+          config,
+          schedule,
+          runKey,
+          dateKey,
+          timeZone,
         ).catch((error) => {
           console.warn(
-            `[DiscordCleanup] scheduled full session cleanup failed session=${session.id}: ${String(error)}`,
+            `[DiscordCleanup] scheduled full session confirmation failed session=${session.id}: ${String(error)}`,
           );
         });
         continue;
       }
 
+      this.rememberAutoCleanupRunKey(runKey);
       if (schedule.channel === "slotData") {
         await this.withOrganization(config.organizationId, () =>
           this.cleanScheduledAssignedSlots(guild, session, config, schedule),
@@ -13815,6 +20074,7 @@ export class DiscordSessionService {
       [
         config.emojis?.managedRegistrationPanelMessageId,
         config.emojis?.managedRegistrationStatusMessageId,
+        config.emojis?.managedWaitlistPromotionMessageId,
         config.emojis?.managedEarlyAccessStatusMessageId,
         config.emojis?.managedVipAccessStatusMessageId,
         config.emojis?.managedSlotListMessageId,
@@ -13825,6 +20085,14 @@ export class DiscordSessionService {
         .map((value) => value?.trim())
         .filter((value): value is string => Boolean(value)),
     );
+  }
+
+  private isProtectedAutoCleanupLogChannel(
+    config: SessionDiscordConfigResponse,
+    channelId: string | null | undefined,
+  ) {
+    const logChannelId = config.logChannelId?.trim();
+    return Boolean(logChannelId && channelId?.trim() === logChannelId);
   }
 
   private async fetchAutoCleanupChannel(guild: Guild, channelId: string) {
@@ -13999,6 +20267,11 @@ export class DiscordSessionService {
       },
       { key: "idp", label: "IDP", channelId: config.idpChannelId ?? "" },
       {
+        key: "publicChat",
+        label: "Public Chat",
+        channelId: config.publicChatChannelId ?? "",
+      },
+      {
         key: "manager",
         label: "Manager Chat",
         channelId: config.managerChannelId ?? "",
@@ -14029,7 +20302,11 @@ export class DiscordSessionService {
     const byChannelId = new Map<string, (typeof targets)[number]>();
     for (const target of targets) {
       const channelId = target.channelId.trim();
-      if (!channelId || byChannelId.has(channelId)) {
+      if (
+        !channelId ||
+        this.isProtectedAutoCleanupLogChannel(config, channelId) ||
+        byChannelId.has(channelId)
+      ) {
         continue;
       }
       byChannelId.set(channelId, { ...target, channelId });
@@ -14071,6 +20348,13 @@ export class DiscordSessionService {
     schedule: AutoCleanupSchedule,
     channelId: string,
   ) {
+    if (this.isProtectedAutoCleanupLogChannel(config, channelId)) {
+      console.warn(
+        `[DiscordCleanup] protected log channel cleanup skipped session=${session.id} channel=${channelId} type=${schedule.channel}`,
+      );
+      return;
+    }
+
     const cleanup = await this.cleanAutoCleanupChannelMessages(
       guild,
       config,
@@ -14191,11 +20475,30 @@ export class DiscordSessionService {
     )
       .filter((slotNumber): slotNumber is number => slotNumber !== null)
       .sort((left, right) => left - right);
+    const removedManagerDiscordUserIds =
+      this.registrationRoleSyncDiscordUserIds(removed);
+
+    // A scheduled cleanup soft-deletes registrations before the queued sync
+    // runs. Reconcile their saved manager snapshots immediately so a restart
+    // or delayed background job cannot leave Slot/IDP roles behind.
+    const rolesSynced = await this.syncAffectedTeamAccessRoles(
+      guild,
+      session.id,
+      {
+        removedTeamIds,
+        extraDiscordUserIds: removedManagerDiscordUserIds,
+      },
+    );
+    if (!rolesSynced && removedManagerDiscordUserIds.length > 0) {
+      console.warn(
+        `[DiscordCleanup] immediate role removal deferred session=${session.id} managers=${removedManagerDiscordUserIds.length}; queued reconciliation will retry.`,
+      );
+    }
 
     this.syncDiscordScrimStateInBackground(guild, session.id, {
       organizationId: config.organizationId,
       removedTeamIds,
-      extraDiscordUserIds: this.registrationRoleSyncDiscordUserIds(removed),
+      extraDiscordUserIds: removedManagerDiscordUserIds,
       cleanupTeamIds: removedTeamIds,
       fastMessageRefresh: true,
       skipFullSync: true,
@@ -14216,6 +20519,19 @@ export class DiscordSessionService {
         this.formatResultResetNote(result.resultReset),
         "Discord refresh, role reconciliation, and roster release were queued.",
       ].join(" "),
+    });
+    await this.sendCleanedSlotListSnapshotLog(guild, config, {
+      title: "Scheduled assigned slot cleanup - removed slot list.",
+      sessionId: session.id,
+      sessionName: session.name,
+      registrations: removed,
+      removedSlots,
+    }).catch((error) => {
+      console.warn(
+        `[DiscordCleanup] scheduled slot snapshot log failed session=${session.id}: ${String(
+          error,
+        )}`,
+      );
     });
     console.log(
       `[DiscordCleanup] scheduled assigned slots session=${session.id} removed=${removed.length} slots=${removedSlots.length}`,
@@ -14275,12 +20591,30 @@ export class DiscordSessionService {
       .map((registration) => registration.waitlistPosition)
       .filter((position): position is number => position !== null)
       .sort((left, right) => left - right);
+    const removedManagerDiscordUserIds =
+      this.registrationRoleSyncDiscordUserIds(removedRegistrations);
+
+    // Do not rely only on the queued sync after registrations have been
+    // soft-deleted. Remove stale managed access from their saved managers
+    // first, then retain the queued reconciliation as a retry/safety pass.
+    const rolesSynced = await this.syncAffectedTeamAccessRoles(
+      guild,
+      session.id,
+      {
+        removedTeamIds,
+        extraDiscordUserIds: removedManagerDiscordUserIds,
+      },
+    );
+    if (!rolesSynced && removedManagerDiscordUserIds.length > 0) {
+      console.warn(
+        `[DiscordCleanup] immediate role removal deferred session=${session.id} managers=${removedManagerDiscordUserIds.length}; queued reconciliation will retry.`,
+      );
+    }
 
     this.syncDiscordScrimStateInBackground(guild, session.id, {
       organizationId: config.organizationId,
       removedTeamIds,
-      extraDiscordUserIds:
-        this.registrationRoleSyncDiscordUserIds(removedRegistrations),
+      extraDiscordUserIds: removedManagerDiscordUserIds,
       cleanupTeamIds: removedTeamIds,
       fastMessageRefresh: true,
       skipFullSync: true,
@@ -14550,12 +20884,8 @@ export class DiscordSessionService {
 
     const slotRoleId = config.slotRoleId ?? config.idpRoleId ?? "";
     const slotRoleName = config.slotRoleName ?? config.idpRoleName ?? "";
-    const legacyIdpRoleId =
-      config.idpRoleId && config.idpRoleId !== slotRoleId
-        ? config.idpRoleId
-        : undefined;
-    const legacyIdpRoleName =
-      legacyIdpRoleId && config.idpRoleName ? config.idpRoleName : undefined;
+    const idpRoleId = config.idpRoleId ?? slotRoleId;
+    const idpRoleName = config.idpRoleName ?? slotRoleName;
 
     return {
       categoryId: config.categoryId,
@@ -14568,10 +20898,16 @@ export class DiscordSessionService {
       waitlistChannelName: config.waitlistChannelName ?? "",
       idpChannelId: config.idpChannelId ?? "",
       idpChannelName: config.idpChannelName ?? "",
+      publicChatChannelId: config.publicChatChannelId ?? "",
+      publicChatChannelName: config.publicChatChannelName ?? "",
       managerChannelId: config.managerChannelId ?? "",
       managerChannelName: config.managerChannelName ?? "",
       transferChannelId: config.transferChannelId ?? "",
       transferChannelName: config.transferChannelName ?? "",
+      autoRegistrationGrantChannelId:
+        config.emojis.autoRegistrationGrantChannelId?.trim() || undefined,
+      autoRegistrationGrantChannelName:
+        config.emojis.autoRegistrationGrantChannelName?.trim() || undefined,
       manageChannelId: config.manageChannelId ?? "",
       manageChannelName: config.manageChannelName ?? "",
       resultsChannelId: config.resultsChannelId ?? "",
@@ -14588,10 +20924,8 @@ export class DiscordSessionService {
       staffRoleName: config.emojis.staffRoleName ?? "Arenzyra Staff",
       waitlistRoleId: config.waitlistRoleId ?? "",
       waitlistRoleName: config.waitlistRoleName ?? "",
-      idpRoleId: slotRoleId,
-      idpRoleName: slotRoleName,
-      legacyIdpRoleId,
-      legacyIdpRoleName,
+      idpRoleId,
+      idpRoleName,
       bannedRoleId: config.bannedRoleId ?? "",
       bannedRoleName: config.bannedRoleName ?? "",
     };
@@ -14639,6 +20973,13 @@ export class DiscordSessionService {
       );
     }
 
+    registrations = await this.backfillPendingLogosForRegistrations(
+      guild,
+      session.id,
+      config,
+      registrations,
+    );
+
     const memberCache = await this.loadTeamMembersForSync(
       registrations
         .filter((registration) => this.activeRegistrationStatus(registration))
@@ -14661,6 +21002,12 @@ export class DiscordSessionService {
       session.id,
       config,
       messageIds,
+    );
+    config = await this.syncWaitlistPromotionAnnouncement(
+      guild,
+      session,
+      config,
+      registrations,
     );
     this.scheduleCopiedEventSourceImportRefresh(session.id, config);
     this.scheduleConfirmationWindowSync(guild, session.id, config);
@@ -14709,6 +21056,13 @@ export class DiscordSessionService {
         );
       }
 
+      registrations = await this.backfillPendingLogosForRegistrations(
+        guild,
+        session.id,
+        config,
+        registrations,
+      );
+
       const memberCache = await this.loadTeamMembersForSync(
         registrations
           .filter((registration) => this.activeRegistrationStatus(registration))
@@ -14753,6 +21107,12 @@ export class DiscordSessionService {
         session.id,
         config,
         messageIds,
+      );
+      config = await this.syncWaitlistPromotionAnnouncement(
+        guild,
+        session,
+        config,
+        registrations,
       );
       this.scheduleCopiedEventSourceImportRefresh(session.id, config);
       this.scheduleConfirmationWindowSync(guild, session.id, config);
@@ -14813,6 +21173,7 @@ export class DiscordSessionService {
       await this.reconcileTeamSetAccessRoles(
         guild,
         setup,
+        sessionId,
         affectedTeamIds,
         registrations,
         activeRegistrationByTeamId,
@@ -14837,6 +21198,7 @@ export class DiscordSessionService {
     sessionId: string,
     registration: SessionRegistrationResponse | null,
     reasonLabel: string,
+    config?: SessionDiscordConfigResponse | null,
   ) {
     if (!guild || !registration) {
       return false;
@@ -14847,15 +21209,132 @@ export class DiscordSessionService {
     if (!activeRoleTeamIds.has(registration.teamId)) {
       return false;
     }
-    const synced = await this.syncAffectedTeamAccessRoles(guild, sessionId, {
-      activeTeamIds: [registration.teamId],
-    });
-    if (!synced) {
-      console.warn(
-        `[DiscordSync] ${reasonLabel} role sync did not complete session=${sessionId} registration=${registration.id}`,
+
+    try {
+      const resolvedConfig =
+        config ??
+        (await this.apiClient
+          .getSessionDiscordConfig(sessionId)
+          .catch((error) => {
+            console.warn(
+              `[DiscordSync] ${reasonLabel} role config lookup failed session=${sessionId} registration=${registration.id}: ${String(
+                error,
+              )}`,
+            );
+            return null;
+          }));
+      const setup = this.setupFromConfig(resolvedConfig);
+      if (!setup) {
+        console.warn(
+          `[DiscordSync] ${reasonLabel} role sync skipped session=${sessionId} registration=${registration.id}: saved Discord setup is incomplete`,
+        );
+        return false;
+      }
+
+      const desiredRoleIds = this.desiredScrimRoleIds(registration, setup);
+      if (desiredRoleIds.length === 0) {
+        return false;
+      }
+
+      let managerDiscordUserIds =
+        this.managerSnapshotDiscordUserIds(registration);
+      if (managerDiscordUserIds.length === 0) {
+        const memberCache = await this.loadTeamMembersForSync([
+          registration.teamId,
+        ]);
+        managerDiscordUserIds = this.accessRoleManagerDiscordUserIds(
+          registration,
+          memberCache.get(registration.teamId) ?? [],
+        );
+      }
+      if (managerDiscordUserIds.length === 0) {
+        console.warn(
+          `[DiscordSync] ${reasonLabel} role sync skipped session=${sessionId} registration=${registration.id}: no saved manager Discord user`,
+        );
+        return false;
+      }
+
+      let liveDesiredRolesByDiscordUserId: Map<string, string[]> | null = null;
+      try {
+        liveDesiredRolesByDiscordUserId =
+          await this.latestDesiredAccessRolesByDiscordUser(sessionId, setup);
+      } catch (error) {
+        console.warn(
+          `[DiscordSync] ${reasonLabel} live role state lookup failed session=${sessionId} registration=${registration.id}: ${String(
+            error,
+          )}`,
+        );
+      }
+
+      const managedRoleIds = this.scrimManagedRoleIds(setup);
+      const fallbackRoleIds = this.uniqueRoleIds(desiredRoleIds);
+      const liveRoleState = liveDesiredRolesByDiscordUserId;
+      let verified = true;
+
+      await this.runLimited(
+        managerDiscordUserIds,
+        ROLE_SYNC_CONCURRENCY,
+        async (discordUserId) => {
+          // A manager can own more than one active team in the same session.
+          // Reconcile their complete live access set, rather than letting a
+          // waitlist update strip Slot/IDP access from another confirmed team.
+          const hasLiveRoleState = liveRoleState !== null;
+          const expectedRoleIds = hasLiveRoleState
+            ? this.uniqueRoleIds(liveRoleState?.get(discordUserId) ?? [])
+            : fallbackRoleIds;
+          const expectedRoles = new Set(expectedRoleIds);
+
+          await this.applySessionManagedRoleSetToDiscordUser(
+            guild,
+            sessionId,
+            setup,
+            discordUserId,
+            expectedRoleIds,
+            // If the live read fails, grant the known required role without
+            // removing any existing managed role. A later full sync can
+            // safely reconcile removals from current registration data.
+            hasLiveRoleState ? managedRoleIds : expectedRoleIds,
+            `Arenzyra ${reasonLabel} access role sync ${setup.categoryId}`,
+            { refreshDesired: false },
+          );
+
+          const member = await guild.members
+            .fetch({ user: discordUserId, force: true })
+            .catch(() => null);
+          const roleCache = member?.roles?.cache;
+          const hasRequiredRoles = expectedRoleIds.every((roleId) =>
+            roleCache?.has(roleId),
+          );
+          const hasStaleManagedRoles = hasLiveRoleState
+            ? managedRoleIds.some(
+                (roleId) =>
+                  !expectedRoles.has(roleId) && roleCache?.has(roleId),
+              )
+            : false;
+
+          if (!hasRequiredRoles || hasStaleManagedRoles) {
+            verified = false;
+            console.warn(
+              `[DiscordSync] ${reasonLabel} role verification failed session=${sessionId} registration=${registration.id} user=${discordUserId} required=${expectedRoleIds.join(",")} stale=${hasStaleManagedRoles ? "yes" : "no"}`,
+            );
+            return;
+          }
+
+          console.log(
+            `[DiscordSync] ${reasonLabel} role verified session=${sessionId} registration=${registration.id} user=${discordUserId}`,
+          );
+        },
       );
+
+      return verified;
+    } catch (error) {
+      console.warn(
+        `[DiscordSync] ${reasonLabel} role sync did not complete session=${sessionId} registration=${registration.id}: ${String(
+          error,
+        )}`,
+      );
+      return false;
     }
-    return synced;
   }
 
   private async syncSlotListMessageFast(
@@ -14872,6 +21351,13 @@ export class DiscordSessionService {
     if (!setup) {
       return false;
     }
+
+    registrations = await this.backfillPendingLogosForRegistrations(
+      guild,
+      session.id,
+      config,
+      registrations,
+    );
 
     const startedAt = Date.now();
     try {
@@ -14962,6 +21448,9 @@ export class DiscordSessionService {
   }
 
   startConfirmationWindowRefresh(client: Client) {
+    if (this.confirmationWindowRefreshTimer) {
+      return;
+    }
     const refresh = () => {
       void this.refreshConfirmationWindowSyncs(client).catch((error) => {
         console.warn(`Confirmation window refresh failed: ${String(error)}`);
@@ -14969,10 +21458,10 @@ export class DiscordSessionService {
     };
 
     refresh();
-    const timer = setInterval(() => {
+    this.confirmationWindowRefreshTimer = setInterval(() => {
       refresh();
     }, CONFIRMATION_WINDOW_REFRESH_INTERVAL_MS);
-    timer.unref?.();
+    this.confirmationWindowRefreshTimer.unref?.();
   }
 
   startActiveDiscordSessionReconciler(client: Client) {
@@ -14990,10 +21479,10 @@ export class DiscordSessionService {
       );
     };
 
-    const startupTimer = setTimeout(() => {
+    this.activeDiscordSessionReconcileStartupTimer = setTimeout(() => {
       run(true);
     }, ACTIVE_DISCORD_RECONCILE_INITIAL_DELAY_MS);
-    startupTimer.unref?.();
+    this.activeDiscordSessionReconcileStartupTimer.unref?.();
 
     this.activeDiscordSessionReconcileTimer = setInterval(() => {
       run(false);
@@ -15016,17 +21505,60 @@ export class DiscordSessionService {
       });
     };
 
-    const startupTimer = setTimeout(
+    this.expiredBanRoleCleanupStartupTimer = setTimeout(
       run,
       EXPIRED_BAN_ROLE_CLEANUP_INITIAL_DELAY_MS,
     );
-    startupTimer.unref?.();
+    this.expiredBanRoleCleanupStartupTimer.unref?.();
 
     this.expiredBanRoleCleanupTimer = setInterval(
       run,
       EXPIRED_BAN_ROLE_CLEANUP_INTERVAL_MS,
     );
     this.expiredBanRoleCleanupTimer.unref?.();
+  }
+
+  stopBackgroundTasks() {
+    for (const timer of [
+      this.confirmationWindowRefreshTimer,
+      this.activeDiscordSessionReconcileStartupTimer,
+      this.activeDiscordSessionReconcileTimer,
+      this.expiredBanRoleCleanupStartupTimer,
+      this.expiredBanRoleCleanupTimer,
+    ]) {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+    this.confirmationWindowRefreshTimer = null;
+    this.activeDiscordSessionReconcileStartupTimer = null;
+    this.activeDiscordSessionReconcileTimer = null;
+    this.expiredBanRoleCleanupStartupTimer = null;
+    this.expiredBanRoleCleanupTimer = null;
+
+    for (const timer of this.copiedEventSourceRefreshTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.copiedEventSourceRefreshTimers.clear();
+    for (const timersByKey of [
+      this.confirmationWindowTimers,
+      this.registrationWindowTimers,
+      this.waitlistPromotionWindowTimers,
+      this.cancellationCleanupTimers,
+    ]) {
+      for (const timers of timersByKey.values()) {
+        for (const timer of timers) {
+          clearTimeout(timer);
+        }
+      }
+      timersByKey.clear();
+    }
+    for (const queued of this.queuedDiscordSyncs.values()) {
+      if (queued.timer) {
+        clearTimeout(queued.timer);
+      }
+    }
+    this.queuedDiscordSyncs.clear();
   }
 
   private async cleanupExpiredBanRoles(client: Client) {
@@ -15142,7 +21674,9 @@ export class DiscordSessionService {
     }
 
     const [inactiveBans, matches] = await Promise.all([
-      this.apiClient.listManagerBans({ active: false }).catch(() => []),
+      this.apiClient
+        .listManagerBans({ active: false, limit: DISCORD_BAN_LIST_LIMIT })
+        .catch(() => []),
       this.apiClient
         .listSessionMatches(session.id)
         .catch(() => [] as SessionMatchResponse[]),
@@ -15168,24 +21702,34 @@ export class DiscordSessionService {
       ROLE_SYNC_CONCURRENCY,
       async (discordUserId) => {
         result.checkedMembers += 1;
-        if (
-          await this.memberHasActiveRelevantManagerBan(
-            discordUserId,
-            session.id,
-            matchIds,
-          )
-        ) {
-          result.keptActive += 1;
-          return;
-        }
-
+        let keptProtected = false;
         try {
           const removed = await this.removeConfiguredBanRolesFromMember(
             guild,
             config,
             discordUserId,
             `Arenzyra expired ban role cleanup ${session.id}`,
+            {
+              roles,
+              strictMemberFetch: true,
+              refreshProtectedRoleIds: async (_member, candidateRoles) => {
+                const protectedRoleIds =
+                  await this.activeDiscordBanProtectedRoleIdsStrict(
+                    guild,
+                    config,
+                    session.id,
+                    matchIds,
+                    discordUserId,
+                    candidateRoles,
+                  );
+                keptProtected = protectedRoleIds.size > 0;
+                return protectedRoleIds;
+              },
+            },
           );
+          if (keptProtected) {
+            result.keptActive += 1;
+          }
           result.removedRoles += removed.removed;
           if (removed.missing) {
             result.missingMembers += 1;
@@ -15381,6 +21925,21 @@ export class DiscordSessionService {
               currentSession,
               currentConfig,
             );
+            currentConfig = await this.runDueRoleRemovalRequests(
+              guild,
+              currentSession,
+              currentConfig,
+            );
+            currentConfig = await this.runDueAutoRegistrationGrantExpiry(
+              guild,
+              currentSession,
+              currentConfig,
+            );
+            currentConfig = await this.runDueWinnerRoleAccessExpiry(
+              guild,
+              currentSession,
+              currentConfig,
+            );
             currentConfig = await this.runDueAutoRegistration(
               guild,
               currentSession,
@@ -15398,7 +21957,22 @@ export class DiscordSessionService {
             currentSession,
             currentConfig,
           );
+          await this.runDueTeamLogoReminders(
+            guild,
+            currentSession,
+            currentConfig,
+          );
+          currentConfig = await this.applyDueCancellationCleanup(
+            guild,
+            currentSession,
+            currentConfig,
+          );
           currentConfig = await this.applyDueConfirmationCloseCleanup(
+            guild,
+            currentSession,
+            currentConfig,
+          );
+          this.scheduleCancellationCleanupSync(
             guild,
             currentSession,
             currentConfig,
@@ -15568,15 +22142,20 @@ export class DiscordSessionService {
   private async syncRegistrationAccessRoles(
     guild: Guild,
     setup: ScrimDiscordSetup,
+    sessionId: string,
     registrations: SessionRegistrationResponse[],
     memberCache: Map<string, TeamMemberSummary[]>,
   ) {
     const activeRegistrationByTeamId =
       this.activeRegistrationByTeam(registrations);
+    const allKnownTeamIds = this.uniqueStrings(
+      registrations.map((registration) => registration.teamId),
+    );
     await this.reconcileTeamSetAccessRoles(
       guild,
       setup,
-      [...activeRegistrationByTeamId.keys()],
+      sessionId,
+      allKnownTeamIds,
       registrations,
       activeRegistrationByTeamId,
       memberCache,
@@ -15612,6 +22191,16 @@ export class DiscordSessionService {
     const byTeamId = new Map<string, SessionRegistrationResponse>();
     for (const registration of registrations) {
       byTeamId.set(registration.teamId, registration);
+    }
+    return byTeamId;
+  }
+
+  private registrationsByTeamId(registrations: SessionRegistrationResponse[]) {
+    const byTeamId = new Map<string, SessionRegistrationResponse[]>();
+    for (const registration of registrations) {
+      const entries = byTeamId.get(registration.teamId) ?? [];
+      entries.push(registration);
+      byTeamId.set(registration.teamId, entries);
     }
     return byTeamId;
   }
@@ -15660,16 +22249,18 @@ export class DiscordSessionService {
 
   private affectedAccessRoleDiscordUserIds(
     teamIds: string[],
-    registrationsByTeamId: Map<string, SessionRegistrationResponse>,
+    registrationsByTeamId: Map<string, SessionRegistrationResponse[]>,
     memberCache: Map<string, TeamMemberSummary[]>,
   ) {
     const discordUserIds: string[] = [];
     for (const teamId of teamIds) {
-      const registration = registrationsByTeamId.get(teamId) ?? null;
+      const registrations = registrationsByTeamId.get(teamId) ?? [];
       const members = memberCache.get(teamId) ?? [];
       discordUserIds.push(...this.activeTeamMemberDiscordUserIds(members));
       discordUserIds.push(
-        ...this.accessRoleManagerDiscordUserIds(registration, members),
+        ...registrations.flatMap((registration) =>
+          this.accessRoleManagerDiscordUserIds(registration, members),
+        ),
       );
     }
     return this.uniqueStrings(discordUserIds);
@@ -15678,6 +22269,7 @@ export class DiscordSessionService {
   private async reconcileTeamSetAccessRoles(
     guild: Guild,
     setup: ScrimDiscordSetup,
+    sessionId: string,
     teamIds: string[],
     registrations: SessionRegistrationResponse[],
     activeRegistrationByTeamId: Map<string, SessionRegistrationResponse>,
@@ -15690,7 +22282,7 @@ export class DiscordSessionService {
       return;
     }
     const managedRoleIds = this.scrimManagedRoleIds(setup);
-    const registrationsByTeamId = this.registrationByTeamId(registrations);
+    const registrationsByTeamId = this.registrationsByTeamId(registrations);
     const desiredRolesByDiscordUserId = this.desiredAccessRolesByDiscordUser(
       [...activeRegistrationByTeamId.values()],
       setup,
@@ -15710,44 +22302,17 @@ export class DiscordSessionService {
       affectedDiscordUserIds,
       ROLE_SYNC_CONCURRENCY,
       async (discordUserId) => {
-        const guildMember = await guild.members
-          .fetch(discordUserId)
-          .catch(() => null);
-        if (!guildMember) {
-          return;
-        }
-        await this.applyManagedRoleSetToMember(
-          guildMember,
+        await this.applySessionManagedRoleSetToDiscordUser(
+          guild,
+          sessionId,
+          setup,
+          discordUserId,
           desiredRolesByDiscordUserId.get(discordUserId) ?? [],
           managedRoleIds,
           reason,
         );
       },
     );
-  }
-
-  private async removeTeamAccessRolesFromDiscordUser(
-    guild: Guild,
-    setup: ScrimDiscordSetup,
-    discordUserId: string,
-  ) {
-    const roleIds = this.scrimManagedRoleIds(setup);
-    if (roleIds.length === 0) {
-      return;
-    }
-    const guildMember = await guild.members
-      .fetch(discordUserId)
-      .catch(() => null);
-    if (!guildMember) {
-      return;
-    }
-    await guildMember.roles
-      .remove(roleIds, `Arenzyra manager transfer ${setup.categoryId}`)
-      .catch((error) =>
-        console.warn(
-          `Discord transfer role remove failed for ${discordUserId}: ${String(error)}`,
-        ),
-      );
   }
 
   private normalizeTeamLookup(value: string) {
@@ -15964,7 +22529,6 @@ export class DiscordSessionService {
       );
     }
 
-    const setup = this.setupFromConfig(config);
     if (isSessionManager) {
       await this.apiClient.updateRegistrationManagers(
         session.id,
@@ -15978,15 +22542,9 @@ export class DiscordSessionService {
     if (isActiveTeamMember) {
       await this.apiClient.releaseDiscordTeamMember(team.id, discordUserId);
     }
-    if (setup) {
-      await this.removeTeamAccessRolesFromDiscordUser(
-        guild,
-        setup,
-        discordUserId,
-      );
-    }
     await this.syncAffectedTeamAccessRoles(guild, session.id, {
       activeTeamIds: [team.id],
+      extraDiscordUserIds: [discordUserId],
     });
     const refreshed = await this.syncVisibleDiscordMessagesFast(
       guild,
@@ -16010,6 +22568,610 @@ export class DiscordSessionService {
     });
 
     return `${this.emoji("check", config)} Removed <@${discordUserId}> from ${this.formatTeamSummary(team)}, synced the session role, and refreshed the slot list.`;
+  }
+
+  async grantAutoRegistrationAccessFromDiscord(
+    guild: Guild,
+    sessionId: string,
+    input: AutoRegistrationAccessGrantInput,
+  ): Promise<string> {
+    const sessionIdValue = sessionId.trim();
+    const normalizedTag = this.normalizeTag(input.tag);
+    const normalizedName = input.teamName.trim();
+    const managerDiscordId = input.manager.discordUserId.trim();
+    const sourceChannelId = input.audit.sourceChannelId?.trim() ?? "";
+    if (!sessionIdValue) {
+      return `${this.emoji("reject")} Session ID is required`;
+    }
+    if (!normalizedTag) {
+      return `${this.emoji("reject")} Team tag is required`;
+    }
+    if (!normalizedName) {
+      return `${this.emoji("reject")} Team name is required`;
+    }
+    if (!managerDiscordId) {
+      return `${this.emoji("reject")} Manager mention is required`;
+    }
+    if (!sourceChannelId) {
+      return `${this.emoji("reject")} Source channel is required`;
+    }
+
+    try {
+      const [session, config] = await Promise.all([
+        this.apiClient.getSession(sessionIdValue),
+        this.apiClient.getSessionDiscordConfig(sessionIdValue),
+      ]);
+      if (config.guildId && config.guildId !== guild.id) {
+        throw new Error(
+          `${this.emoji("reject", config)} This auto-registration channel belongs to a different Discord server.`,
+        );
+      }
+      const hasStaffAccess = await this.requesterHasStaffAccess(
+        input.audit.actorDiscordId,
+        guild,
+        config,
+      );
+      if (!hasStaffAccess) {
+        throw new Error(
+          `${this.emoji("reject", config)} Only Arenzyra staff can grant auto-registration access.`,
+        );
+      }
+
+      const autoConfig = parseAutoRegistrationConfig(config);
+      if (!autoConfig.enabled || !autoConfig.roleId) {
+        throw new Error(
+          `${this.emoji("reject", config)} Enable Auto Registration and select an Auto Register Role before using this channel.`,
+        );
+      }
+      const role = await guild.roles.fetch(autoConfig.roleId).catch(() => null);
+      if (!role) {
+        throw new Error(
+          `${this.emoji("reject", config)} The configured auto-registration role was not found in this server.`,
+        );
+      }
+
+      const durationDays = Math.min(
+        365,
+        Math.max(1, Math.trunc(Number(input.durationDays) || 0)),
+      );
+      let effectiveLogoUpload = input.logoUpload ?? null;
+      let pendingLogoRecord: PendingTeamLogoRecord | null = null;
+      let pendingLogoNote: string | null = null;
+      if (!effectiveLogoUpload && !input.logoUrl?.trim()) {
+        try {
+          const pendingLogo = await this.pendingLogoUploadForRegistration(
+            normalizedName,
+            normalizedTag,
+            config,
+            guild,
+          );
+          if (pendingLogo) {
+            effectiveLogoUpload = pendingLogo.upload;
+            pendingLogoRecord = pendingLogo.record;
+            pendingLogoNote = `${this.emoji("check", config)} Saved logo attached from the logo channel.`;
+          }
+        } catch (error) {
+          pendingLogoNote = `${this.emoji("warning", config)} Saved logo was found, but could not be attached: ${toFriendlyApiError(
+            error,
+          )}`;
+        }
+      }
+
+      const response = await this.apiClient.registerDiscordTeam({
+        tag: normalizedTag,
+        name: normalizedName,
+        leaderDiscordUserId: managerDiscordId,
+        leaderDiscordUsername:
+          input.manager.discordUsername ?? managerDiscordId,
+        leaderDisplayName: input.manager.displayName ?? undefined,
+        logoUrl: input.logoUrl?.trim() || undefined,
+        allowDiscordMemberTransfer: true,
+        contextSessionId: sessionIdValue,
+        members: [
+          { ...input.manager, discordUserId: managerDiscordId, role: "LEADER" },
+        ],
+      });
+
+      const logoUploadNote = await this.uploadLogoAfterRegistration(
+        response,
+        effectiveLogoUpload,
+        config,
+      );
+      if (effectiveLogoUpload && !logoUploadNote) {
+        await this.persistRegistrationLogoSource({
+          guild,
+          sessionId: sessionIdValue,
+          config,
+          teamName: normalizedName,
+          tag: normalizedTag,
+          logoUpload: effectiveLogoUpload,
+          source:
+            input.logoSource ??
+            (pendingLogoRecord
+              ? {
+                  teamName: pendingLogoRecord.teamName,
+                  tag: pendingLogoRecord.tag,
+                  channelId: pendingLogoRecord.channelId,
+                  messageId: pendingLogoRecord.messageId,
+                  attachmentId: pendingLogoRecord.attachmentId,
+                  url: pendingLogoRecord.url,
+                  filename: pendingLogoRecord.filename,
+                  contentType: pendingLogoRecord.contentType,
+                  savedByDiscordId: pendingLogoRecord.savedByDiscordId,
+                  savedByDiscordUsername:
+                    pendingLogoRecord.savedByDiscordUsername,
+                }
+              : null),
+        }).catch((error) => {
+          pendingLogoNote = `${this.emoji("warning", config)} Team logo was saved, but the logo channel copy failed: ${toFriendlyApiError(
+            error,
+          )}`;
+        });
+      }
+
+      const member = await guild.members
+        .fetch(managerDiscordId)
+        .catch(() => null);
+      if (!member) {
+        throw new Error(
+          `${this.emoji("reject", config)} Mentioned manager is not visible to the bot or is not in this server.`,
+        );
+      }
+      const hadRole = member.roles.cache.has(role.id);
+      if (!hadRole) {
+        await member.roles.add(
+          role.id,
+          `Arenzyra auto-registration grant for ${session.name}`,
+        );
+      }
+
+      const grantedAt = new Date();
+      const expiresAt = new Date(
+        grantedAt.getTime() + durationDays * 24 * 60 * 60 * 1000,
+      );
+      const grant: AutoRegistrationGrant = {
+        id: `arg-${Date.now().toString(36)}-${Math.random()
+          .toString(36)
+          .slice(2, 10)}`,
+        teamId: response.team.id,
+        teamName: response.team.name,
+        teamTag: response.team.tag ?? normalizedTag,
+        managerDiscordId,
+        managerDiscordUsername: input.manager.discordUsername ?? null,
+        managerDisplayName: input.manager.displayName ?? null,
+        roleId: role.id,
+        roleName: role.name,
+        grantedAt: grantedAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        createdByDiscordId: input.audit.actorDiscordId,
+        createdByLabel: input.audit.actorLabel ?? null,
+        sourceChannelId,
+        sourceMessageId: input.audit.sourceMessageId,
+        roleAddedByBot: !hadRole,
+      };
+      const latestConfig = await this.latestSessionDiscordConfig(
+        sessionIdValue,
+        config,
+      );
+      const activeGrants = parseAutoRegistrationGrants(latestConfig).filter(
+        (existing) =>
+          Date.parse(existing.expiresAt) > grantedAt.getTime() &&
+          !this.sameAutoRegistrationGrantTarget(existing, grant),
+      );
+      const updatedConfig = await this.persistAutoRegistrationGrants(
+        sessionIdValue,
+        latestConfig,
+        [...activeGrants, grant],
+        { resetLastRunKey: true },
+      );
+
+      await this.sendDiscordActionLog(guild, updatedConfig, {
+        action: "Auto registration access granted",
+        actorDiscordId: input.audit.actorDiscordId,
+        actorLabel: input.audit.actorLabel,
+        sourceChannelId,
+        sessionId: session.id,
+        sessionName: session.name,
+        team: response.team,
+        status: `<@${managerDiscordId}> for ${durationDays} day(s)`,
+        details: [
+          `Role: ${role.name}`,
+          `Expires: ${expiresAt.toISOString()}`,
+          response.created ? "Team record: created" : "Team record: updated",
+          effectiveLogoUpload && !logoUploadNote ? "Logo: saved" : "",
+          pendingLogoRecord ? "Logo source: saved logo channel" : "",
+          hadRole ? "Role already existed before grant" : "Role added by bot",
+        ].filter(Boolean),
+        color: 0x22c55e,
+      }).catch((error) => {
+        console.warn(
+          `[DiscordAutoRegister] grant action log failed session=${sessionIdValue}: ${String(
+            error,
+          )}`,
+        );
+      });
+
+      const expiryUnix = Math.floor(expiresAt.getTime() / 1000);
+      return [
+        `${this.emoji("check", updatedConfig)} Auto-registration access granted.`,
+        `Team: ${this.formatTeamSummary(response.team)}`,
+        `Manager: <@${managerDiscordId}>`,
+        `Role: ${role.name}`,
+        `Duration: ${durationDays} day(s)`,
+        `Expires: <t:${expiryUnix}:R> (<t:${expiryUnix}:f>)`,
+        response.created ? "Team record: created" : "Team record: updated",
+        logoUploadNote,
+        pendingLogoNote,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n");
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
+  }
+
+  async removeAutoRegistrationAccessFromDiscord(
+    guild: Guild,
+    sessionId: string,
+    managerDiscordId: string,
+    audit: DiscordActionAuditContext,
+  ): Promise<string> {
+    const cleanSessionId = sessionId.trim();
+    const cleanManagerDiscordId = managerDiscordId.trim();
+    if (!cleanSessionId) {
+      return `${this.emoji("reject")} Session ID is required`;
+    }
+    if (!cleanManagerDiscordId) {
+      return `${this.emoji("reject")} Manager mention is required`;
+    }
+
+    try {
+      const [session, config] = await Promise.all([
+        this.apiClient.getSession(cleanSessionId),
+        this.apiClient.getSessionDiscordConfig(cleanSessionId),
+      ]);
+      if (config.guildId && config.guildId !== guild.id) {
+        throw new Error(
+          `${this.emoji("reject", config)} This session belongs to a different Discord server.`,
+        );
+      }
+      const hasStaffAccess = await this.requesterHasStaffAccess(
+        audit.actorDiscordId?.trim() ?? "",
+        guild,
+        config,
+      );
+      if (!hasStaffAccess) {
+        throw new Error(
+          `${this.emoji("reject", config)} Only Arenzyra staff can remove auto-registration access.`,
+        );
+      }
+
+      const latestConfig = await this.latestSessionDiscordConfig(
+        cleanSessionId,
+        config,
+      );
+      const grants = parseAutoRegistrationGrants(latestConfig);
+      const matching = grants.filter(
+        (grant) => grant.managerDiscordId === cleanManagerDiscordId,
+      );
+      if (matching.length === 0) {
+        return `${this.emoji("warning", latestConfig)} No stored auto-registration access found for <@${cleanManagerDiscordId}> in ${session.name}.`;
+      }
+
+      const remaining = grants.filter(
+        (grant) => grant.managerDiscordId !== cleanManagerDiscordId,
+      );
+      let updatedConfig = await this.persistAutoRegistrationGrants(
+        cleanSessionId,
+        latestConfig,
+        remaining,
+        { resetLastRunKey: true },
+      );
+
+      const now = new Date();
+      const targetsByRoleId = new Map<string, AutoRegistrationGrant>();
+      for (const grant of matching) {
+        if (grant.roleId && !targetsByRoleId.has(grant.roleId)) {
+          targetsByRoleId.set(grant.roleId, grant);
+        }
+      }
+
+      let removedRoles = 0;
+      let keptRoles = 0;
+      let missingRoles = 0;
+      let failedRoles = 0;
+      const failedRequests: RoleRemovalRequest[] = [];
+      for (const grant of targetsByRoleId.values()) {
+        const removal = await this.removeAccessRoleIfUnused(
+          guild,
+          cleanSessionId,
+          grant.roleId,
+          cleanManagerDiscordId,
+          now,
+          `Arenzyra Discord %autoremove for ${session.name}`,
+          {
+            autoRegistrationGrants: remaining,
+            winnerGroups: parseRoleAccessGroups(updatedConfig),
+          },
+        );
+        if (removal === "removed") {
+          removedRoles += 1;
+        } else if (removal === "kept-active") {
+          keptRoles += 1;
+        } else if (removal === "failed") {
+          failedRoles += 1;
+          failedRequests.push({
+            id: `rr-${Date.now().toString(36)}-${Math.random()
+              .toString(36)
+              .slice(2, 10)}`,
+            kind: "auto-registration",
+            grantId: grant.id,
+            groupId: null,
+            qualificationId: null,
+            teamId: grant.teamId,
+            teamName: grant.teamName,
+            teamTag: grant.teamTag,
+            managerDiscordId: cleanManagerDiscordId,
+            roleId: grant.roleId,
+            roleName: grant.roleName,
+            requestedAt: now.toISOString(),
+            requestedBy: audit.actorDiscordId?.trim() || null,
+          });
+        } else {
+          missingRoles += 1;
+        }
+      }
+      if (failedRequests.length > 0) {
+        updatedConfig = await this.persistRoleRemovalRequests(
+          cleanSessionId,
+          updatedConfig,
+          [...parseRoleRemovalRequests(updatedConfig), ...failedRequests],
+        );
+      }
+
+      const removedTeams = matching
+        .slice(0, 10)
+        .map((grant) =>
+          grant.teamTag
+            ? `${grant.teamName} (${grant.teamTag})`
+            : grant.teamName,
+        );
+      await this.sendDiscordActionLog(guild, updatedConfig, {
+        action: "Auto registration access removed",
+        actorDiscordId: audit.actorDiscordId,
+        actorLabel: audit.actorLabel,
+        sourceChannelId: audit.sourceChannelId,
+        sessionId: session.id,
+        sessionName: audit.sessionName ?? session.name,
+        status: `<@${cleanManagerDiscordId}>`,
+        details: [
+          `Stored grants removed: ${matching.length}`,
+          `Roles removed: ${removedRoles}`,
+          `Roles kept because another active access exists: ${keptRoles}`,
+          `Members missing or role already absent: ${missingRoles}`,
+          `Role updates failed and queued for retry: ${failedRoles}`,
+          ...removedTeams,
+        ],
+        color: failedRoles > 0 ? 0xf59e0b : 0xef4444,
+      }).catch((error) => {
+        console.warn(
+          `[DiscordAutoRegister] manual removal action log failed session=${cleanSessionId}: ${String(
+            error,
+          )}`,
+        );
+      });
+
+      return [
+        `${this.emoji("check", updatedConfig)} Auto-registration access removed.`,
+        `Manager: <@${cleanManagerDiscordId}>`,
+        `Stored grants removed: ${matching.length}`,
+        `Roles removed: ${removedRoles}`,
+        `Roles kept because another active access exists: ${keptRoles}`,
+        `Members missing or role already absent: ${missingRoles}`,
+        failedRoles > 0
+          ? `Role updates failed and queued for retry: ${failedRoles}`
+          : null,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n");
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
+  }
+
+  async removeWinnerAccessFromDiscord(
+    guild: Guild,
+    sessionId: string,
+    managerDiscordId: string,
+    audit: DiscordActionAuditContext,
+  ): Promise<string> {
+    const cleanSessionId = sessionId.trim();
+    const cleanManagerDiscordId = managerDiscordId.trim();
+    if (!cleanSessionId) {
+      return `${this.emoji("reject")} Session ID is required`;
+    }
+    if (!cleanManagerDiscordId) {
+      return `${this.emoji("reject")} Manager mention is required`;
+    }
+
+    try {
+      const [session, config] = await Promise.all([
+        this.apiClient.getSession(cleanSessionId),
+        this.apiClient.getSessionDiscordConfig(cleanSessionId),
+      ]);
+      if (config.guildId && config.guildId !== guild.id) {
+        throw new Error(
+          `${this.emoji("reject", config)} This session belongs to a different Discord server.`,
+        );
+      }
+      const hasStaffAccess = await this.requesterHasStaffAccess(
+        audit.actorDiscordId?.trim() ?? "",
+        guild,
+        config,
+      );
+      if (!hasStaffAccess) {
+        throw new Error(
+          `${this.emoji("reject", config)} Only Arenzyra staff can remove winner access.`,
+        );
+      }
+
+      const latestConfig = await this.latestSessionDiscordConfig(
+        cleanSessionId,
+        config,
+      );
+      const groups = parseRoleAccessGroups(latestConfig);
+      const roleTargets = new Map<
+        string,
+        { group: RoleAccessGroup; qualification: WinnerQualification }
+      >();
+      let removedEntries = 0;
+      const removedTeams: string[] = [];
+      const nextGroups = groups.map((group) => {
+        if (group.qualificationMode !== "winner") {
+          return group;
+        }
+        let changed = false;
+        const nextQualifications: WinnerQualification[] = [];
+        for (const qualification of group.winnerQualifications) {
+          if (
+            !qualification.managerDiscordIds.includes(cleanManagerDiscordId)
+          ) {
+            nextQualifications.push(qualification);
+            continue;
+          }
+          changed = true;
+          removedEntries += 1;
+          if (group.roleId && !roleTargets.has(group.roleId)) {
+            roleTargets.set(group.roleId, { group, qualification });
+          }
+          if (removedTeams.length < 10) {
+            removedTeams.push(
+              qualification.teamTag
+                ? `${qualification.teamName} (${qualification.teamTag})`
+                : qualification.teamName,
+            );
+          }
+          const remainingManagers = qualification.managerDiscordIds.filter(
+            (discordUserId) => discordUserId !== cleanManagerDiscordId,
+          );
+          if (remainingManagers.length > 0) {
+            nextQualifications.push({
+              ...qualification,
+              managerDiscordIds: remainingManagers,
+            });
+          }
+        }
+        return changed
+          ? { ...group, winnerQualifications: nextQualifications }
+          : group;
+      });
+
+      if (removedEntries === 0) {
+        return `${this.emoji("warning", latestConfig)} No stored winner access found for <@${cleanManagerDiscordId}> in ${session.name}.`;
+      }
+
+      let updatedConfig = await this.persistRoleAccessGroups(
+        cleanSessionId,
+        latestConfig,
+        nextGroups,
+      );
+
+      const now = new Date();
+      const activeAutoGrants = activeAutoRegistrationGrants(updatedConfig, now);
+      let removedRoles = 0;
+      let keptRoles = 0;
+      let missingRoles = 0;
+      let failedRoles = 0;
+      const failedRequests: RoleRemovalRequest[] = [];
+      for (const { group, qualification } of roleTargets.values()) {
+        const removal = await this.removeAccessRoleIfUnused(
+          guild,
+          cleanSessionId,
+          group.roleId,
+          cleanManagerDiscordId,
+          now,
+          `Arenzyra Discord %winnerremove for ${session.name}`,
+          {
+            autoRegistrationGrants: activeAutoGrants,
+            winnerGroups: nextGroups,
+          },
+        );
+        if (removal === "removed") {
+          removedRoles += 1;
+        } else if (removal === "kept-active") {
+          keptRoles += 1;
+        } else if (removal === "failed") {
+          failedRoles += 1;
+          failedRequests.push({
+            id: `rr-${Date.now().toString(36)}-${Math.random()
+              .toString(36)
+              .slice(2, 10)}`,
+            kind: "winner",
+            grantId: null,
+            groupId: group.id,
+            qualificationId: qualification.id,
+            teamId: qualification.teamId,
+            teamName: qualification.teamName,
+            teamTag: qualification.teamTag,
+            managerDiscordId: cleanManagerDiscordId,
+            roleId: group.roleId,
+            roleName: group.roleName,
+            requestedAt: now.toISOString(),
+            requestedBy: audit.actorDiscordId?.trim() || null,
+          });
+        } else {
+          missingRoles += 1;
+        }
+      }
+      if (failedRequests.length > 0) {
+        updatedConfig = await this.persistRoleRemovalRequests(
+          cleanSessionId,
+          updatedConfig,
+          [...parseRoleRemovalRequests(updatedConfig), ...failedRequests],
+        );
+      }
+
+      await this.sendDiscordActionLog(guild, updatedConfig, {
+        action: "Winner access removed",
+        actorDiscordId: audit.actorDiscordId,
+        actorLabel: audit.actorLabel,
+        sourceChannelId: audit.sourceChannelId,
+        sessionId: session.id,
+        sessionName: audit.sessionName ?? session.name,
+        status: `<@${cleanManagerDiscordId}>`,
+        details: [
+          `Stored winner entries removed: ${removedEntries}`,
+          `Roles removed: ${removedRoles}`,
+          `Roles kept because another active access exists: ${keptRoles}`,
+          `Members missing or role already absent: ${missingRoles}`,
+          `Role updates failed and queued for retry: ${failedRoles}`,
+          ...removedTeams,
+        ],
+        color: failedRoles > 0 ? 0xf59e0b : 0xef4444,
+      }).catch((error) => {
+        console.warn(
+          `[DiscordWinnerAccess] manual removal action log failed session=${cleanSessionId}: ${String(
+            error,
+          )}`,
+        );
+      });
+
+      return [
+        `${this.emoji("check", updatedConfig)} Winner access removed.`,
+        `Manager: <@${cleanManagerDiscordId}>`,
+        `Stored winner entries removed: ${removedEntries}`,
+        `Roles removed: ${removedRoles}`,
+        `Roles kept because another active access exists: ${keptRoles}`,
+        `Members missing or role already absent: ${missingRoles}`,
+        failedRoles > 0
+          ? `Role updates failed and queued for retry: ${failedRoles}`
+          : null,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n");
+    } catch (error) {
+      throw new Error(toFriendlyApiError(error));
+    }
   }
 
   async registerTeamAndJoinScrim(
@@ -16097,6 +23259,15 @@ export class DiscordSessionService {
         allowDiscordMemberTransfer: true,
         contextSessionId: sessionId.trim(),
         members: this.discordRegistrationManagerInputs(members),
+      });
+
+      await this.assertWinnerRoleRegistrationAllowed({
+        guild,
+        sessionId: sessionId.trim(),
+        config,
+        winnerAccessGroupId: options.winnerAccessGroupId,
+        team: response.team,
+        managerDiscordUserIds: registrationManagerDiscordUserIds,
       });
 
       const logoUploadNote = await this.uploadLogoAfterRegistration(
@@ -16249,6 +23420,7 @@ export class DiscordSessionService {
         sessionId.trim(),
         auditRegistration,
         "post-registration immediate",
+        config,
       ).catch((error) => {
         console.warn(
           `Immediate registration role sync failed for ${sessionId}: ${String(
@@ -16301,6 +23473,7 @@ export class DiscordSessionService {
             sessionId.trim(),
             auditRegistration,
             "post-registration background",
+            config,
           ).catch((error) => {
             console.warn(
               `Fast registration role sync failed for ${sessionId}: ${String(
@@ -16331,6 +23504,19 @@ export class DiscordSessionService {
         }
 
         if (guild) {
+          await this.logBannedTeamTagRegistrationMatch({
+            guild,
+            config,
+            sessionId: sessionId.trim(),
+            sessionName: options.audit?.sessionName,
+            sourceChannelId: options.audit?.sourceChannelId,
+            actorDiscordId: options.audit?.actorDiscordId ?? requesterDiscordId,
+            actorLabel: options.audit?.actorLabel,
+            team: response.team,
+            tag: normalizedTag,
+            leaderDiscordId,
+            registration: auditRegistration,
+          });
           await this.sendDiscordActionLog(guild, config, {
             action: staffBypass
               ? "Staff registration accepted"
@@ -16377,6 +23563,78 @@ export class DiscordSessionService {
     }
   }
 
+  private async logBannedTeamTagRegistrationMatch(input: {
+    guild: Guild;
+    config: SessionDiscordConfigResponse;
+    sessionId: string;
+    sessionName?: string | null;
+    sourceChannelId?: string | null;
+    actorDiscordId?: string | null;
+    actorLabel?: string | null;
+    team: TeamSummary;
+    tag: string;
+    leaderDiscordId: string;
+    registration: SessionRegistrationResponse | null;
+  }) {
+    try {
+      const matchingBans = new Map<string, TeamBanResponse>();
+      const activeBans = await this.apiClient.listTeamBans({
+        active: true,
+        limit: DISCORD_BAN_LIST_LIMIT,
+      });
+      for (const ban of activeBans) {
+        if (
+          ban.teamId === input.team.id ||
+          this.normalizeTag(ban.team?.tag ?? "") !== input.tag
+        ) {
+          continue;
+        }
+        if (!matchingBans.has(ban.teamId)) {
+          matchingBans.set(ban.teamId, ban);
+        }
+      }
+      if (matchingBans.size === 0) {
+        return;
+      }
+
+      await this.sendDiscordActionLog(input.guild, input.config, {
+        action: "Banned team tag matched",
+        actorDiscordId: input.actorDiscordId,
+        actorLabel: input.actorLabel,
+        sourceChannelId: input.sourceChannelId,
+        sessionId: input.sessionId,
+        sessionName: input.sessionName,
+        team: input.team,
+        slot:
+          input.registration?.slotNumber ??
+          (input.registration?.waitlistPosition
+            ? `waitlist #${input.registration.waitlistPosition}`
+            : null),
+        status: "Registration allowed",
+        reason: `Submitted tag ${input.tag} matches an active banned team tag`,
+        details: [
+          `Leader: <@${input.leaderDiscordId}>`,
+          "Matching banned teams:",
+          ...[...matchingBans.values()].map((ban) => {
+            const reason = ban.reason?.trim();
+            return `- ${this.formatTeamSummary(
+              ban.team ?? {
+                id: ban.teamId,
+                name: "Unknown team",
+                tag: null,
+              },
+            )}${reason ? ` — ${reason}` : ""}`;
+          }),
+        ],
+        color: 0xf59e0b,
+      });
+    } catch (error) {
+      console.warn(
+        `Banned team tag audit failed for ${input.sessionId}: ${toFriendlyApiError(error)}`,
+      );
+    }
+  }
+
   private normalizeTeamName(value: string) {
     return value.trim().toUpperCase().replace(/\s+/g, " ");
   }
@@ -16390,6 +23648,7 @@ export class DiscordSessionService {
     guild: Guild | null,
     sessionId: string,
     audit: DiscordActionAuditContext = {},
+    options: { fromRegistrationChannel?: boolean } = {},
   ): Promise<string> {
     const sessionIdValue = sessionId.trim();
     const reject = this.emoji("reject");
@@ -16416,22 +23675,19 @@ export class DiscordSessionService {
         guild,
         config,
       );
-      const window = this.waitlistPromotionWindow(session, config);
-      if (!window.allowsAction && !staffBypass) {
-        throw new Error(
-          `${this.emoji("reject", config)} Waitlist promotion is closed for this scrim.`,
-        );
-      }
-
-      const nextSlot = this.nextAvailableNormalSlot(
-        session,
-        registrations,
-        config,
-      );
-      if (nextSlot === null) {
-        throw new Error(
-          `${this.emoji("reject", config)} No normal slot is empty. VIP slots do not open waitlist promotion.`,
-        );
+      if (options.fromRegistrationChannel) {
+        if (!this.publicRegistrationAccepting(session, config)) {
+          throw new Error(
+            `${this.emoji("reject", config)} Registration is closed for this scrim.`,
+          );
+        }
+      } else {
+        const window = this.waitlistPromotionWindow(session, config);
+        if (!window.allowsAction && !staffBypass) {
+          throw new Error(
+            `${this.emoji("reject", config)} Waitlist promotion is closed for this scrim.`,
+          );
+        }
       }
 
       const waitlistRegistrations = registrations.filter(
@@ -16451,6 +23707,9 @@ export class DiscordSessionService {
       const candidates = nameMatches.length > 0 ? nameMatches : tagMatches;
 
       if (candidates.length === 0) {
+        if (options.fromRegistrationChannel) {
+          return "";
+        }
         throw new Error(
           `${this.emoji("reject", config)} This team is not on the waitlist for this scrim.`,
         );
@@ -16472,6 +23731,12 @@ export class DiscordSessionService {
             .map((member) => member.discordUserId),
         );
         if (!activeIds.has(requesterDiscordId)) {
+          if (options.fromRegistrationChannel) {
+            // A matching waitlist entry must not reserve normal registration for
+            // its managers. Let a different requester continue through the
+            // standard registration flow while normal registration is open.
+            return "";
+          }
           throw new Error(
             `${this.emoji("reject", config)} Only a manager from the waitlisted team can claim an empty slot.`,
           );
@@ -16482,10 +23747,24 @@ export class DiscordSessionService {
           mentionedIds.length > 0 &&
           !mentionedIds.some((discordUserId) => activeIds.has(discordUserId))
         ) {
+          if (options.fromRegistrationChannel) {
+            return "";
+          }
           throw new Error(
             `${this.emoji("reject", config)} Mention a manager from the same waitlisted team.`,
           );
         }
+      }
+
+      const nextSlot = this.nextAvailableNormalSlot(
+        session,
+        registrations,
+        config,
+      );
+      if (nextSlot === null) {
+        throw new Error(
+          `${this.emoji("reject", config)} No normal slot is empty. VIP slots do not open waitlist promotion.`,
+        );
       }
 
       const placement = await this.updateRegistrationPlacement(
@@ -16504,6 +23783,30 @@ export class DiscordSessionService {
     } catch (error) {
       throw new Error(toFriendlyApiError(error));
     }
+  }
+
+  async promoteWaitlistedTeamFromRegistrationChannel(
+    requesterDiscordId: string,
+    requesterLabel: string | null,
+    rawTag: string,
+    rawName: string,
+    members: DiscordRegistrationMemberInput[],
+    guild: Guild | null,
+    sessionId: string,
+    audit: DiscordActionAuditContext = {},
+  ): Promise<string | null> {
+    const result = await this.promoteWaitlistedTeamFromDiscord(
+      requesterDiscordId,
+      requesterLabel,
+      rawTag,
+      rawName,
+      members,
+      guild,
+      sessionId,
+      audit,
+      { fromRegistrationChannel: true },
+    );
+    return result || null;
   }
 
   private async requireLeaderForTeam(
@@ -16600,8 +23903,24 @@ export class DiscordSessionService {
       }
 
       try {
-        const guildMember = await guild.members.fetch(member.discordUserId);
-        await guildMember.roles.add([...roleIds]);
+        await this.runAccessRoleMutationExclusive(
+          guild.id,
+          member.discordUserId,
+          async () => {
+            const guildMember = await this.forceFetchGuildMember(
+              guild,
+              member.discordUserId,
+            );
+            if (!guildMember) {
+              throw new Error("Discord member was not found");
+            }
+            for (const roleId of roleIds) {
+              if (!guildMember.roles.cache.has(roleId)) {
+                await guildMember.roles.add(roleId);
+              }
+            }
+          },
+        );
         syncedCount += 1;
       } catch (error) {
         failedCount += 1;
@@ -16647,8 +23966,16 @@ export class DiscordSessionService {
           slotCount,
           maxTeams: slotCount,
           waitlistEnabled: true,
+          gameKey: "PUBG_MOBILE",
         });
         this.sessionCreatorById.set(session.id, creatorDiscordId);
+        try {
+          this.sessionOwnershipStore.set(session.id, creatorDiscordId);
+        } catch (error) {
+          console.warn(
+            `[DiscordState] failed to persist creator for session=${session.id}: ${String(error)}`,
+          );
+        }
         const lines = [
           `${this.emoji("check")} Scrim created: ${session.name}`,
           `ID: ${session.id}`,
@@ -16784,6 +24111,13 @@ export class DiscordSessionService {
       const config = await this.apiClient
         .getSessionDiscordConfig(sessionId)
         .catch(() => null);
+      await this.syncSessionRegistrationAccessRolesNow(
+        guild,
+        sessionId,
+        result.promotedRegistration ?? null,
+        "team leave promoted team",
+        config,
+      );
       const cleanup = await this.syncRemovedTeamsThenCleanup(
         guild,
         sessionId,
@@ -16839,6 +24173,13 @@ export class DiscordSessionService {
         sessionId,
         registration.id,
       );
+      await this.syncSessionRegistrationAccessRolesNow(
+        guild,
+        sessionId,
+        result.promotedRegistration ?? null,
+        "team removal promoted team",
+        config,
+      );
       const cleanup = await this.syncRemovedTeamsThenCleanup(
         guild,
         sessionId,
@@ -16892,7 +24233,6 @@ export class DiscordSessionService {
       setup.slotRoleId,
       setup.waitlistRoleId,
       setup.idpRoleId,
-      setup.legacyIdpRoleId,
       options.includeBannedRole ? setup.bannedRoleId : "",
     ]);
   }
@@ -16926,15 +24266,11 @@ export class DiscordSessionService {
   }
 
   private slotAccessRemoveRoleIds(setup: ScrimDiscordSetup) {
-    return this.uniqueRoleIds([setup.waitlistRoleId, setup.legacyIdpRoleId]);
+    return this.uniqueRoleIds([setup.waitlistRoleId]);
   }
 
   private waitlistAccessRemoveRoleIds(setup: ScrimDiscordSetup) {
-    return this.uniqueRoleIds([
-      setup.slotRoleId,
-      setup.idpRoleId,
-      setup.legacyIdpRoleId,
-    ]);
+    return this.uniqueRoleIds([setup.slotRoleId, setup.idpRoleId]);
   }
 
   private desiredScrimRoleIds(
@@ -17015,39 +24351,208 @@ export class DiscordSessionService {
     let removed = 0;
     let failed = 0;
 
-    if (removeRoleIds.length > 0) {
-      await member.roles
-        .remove(removeRoleIds, reason)
-        .then(() => {
-          removed += removeRoleIds.length;
-        })
-        .catch((error) => {
-          failed += removeRoleIds.length;
+    let addedRequiredRoles = true;
+    for (const roleId of addRoleIds) {
+      await member.roles.add(roleId, reason).then(
+        () => {
+          added += 1;
+        },
+        (error) => {
+          addedRequiredRoles = false;
+          failed += 1;
           console.warn(
-            `Discord managed role remove failed for ${member.id}: ${String(
+            `Discord managed role add failed for ${member.id} role=${roleId}: ${String(
               error,
             )}`,
           );
-        });
+        },
+      );
     }
 
-    if (addRoleIds.length > 0) {
-      await member.roles
-        .add(addRoleIds, reason)
-        .then(() => {
-          added += addRoleIds.length;
-        })
-        .catch((error) => {
-          failed += addRoleIds.length;
-          console.warn(
-            `Discord managed role add failed for ${member.id}: ${String(
-              error,
-            )}`,
-          );
-        });
+    if (removeRoleIds.length > 0 && addedRequiredRoles) {
+      for (const roleId of removeRoleIds) {
+        await member.roles.remove(roleId, reason).then(
+          () => {
+            removed += 1;
+          },
+          (error) => {
+            failed += 1;
+            console.warn(
+              `Discord managed role remove failed for ${member.id} role=${roleId}: ${String(
+                error,
+              )}`,
+            );
+          },
+        );
+      }
+    } else if (removeRoleIds.length > 0) {
+      console.warn(
+        `Discord managed role remove skipped for ${member.id}: required access role add failed`,
+      );
     }
 
     return { added, removed, failed };
+  }
+
+  private emptyManagedRoleUpdate() {
+    return { added: 0, removed: 0, failed: 0 };
+  }
+
+  private async runAccessRoleMutationExclusive<T>(
+    guildId: string,
+    discordUserId: string,
+    task: () => Promise<T>,
+  ) {
+    const key = `${guildId}:${discordUserId}`;
+    const previous =
+      this.accessRoleMutationQueues.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(task);
+    this.accessRoleMutationQueues.set(key, next);
+    try {
+      return await next;
+    } finally {
+      if (this.accessRoleMutationQueues.get(key) === next) {
+        this.accessRoleMutationQueues.delete(key);
+      }
+    }
+  }
+
+  private async forceFetchGuildMember(guild: Guild, discordUserId: string) {
+    return guild.members
+      .fetch({ user: discordUserId, force: true })
+      .catch(() => null);
+  }
+
+  private async latestDesiredAccessRolesByDiscordUser(
+    sessionId: string,
+    setup: ScrimDiscordSetup,
+  ) {
+    const registrations = await this.apiClient.listRegistrations(sessionId);
+    const activeRegistrationByTeamId =
+      this.activeRegistrationByTeam(registrations);
+    const memberCache = await this.loadTeamMembersForSync([
+      ...activeRegistrationByTeamId.keys(),
+    ]);
+    const desiredRolesByDiscordUserId = this.desiredAccessRolesByDiscordUser(
+      [...activeRegistrationByTeamId.values()],
+      setup,
+      memberCache,
+    );
+    return desiredRolesByDiscordUserId;
+  }
+
+  private async latestDesiredAccessRoleIdsForDiscordUser(
+    sessionId: string,
+    setup: ScrimDiscordSetup,
+    discordUserId: string,
+  ) {
+    const desiredRolesByDiscordUserId =
+      await this.latestDesiredAccessRolesByDiscordUser(sessionId, setup);
+    return desiredRolesByDiscordUserId.get(discordUserId) ?? [];
+  }
+
+  private async applySessionManagedRoleSetToDiscordUser(
+    guild: Guild,
+    sessionId: string,
+    setup: ScrimDiscordSetup,
+    discordUserId: string,
+    desiredRoleIds: string[],
+    managedRoleIds: string[],
+    reason: string,
+    options: { refreshDesired?: boolean } = {},
+  ) {
+    const userId = discordUserId.trim();
+    if (!userId) {
+      return this.emptyManagedRoleUpdate();
+    }
+
+    return this.runAccessRoleMutationExclusive(guild.id, userId, async () => {
+      let desired = desiredRoleIds;
+      if (options.refreshDesired !== false) {
+        desired = await this.latestDesiredAccessRoleIdsForDiscordUser(
+          sessionId,
+          setup,
+          userId,
+        ).catch((error) => {
+          console.warn(
+            `[DiscordSync] latest role state lookup failed session=${sessionId} user=${userId}: ${String(
+              error,
+            )}`,
+          );
+          return desiredRoleIds;
+        });
+      }
+
+      const guildMember = await this.forceFetchGuildMember(guild, userId);
+      if (!guildMember) {
+        return this.emptyManagedRoleUpdate();
+      }
+
+      // A Discord role can intentionally serve two purposes: it may be a
+      // session Slot/IDP role and also an active winner or auto-registration
+      // access role. Do not let the session role reconciler remove that
+      // still-valid access when the member has no current registration.
+      const desiredRoleIdSet = new Set(this.uniqueRoleIds(desired));
+      const roleCache = guildMember.roles?.cache;
+      const staleManagedRoleIds =
+        roleCache && typeof roleCache.has === "function"
+          ? this.uniqueRoleIds(managedRoleIds).filter(
+              (roleId) =>
+                !desiredRoleIdSet.has(roleId) && roleCache.has(roleId),
+            )
+          : [];
+      let managedRoleIdsToReconcile = managedRoleIds;
+      if (staleManagedRoleIds.length > 0) {
+        const accessConfig = await this.apiClient
+          .getSessionDiscordConfig(sessionId)
+          .catch(() => null);
+        if (accessConfig) {
+          const now = new Date();
+          const activeAccessRoleIds = new Set<string>();
+          for (const grant of activeAutoRegistrationGrants(accessConfig, now)) {
+            if (grant.managerDiscordId === userId) {
+              activeAccessRoleIds.add(grant.roleId);
+            }
+          }
+          for (const group of parseRoleAccessGroups(accessConfig)) {
+            if (
+              group.enabled &&
+              group.qualificationMode === "winner" &&
+              this.activeWinnerQualifications(group, now).some(
+                (qualification) =>
+                  qualification.managerDiscordIds.includes(userId),
+              )
+            ) {
+              activeAccessRoleIds.add(group.roleId);
+            }
+          }
+          const protectedRoleIds = staleManagedRoleIds.filter((roleId) =>
+            activeAccessRoleIds.has(roleId),
+          );
+          if (protectedRoleIds.length > 0) {
+            const protectedRoleIdSet = new Set(protectedRoleIds);
+            managedRoleIdsToReconcile = this.uniqueRoleIds(
+              managedRoleIds,
+            ).filter((roleId) => !protectedRoleIdSet.has(roleId));
+            console.log(
+              "[DiscordSync] retained active access role(s) during scrim cleanup session=" +
+                sessionId +
+                " user=" +
+                userId +
+                " roles=" +
+                protectedRoleIds.join(","),
+            );
+          }
+        }
+      }
+
+      return this.applyManagedRoleSetToMember(
+        guildMember,
+        desired,
+        managedRoleIdsToReconcile,
+        reason,
+      );
+    });
   }
 
   private async cachedManagedRoleMembers(
@@ -17143,30 +24648,34 @@ export class DiscordSessionService {
         : `Arenzyra scrim managed role reconciliation ${setup.categoryId}`;
 
     for (const userId of knownUserIds) {
-      const member = await guild.members.fetch(userId).catch(() => null);
-      if (!member) {
-        continue;
-      }
-      const update = await this.applyManagedRoleSetToMember(
-        member,
+      const update = await this.applySessionManagedRoleSetToDiscordUser(
+        guild,
+        session.id,
+        setup,
+        userId,
         desiredRolesByUserId.get(userId) ?? [],
         managedRoleIds,
         reason,
+        { refreshDesired: mode !== "strip" },
       );
       result.added += update.added;
       result.removed += update.removed;
       result.failed += update.failed;
     }
 
-    for (const [userId, member] of cachedRoleMembers) {
+    for (const [userId] of cachedRoleMembers) {
       if (knownUserIds.has(userId)) {
         continue;
       }
-      const update = await this.applyManagedRoleSetToMember(
-        member,
+      const update = await this.applySessionManagedRoleSetToDiscordUser(
+        guild,
+        session.id,
+        setup,
+        userId,
         mode === "strip" ? [] : (desiredRolesByUserId.get(userId) ?? []),
         managedRoleIds,
         reason,
+        { refreshDesired: mode !== "strip" },
       );
       result.added += update.added;
       result.removed += update.removed;
@@ -17289,32 +24798,66 @@ export class DiscordSessionService {
     slotNumber: number,
     guild?: Guild | null,
     audit: DiscordActionAuditContext = {},
+    options: {
+      removalReason?: string | null;
+      note?: string | null;
+      registrationSnapshot?: SessionRegistrationResponse | null;
+    } = {},
   ): Promise<string> {
     try {
       const [registrations, config] = await Promise.all([
         this.apiClient.listRegistrations(sessionId),
         this.apiClient.getSessionDiscordConfig(sessionId).catch(() => null),
       ]);
-      const registration =
-        registrations.find((entry) => entry.slotNumber === slotNumber) ?? null;
+      const registrationSnapshot = options.registrationSnapshot ?? null;
+      const liveRegistration = registrationSnapshot
+        ? (registrations.find(
+            (entry) => entry.id === registrationSnapshot.id,
+          ) ?? null)
+        : (registrations.find((entry) => entry.slotNumber === slotNumber) ??
+          null);
+      const registration = liveRegistration ?? registrationSnapshot;
 
       if (!registration) {
         return `${this.emoji("reject", config)} No team is assigned to slot #${slotNumber}`;
       }
 
-      const result = await this.apiClient.removeRegistration(
-        sessionId,
-        registration.id,
+      const alreadyRemovedByBan = Boolean(
+        registrationSnapshot && !liveRegistration,
       );
+      const result = liveRegistration
+        ? await this.apiClient.removeRegistration(
+            sessionId,
+            liveRegistration.id,
+            {
+              removalReason:
+                options.removalReason?.trim() || "Removed via Discord bot",
+              note: options.note?.trim() || undefined,
+            },
+          )
+        : {
+            removedRegistration: registration,
+            promotedRegistration: null,
+          };
       const removedRoleSyncUserIds = this.registrationRoleSyncDiscordUserIds([
         result.removedRegistration ?? registration,
       ]);
+      const promotedRoleSynced = result.promotedRegistration
+        ? await this.syncSessionRegistrationAccessRolesNow(
+            guild,
+            sessionId,
+            result.promotedRegistration,
+            "slot cleanup promoted team",
+            config,
+          )
+        : false;
       this.syncDiscordScrimStateInBackground(guild, sessionId, {
         organizationId: config?.organizationId,
         removedTeamIds: [registration.teamId],
-        activeTeamIds: result.promotedRegistration
-          ? [result.promotedRegistration.teamId]
-          : [],
+        activeTeamIds:
+          result.promotedRegistration && !promotedRoleSynced
+            ? [result.promotedRegistration.teamId]
+            : [],
         extraDiscordUserIds: removedRoleSyncUserIds,
         cleanupTeamIds: [registration.teamId],
         fastMessageRefresh: true,
@@ -17333,7 +24876,9 @@ export class DiscordSessionService {
         slot: slotNumber,
         status: "removed",
         details: [
-          "Discord refresh and roster release queued.",
+          alreadyRemovedByBan
+            ? "Registration was already removed by the ban transaction; Discord refresh and roster release queued."
+            : "Discord refresh and roster release queued.",
           result.promotedRegistration
             ? `Promoted: ${this.resolveTeamLabel(result.promotedRegistration)}`
             : "",
@@ -17350,7 +24895,11 @@ export class DiscordSessionService {
       const lines = [
         `${this.emoji("reject", config)} Cleared slot #${slotNumber}: ${this.resolveTeamLabel(
           registration,
-        )} removed from scrim. Discord refresh and roster release queued.`,
+        )} removed from scrim.${
+          alreadyRemovedByBan
+            ? " Registration was already removed by the ban transaction."
+            : ""
+        } Discord refresh and roster release queued.`,
       ];
       if (result.promotedRegistration) {
         lines.push(
@@ -17749,6 +25298,20 @@ export class DiscordSessionService {
           ? slotNumbers.map((slotNumber) => `#${slotNumber}`).join(", ")
           : `${slotNumbers.length} slots`;
 
+      await this.sendCleanedSlotListSnapshotLog(guild, config, {
+        title: "All slots cleaned - removed slot list.",
+        sessionId,
+        sessionName: audit.sessionName,
+        registrations: removed,
+        removedSlots: slotNumbers,
+      }).catch((error) => {
+        console.warn(
+          `Discord slot snapshot log failed for clean all slots ${sessionId}: ${String(
+            error,
+          )}`,
+        );
+      });
+
       void this.sendDiscordActionLog(guild, config, {
         action: "All slots cleaned",
         actorDiscordId: audit.actorDiscordId,
@@ -17806,6 +25369,7 @@ export class DiscordSessionService {
               sessionId,
               result.promotedRegistration,
               "remove placement promoted team",
+              config,
             )
           : false;
         this.syncDiscordScrimStateInBackground(guild, sessionId, {
@@ -17866,6 +25430,7 @@ export class DiscordSessionService {
         sessionId,
         registration,
         "placement update immediate",
+        resolvedConfig,
       );
       this.syncDiscordScrimStateInBackground(guild, sessionId, {
         organizationId: resolvedConfig.organizationId,
@@ -18495,7 +26060,9 @@ export class DiscordSessionService {
     const config = await this.apiClient
       .getSessionDiscordConfig(sessionId)
       .catch(() => null);
-    const creatorDiscordId = this.sessionCreatorById.get(sessionId) ?? null;
+    const creatorDiscordId =
+      this.sessionCreatorById.get(sessionId) ??
+      this.sessionOwnershipStore.get(sessionId);
     if (
       !opts.allowOrganizerOverride &&
       (!creatorDiscordId || creatorDiscordId !== requesterDiscordId)
@@ -18504,7 +26071,11 @@ export class DiscordSessionService {
     }
 
     try {
-      const match = await this.apiClient.createSessionMatch(sessionId);
+      const session = await this.apiClient.getSession(sessionId);
+      const match = await this.apiClient.createSessionMatch(
+        sessionId,
+        sessionMatchGamePayload(session),
+      );
       return `${this.emoji("fire", config)} Scrim match created\n\nMatch ID: ${match.id}\n\nUse this match to submit results after play.`;
     } catch (error) {
       throw new Error(toFriendlyApiError(error));
@@ -18709,18 +26280,32 @@ export class DiscordSessionService {
       const topResults = applied.summary?.length
         ? this.resultSummaryLines(applied.summary, config)
         : this.topResultLines(preview, config);
+      const publicContent = this.matchResultPublicContent(
+        matchId,
+        applied.summary?.length ? applied.summary : preview.resolved,
+        config,
+      );
       const lines = [`${this.emoji("check")} Results applied`];
 
       if (topResults.length > 0) {
         lines.push("", this.resultSummaryTitle(config), ...topResults);
       }
 
-      const imageFiles = await this.buildResultImageFiles(matchId);
+      const renderCards = this.matchResultRenderCards(config);
+      const imageFiles = await this.buildResultImageFiles(matchId, renderCards);
       if (imageFiles.length > 0) {
         return {
           content: lines.join("\n"),
+          publicContent,
           imageBuffer: imageFiles[0]?.buffer,
           imageFiles,
+        };
+      }
+
+      if (!renderCards.length) {
+        return {
+          content: lines.join("\n"),
+          publicContent,
         };
       }
 
@@ -18732,6 +26317,7 @@ export class DiscordSessionService {
       }
       return {
         content: fallbackLines.join("\n"),
+        publicContent,
       };
     } catch (error) {
       throw new Error(toFriendlyApiError(error));
@@ -18742,11 +26328,14 @@ export class DiscordSessionService {
     matchId: string,
     rows: ReviewedResultRow[],
     config?: Pick<SessionDiscordConfigResponse, "emojis"> | null,
-    opts: { markMissingSlotsNoShow?: boolean } = {},
+    opts: {
+      markMissingSlotsNoShow?: boolean;
+      noShowSlotNumbers?: number[];
+    } = {},
   ): Promise<ApplyResultsDiscordResponse> {
     try {
       const included = rows.filter((row) => row.include);
-      if (!included.length) {
+      if (!included.length && !opts.markMissingSlotsNoShow) {
         return {
           content: `${this.emoji("reject")} No reviewed result rows selected.`,
         };
@@ -18795,16 +26384,18 @@ export class DiscordSessionService {
       if (topResults.length > 0) {
         lines.push("", this.resultSummaryTitle(config), ...topResults);
       }
-      const publicLines =
-        topResults.length > 0
-          ? [this.resultSummaryTitle(config), ...topResults]
-          : [this.resultSummaryTitle(config)];
+      const publicContent = this.matchResultPublicContent(
+        matchId,
+        applied.summary?.length ? applied.summary : included,
+        config,
+      );
 
-      const imageFiles = await this.buildResultImageFiles(matchId);
+      const renderCards = this.matchResultRenderCards(config);
+      const imageFiles = await this.buildResultImageFiles(matchId, renderCards);
       if (imageFiles.length > 0) {
         return {
           content: lines.join("\n"),
-          publicContent: publicLines.join("\n"),
+          publicContent,
           noShowCount: applied.noShowCount ?? 0,
           imageBuffer: imageFiles[0]?.buffer,
           imageFiles,
@@ -18813,7 +26404,7 @@ export class DiscordSessionService {
 
       return {
         content: lines.join("\n"),
-        publicContent: publicLines.join("\n"),
+        publicContent,
         noShowCount: applied.noShowCount ?? 0,
       };
     } catch (error) {

@@ -1,11 +1,264 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { Collection } from "discord.js";
+import sharp from "sharp";
 import { MessageRegistrationService } from "./message-registration.service";
 
-test("unknown Arenzyra session topic is ignored without reject reaction", async () => {
+async function mockRemotePng(t: { after: (callback: () => void) => void }) {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const image = await sharp({
+    create: {
+      width: 2,
+      height: 2,
+      channels: 4,
+      background: { r: 20, g: 80, b: 160, alpha: 1 },
+    },
+  })
+    .png()
+    .toBuffer();
+  globalThis.fetch = async () =>
+    new Response(new Uint8Array(image), {
+      status: 200,
+      headers: {
+        "content-type": "image/png",
+        "content-length": String(image.length),
+      },
+    });
+}
+
+function emptyConditionalBanFinalizationResult(messageId: string) {
+  return {
+    response: {
+      idempotent: false,
+      receipt: {
+        id: `receipt-${messageId}`,
+        runKey: "run-1",
+        requestKey: `request-${messageId}`,
+        guildId: "guild-1",
+        channelId: "results-channel",
+        messageId,
+        resultSnapshotId: "snapshot-1",
+        resultSnapshotHash: "b".repeat(64),
+        overallBackupId: "overall-backup-1",
+        matchIds: ["match-1", "match-2"],
+        createdAt: new Date().toISOString(),
+      },
+      enrollments: [],
+    },
+    completedEnrollments: 0,
+    completedManagers: 0,
+    removedBanRoles: 0,
+    keptProtectedManagers: 0,
+    missingManagers: 0,
+  };
+}
+
+function automaticFinalSnapshotHarness(options: {
+  sourceMessageId: string;
+  snapshotRequired: boolean;
+  finalizeErrors?: Error[];
+}) {
+  const counters = {
+    prepare: 0,
+    seal: 0,
+    buildFinal: 0,
+    finalPosts: 0,
+    remember: 0,
+    finalize: 0,
+    winnerSync: 0,
+    reset: 0,
+  };
+  const finalBuffer = Buffer.from([7, 8, 9]);
+  let sentSequence = 0;
+  const finalizeErrors = [...(options.finalizeErrors ?? [])];
+  const sessionService = {
+    applyReviewedResults: async () => ({
+      content: "Applied match",
+      publicContent: "Public match",
+    }),
+    rebuildOverallResultBackupFromDiscord: async () => ({
+      id: "overall-backup-1",
+    }),
+    prepareConditionalBanFinalSnapshot: async () => {
+      counters.prepare += 1;
+      if (!options.snapshotRequired) {
+        return { required: false as const };
+      }
+      return {
+        required: true as const,
+        id: `snapshot-${counters.prepare}`,
+        resultStateHash: "a".repeat(64),
+        resultBackupId: `conditional-backup-${counters.prepare}`,
+        sourceMatchId: "match-1",
+        liveMatchIds: ["match-1"],
+        appliedMatchIds: ["match-1"],
+        createdAt: new Date().toISOString(),
+      };
+    },
+    buildFinalResultPost: async () => {
+      counters.buildFinal += 1;
+      return {
+        content: "Unprocessed final",
+        publicContent: "Public final",
+        imageFiles: [{ name: "overall-ranking.png", buffer: finalBuffer }],
+      };
+    },
+    sealConditionalBanFinalSnapshot: async (
+      _sessionId: string,
+      snapshot: any,
+    ) => {
+      counters.seal += 1;
+      return {
+        id: snapshot.id,
+        resultStateHash: snapshot.resultStateHash,
+        snapshotHash: `${counters.seal}`.padStart(64, "b").slice(-64),
+        resultBackupId: snapshot.resultBackupId,
+        artifactManifest: {
+          version: 1,
+          contentSha256: "c".repeat(64),
+          files: [],
+        },
+        idempotent: false,
+      };
+    },
+    rememberFinalResultPost: async () => {
+      counters.remember += 1;
+    },
+    previewNoShowTeamBansFromDiscord: async () => ({
+      response: {
+        session: { id: "session-1", name: "Session 1", status: "LIVE" },
+        match: {
+          id: "session:session-1:no-shows",
+          name: "No shows",
+          matchNumber: null,
+          status: "FINISHED",
+        },
+        scope: "SESSION",
+        reason: "No-show",
+        expiresAt: null,
+        teams: [],
+        noShowCount: 0,
+        alreadyBannedCount: 0,
+        creatableCount: 0,
+        createdCount: 0,
+        createdManagerBans: 0,
+        createdBans: [],
+      },
+      content: "No-show preview",
+    }),
+    finalizeConditionalBannedTeamRegistrations: async (...args: any[]) => {
+      counters.finalize += 1;
+      const failure = finalizeErrors.shift();
+      if (failure) throw failure;
+      return emptyConditionalBanFinalizationResult(args[3].messageId);
+    },
+    syncWinnerRoleAccessForSourceSession: async () => {
+      counters.winnerSync += 1;
+    },
+    resetSessionResultSystem: async () => {
+      counters.reset += 1;
+      return {
+        sessionId: "session-1",
+        organizationId: "org-1",
+        matchesRemoved: 1,
+        matchIds: ["match-1"],
+        reason: "Final result posted",
+        resetAt: new Date().toISOString(),
+      };
+    },
+  };
+  const service = new MessageRegistrationService(sessionService as any) as any;
+  service.pendingAutoResults.set(options.sourceMessageId, {
+    sessionId: "session-1",
+    matchId: "match-1",
+    matchLabel: "Match 1",
+    imageUrl: "https://cdn.discordapp.com/result.png",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    sourceGuildId: "guild-1",
+    sourceMessageId: options.sourceMessageId,
+    sourceChannelId: "screenshots-channel",
+    dashboardChannelId: "screenshots-channel",
+    dashboardMessageId: "dashboard-message",
+    config: {
+      sessionId: "session-1",
+      organizationId: "org-1",
+      guildId: "guild-1",
+      resultsChannelId: "results-channel",
+      manageRoleIds: [],
+      emojis: {},
+    },
+    rows: [
+      {
+        position: 1,
+        tag: "EXT",
+        kills: 1,
+        teamId: "team-1",
+        slotId: "slot-1",
+        slotNumber: 3,
+        status: "OK",
+        include: true,
+      },
+    ],
+    slots: [
+      {
+        id: "slot-1",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", name: "Exact Team", tag: "EXT" },
+      },
+    ],
+    expiresAt: Date.now() + 60_000,
+  });
+  const messages = {
+    fetch: async (input: unknown) =>
+      typeof input === "string" ? null : new Collection(),
+  };
+  const sentPayloads: any[] = [];
+  const guild = {
+    id: "guild-1",
+    channels: {
+      fetch: async () => ({
+        messages,
+        send: async (payload: any) => {
+          sentSequence += 1;
+          sentPayloads.push(payload);
+          if (payload.content === "Public final") counters.finalPosts += 1;
+          return { ...payload, id: `sent-${sentSequence}` };
+        },
+      }),
+    },
+  };
+  const interaction = {
+    customId: `result:auto:final:${options.sourceMessageId}`,
+    user: { id: "staff-1", tag: "staff#0001" },
+    memberPermissions: { has: () => true },
+    member: null,
+    channelId: "screenshots-channel",
+    deferUpdate: async () => undefined,
+    editReply: async (payload: any) => payload,
+    guild,
+    client: { user: { id: "bot-1" } },
+    channel: { send: async () => undefined },
+    reply: async () => undefined,
+  };
+  return {
+    counters,
+    finalBuffer,
+    interaction,
+    sentPayloads,
+    service,
+  };
+}
+
+test("unknown Arenzyra session topic command is ignored silently without side effects", async () => {
   const reactions: string[] = [];
   const replies: string[] = [];
+  let configuredLookupCalled = false;
   let registrationLookupCalled = false;
   const message = {
     author: {
@@ -37,7 +290,59 @@ test("unknown Arenzyra session topic is ignored without reject reaction", async 
     },
   };
   const sessionService = {
+    findConfiguredScrimForDiscordChannel: async () => {
+      configuredLookupCalled = true;
+      return null;
+    },
     findScrimForDiscordChannel: async () => null,
+    findScrimForWaitlistChannel: async () => null,
+    findScrimForRegistrationChannel: async () => {
+      registrationLookupCalled = true;
+      return null;
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(configuredLookupCalled, true);
+  assert.equal(registrationLookupCalled, false);
+  assert.deepEqual(reactions, []);
+  assert.deepEqual(replies, []);
+});
+
+test("register command in a non-configured server channel is ignored silently before registration lookup", async () => {
+  const reactions: string[] = [];
+  const replies: string[] = [];
+  let registrationLookupCalled = false;
+  const message = {
+    author: {
+      id: "manager-1",
+      username: "manager",
+      globalName: "Manager",
+      bot: false,
+      tag: "manager",
+    },
+    content: "%register\nWrong Channel Team\nWCT\n<@manager-1>",
+    guild: { id: "guild-1" },
+    channel: { id: "random-channel" },
+    mentions: {
+      users: new Map(),
+      channels: { first: () => null },
+    },
+    attachments: { find: () => undefined },
+    react: async (emoji: string) => {
+      reactions.push(emoji);
+    },
+    reply: async (payload: string | { content?: string }) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+    },
+  };
+  const sessionService = {
+    findConfiguredScrimForDiscordChannel: async () => null,
     findScrimForWaitlistChannel: async () => null,
     findScrimForRegistrationChannel: async () => {
       registrationLookupCalled = true;
@@ -137,6 +442,136 @@ test("slot status command toggles the per-session free slot replies", async () =
   assert.deepEqual(sent, [
     "\u2705 Free-slot status replies are now on for Scrim 1.",
   ]);
+});
+
+test("autoremove command routes to stored auto-registration removal", async () => {
+  const replies: string[] = [];
+  let captured: {
+    sessionId: string;
+    managerDiscordId: string;
+    actorDiscordId: string;
+  } | null = null;
+  const managerUser = {
+    id: "manager-1",
+    username: "manager",
+    globalName: "Manager",
+    bot: false,
+  };
+  const message = {
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%autoremove <@manager-1>",
+    client: { user: { id: "bot-1" } },
+    guild: { id: "guild-1" },
+    channel: { id: "manager-channel" },
+    mentions: {
+      users: new Collection([["manager-1", managerUser]]),
+    },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    reply: async (payload: { content?: string } | string) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+    },
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: { organizationId: "org-1", manageRoleIds: [], emojis: {} },
+      channelKind: "manager",
+    }),
+    removeAutoRegistrationAccessFromDiscord: async (
+      _guild: unknown,
+      sessionId: string,
+      managerDiscordId: string,
+      audit: { actorDiscordId?: string | null },
+    ) => {
+      captured = {
+        sessionId,
+        managerDiscordId,
+        actorDiscordId: audit.actorDiscordId ?? "",
+      };
+      return "auto removed";
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(captured, {
+    sessionId: "session-1",
+    managerDiscordId: "manager-1",
+    actorDiscordId: "staff-1",
+  });
+  assert.deepEqual(replies, ["auto removed"]);
+});
+
+test("winnerremove command routes to stored winner access removal", async () => {
+  const replies: string[] = [];
+  let captured: {
+    sessionId: string;
+    managerDiscordId: string;
+    actorDiscordId: string;
+  } | null = null;
+  const managerUser = {
+    id: "manager-1",
+    username: "manager",
+    globalName: "Manager",
+    bot: false,
+  };
+  const message = {
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%winnerremove <@manager-1>",
+    client: { user: { id: "bot-1" } },
+    guild: { id: "guild-1" },
+    channel: { id: "manager-channel" },
+    mentions: {
+      users: new Collection([["manager-1", managerUser]]),
+    },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    reply: async (payload: { content?: string } | string) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+    },
+  };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: { organizationId: "org-1", manageRoleIds: [], emojis: {} },
+      channelKind: "manager",
+    }),
+    removeWinnerAccessFromDiscord: async (
+      _guild: unknown,
+      sessionId: string,
+      managerDiscordId: string,
+      audit: { actorDiscordId?: string | null },
+    ) => {
+      captured = {
+        sessionId,
+        managerDiscordId,
+        actorDiscordId: audit.actorDiscordId ?? "",
+      };
+      return "winner removed";
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(captured, {
+    sessionId: "session-1",
+    managerDiscordId: "manager-1",
+    actorDiscordId: "staff-1",
+  });
+  assert.deepEqual(replies, ["winner removed"]);
 });
 
 test("idp dm command toggles forwarding for the synced idp channel", async () => {
@@ -820,6 +1255,178 @@ test("%ban accepts selected sessions by name", async () => {
   assert.match(replies[0].content, /Manager ban saved/);
 });
 
+test("%ban3 bans and removes the current slot team with no-show defaults", async () => {
+  let createdCommand: any = null;
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: {
+          banDefaultDurationDays: "3",
+          banDefaultReason: "Manual Discord ban",
+          banDefaultScope: "SESSION",
+        },
+      },
+      channelKind: "slot-list",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createSlotBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Slot #3 processed for DXB";
+    },
+  };
+  const replies: any[] = [];
+  const message = {
+    id: "message-slot-ban",
+    url: "https://discord.test/message-slot-ban",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%ban3",
+    guild,
+    channel: { id: "slot-channel" },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: { users: new Collection() },
+    reply: async (payload: any) => {
+      replies.push(payload);
+      return { id: "reply-slot-ban" };
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(createdCommand, {
+    sessionId: "session-1",
+    slotNumber: 3,
+    scope: "SESSION",
+    days: 3,
+    reason: "Didn't Show Up",
+    note: "Created from Discord %ban3 command: https://discord.test/message-slot-ban",
+    serverAction: null,
+  });
+  assert.match(replies[0].content, /Slot #3 processed/);
+});
+
+test("%ban3 uses slot-specific defaults when configured", async () => {
+  let createdCommand: any = null;
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: {
+          banDefaultDurationDays: "5",
+          banDefaultReason: "Shared ban reason",
+          banDefaultScope: "SESSION",
+          banServerAction: "ROLE",
+          slotBanDefaultDurationDays: "0",
+          slotBanDefaultReason: "Slot no-show",
+          slotBanDefaultScope: "TEAM",
+          slotBanServerAction: "NONE",
+        },
+      },
+      channelKind: "slot-list",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createSlotBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Slot #3 processed for DXB";
+    },
+  };
+  const message = {
+    id: "message-slot-ban-defaults",
+    url: "https://discord.test/message-slot-ban-defaults",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%ban3",
+    guild,
+    channel: { id: "slot-channel" },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: { users: new Collection() },
+    reply: async () => ({ id: "reply-slot-ban-defaults" }),
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(createdCommand, {
+    sessionId: "session-1",
+    slotNumber: 3,
+    scope: "TEAM",
+    days: null,
+    reason: "Slot no-show",
+    note: "Created from Discord %ban3 command: https://discord.test/message-slot-ban-defaults",
+    serverAction: "NONE",
+  });
+});
+
+test("%ban 3 accepts custom duration, scope, and reason", async () => {
+  let createdCommand: any = null;
+  const guild = { id: "guild-1" };
+  const sessionService = {
+    findScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: {
+          banDefaultDurationDays: "3",
+          banDefaultReason: "Didn't Show Up",
+          banDefaultScope: "SESSION",
+        },
+      },
+      channelKind: "slot-list",
+    }),
+    withOrganization: async (_organizationId: string, fn: () => Promise<any>) =>
+      fn(),
+    createSlotBanFromDiscord: async (command: any) => {
+      createdCommand = command;
+      return "Slot #3 processed for DXB";
+    },
+  };
+  const message = {
+    id: "message-slot-ban-custom",
+    url: "https://discord.test/message-slot-ban-custom",
+    author: { id: "staff-1", bot: false, tag: "staff#0001" },
+    content: "%ban 3 scope=all-sessions days=5 + late no-show",
+    guild,
+    channel: { id: "slot-channel" },
+    member: {
+      permissions: { has: () => true },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: { users: new Collection() },
+    reply: async () => ({ id: "reply-slot-ban-custom" }),
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(createdCommand, {
+    sessionId: "session-1",
+    slotNumber: 3,
+    scope: "TEAM",
+    days: 5,
+    reason: "late no-show",
+    note: "Created from Discord %ban3 command: https://discord.test/message-slot-ban-custom",
+    serverAction: null,
+  });
+});
+
 test("%ban timed choice asks for days and creates timed manager ban", async () => {
   let createdCommand: any = null;
   let shownModal: any = null;
@@ -1305,6 +1912,162 @@ test("staff registration messages use the first mentioned user as team leader", 
   assert.deepEqual(reactions, ["\u23F3", "\u2611\uFE0F"]);
 });
 
+test("scrim registration strips pasted invisible direction marks", async () => {
+  let capturedArgs: unknown[] | null = null;
+  const manager = {
+    id: "935267073549013123",
+    username: "winter-manager",
+    globalName: "Winter Manager",
+    bot: false,
+  };
+  const message = {
+    author: {
+      id: "staff-1",
+      username: "staff",
+      globalName: "Staff",
+      bot: false,
+      tag: "staff",
+    },
+    content:
+      "\u200e%register\n\u200eWinter Season Esport\n\u200eWS\n<@935267073549013123>",
+    guild: { id: "guild-1" },
+    channel: { id: "registration-channel" },
+    member: {
+      permissions: { has: () => false },
+      roles: {
+        cache: {
+          has: (roleId: string) => roleId === "staff-role",
+          some: () => false,
+        },
+      },
+    },
+    mentions: {
+      users: new Map([[manager.id, manager]]),
+      channels: { first: () => null },
+    },
+    attachments: { find: () => undefined },
+    client: { user: { id: "bot-1" } },
+    reactions: {
+      resolve: () => ({
+        users: { remove: async () => undefined },
+      }),
+    },
+    react: async () => undefined,
+    reply: async () => undefined,
+  };
+  const sessionService = {
+    findScrimForRegistrationChannel: async () => ({
+      accepting: true,
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        manageRoleIds: ["staff-role"],
+        emojis: {},
+      },
+    }),
+    registerTeamAndJoinScrim: async (...args: unknown[]) => {
+      capturedArgs = args;
+      const options = args[10] as {
+        onSessionRegistration?: (result: unknown) => Promise<void>;
+      };
+      await options.onSessionRegistration?.({
+        registration: { status: "CONFIRMED", waitlistPosition: null },
+        status: "registered",
+        warning: null,
+      });
+      return "Team registered";
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.ok(capturedArgs);
+  assert.equal(capturedArgs[0], "935267073549013123");
+  assert.equal(capturedArgs[3], "WS");
+  assert.equal(capturedArgs[4], "Winter Season Esport");
+});
+
+test("scrim registration strips team name and team tag labels", async () => {
+  const capturedArgs: unknown[][] = [];
+  const manager = {
+    id: "935267073549013123",
+    username: "user-manager",
+    globalName: "User Manager",
+    bot: false,
+  };
+  const baseMessage = {
+    author: {
+      id: "staff-1",
+      username: "staff",
+      globalName: "Staff",
+      bot: false,
+      tag: "staff",
+    },
+    guild: { id: "guild-1" },
+    channel: { id: "registration-channel" },
+    member: {
+      permissions: { has: () => false },
+      roles: {
+        cache: {
+          has: (roleId: string) => roleId === "staff-role",
+          some: () => false,
+        },
+      },
+    },
+    mentions: {
+      users: new Map([[manager.id, manager]]),
+      channels: { first: () => null },
+    },
+    attachments: { find: () => undefined },
+    client: { user: { id: "bot-1" } },
+    reactions: {
+      resolve: () => ({
+        users: { remove: async () => undefined },
+      }),
+    },
+    react: async () => undefined,
+    reply: async () => undefined,
+  };
+  const sessionService = {
+    findScrimForRegistrationChannel: async () => ({
+      accepting: true,
+      session: { id: "session-1", name: "Scrim Registration" },
+      config: {
+        organizationId: "org-1",
+        registrationMode: "SCRIM",
+        manageRoleIds: ["staff-role"],
+        emojis: {},
+      },
+    }),
+    registerTeamAndJoinScrim: async (...args: unknown[]) => {
+      capturedArgs.push(args);
+      return "Team registered";
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  await service.handleMessage({
+    ...baseMessage,
+    id: "label-registration-1",
+    content:
+      "%register\nTeam name:USER E-SPORT\nTEAMTAG:USER\n<@935267073549013123>",
+  } as any);
+  await service.handleMessage({
+    ...baseMessage,
+    id: "label-registration-2",
+    content:
+      "%register Team Name: Pipe Esports | Team Tag: PIPE | <@935267073549013123>",
+  } as any);
+
+  assert.equal(capturedArgs.length, 2);
+  assert.equal(capturedArgs[0]?.[3], "USER");
+  assert.equal(capturedArgs[0]?.[4], "USER E-SPORT");
+  assert.equal(capturedArgs[1]?.[3], "PIPE");
+  assert.equal(capturedArgs[1]?.[4], "Pipe Esports");
+});
+
 test("waitlist channel register promotes an existing waitlist team", async () => {
   let promotedArgs: unknown[] | null = null;
   const replies: string[] = [];
@@ -1378,6 +2141,82 @@ test("waitlist channel register promotes an existing waitlist team", async () =>
   assert.equal(promotedArgs[3], "Oppressors");
   assert.equal(replies[0], "\u2705 Waitlist team moved to Slot 7.");
   assert.deepEqual(reactions, ["\u23F3", "\u2705"]);
+});
+
+test("registration channel promotes an existing waitlist team while registration is open", async () => {
+  let promotedArgs: unknown[] | null = null;
+  const replies: string[] = [];
+  const manager = {
+    id: "manager-1",
+    username: "manager",
+    globalName: "Manager",
+    bot: false,
+  };
+  const message = {
+    author: {
+      id: "manager-1",
+      username: "manager",
+      globalName: "Manager",
+      bot: false,
+      tag: "manager",
+    },
+    content: "%register\nOppressors\nOPS\n<@manager-1>",
+    guild: { id: "guild-1" },
+    channel: { id: "registration-channel" },
+    member: {
+      permissions: { has: () => false },
+      roles: { cache: { has: () => false, some: () => false } },
+    },
+    mentions: {
+      users: new Map([[manager.id, manager]]),
+      channels: { first: () => null },
+    },
+    attachments: { find: () => undefined },
+    client: { user: { id: "bot-1" } },
+    reactions: {
+      resolve: () => ({
+        users: { remove: async () => undefined },
+      }),
+    },
+    react: async () => undefined,
+    reply: async (payload: string | { content?: string }) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+    },
+  };
+  const sessionService = {
+    findScrimForRegistrationChannel: async () => ({
+      accepting: true,
+      session: { id: "session-1", name: "Scrim 1" },
+      config: {
+        organizationId: "org-1",
+        registrationMode: "SCRIM",
+        emojis: { check: "\u2705" },
+      },
+    }),
+    promoteWaitlistedTeamFromRegistrationChannel: async (
+      ...args: unknown[]
+    ) => {
+      promotedArgs = args;
+      return "\u2705 Waitlist team moved to Slot 7.";
+    },
+    registerTeamAndJoinScrim: async () => {
+      throw new Error(
+        "waitlisted team should be promoted, not registered again",
+      );
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.ok(promotedArgs);
+  assert.equal(promotedArgs[0], "manager-1");
+  assert.equal(promotedArgs[2], "OPS");
+  assert.equal(promotedArgs[3], "Oppressors");
+  assert.equal(replies[0], "\u2705 Waitlist team moved to Slot 7.");
 });
 
 test("staff waitlist channel register bypasses closed promotion window gate", async () => {
@@ -1591,6 +2430,87 @@ test("normal users cannot use vip registration command", async () => {
   assert.equal(handled, true);
   assert.equal(registered, false);
   assert.match(replyPayload?.content, /VIP registration is closed/);
+});
+
+test("vip access role can use normal registration while normal window is closed", async () => {
+  let capturedArgs: unknown[] | null = null;
+  const replies: string[] = [];
+  const manager = {
+    id: "123456789012345678",
+    username: "manager",
+    globalName: "Manager",
+    bot: false,
+  };
+  const message = {
+    author: {
+      id: manager.id,
+      username: manager.username,
+      globalName: manager.globalName,
+      bot: false,
+      tag: "manager",
+    },
+    content: "%register\nHORUS ESPORTS\nHORUS\n<@123456789012345678>",
+    guild: { id: "guild-1" },
+    channel: { id: "registration-channel" },
+    member: {
+      permissions: { has: () => false },
+      roles: {
+        cache: { has: () => false, some: () => false },
+      },
+    },
+    mentions: {
+      users: new Map([[manager.id, manager]]),
+      channels: { first: () => null },
+    },
+    attachments: { find: () => undefined },
+    client: { user: { id: "bot-1" } },
+    reactions: {
+      resolve: () => ({
+        users: { remove: async () => undefined },
+      }),
+    },
+    react: async () => undefined,
+    reply: async (payload: string | { content?: string }) => {
+      replies.push(
+        typeof payload === "string" ? payload : (payload.content ?? ""),
+      );
+    },
+  };
+  const sessionService = {
+    findScrimForRegistrationChannel: async () => ({
+      accepting: false,
+      session: { id: "session-1", name: "Scrim Registration" },
+      config: {
+        organizationId: "org-1",
+        registrationMode: "SCRIM",
+        manageRoleIds: [],
+        emojis: {},
+      },
+    }),
+    registerTeamAndJoinScrim: async (...args: unknown[]) => {
+      capturedArgs = args;
+      return "Team registered";
+    },
+    userHasVipRegistrationAccess: async () => true,
+    userHasCustomRoleRegistrationAccess: async () => false,
+    userHasEarlyAccessRegistrationAccess: async () => false,
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.deepEqual(replies, []);
+  assert.ok(capturedArgs);
+  assert.equal(capturedArgs[0], manager.id);
+  const options = capturedArgs[10] as {
+    placement?: string;
+    registrationWindowBypass?: boolean;
+    registrationRoleBypass?: boolean;
+  };
+  assert.equal(options.placement, "NORMAL");
+  assert.equal(options.registrationWindowBypass, true);
+  assert.equal(options.registrationRoleBypass, true);
 });
 
 test("event registration channel accepts pipe format without register command", async () => {
@@ -2581,22 +3501,7 @@ test("scrim registration channel rejects tournament pipe format", async () => {
 });
 
 test("logo command in synced logo channel updates the saved team logo", async (t) => {
-  const originalFetch = globalThis.fetch;
-  t.after(() => {
-    (globalThis as any).fetch = originalFetch;
-  });
-  (globalThis as any).fetch = async () => ({
-    ok: true,
-    headers: {
-      get: (name: string) =>
-        name.toLowerCase() === "content-type"
-          ? "image/png"
-          : name.toLowerCase() === "content-length"
-            ? "3"
-            : null,
-    },
-    arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer,
-  });
+  await mockRemotePng(t);
 
   let uploadedTeamName: string | null = null;
   let uploadedLogo: any = null;
@@ -2692,6 +3597,79 @@ test("logo command in synced logo channel updates the saved team logo", async (t
   assert.equal(refreshedSessionId, "session-1");
 });
 
+test("logo command parses pipe-separated team name and tag", async (t) => {
+  await mockRemotePng(t);
+
+  let uploadedTeamQuery: string | null = null;
+  let uploadedSource: any = null;
+  const message = {
+    id: "logo-message-2",
+    author: {
+      id: "manager-1",
+      username: "manager",
+      globalName: "Manager",
+      bot: false,
+      tag: "manager",
+    },
+    content: "%logo\nAura Esports | AURA",
+    guild: { id: "guild-1" },
+    channel: { id: "111111111111111111" },
+    mentions: {
+      users: new Map(),
+      channels: { first: () => null },
+    },
+    attachments: {
+      find: () => ({
+        id: "attachment-1",
+        url: "https://cdn.discordapp.com/team-logo.png",
+        name: "team-logo.png",
+        contentType: "image/png",
+        size: 3,
+      }),
+    },
+    client: { user: { id: "bot-1" } },
+    reactions: {
+      resolve: () => ({
+        users: { remove: async () => undefined },
+      }),
+    },
+    react: async () => undefined,
+    reply: async () => undefined,
+  };
+  const sessionService = {
+    findScrimForLogoChannel: async (guildId: string, channelId: string) => ({
+      session: { id: "session-1" },
+      config: {
+        sessionId: "session-1",
+        guildId,
+        organizationId: "org-1",
+        manageRoleIds: [],
+        emojis: { discordLogoChannelIds: channelId },
+      },
+    }),
+    updateTeamLogoFromDiscord: async (
+      teamQuery: string,
+      _logoUpload: unknown,
+      _config: unknown,
+      source: unknown,
+    ) => {
+      uploadedTeamQuery = teamQuery;
+      uploadedSource = source;
+      return "Logo saved for Aura Esports.";
+    },
+    queueVisibleDiscordScrimRefreshForActiveGuildSessions: async () =>
+      undefined,
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(uploadedTeamQuery, "Aura Esports (AURA)");
+  assert.equal(uploadedSource?.teamName, "Aura Esports");
+  assert.equal(uploadedSource?.tag, "AURA");
+});
+
 test("sync old logos command scans the current synced logo channel", async () => {
   let requested: any = null;
   let refreshedSessionId: string | null = null;
@@ -2781,22 +3759,7 @@ test("sync old logos command scans the current synced logo channel", async () =>
 });
 
 test("player photo command in tournament mode uploads by uid", async (t) => {
-  const originalFetch = globalThis.fetch;
-  t.after(() => {
-    (globalThis as any).fetch = originalFetch;
-  });
-  (globalThis as any).fetch = async () => ({
-    ok: true,
-    headers: {
-      get: (name: string) =>
-        name.toLowerCase() === "content-type"
-          ? "image/png"
-          : name.toLowerCase() === "content-length"
-            ? "3"
-            : null,
-    },
-    arrayBuffer: async () => Uint8Array.of(1, 2, 3).buffer,
-  });
+  await mockRemotePng(t);
 
   let uploadedPayload: any = null;
   let uploadedPhoto: any = null;
@@ -3646,7 +4609,7 @@ test("team managers can remove a session manager from the synced transfer channe
   assert.deepEqual(sentPayload.allowedMentions?.users, [removedManager.id]);
 });
 
-test("staff can pause and resume bot activity in any server channel", async () => {
+test("staff can pause and resume bot activity in a configured server channel", async () => {
   const channelId = "123456789012345678";
   let organizationContext: string | null | undefined = null;
   const pauseCalls: Array<{
@@ -3702,6 +4665,11 @@ test("staff can pause and resume bot activity in any server channel", async () =
     reply: async () => undefined,
   };
   const sessionService = {
+    findConfiguredScrimForDiscordChannel: async () => ({
+      session: { id: "session-1", name: "Scrim 1" },
+      config: { organizationId: "org-1", emojis: {} },
+      channelKind: "manager",
+    }),
     findScrimForDiscordChannel: async () => null,
     findScrimForLogoChannel: async () => null,
     withOrganization: async (
@@ -3748,6 +4716,62 @@ test("staff can pause and resume bot activity in any server channel", async () =
     sentPayload.content,
     "Arenzyra bot is now active in this channel.",
   );
+});
+
+test("staff stop command in a non-configured server channel is ignored silently", async () => {
+  const channelId = "123456789012345678";
+  let pauseCalled = false;
+  let commandDeleted = false;
+  let replyCalled = false;
+  let sendCalled = false;
+  const message = {
+    author: {
+      id: "staff-1",
+      username: "staff",
+      globalName: "Staff",
+      bot: false,
+      tag: "staff",
+    },
+    content: "%stop",
+    guild: { id: "guild-1" },
+    channel: {
+      id: channelId,
+      send: async () => {
+        sendCalled = true;
+      },
+    },
+    member: {
+      permissions: { has: () => true },
+      roles: {
+        cache: {
+          has: () => false,
+          some: () => false,
+        },
+      },
+    },
+    client: { user: { id: "bot-1" } },
+    delete: async () => {
+      commandDeleted = true;
+    },
+    reply: async () => {
+      replyCalled = true;
+    },
+  };
+  const sessionService = {
+    findConfiguredScrimForDiscordChannel: async () => null,
+    setDiscordChannelPaused: async () => {
+      pauseCalled = true;
+    },
+  };
+
+  const service = new MessageRegistrationService(sessionService as any);
+  const handled = await service.handleMessage(message as any);
+
+  assert.equal(handled, true);
+  assert.equal(pauseCalled, false);
+  assert.equal(commandDeleted, false);
+  assert.equal(replyCalled, false);
+  assert.equal(sendCalled, false);
 });
 
 test("paused server channels ignore bot activity until started", async () => {
@@ -4440,6 +5464,7 @@ test("automatic result apply button applies the stored screenshot", async () => 
   let appliedArgs: unknown[] | null = null;
   let finalEdit: any = null;
   let resultsPost: any = null;
+  let resultControlPanelUpdates = 0;
   const message = {
     id: "123456789012345679",
     author: {
@@ -4548,7 +5573,21 @@ test("automatic result apply button applies the stored screenshot", async () => 
       };
     },
   };
-  const service = new MessageRegistrationService(sessionService as any);
+  const controlPanelService = {
+    postOrUpdateResultControlPanel: async () => {
+      resultControlPanelUpdates += 1;
+      return {
+        posted: true,
+        updated: false,
+        channelId: "manage-channel",
+        messageId: "panel-message",
+      };
+    },
+  };
+  const service = new MessageRegistrationService(
+    sessionService as any,
+    controlPanelService as any,
+  );
   await service.handleMessage(message as any);
 
   const handled = await service.handleButton({
@@ -4599,6 +5638,8 @@ test("automatic result apply button applies the stored screenshot", async () => 
   assert.equal(finalEdit.files.length, 0);
   assert.equal(resultsPost.content, "Public results");
   assert.equal(resultsPost.files.length, 1);
+  assert.equal(resultControlPanelUpdates, 0);
+  assert.doesNotMatch(finalEdit.content, /Result control panel/);
 });
 
 test("automatic result review channel defaults to screenshots before manage", () => {
@@ -5048,6 +6089,115 @@ test("automatic apply with no-shows counts ban candidates without creating bans"
   assert.equal(service.pendingAutoResults.has("123456789012345693"), false);
 });
 
+test("automatic apply with no-shows allows selected ban slots when no OCR rows are selected", async () => {
+  let finalEdit: any = null;
+  let applyArgs: any[] | null = null;
+  const service = new MessageRegistrationService({
+    applyReviewedResults: async (...args: any[]) => {
+      applyArgs = args;
+      return {
+        content:
+          "Reviewed results applied\n\nRows applied: 0\nBan candidates counted: 2",
+        noShowCount: 2,
+      };
+    },
+  } as any) as any;
+  service.pendingAutoResults.set("123456789012345694", {
+    sessionId: "session-1",
+    matchId: "match-1",
+    matchLabel: "Match 1",
+    imageUrl: "https://cdn.discordapp.com/result.png",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    sourceGuildId: "guild-1",
+    sourceMessageId: "123456789012345694",
+    sourceChannelId: "screenshots-channel",
+    dashboardChannelId: "screenshots-channel",
+    dashboardMessageId: "123456789012345694",
+    config: {
+      organizationId: null,
+      manageRoleIds: [],
+      emojis: {},
+    },
+    rows: [
+      {
+        position: 1,
+        tag: "ORGE",
+        kills: 0,
+        teamId: "team-3",
+        slotId: "slot-3",
+        slotNumber: 3,
+        status: "UNRESOLVED",
+        reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
+        include: false,
+        skipConfirmed: true,
+        noShowAction: "BAN",
+      },
+      {
+        position: 2,
+        tag: "SVG",
+        kills: 0,
+        teamId: "team-4",
+        slotId: "slot-4",
+        slotNumber: 4,
+        status: "UNRESOLVED",
+        reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
+        include: false,
+        skipConfirmed: true,
+        noShowAction: "BAN",
+      },
+    ],
+    slots: [
+      {
+        id: "slot-3",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-3",
+        team: { id: "team-3", tag: "ORGE", name: "ORGE" },
+      },
+      {
+        id: "slot-4",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-4",
+        team: { id: "team-4", tag: "SVG", name: "SAVAGE UNIT ESPORTS" },
+      },
+    ],
+    expiresAt: Date.now() + 60_000,
+  });
+
+  assert.deepEqual(
+    service.reviewIssues(service.pendingAutoResults.get("123456789012345694")),
+    ["No rows are selected to apply."],
+  );
+  assert.deepEqual(
+    service.reviewIssues(service.pendingAutoResults.get("123456789012345694"), {
+      allowMissingPlacements: true,
+    }),
+    [],
+  );
+
+  const handled = await service.handleButton({
+    customId: "result:auto:apply-noshow:123456789012345694",
+    memberPermissions: { has: () => true },
+    member: null,
+    deferUpdate: async () => undefined,
+    editReply: async (payload: any) => {
+      finalEdit = payload;
+      return payload;
+    },
+    reply: async () => undefined,
+  } as any);
+
+  assert.equal(handled, true);
+  const capturedApplyArgs = applyArgs as unknown as any[];
+  assert.equal(capturedApplyArgs[0], "match-1");
+  assert.equal(capturedApplyArgs[3]?.markMissingSlotsNoShow, true);
+  assert.deepEqual(capturedApplyArgs[3]?.noShowSlotNumbers, [3, 4]);
+  assert.match(finalEdit.content, /Rows applied: 0/);
+  assert.match(finalEdit.content, /Ban candidates counted: 2/);
+  assert.equal(service.pendingAutoResults.has("123456789012345694"), false);
+});
+
 test("automatic result apply replaces stale MVP and top fragger widget posts", async () => {
   const deletedMessages: string[] = [];
   let sentPayload: any = null;
@@ -5310,8 +6460,8 @@ test("automatic result row edit stores player kills for MVP widgets", () => {
   };
   const values: Record<string, string> = {
     include: "yes",
-    position: "1",
-    kills: "8",
+    ban: "no ban",
+    score: "1, 8",
     slot: "3",
     players: "Alice=5\nBob=3",
   };
@@ -5357,8 +6507,8 @@ test("automatic result row edit requires player kills to match team kills", () =
   };
   const values: Record<string, string> = {
     include: "yes",
-    position: "1",
-    kills: "8",
+    ban: "no ban",
+    score: "1, 8",
     slot: "3",
     players: "Alice=5\nBob=2",
   };
@@ -5376,14 +6526,364 @@ test("automatic result row edit requires player kills to match team kills", () =
   assert.match(result.error, /add up to team kills/);
 });
 
+test("automatic result confirmed skip does not keep a missing placement blocker", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345692",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 1,
+        tag: "DXB",
+        kills: 8,
+        teamId: "team-1",
+        slotId: "slot-1",
+        slotNumber: 3,
+        status: "OK",
+        include: true,
+      },
+      {
+        position: 2,
+        tag: "NO TAG",
+        kills: 0,
+        teamId: null,
+        slotId: null,
+        slotNumber: null,
+        status: "UNRESOLVED",
+        reason: "TEAM_TAG_NOT_FOUND",
+        include: false,
+      },
+      {
+        position: 3,
+        tag: "NXT",
+        kills: 4,
+        teamId: "team-2",
+        slotId: "slot-2",
+        slotNumber: 4,
+        status: "OK",
+        include: true,
+      },
+    ],
+    slots: [],
+  };
+  const values: Record<string, string> = {
+    include: "skip",
+    ban: "no ban",
+    score: "2, 0",
+    slot: "",
+    players: "",
+  };
+
+  const result = service.readEditedResultRow(
+    {
+      fields: {
+        getTextInputValue: (field: string) => values[field] ?? "",
+      },
+    },
+    pending,
+    pending.rows[1],
+  );
+
+  assert.equal(result.ok, true);
+  pending.rows[1] = result.row;
+  assert.equal(result.row.include, false);
+  assert.equal(result.row.skipConfirmed, true);
+  assert.equal(result.row.noShowAction, "NO_BAN");
+  assert.equal(result.row.edited, true);
+  assert.deepEqual(service.reviewIssues(pending), []);
+});
+
+test("automatic result confirmed no-ban for an official slot is not a ban candidate", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345693",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 1,
+        tag: "DXB",
+        kills: 8,
+        teamId: "team-1",
+        slotId: "slot-1",
+        slotNumber: 3,
+        status: "OK",
+        include: true,
+      },
+      {
+        position: 2,
+        tag: "NXT",
+        kills: 0,
+        teamId: "team-2",
+        slotId: "slot-2",
+        slotNumber: 4,
+        status: "OK",
+        include: true,
+      },
+    ],
+    slots: [
+      {
+        id: "slot-1",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", tag: "DXB" },
+      },
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", tag: "NXT" },
+      },
+    ],
+  };
+  const values: Record<string, string> = {
+    include: "no",
+    ban: "no ban",
+    score: "2, 0",
+    slot: "4",
+    players: "",
+  };
+
+  const result = service.readEditedResultRow(
+    {
+      fields: {
+        getTextInputValue: (field: string) => values[field] ?? "",
+      },
+    },
+    pending,
+    pending.rows[1],
+  );
+
+  assert.equal(result.ok, true);
+  pending.rows[1] = result.row;
+  assert.deepEqual(service.reviewIssues(pending), []);
+  assert.equal(result.row.noShowAction, "NO_BAN");
+  assert.deepEqual(
+    service.noShowCandidateSlots(pending).map((slot: any) => slot.slotNumber),
+    [],
+  );
+  assert.match(
+    service.formatAutoResultDashboard(pending),
+    /Ban-count candidates: 0/,
+  );
+  assert.match(service.formatAutoResultDetails(pending), /\[skip\/no-ban\]/);
+});
+
+test("automatic result explicit ban for an official slot becomes a ban candidate", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345693",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 1,
+        tag: "DXB",
+        kills: 8,
+        teamId: "team-1",
+        slotId: "slot-1",
+        slotNumber: 3,
+        status: "OK",
+        include: true,
+      },
+      {
+        position: 2,
+        tag: "NXT",
+        kills: 0,
+        teamId: "team-2",
+        slotId: "slot-2",
+        slotNumber: 4,
+        status: "OK",
+        include: true,
+      },
+    ],
+    slots: [
+      {
+        id: "slot-1",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", tag: "DXB" },
+      },
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", tag: "NXT" },
+      },
+    ],
+  };
+  const values: Record<string, string> = {
+    include: "skip",
+    ban: "ban",
+    score: "2, 0",
+    slot: "4",
+    players: "",
+  };
+
+  const result = service.readEditedResultRow(
+    {
+      fields: {
+        getTextInputValue: (field: string) => values[field] ?? "",
+      },
+    },
+    pending,
+    pending.rows[1],
+  );
+
+  assert.equal(result.ok, true);
+  pending.rows[1] = result.row;
+  assert.deepEqual(service.reviewIssues(pending), []);
+  assert.equal(result.row.noShowAction, "BAN");
+  assert.deepEqual(
+    service.noShowCandidateSlots(pending).map((slot: any) => slot.slotNumber),
+    [4],
+  );
+  assert.match(
+    service.formatAutoResultDashboard(pending),
+    /Ban-count candidates: 1/,
+  );
+  assert.match(service.formatAutoResultDetails(pending), /\[skip\+ban\]/);
+});
+
+test("automatic result apply row keeps ban count separate", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending: any = {
+    rows: [],
+    slots: [
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", tag: "NXT" },
+      },
+    ],
+  };
+  const current = {
+    position: 2,
+    tag: "NXT",
+    kills: 0,
+    teamId: "team-2",
+    slotId: "slot-2",
+    slotNumber: 4,
+    status: "OK",
+    include: false,
+    noShowAction: "BAN",
+  };
+  pending.rows = [current];
+  const values: Record<string, string> = {
+    include: "yes",
+    ban: "ban",
+    score: "2, 0",
+    slot: "4",
+    players: "",
+  };
+
+  const result = service.readEditedResultRow(
+    {
+      fields: {
+        getTextInputValue: (field: string) => values[field] ?? "",
+      },
+    },
+    pending,
+    current,
+  );
+
+  assert.equal(result.ok, true);
+  pending.rows[0] = result.row;
+  assert.equal(result.row.include, true);
+  assert.equal(result.row.noShowAction, undefined);
+  assert.deepEqual(
+    service.noShowCandidateSlots(pending).map((slot: any) => slot.slotNumber),
+    [],
+  );
+});
+
+test("automatic result row edit keeps legacy action ban compatible", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending: any = {
+    rows: [],
+    slots: [
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", tag: "NXT" },
+      },
+    ],
+  };
+  const current = {
+    position: 2,
+    tag: "NXT",
+    kills: 0,
+    teamId: "team-2",
+    slotId: "slot-2",
+    slotNumber: 4,
+    status: "OK",
+    include: true,
+  };
+  pending.rows = [current];
+  const values: Record<string, string> = {
+    include: "ban",
+    position: "2",
+    kills: "0",
+    slot: "4",
+    players: "",
+  };
+
+  const result = service.readEditedResultRow(
+    {
+      fields: {
+        getTextInputValue: (field: string) => values[field] ?? "",
+      },
+    },
+    pending,
+    current,
+  );
+
+  assert.equal(result.ok, true);
+  pending.rows[0] = result.row;
+  assert.equal(result.row.include, false);
+  assert.equal(result.row.noShowAction, "BAN");
+  assert.deepEqual(
+    service.noShowCandidateSlots(pending).map((slot: any) => slot.slotNumber),
+    [4],
+  );
+});
+
 test("automatic final result posts match and overall widgets to results by default", async () => {
   let finalEdit: any = null;
   let managerPost: any = null;
   let applyNoShowOpts: any = null;
   let finalBanPreviewInput: any = null;
   let finalBanReviewPost: any = null;
+  let sealedArtifactInput: any = null;
+  let finalizedSnapshotInput: any = null;
+  let rememberedFinalPost: any[] | null = null;
   const operationOrder: string[] = [];
   const resultsPosts: any[] = [];
+  const resultControlPanelCalls: any[] = [];
+  const finalImageFiles = [
+    { name: "overall-ranking.png", buffer: Buffer.from([2]) },
+    { name: "overall-top-mvp.png", buffer: Buffer.from([3]) },
+    { name: "overall-top-fraggers.png", buffer: Buffer.from([4]) },
+    { name: "match-schedule.png", buffer: Buffer.from([5]) },
+  ];
   const message = {
     id: "123456789012345683",
     author: {
@@ -5539,16 +7039,55 @@ test("automatic final result posts match and overall widgets to results by defau
         content: "No-show ban preview",
       };
     },
-    buildFinalResultPost: async () => ({
-      content: "Final widgets",
-      publicContent: "Public overall results",
-      imageFiles: [
-        { name: "overall-ranking.png", buffer: Buffer.from([2]) },
-        { name: "overall-top-mvp.png", buffer: Buffer.from([3]) },
-        { name: "overall-top-fraggers.png", buffer: Buffer.from([4]) },
-        { name: "match-schedule.png", buffer: Buffer.from([5]) },
-      ],
-    }),
+    rebuildOverallResultBackupFromDiscord: async () => {
+      operationOrder.push("rebuild-overall");
+      return { id: "overall-backup-1" };
+    },
+    prepareConditionalBanFinalSnapshot: async () => {
+      operationOrder.push("prepare-final-snapshot");
+      return {
+        required: true,
+        id: "snapshot-1",
+        resultStateHash: "a".repeat(64),
+        resultBackupId: "conditional-backup-1",
+        sourceMatchId: "match-2",
+        liveMatchIds: ["match-1", "match-2"],
+        appliedMatchIds: ["match-1", "match-2"],
+        createdAt: new Date().toISOString(),
+      };
+    },
+    buildFinalResultPost: async () => {
+      operationOrder.push("build-final-post");
+      return {
+        content: "Final widgets",
+        publicContent: "Public overall results",
+        imageFiles: finalImageFiles,
+      };
+    },
+    sealConditionalBanFinalSnapshot: async (...args: any[]) => {
+      operationOrder.push("seal-final-snapshot");
+      sealedArtifactInput = args;
+      return {
+        id: "snapshot-1",
+        resultStateHash: "a".repeat(64),
+        snapshotHash: "b".repeat(64),
+        resultBackupId: "conditional-backup-1",
+        artifactManifest: { version: 1, ...args[2] },
+        idempotent: false,
+      };
+    },
+    rememberFinalResultPost: async (...args: any[]) => {
+      operationOrder.push("remember-final-post");
+      rememberedFinalPost = args;
+    },
+    finalizeConditionalBannedTeamRegistrations: async (...args: any[]) => {
+      operationOrder.push("finalize-conditional-bans");
+      finalizedSnapshotInput = args[3];
+      return emptyConditionalBanFinalizationResult(args[3].messageId as string);
+    },
+    syncWinnerRoleAccessForSourceSession: async () => {
+      operationOrder.push("sync-winner-access");
+    },
     resetSessionResultSystem: async () => {
       operationOrder.push("reset-result-system");
       return {
@@ -5561,7 +7100,21 @@ test("automatic final result posts match and overall widgets to results by defau
       };
     },
   };
-  const service = new MessageRegistrationService(sessionService as any);
+  const controlPanelService = {
+    postOrUpdateResultControlPanel: async (...args: any[]) => {
+      resultControlPanelCalls.push(args);
+      return {
+        posted: false,
+        updated: true,
+        channelId: "manage-channel",
+        messageId: "panel-message",
+      };
+    },
+  };
+  const service = new MessageRegistrationService(
+    sessionService as any,
+    controlPanelService as any,
+  );
   await service.handleMessage(message as any);
 
   const handled = await service.handleButton({
@@ -5584,7 +7137,10 @@ test("automatic final result posts match and overall widgets to results by defau
             if (channelId === "results-channel") {
               resultsPosts.push(payload);
             }
-            return payload;
+            return {
+              ...payload,
+              id: `result-message-${resultsPosts.length}`,
+            };
           },
         }),
       },
@@ -5603,6 +7159,10 @@ test("automatic final result posts match and overall widgets to results by defau
   assert.match(finalEdit.content, /results-channel/);
   assert.match(
     finalEdit.content,
+    /Result control panel updated in <#manage-channel>/,
+  );
+  assert.match(
+    finalEdit.content,
     /No-show ban review posted with 1 team candidate/,
   );
   assert.match(finalEdit.content, /Result system reset: 2 old matches removed/);
@@ -5616,8 +7176,15 @@ test("automatic final result posts match and overall widgets to results by defau
   });
   assert.match(finalBanReviewPost.content, /No-show Ban Review/);
   assert.deepEqual(operationOrder, [
+    "rebuild-overall",
+    "prepare-final-snapshot",
+    "build-final-post",
+    "seal-final-snapshot",
+    "remember-final-post",
     "preview-no-show-ban-review",
     "post-no-show-ban-review",
+    "finalize-conditional-bans",
+    "sync-winner-access",
     "reset-result-system",
   ]);
   assert.match(finalBanReviewPost.content, /DXB \(DXB\) \| missed G1/);
@@ -5627,6 +7194,8 @@ test("automatic final result posts match and overall widgets to results by defau
     .components.map((component: any) => component.label);
   assert.deepEqual(reviewButtons, ["Edit Selection", "Apply Bans", "Cancel"]);
   assert.equal(managerPost, null);
+  assert.equal(resultControlPanelCalls.length, 1);
+  assert.equal(resultControlPanelCalls[0][1], "session-1");
   assert.equal(resultsPosts[0].content, "Public match results");
   assert.equal(resultsPosts[1].content, "Public overall results");
   assert.equal(resultsPosts[0].files.length, 4);
@@ -5639,6 +7208,39 @@ test("automatic final result posts match and overall widgets to results by defau
       "overall-top-fraggers.png",
       "match-schedule.png",
     ],
+  );
+  assert.deepEqual(rememberedFinalPost, [
+    "session-1",
+    "results-channel",
+    "result-message-2",
+    "overall-backup-1",
+  ]);
+  assert.deepEqual(finalizedSnapshotInput, {
+    channelId: "results-channel",
+    messageId: "result-message-2",
+    sourceMatchId: "match-2",
+    resultSnapshotId: "snapshot-1",
+    resultSnapshotHash: "b".repeat(64),
+  });
+  assert.equal(sealedArtifactInput[0], "session-1");
+  assert.equal(sealedArtifactInput[1].id, "snapshot-1");
+  assert.equal(
+    sealedArtifactInput[2].contentSha256,
+    createHash("sha256").update("Public overall results").digest("hex"),
+  );
+  assert.deepEqual(
+    sealedArtifactInput[2].files,
+    finalImageFiles.map((file) => ({
+      name: file.name,
+      size: file.buffer.length,
+      sha256: createHash("sha256").update(file.buffer).digest("hex"),
+    })),
+  );
+  assert.deepEqual(
+    resultsPosts[1].files.map(
+      (file: { attachment?: Buffer }) => file.attachment,
+    ),
+    finalImageFiles.map((file) => file.buffer),
   );
 });
 
@@ -5812,11 +7414,41 @@ test("automatic final result applies configured no-show rules before reset", asy
     previewNoShowTeamBansFromDiscord: async () => {
       throw new Error("manual no-show review should not be created");
     },
+    rebuildOverallResultBackupFromDiscord: async () => {
+      operationOrder.push("rebuild-overall");
+      return { id: "overall-backup-1" };
+    },
+    prepareConditionalBanFinalSnapshot: async () => {
+      operationOrder.push("prepare-final-snapshot");
+      return {
+        required: true,
+        id: "snapshot-1",
+        resultStateHash: "a".repeat(64),
+        resultBackupId: "conditional-backup-1",
+      };
+    },
     buildFinalResultPost: async () => ({
       content: "Final widgets",
       publicContent: "Public overall results",
       imageFiles: [{ name: "overall-ranking.png", buffer: Buffer.from([2]) }],
     }),
+    sealConditionalBanFinalSnapshot: async () => {
+      operationOrder.push("seal-final-snapshot");
+      return {
+        id: "snapshot-1",
+        resultStateHash: "a".repeat(64),
+        snapshotHash: "b".repeat(64),
+        resultBackupId: "conditional-backup-1",
+      };
+    },
+    rememberFinalResultPost: async () => undefined,
+    finalizeConditionalBannedTeamRegistrations: async (...args: any[]) => {
+      operationOrder.push("finalize-conditional-bans");
+      return emptyConditionalBanFinalizationResult(args[3].messageId as string);
+    },
+    syncWinnerRoleAccessForSourceSession: async () => {
+      operationOrder.push("sync-winner-access");
+    },
     resetSessionResultSystem: async () => {
       operationOrder.push("reset-result-system");
       return {
@@ -5836,6 +7468,7 @@ test("automatic final result applies configured no-show rules before reset", asy
     (row: any) => row.slotNumber === 4,
   );
   assert.equal(missingNoShowRow?.officialPlaceholder, true);
+  assert.equal(missingNoShowRow?.noShowAction, "BAN");
   assert.deepEqual((service as any).reviewIssues(pending), []);
 
   const guild = {
@@ -5854,7 +7487,10 @@ test("automatic final result applies configured no-show rules before reset", asy
           } else {
             resultsPosts.push(payload);
           }
-          return payload;
+          return {
+            ...payload,
+            id: `result-message-${resultsPosts.length}`,
+          };
         },
       }),
     },
@@ -5880,6 +7516,7 @@ test("automatic final result applies configured no-show rules before reset", asy
 
   assert.equal(handled, true);
   assert.equal(applyNoShowOpts.markMissingSlotsNoShow, true);
+  assert.deepEqual(applyNoShowOpts.noShowSlotNumbers, [4]);
   assert.deepEqual(autoBanInput[0], {
     matchId: "match-2",
     sessionId: "session-1",
@@ -5887,7 +7524,12 @@ test("automatic final result applies configured no-show rules before reset", asy
   assert.equal(autoBanInput[1], guild);
   assert.equal(autoBanInput[2].organizationId, "org-1");
   assert.deepEqual(operationOrder, [
+    "rebuild-overall",
+    "prepare-final-snapshot",
+    "seal-final-snapshot",
     "apply-auto-no-show-rules",
+    "finalize-conditional-bans",
+    "sync-winner-access",
     "reset-result-system",
   ]);
   assert.equal(finalBanReviewPosted, false);
@@ -5895,9 +7537,10 @@ test("automatic final result applies configured no-show rules before reset", asy
     finalEdit.content,
     /Automatic no-show rules applied: 1 team ban\(s\), 1 manager ban\(s\)\./,
   );
-  assert.match(
+  assert.doesNotMatch(finalEdit.content, /Banned teams report posted/);
+  assert.doesNotMatch(
     finalEdit.content,
-    /Banned teams report posted to <#bans-channel>\./,
+    /Banned teams report could not be posted/,
   );
   assert.match(
     finalEdit.content,
@@ -5905,25 +7548,109 @@ test("automatic final result applies configured no-show rules before reset", asy
   );
   assert.doesNotMatch(finalEdit.content, /No-show ban review posted/);
   assert.equal(resultsPosts.length, 2);
-  assert.equal(banPosts.length, 1);
-  assert.match(
-    banPosts[0].content,
-    /banned role\(s\) applied to 1\/1 linked member/,
-  );
-  assert.match(banPosts[0].content, /Banned teams:/);
-  assert.match(
-    banPosts[0].content,
-    /No Show \(NS\): managers <@123456789012345678>, Discord ID 223456789012345678; missed G1;/,
-  );
-  assert.match(
-    banPosts[0].content,
-    /reason: Missed 1 match\(es\) in Daily Scrim - Missed G1;/,
-  );
-  assert.deepEqual(banPosts[0].allowedMentions, {
-    parse: [],
-    users: ["123456789012345678"],
+  assert.equal(banPosts.length, 0);
+});
+
+test("snapshot mismatch clears the posted receipt and rebuilds, reseals, and reposts on retry", async () => {
+  const harness = automaticFinalSnapshotHarness({
+    sourceMessageId: "123456789012345685",
+    snapshotRequired: true,
+    finalizeErrors: [
+      new Error(
+        "Final result snapshot no longer matches live result data; create and post a fresh final snapshot",
+      ),
+    ],
   });
-  assert.doesNotMatch(banPosts[0].content, /<@223456789012345678>/);
+
+  await assert.rejects(
+    harness.service.handleButton(harness.interaction),
+    /no longer matches live result data/,
+  );
+  const pendingAfterMismatch =
+    harness.service.pendingAutoResults.get("123456789012345685");
+  assert.equal(pendingAfterMismatch?.conditionalFinalPostReceipt, undefined);
+  assert.equal(pendingAfterMismatch?.processing, false);
+  assert.deepEqual(harness.counters, {
+    prepare: 1,
+    seal: 1,
+    buildFinal: 1,
+    finalPosts: 1,
+    remember: 1,
+    finalize: 1,
+    winnerSync: 0,
+    reset: 0,
+  });
+
+  const handled = await harness.service.handleButton(harness.interaction);
+  assert.equal(handled, true);
+  assert.deepEqual(harness.counters, {
+    prepare: 2,
+    seal: 2,
+    buildFinal: 2,
+    finalPosts: 2,
+    remember: 2,
+    finalize: 2,
+    winnerSync: 1,
+    reset: 1,
+  });
+});
+
+test("transient post-commit failure keeps and reuses the exact sealed post receipt", async () => {
+  const harness = automaticFinalSnapshotHarness({
+    sourceMessageId: "123456789012345686",
+    snapshotRequired: true,
+    finalizeErrors: [new Error("Temporary network failure after commit")],
+  });
+
+  await assert.rejects(
+    harness.service.handleButton(harness.interaction),
+    /Temporary network failure/,
+  );
+  const pendingAfterFailure =
+    harness.service.pendingAutoResults.get("123456789012345686");
+  assert.equal(
+    pendingAfterFailure?.conditionalFinalPostReceipt?.resultSnapshotId,
+    "snapshot-1",
+  );
+  assert.equal(harness.counters.finalPosts, 1);
+  assert.equal(harness.counters.winnerSync, 0);
+  assert.equal(harness.counters.reset, 0);
+
+  const handled = await harness.service.handleButton(harness.interaction);
+  assert.equal(handled, true);
+  assert.equal(harness.counters.prepare, 1);
+  assert.equal(harness.counters.seal, 1);
+  assert.equal(harness.counters.buildFinal, 1);
+  assert.equal(harness.counters.finalPosts, 1);
+  assert.equal(harness.counters.remember, 1);
+  assert.equal(harness.counters.finalize, 2);
+  assert.equal(harness.counters.winnerSync, 1);
+  assert.equal(harness.counters.reset, 1);
+});
+
+test("no active conditional enrollment keeps the original final-post path and creates no snapshot receipt", async () => {
+  const harness = automaticFinalSnapshotHarness({
+    sourceMessageId: "123456789012345687",
+    snapshotRequired: false,
+  });
+  const handled = await harness.service.handleButton(harness.interaction);
+  assert.equal(handled, true);
+  assert.deepEqual(harness.counters, {
+    prepare: 1,
+    seal: 0,
+    buildFinal: 1,
+    finalPosts: 1,
+    remember: 1,
+    finalize: 0,
+    winnerSync: 1,
+    reset: 1,
+  });
+  const finalPost = harness.sentPayloads.find(
+    (payload) => payload.content === "Public final",
+  );
+  assert.ok(finalPost);
+  assert.equal(finalPost.files[0].name, "overall-ranking.png");
+  assert.equal(finalPost.files[0].attachment, harness.finalBuffer);
 });
 
 test("final no-show ban review applies only selected teams and managers", async () => {
@@ -6386,8 +8113,127 @@ test("automatic result review auto-skips duplicate OCR team rows", () => {
     service.formatAutoResultDashboard(pending),
     /Auto-skipped duplicates: 1/,
   );
-  assert.match(service.formatAutoResultDetails(pending), /\[auto-skip\]/);
+  assert.match(
+    service.formatAutoResultDetails(pending),
+    /\[skip\/no-ban auto-skip\]/,
+  );
   assert.match(service.formatAutoResultDetails(pending), /duplicate team DXB/i);
+});
+
+test("automatic result review auto-skips partial duplicate mapped rows after the complete row", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const rows = service.toReviewedRows({
+    preview: {
+      preview: [
+        {
+          position: 1,
+          tag: "ICE",
+          kills: 4,
+          teamId: "team-ice",
+          slotId: "slot-ice",
+          slotNumber: 3,
+          status: "OK",
+        },
+        {
+          position: 2,
+          tag: "KRX",
+          kills: 10,
+          teamId: "team-krx",
+          slotId: "slot-krx",
+          slotNumber: 5,
+          status: "OK",
+        },
+        {
+          position: 3,
+          tag: "BCX",
+          kills: 10,
+          teamId: "team-bcx",
+          slotId: "slot-bcx",
+          slotNumber: 19,
+          status: "OK",
+        },
+        {
+          position: 4,
+          tag: "FCK",
+          kills: 3,
+          teamId: "team-fck",
+          slotId: "slot-fck",
+          slotNumber: 13,
+          status: "OK",
+        },
+        {
+          position: 5,
+          tag: "B13",
+          kills: 1,
+          teamId: "team-b13",
+          slotId: "slot-b13",
+          slotNumber: 4,
+          status: "OK",
+        },
+        {
+          position: 6,
+          tag: "SOU",
+          kills: 0,
+          teamId: "team-sou",
+          slotId: "slot-sou",
+          slotNumber: 14,
+          status: "UNRESOLVED",
+          reason: "OCR_POSITION_UNREADABLE",
+          playerNames: ["SOUxNONAME"],
+        },
+        {
+          position: 6,
+          tag: "WS",
+          kills: 8,
+          teamId: "team-ws",
+          slotId: "slot-ws",
+          slotNumber: 20,
+          status: "OK",
+          playerNames: ["WS-MOD", "WS-STALKER"],
+        },
+        {
+          position: 7,
+          tag: "SOU",
+          kills: 0,
+          teamId: "team-sou",
+          slotId: "slot-sou",
+          slotNumber: 14,
+          status: "OK",
+          playerNames: ["SOU Pufi G", "SOU NoMERCY"],
+        },
+      ],
+    },
+  });
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345687",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows,
+    slots: [],
+  };
+
+  const partialSou = rows.find(
+    (row: any) => row.tag === "SOU" && row.position === 6,
+  );
+  const ws = rows.find((row: any) => row.tag === "WS");
+  const completeSou = rows.find(
+    (row: any) => row.tag === "SOU" && row.position === 7,
+  );
+
+  assert.equal(partialSou?.include, false);
+  assert.equal(partialSou?.autoSkipped, true);
+  assert.match(partialSou?.autoSkipReason ?? "", /duplicate official slot/i);
+  assert.match(partialSou?.autoSkipReason ?? "", /duplicate team SOU/i);
+  assert.equal(ws?.include, true);
+  assert.equal(completeSou?.include, true);
+  assert.deepEqual(service.reviewIssues(pending), []);
+  assert.match(
+    service.formatAutoResultDashboard(pending),
+    /Auto-skipped duplicates: 1/,
+  );
 });
 
 test("automatic result review adds editable placeholders for official slots missed by OCR", () => {
@@ -6453,7 +8299,7 @@ test("automatic result review adds editable placeholders for official slots miss
   assert.equal(rows[1].officialPlaceholder, true);
   assert.equal(rows[1].include, false);
   assert.equal(rows[1].slotNumber, 4);
-  assert.match(service.reviewedRowLabel(rows[1], 1), /P\? NXT S4 0k missing/);
+  assert.match(service.reviewedRowLabel(rows[1], 1), /P\? NXT S4 0k skip\+ban/);
   assert.deepEqual(service.reviewIssues(pending), []);
   assert.match(
     service.formatAutoResultDashboard(pending),
@@ -6461,7 +8307,7 @@ test("automatic result review adds editable placeholders for official slots miss
   );
   assert.match(
     service.formatAutoResultDetails(pending),
-    /\[skip\] 2\) P\? NXT slot 4 - 0 kills/,
+    /\[skip\+ban\] 2\) P\? NXT slot 4 - 0 kills/,
   );
 });
 
@@ -6496,6 +8342,7 @@ test("automatic result review removes stale official placeholders once the slot 
         reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
         include: false,
         officialPlaceholder: true,
+        noShowAction: "BAN",
       },
       {
         position: 21,
@@ -6508,6 +8355,7 @@ test("automatic result review removes stale official placeholders once the slot 
         reason: "OFFICIAL_SLOT_MISSING_FROM_OCR",
         include: false,
         officialPlaceholder: true,
+        noShowAction: "BAN",
       },
     ],
     slots: [
@@ -6586,6 +8434,59 @@ test("automatic result review describes unreadable kills on matched rows", () =>
     service.formatAutoResultDashboard(pending),
     /row 1 is skipped/i,
   );
+});
+
+test("automatic result review warns about incomplete player kills without blocking apply", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345688",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 1,
+        tag: "DXB",
+        kills: 8,
+        players: [{ name: "Alice", kills: 5 }],
+        teamId: "team-1",
+        slotId: "slot-1",
+        slotNumber: 3,
+        status: "OK",
+        include: true,
+      },
+      {
+        position: 2,
+        tag: "NXT",
+        kills: 4,
+        players: [
+          { name: "NXT One", kills: 2 },
+          { name: "NXT Two", kills: 2 },
+        ],
+        teamId: "team-2",
+        slotId: "slot-2",
+        slotNumber: 4,
+        status: "OK",
+        include: true,
+      },
+    ],
+    slots: [],
+  };
+
+  assert.deepEqual(service.reviewIssues(pending), []);
+  assert.match(
+    service.formatAutoResultDashboard(pending),
+    /Warning: 1 team\(s\) have incomplete player kills \(S3 DXB 5\/8\)/,
+  );
+  assert.match(service.formatAutoResultDetails(pending), /player total 5\/8/);
+
+  const buttons = service.autoResultComponents(pending)[1].toJSON().components;
+  assert.equal(buttons[1].label, "2 Apply");
+  assert.equal(buttons[1].disabled, false);
+  assert.equal(buttons[3].label, "4 Final");
+  assert.equal(buttons[3].disabled, false);
 });
 
 test("automatic result apply blocks missing placement rows", async () => {
@@ -6723,6 +8624,83 @@ test("automatic result apply blocks missing placement rows", async () => {
   assert.equal(applied, false);
   assert.match(replyPayload.content, /Missing placement row\(s\): 2/i);
   assert.equal(replyPayload.ephemeral, true);
+});
+
+test("automatic result no-show actions allow missing placement rows", () => {
+  const service = new MessageRegistrationService({} as any) as any;
+  const pending = {
+    sourceGuildId: "guild-1",
+    sourceChannelId: "screenshots-channel",
+    sourceMessageId: "123456789012345694",
+    matchLabel: "Match 1",
+    imageUrls: ["https://cdn.discordapp.com/result.png"],
+    config: { emojis: {} },
+    rows: [
+      {
+        position: 1,
+        tag: "DXB",
+        kills: 8,
+        teamId: "team-1",
+        slotId: "slot-1",
+        slotNumber: 3,
+        status: "OK",
+        include: true,
+      },
+      {
+        position: 3,
+        tag: "NXT",
+        kills: 4,
+        teamId: "team-2",
+        slotId: "slot-2",
+        slotNumber: 4,
+        status: "OK",
+        include: true,
+      },
+    ],
+    slots: [
+      {
+        id: "slot-1",
+        matchId: "match-1",
+        slotNumber: 3,
+        teamId: "team-1",
+        team: { id: "team-1", tag: "DXB" },
+      },
+      {
+        id: "slot-2",
+        matchId: "match-1",
+        slotNumber: 4,
+        teamId: "team-2",
+        team: { id: "team-2", tag: "NXT" },
+      },
+      {
+        id: "slot-3",
+        matchId: "match-1",
+        slotNumber: 5,
+        teamId: "team-3",
+        team: { id: "team-3", tag: "MISS" },
+      },
+    ],
+  };
+
+  assert.match(
+    service.formatAutoResultDashboard(pending),
+    /ready for Apply \+ Ban Count \/ Final/,
+  );
+  assert.deepEqual(service.reviewIssues(pending), [
+    "Missing placement row(s): 2. Edit a skipped OCR row, use Add Row, or resend the complete result screenshots before applying.",
+  ]);
+  assert.deepEqual(
+    service.reviewIssues(pending, { allowMissingPlacements: true }),
+    [],
+  );
+
+  const buttons = service.autoResultComponents(pending)[1].toJSON().components;
+  assert.equal(buttons[1].label, "2 Apply");
+  assert.equal(buttons[1].disabled, true);
+  assert.equal(buttons[2].label, "3 Apply + Ban Count");
+  assert.equal(buttons[2].disabled, false);
+  assert.equal(buttons[3].label, "4 Final");
+  assert.equal(buttons[3].disabled, false);
 });
 
 test("automatic result review exposes add row for missing placements", () => {
@@ -6930,15 +8908,22 @@ test("automatic result review paginates every skipped row and missing official s
     service.formatAutoResultDetails(pending, page),
   ).join("\n");
 
-  assert.match(combined, /\[skip\] 30\) P30 T30 no slot - 0 kills/);
+  assert.match(combined, /\[skip\/no-ban\] 30\) P30 T30 no slot - 0 kills/);
   assert.match(combined, /- Slot 30 T30 - Team 30/);
   assert.doesNotMatch(combined, /\+\d+ more/);
   assert.doesNotMatch(combined, /more rows/);
   assert.doesNotMatch(combined, /Output truncated/);
 
   const components = service.autoResultPreviewComponents(pending, 0);
+  const previewButtons = components[0].toJSON().components;
+  assert.notEqual(previewButtons[0].custom_id, previewButtons[1].custom_id);
+  assert.notEqual(previewButtons[1].custom_id, previewButtons[2].custom_id);
   assert.match(
-    components[0].toJSON().components[2].custom_id,
+    previewButtons[1].custom_id,
+    /result:auto:preview-current:123456789012345685:0/,
+  );
+  assert.match(
+    previewButtons[2].custom_id,
     /result:auto:preview-page:123456789012345685:1/,
   );
 });

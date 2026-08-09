@@ -1,5 +1,8 @@
 import {
   ActionRowBuilder,
+  type ApplicationEmoji,
+  type ApplicationEmojiManager,
+  type AttachmentPayload,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -8,6 +11,7 @@ import {
   Guild,
   GuildEmoji,
   Message,
+  type MessageEditAttachmentData,
   MessageType,
   MessageReaction,
   OverwriteType,
@@ -29,6 +33,7 @@ import type {
   UpdateSessionDiscordConfigPayload,
 } from "../api/api-client";
 import { botConfig } from "../config";
+import { fetchRemoteRasterImage } from "../security/remote-image";
 import {
   configuredButtonEmoji,
   configuredButtonLabel,
@@ -62,6 +67,11 @@ import {
   mentionContentForOrganizerText,
   type OrganizerAllowedMentions,
 } from "./discord-allowed-mentions";
+import {
+  SlotRosterImageRenderer,
+  type SlotRosterImagePage,
+  type SlotRosterImageRow,
+} from "./slot-roster-image";
 
 const SLOT_LIST_START = 3;
 const DISCORD_CDN_BASE_URL = "https://cdn.discordapp.com";
@@ -70,9 +80,17 @@ const SERVER_TEAM_LOGO_EMOJI_PREFIX = "azg";
 const SERVER_TEAM_LOGO_EMOJI_VERSION = "v1";
 const TEAM_LOGO_EMOJI_PREFIX = "azt";
 const TEAM_LOGO_EMOJI_VERSION = "v1";
+const SERVER_TEAM_LOGO_EMOJI_NAME_PATTERN =
+  /^azg_v1_[0-9a-f]{8}_[0-9a-f]{6}$/;
+const TEAM_LOGO_EMOJI_NAME_PATTERN =
+  /^azt_v1_[0-9a-f]{10}_[0-9a-f]{6}$/;
 const MAX_EMOJI_IMAGE_BYTES = 256 * 1024;
 const MAX_SOURCE_LOGO_BYTES = 8 * 1024 * 1024;
 const EMOJI_IMAGE_SIZE = 128;
+const MAX_STALE_TEAM_LOGO_EMOJI_DELETE = 50;
+const APPLICATION_EMOJI_LIMIT = 2000;
+const APPLICATION_EMOJI_CACHE_TTL_MS = 60_000;
+const APPLICATION_EMOJI_FULL_WARNING_TTL_MS = 60_000;
 const PLAY_STATUS_NOTE_PREFIX = "ARENZYRA_PLAY_STATUS:";
 const BACKGROUND_SAMPLE_EDGE_SIZE = 10;
 const BACKGROUND_COLOR_BUCKET_SIZE = 16;
@@ -90,6 +108,7 @@ const STAFF_ROLE_NAMES = [
 const WAITLIST_CONTROL_PAGE_SIZE = 25;
 const REGISTRATION_CONTROL_CLEANUP_SCAN_LIMIT = 300;
 const DISCORD_MESSAGE_CONTENT_LIMIT = 2000;
+const TEAM_LOGO_EMOJI_CLEANUP_INTERVAL_MS = 5 * 60_000;
 const BOT_CONTROLLED_MEMBER_DENY_PERMISSIONS = [
   PermissionFlagsBits.AddReactions,
   PermissionFlagsBits.CreatePublicThreads,
@@ -127,8 +146,10 @@ type ScrimChannelKind =
   | "slot-list"
   | "waitlist"
   | "idp"
+  | "public-chat"
   | "manager"
   | "transfer"
+  | "auto-registration"
   | "manage"
   | "results"
   | "screenshots"
@@ -155,6 +176,8 @@ export type ManagedMessagePayload = {
   embeds?: EmbedBuilder[];
   components?: ManagedMessageComponentRow[];
   allowedMentions?: ManagedAllowedMentions;
+  files?: AttachmentPayload[];
+  attachments?: MessageEditAttachmentData[];
 };
 type ManagedMessageMatcher = (message: Message) => boolean;
 
@@ -167,6 +190,12 @@ type Rgb = {
   r: number;
   g: number;
   b: number;
+};
+
+type ApplicationEmojiCacheState = {
+  expiresAt: number;
+  fullWarningExpiresAt?: number;
+  refresh?: Promise<boolean>;
 };
 
 function limitDiscordMessageContent(content: string) {
@@ -192,10 +221,14 @@ export type ScrimDiscordSetup = {
   waitlistChannelName: string;
   idpChannelId: string;
   idpChannelName: string;
+  publicChatChannelId: string;
+  publicChatChannelName: string;
   managerChannelId: string;
   managerChannelName: string;
   transferChannelId: string;
   transferChannelName: string;
+  autoRegistrationGrantChannelId?: string;
+  autoRegistrationGrantChannelName?: string;
   manageChannelId: string;
   manageChannelName: string;
   resultsChannelId: string;
@@ -214,8 +247,6 @@ export type ScrimDiscordSetup = {
   waitlistRoleName: string | null;
   idpRoleId: string | null;
   idpRoleName: string | null;
-  legacyIdpRoleId?: string;
-  legacyIdpRoleName?: string;
   bannedRoleId: string | null;
   bannedRoleName: string | null;
 };
@@ -619,9 +650,24 @@ function placementLabel(
 }
 
 export class ScrimDiscordSetupService {
+  private readonly slotRosterImageRenderer = new SlotRosterImageRenderer();
   private readonly waitlistChannelPermissionSignatures = new Map<
     string,
     string
+  >();
+  private readonly teamLogoEmojiCleanupAfter = new Map<string, number>();
+  private readonly teamLogoEmojiCleanups = new Map<string, Promise<void>>();
+  private readonly applicationEmojiCacheStates = new Map<
+    string,
+    ApplicationEmojiCacheState
+  >();
+  private readonly applicationEmojiCreates = new Map<
+    string,
+    Promise<ApplicationEmoji | null>
+  >();
+  private readonly guildEmojiCreates = new Map<
+    string,
+    Promise<GuildEmoji | null>
   >();
 
   private isUnknownDiscordMessageError(error: unknown) {
@@ -639,6 +685,7 @@ export class ScrimDiscordSetupService {
   ): Promise<ScrimDiscordSetup> {
     await guild.channels.fetch();
     await guild.roles.fetch();
+    this.scheduleManagedTeamLogoEmojiCleanup(guild);
 
     const allowRoleCreate = autoCreateRoles(config);
     const staffRole = await this.ensureStaffRole(
@@ -704,6 +751,20 @@ export class ScrimDiscordSetupService {
       preserveExistingChannels,
       manageExistingChannelPermissions,
     );
+    const publicChatChannel = await this.ensureTextChannel(
+      guild,
+      category.id,
+      session.id,
+      "public-chat",
+      configuredOrDefaultChannelName(
+        config?.publicChatChannelName,
+        "public-chat",
+      ),
+      config?.publicChatChannelId,
+      this.publicChatOverwrites(guild, staffRoles, roles.slotRole, config),
+      preserveExistingChannels,
+      manageExistingChannelPermissions,
+    );
     const managerChannel = await this.ensureTextChannel(
       guild,
       category.id,
@@ -732,6 +793,25 @@ export class ScrimDiscordSetupService {
       preserveExistingChannels,
       manageExistingChannelPermissions,
     );
+    const shouldEnsureAutoRegistrationChannel =
+      config?.emojis?.autoRegistrationEnabled === "true" ||
+      Boolean(config?.emojis?.autoRegistrationGrantChannelId?.trim());
+    const autoRegistrationGrantChannel = shouldEnsureAutoRegistrationChannel
+      ? await this.ensureTextChannel(
+          guild,
+          category.id,
+          session.id,
+          "auto-registration",
+          configuredOrDefaultChannelName(
+            config?.emojis?.autoRegistrationGrantChannelName,
+            "auto-registration",
+          ),
+          config?.emojis?.autoRegistrationGrantChannelId,
+          this.staffOnlyOverwrites(guild, staffRoles),
+          preserveExistingChannels,
+          manageExistingChannelPermissions,
+        )
+      : null;
     const manageChannel = await this.ensureTextChannel(
       guild,
       category.id,
@@ -804,10 +884,16 @@ export class ScrimDiscordSetupService {
       waitlistChannelName: waitlistChannel.name,
       idpChannelId: idpChannel.id,
       idpChannelName: idpChannel.name,
+      publicChatChannelId: publicChatChannel.id,
+      publicChatChannelName: publicChatChannel.name,
       managerChannelId: managerChannel.id,
       managerChannelName: managerChannel.name,
       transferChannelId: transferChannel.id,
       transferChannelName: transferChannel.name,
+      autoRegistrationGrantChannelId:
+        autoRegistrationGrantChannel?.id ?? undefined,
+      autoRegistrationGrantChannelName:
+        autoRegistrationGrantChannel?.name ?? undefined,
       manageChannelId: manageChannel.id,
       manageChannelName: manageChannel.name,
       resultsChannelId: resultsChannel.id,
@@ -826,8 +912,6 @@ export class ScrimDiscordSetupService {
       waitlistRoleName: roles.waitlistRole?.name ?? null,
       idpRoleId: roles.idpRole?.id ?? null,
       idpRoleName: roles.idpRole?.name ?? null,
-      legacyIdpRoleId: roles.legacyIdpRole?.id,
-      legacyIdpRoleName: roles.legacyIdpRole?.name,
       bannedRoleId: roles.bannedRole?.id ?? null,
       bannedRoleName: roles.bannedRole?.name ?? null,
     };
@@ -848,8 +932,18 @@ export class ScrimDiscordSetupService {
     const slotListChannel = this.findTextChannel(guild, sessionId, "slot-list");
     const waitlistChannel = this.findTextChannel(guild, sessionId, "waitlist");
     const idpChannel = this.findTextChannel(guild, sessionId, "idp");
+    const publicChatChannel = this.findTextChannel(
+      guild,
+      sessionId,
+      "public-chat",
+    );
     const managerChannel = this.findTextChannel(guild, sessionId, "manager");
     const transferChannel = this.findTextChannel(guild, sessionId, "transfer");
+    const autoRegistrationGrantChannel = this.findTextChannel(
+      guild,
+      sessionId,
+      "auto-registration",
+    );
     const manageChannel = this.findTextChannel(guild, sessionId, "manage");
     const resultsChannel = this.findTextChannel(guild, sessionId, "results");
     const screenshotsChannel = this.findTextChannel(
@@ -867,7 +961,7 @@ export class ScrimDiscordSetupService {
     const slotRole = this.findSessionRole(guild, sessionId, "Slot");
     const staffRole = this.findStaffRole(guild, null);
     const waitlistRole = this.findSessionRole(guild, sessionId, "Waitlist");
-    const legacyIdpRole = this.findSessionRole(guild, sessionId, "IDP");
+    const idpRole = this.findSessionRole(guild, sessionId, "IDP");
     const bannedRole = this.findSessionRole(guild, sessionId, "Banned");
 
     if (
@@ -875,6 +969,7 @@ export class ScrimDiscordSetupService {
       !slotListChannel ||
       !waitlistChannel ||
       !idpChannel ||
+      !publicChatChannel ||
       !managerChannel ||
       !transferChannel ||
       !manageChannel ||
@@ -902,10 +997,14 @@ export class ScrimDiscordSetupService {
       waitlistChannelName: waitlistChannel.name,
       idpChannelId: idpChannel.id,
       idpChannelName: idpChannel.name,
+      publicChatChannelId: publicChatChannel.id,
+      publicChatChannelName: publicChatChannel.name,
       managerChannelId: managerChannel.id,
       managerChannelName: managerChannel.name,
       transferChannelId: transferChannel.id,
       transferChannelName: transferChannel.name,
+      autoRegistrationGrantChannelId: autoRegistrationGrantChannel?.id,
+      autoRegistrationGrantChannelName: autoRegistrationGrantChannel?.name,
       manageChannelId: manageChannel.id,
       manageChannelName: manageChannel.name,
       resultsChannelId: resultsChannel.id,
@@ -922,16 +1021,8 @@ export class ScrimDiscordSetupService {
       staffRoleName: staffRole.name,
       waitlistRoleId: waitlistRole.id,
       waitlistRoleName: waitlistRole.name,
-      idpRoleId: slotRole.id,
-      idpRoleName: slotRole.name,
-      legacyIdpRoleId:
-        legacyIdpRole && legacyIdpRole.id !== slotRole.id
-          ? legacyIdpRole.id
-          : undefined,
-      legacyIdpRoleName:
-        legacyIdpRole && legacyIdpRole.id !== slotRole.id
-          ? legacyIdpRole.name
-          : undefined,
+      idpRoleId: idpRole?.id ?? slotRole.id,
+      idpRoleName: idpRole?.name ?? slotRole.name,
       bannedRoleId: bannedRole.id,
       bannedRoleName: bannedRole.name,
     };
@@ -961,24 +1052,28 @@ export class ScrimDiscordSetupService {
       registrations,
       config,
     );
-    const logoOpts = await this.resolveTeamLogoEmojis(
-      guild,
-      registrations,
-      config,
+    this.scheduleManagedTeamLogoEmojiCleanup(guild);
+    const renderOpts = {
+      ...opts,
+      ...this.emptyTeamLogoRenderOptions(),
+      hideTeamLogos: true,
+    };
+    const slotListPayload = this.withoutRosterImageAttachments(
+      this.buildSlotListPayload(
+        session,
+        registrations,
+        config,
+        renderOpts,
+        this.buildPlayConfirmationRows(session, config),
+      ),
     );
-    const renderOpts = { ...opts, ...logoOpts };
-    const slotListPayload = this.buildSlotListPayload(
-      session,
-      registrations,
-      config,
-      renderOpts,
-      this.buildPlayConfirmationRows(session, config),
-    );
-    const waitlistPayload = this.buildWaitlistPayload(
-      session,
-      registrations,
-      config,
-      renderOpts,
+    const waitlistPayload = this.withoutRosterImageAttachments(
+      this.buildWaitlistPayload(
+        session,
+        registrations,
+        config,
+        renderOpts,
+      ),
     );
 
     const registrationPanelMessage = await this.upsertRegistrationPanel(
@@ -1048,18 +1143,20 @@ export class ScrimDiscordSetupService {
       guild,
       setup.slotListChannelId,
     );
-    const logoOpts = await this.resolveTeamLogoEmojis(
-      guild,
-      registrations,
-      config,
-    );
-    const renderOpts = { ...opts, ...logoOpts };
-    const slotListPayload = this.buildSlotListPayload(
-      session,
-      registrations,
-      config,
-      renderOpts,
-      this.buildPlayConfirmationRows(session, config),
+    this.scheduleManagedTeamLogoEmojiCleanup(guild);
+    const renderOpts = {
+      ...opts,
+      ...this.emptyTeamLogoRenderOptions(),
+      hideTeamLogos: true,
+    };
+    const slotListPayload = this.withoutRosterImageAttachments(
+      this.buildSlotListPayload(
+        session,
+        registrations,
+        config,
+        renderOpts,
+        this.buildPlayConfirmationRows(session, config),
+      ),
     );
     const slotListMessage = await this.upsertPinnedMessage(
       slotListChannel,
@@ -1122,24 +1219,28 @@ export class ScrimDiscordSetupService {
       registrations,
       config,
     );
-    const logoOpts = await this.resolveTeamLogoEmojis(
-      guild,
-      registrations,
-      config,
+    this.scheduleManagedTeamLogoEmojiCleanup(guild);
+    const renderOpts = {
+      ...opts,
+      ...this.emptyTeamLogoRenderOptions(),
+      hideTeamLogos: true,
+    };
+    const slotListPayload = this.withoutRosterImageAttachments(
+      this.buildSlotListPayload(
+        session,
+        registrations,
+        config,
+        renderOpts,
+        this.buildPlayConfirmationRows(session, config),
+      ),
     );
-    const renderOpts = { ...opts, ...logoOpts };
-    const slotListPayload = this.buildSlotListPayload(
-      session,
-      registrations,
-      config,
-      renderOpts,
-      this.buildPlayConfirmationRows(session, config),
-    );
-    const waitlistPayload = this.buildWaitlistPayload(
-      session,
-      registrations,
-      config,
-      renderOpts,
+    const waitlistPayload = this.withoutRosterImageAttachments(
+      this.buildWaitlistPayload(
+        session,
+        registrations,
+        config,
+        renderOpts,
+      ),
     );
 
     const slotListMessage = await this.upsertPinnedMessage(
@@ -1482,11 +1583,12 @@ export class ScrimDiscordSetupService {
       config?.waitlistRoleName,
       allowCreate,
     );
-    const legacyIdpRole = await this.findLegacyIdpRole(
+    const idpRole = await this.ensureConfiguredIdpRole(
       guild,
       session,
       config,
       slotRole,
+      allowCreate,
     );
     const bannedRole = await this.ensureRole(
       guild,
@@ -1501,10 +1603,44 @@ export class ScrimDiscordSetupService {
     return {
       slotRole,
       waitlistRole,
-      idpRole: slotRole,
-      legacyIdpRole,
+      idpRole,
       bannedRole,
     };
+  }
+
+  private hasConfiguredDistinctIdpRole(
+    config: SessionDiscordConfigResponse | null | undefined,
+    slotRole: Role | null,
+  ) {
+    const configuredId = config?.idpRoleId?.trim();
+    if (configuredId) {
+      return configuredId !== slotRole?.id;
+    }
+
+    const configuredName = config?.idpRoleName?.trim();
+    return Boolean(configuredName && configuredName !== slotRole?.name);
+  }
+
+  private async ensureConfiguredIdpRole(
+    guild: Guild,
+    session: Pick<SessionResponse, "id" | "name">,
+    config: SessionDiscordConfigResponse | null | undefined,
+    slotRole: Role | null,
+    allowCreate: boolean,
+  ) {
+    if (!this.hasConfiguredDistinctIdpRole(config, slotRole)) {
+      return slotRole;
+    }
+
+    return this.ensureRole(
+      guild,
+      session,
+      "IDP",
+      0x2563eb,
+      config?.idpRoleId,
+      config?.idpRoleName,
+      allowCreate,
+    );
   }
 
   private async ensureStaffRole(
@@ -1601,36 +1737,6 @@ export class ScrimDiscordSetupService {
       mentionable: false,
       reason: `Arenzyra ${kind} access for ${session.name}`,
     });
-  }
-
-  private async findLegacyIdpRole(
-    guild: Guild,
-    session: Pick<SessionResponse, "id" | "name">,
-    config: SessionDiscordConfigResponse | null | undefined,
-    slotRole: Role | null,
-  ): Promise<Role | null> {
-    const configuredId = config?.idpRoleId?.trim();
-    if (configuredId && configuredId !== slotRole?.id) {
-      const configured = await guild.roles
-        .fetch(configuredId)
-        .catch(() => null);
-      if (configured && configured.id !== slotRole?.id) {
-        return configured;
-      }
-    }
-
-    const configuredName = config?.idpRoleName?.trim();
-    if (configuredName && configuredName !== slotRole?.name) {
-      const byName = guild.roles.cache.find(
-        (role) => role.name === configuredName,
-      );
-      if (byName && byName.id !== slotRole?.id) {
-        return byName;
-      }
-    }
-
-    const legacy = this.findSessionRole(guild, session.id, "IDP");
-    return legacy && legacy.id !== slotRole?.id ? legacy : null;
   }
 
   private findSessionRole(
@@ -1921,7 +2027,10 @@ export class ScrimDiscordSetupService {
 
   private isBotControlledCleanChannel(kind: ScrimChannelKind) {
     return (
-      kind === "registration" || kind === "slot-list" || kind === "waitlist"
+      kind === "registration" ||
+      kind === "slot-list" ||
+      kind === "waitlist" ||
+      kind === "public-chat"
     );
   }
 
@@ -1957,7 +2066,13 @@ export class ScrimDiscordSetupService {
     const desiredOverwriteById = new Map(
       desiredOverwrites.map((overwrite) => [overwrite.id, overwrite]),
     );
+    const publicChatPublicMode =
+      kind === "public-chat" &&
+      this.desiredSendMessagesMode(
+        desiredOverwriteById.get(guild.roles.everyone.id),
+      ) === "allow";
     const denyRoleIds = new Set<string>([guild.roles.everyone.id]);
+    const staleRegistrationRoleIds = new Set<string>();
 
     for (const overwrite of desiredOverwrites) {
       if (
@@ -1971,22 +2086,55 @@ export class ScrimDiscordSetupService {
 
     for (const overwrite of permissionOverwrites.cache?.values?.() ?? []) {
       if (
+        !publicChatPublicMode &&
         overwrite.type === OverwriteType.Role &&
         !staffRoleIds.has(overwrite.id)
       ) {
+        if (
+          kind === "registration" &&
+          overwrite.id !== guild.roles.everyone.id &&
+          !desiredOverwriteById.has(overwrite.id)
+        ) {
+          staleRegistrationRoleIds.add(overwrite.id);
+          continue;
+        }
         denyRoleIds.add(overwrite.id);
       }
     }
 
-    const controlsSendMessages = kind === "registration";
+    const controlsSendMessages =
+      kind === "registration" ||
+      kind === "waitlist" ||
+      kind === "public-chat";
     const reason = controlsSendMessages
-      ? "Arenzyra registration access permission lock"
+      ? kind === "waitlist"
+        ? "Arenzyra waitlist promotion access permission lock"
+        : kind === "public-chat"
+          ? "Arenzyra public chat access permission lock"
+        : "Arenzyra registration access permission lock"
       : `Arenzyra ${kind} reaction/thread permission lock`;
+    for (const roleId of staleRegistrationRoleIds) {
+      if (typeof permissionOverwrites.delete !== "function") {
+        denyRoleIds.add(roleId);
+        continue;
+      }
+      await permissionOverwrites
+        .delete(roleId, "Arenzyra stale registration role cleanup")
+        .catch((error) => {
+          console.warn(
+            `Stale registration role cleanup failed for role=${roleId}: ${String(
+              error,
+            )}`,
+          );
+          denyRoleIds.add(roleId);
+        });
+    }
+
     for (const roleId of denyRoleIds) {
       const existing = permissionOverwrites.cache?.get(roleId);
       const sendMessagesMode = controlsSendMessages
         ? (this.desiredSendMessagesMode(desiredOverwriteById.get(roleId)) ??
-          "deny")
+          (publicChatPublicMode ? null : "deny"))
         : null;
       const denyPermissions = [
         ...BOT_CONTROLLED_MEMBER_DENY_PERMISSIONS,
@@ -2343,6 +2491,41 @@ export class ScrimDiscordSetupService {
       },
       ...this.staffOverwrites(staffRoles),
     ];
+  }
+
+  private publicChatOverwrites(
+    guild: Guild,
+    staffRoles: Map<string, Role>,
+    accessRole: Role | null,
+    config?: SessionDiscordConfigResponse | null,
+  ) {
+    if (config?.emojis?.publicChatAccessMode !== "session-role" || !accessRole) {
+      return this.withBotControlledBotOverwrite(
+        guild,
+        this.publicWritableOverwrites(guild, staffRoles),
+      );
+    }
+
+    return this.withBotControlledBotOverwrite(guild, [
+      {
+        id: guild.roles.everyone.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.ReadMessageHistory,
+        ],
+        deny: this.botControlledMemberDeny([PermissionFlagsBits.SendMessages]),
+      },
+      {
+        id: accessRole.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.SendMessages,
+        ],
+        deny: this.botControlledMemberDeny(),
+      },
+      ...this.staffOverwrites(staffRoles),
+    ]);
   }
 
   private protectedOverwrites(
@@ -2758,6 +2941,32 @@ export class ScrimDiscordSetupService {
     return typeof maybeJson?.toJSON === "function" ? maybeJson.toJSON() : value;
   }
 
+  private comparableEmbedImageUrl(value: unknown) {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) {
+      return null;
+    }
+    if (raw.startsWith("attachment://")) {
+      return raw;
+    }
+    try {
+      const url = new URL(raw);
+      if (
+        (url.hostname === "cdn.discordapp.com" ||
+          url.hostname === "media.discordapp.net") &&
+        /^\/attachments\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname)
+      ) {
+        const fileName = decodeURIComponent(
+          url.pathname.slice(url.pathname.lastIndexOf("/") + 1),
+        );
+        return fileName ? `attachment://${fileName}` : raw;
+      }
+    } catch {
+      return raw;
+    }
+    return raw;
+  }
+
   private comparableEmbed(value: unknown) {
     const source = this.valueToJson(value);
     const embed =
@@ -2787,6 +2996,14 @@ export class ScrimDiscordSetupService {
       color: embed.color ?? null,
       footer: footer ? { text: footer.text ?? null } : null,
       fields,
+      image:
+        embed.image && typeof embed.image === "object"
+          ? {
+              url: this.comparableEmbedImageUrl(
+                (embed.image as Record<string, unknown>).url,
+              ),
+            }
+          : null,
     };
   }
 
@@ -2831,6 +3048,44 @@ export class ScrimDiscordSetupService {
     );
     if (JSON.stringify(existingEmbeds) !== JSON.stringify(payloadEmbeds)) {
       return false;
+    }
+
+    if (payload.files) {
+      const expectedAttachmentNames = [
+        ...new Set(
+          payload.files
+            .map((file) => file.name?.trim())
+            .filter((name): name is string => Boolean(name)),
+        ),
+      ].sort();
+      const attachmentCollectionNames = [
+        ...((message as Message & {
+          attachments?: Map<string, { name?: string | null }>;
+        }).attachments?.values() ?? []),
+      ]
+        .map((attachment) => attachment.name?.trim())
+        .filter((name): name is string => Boolean(name));
+      // Discord can expose an attachment:// embed through its signed CDN URL
+      // while omitting that file from Message#attachments. Count the
+      // normalized embed image names too, otherwise an unchanged roster is
+      // re-uploaded at every sync.
+      const embedImageNames = message.embeds
+        .map((embed) => this.comparableEmbed(embed).image?.url)
+        .filter(
+          (url): url is string =>
+            typeof url === "string" && url.startsWith("attachment://"),
+        )
+        .map((url) => url.slice("attachment://".length))
+        .filter(Boolean);
+      const existingAttachmentNames = [
+        ...new Set([...attachmentCollectionNames, ...embedImageNames]),
+      ].sort();
+      if (
+        JSON.stringify(existingAttachmentNames) !==
+        JSON.stringify(expectedAttachmentNames)
+      ) {
+        return false;
+      }
     }
 
     return (
@@ -3017,7 +3272,7 @@ export class ScrimDiscordSetupService {
       }
     }
 
-    const { content, ...sendRest } = payload;
+    const { attachments: _editAttachments, content, ...sendRest } = payload;
     const sendPayload =
       content === null || content === undefined
         ? sendRest
@@ -3083,7 +3338,7 @@ export class ScrimDiscordSetupService {
       }
     }
 
-    const { content, ...sendRest } = payload;
+    const { attachments: _editAttachments, content, ...sendRest } = payload;
     const sendPayload =
       content === null || content === undefined
         ? sendRest
@@ -3126,10 +3381,12 @@ export class ScrimDiscordSetupService {
     channel: TextChannel,
     session: Pick<SessionResponse, "id">,
     config?: SessionDiscordConfigResponse | null,
+    now = new Date(),
   ): Promise<Message | null> {
     const footerMarker = marker(session.id, "confirmation");
     const messageId = managedMessageId(config, "managedConfirmationMessageId");
-    if (!playConfirmationMessageEnabled(config)) {
+    const confirmationOpen = playConfirmationWindow(config, now).allowsAction;
+    if (!playConfirmationMessageEnabled(config) || !confirmationOpen) {
       await this.deleteManagedMessage(channel, messageId, footerMarker);
       await this.cleanupStandalonePlayConfirmationMessages(
         channel,
@@ -3139,7 +3396,7 @@ export class ScrimDiscordSetupService {
       return null;
     }
 
-    const content = this.playConfirmationMessageContent(session, config);
+    const content = this.playConfirmationMessageContent(session, config, now);
     return this.upsertManagedMessage(
       channel,
       messageId,
@@ -3158,8 +3415,9 @@ export class ScrimDiscordSetupService {
   private playConfirmationMessageContent(
     session: Pick<SessionResponse, "id">,
     config?: SessionDiscordConfigResponse | null,
+    now = new Date(),
   ) {
-    const confirmationStatus = playConfirmationWindowStatusText(config);
+    const confirmationStatus = playConfirmationWindowStatusText(config, now);
     return limitDiscordMessageContent(
       [
         `**${playConfirmationMessageTitle(config)}**`,
@@ -3510,12 +3768,279 @@ export class ScrimDiscordSetupService {
     )}_${this.emojiNameHash(logoUrl, 6)}`;
   }
 
+  private managedTeamLogoEmojiName(name: string | null | undefined) {
+    return TEAM_LOGO_EMOJI_NAME_PATTERN.test(name ?? "");
+  }
+
+  private managedRosterLogoEmojiName(name: string | null | undefined) {
+    return Boolean(
+      this.managedTeamLogoEmojiName(name) ||
+        name === DEFAULT_TEAM_LOGO_EMOJI_NAME ||
+        SERVER_TEAM_LOGO_EMOJI_NAME_PATTERN.test(name ?? ""),
+    );
+  }
+
   private findGuildEmoji(guild: Guild, name: string): GuildEmoji | null {
     return guild.emojis.cache.find((emoji) => emoji.name === name) ?? null;
   }
 
-  private emojiMention(emoji: GuildEmoji) {
+  private findApplicationEmoji(
+    manager: ApplicationEmojiManager | null,
+    name: string,
+  ): ApplicationEmoji | null {
+    return manager?.cache.find((emoji) => emoji.name === name) ?? null;
+  }
+
+  private throwIfAborted(signal?: AbortSignal) {
+    if (!signal?.aborted) {
+      return;
+    }
+    const error = new Error("Team logo emoji resolution aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+
+  private isAbortError(error: unknown) {
+    return (
+      (error as { name?: unknown })?.name === "AbortError" ||
+      /aborted/i.test(String(error))
+    );
+  }
+
+  private emojiMention(
+    emoji: Pick<GuildEmoji | ApplicationEmoji, "animated" | "id" | "name">,
+  ) {
     return `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+  }
+
+  private applicationEmojiManager(guild: Guild) {
+    return (
+      (guild as { client?: { application?: { emojis?: ApplicationEmojiManager } | null } })
+        .client?.application?.emojis ?? null
+    );
+  }
+
+  private async prepareApplicationEmojiManager(guild: Guild) {
+    const manager = this.applicationEmojiManager(guild);
+    if (!manager) {
+      return null;
+    }
+
+    const applicationId = manager.application.id;
+    let state = this.applicationEmojiCacheStates.get(applicationId);
+    const now = Date.now();
+    if (state && state.expiresAt > now) {
+      return manager;
+    }
+
+    if (!state) {
+      state = { expiresAt: 0 };
+      this.applicationEmojiCacheStates.set(applicationId, state);
+    }
+
+    if (!state.refresh) {
+      state.refresh = manager
+        .fetch(undefined, { force: true })
+        .then(() => {
+          state.expiresAt = Date.now() + APPLICATION_EMOJI_CACHE_TTL_MS;
+          return true;
+        })
+        .catch((error) => {
+          state.expiresAt = Date.now() + 10_000;
+          console.warn(
+            `Application emoji cache refresh failed: ${String(error)}`,
+          );
+          return false;
+        })
+        .finally(() => {
+          state.refresh = undefined;
+        });
+    }
+
+    return (await state.refresh) ? manager : null;
+  }
+
+  private applicationEmojiCacheState(manager: ApplicationEmojiManager) {
+    const applicationId = manager.application.id;
+    let state = this.applicationEmojiCacheStates.get(applicationId);
+    if (!state) {
+      state = { expiresAt: 0 };
+      this.applicationEmojiCacheStates.set(applicationId, state);
+    }
+    return state;
+  }
+
+  private isDiscordEmojiCapacityError(error: unknown) {
+    const code = (error as { code?: unknown })?.code;
+    return (
+      code === 30008 || /Maximum number of emojis reached/i.test(String(error))
+    );
+  }
+
+  private markApplicationEmojiFull(
+    manager: ApplicationEmojiManager,
+    label: string,
+  ) {
+    const state = this.applicationEmojiCacheState(manager);
+    const now = Date.now();
+    if ((state.fullWarningExpiresAt ?? 0) <= now) {
+      console.warn(
+        `${label} application emoji skipped: application emoji slots are full (${manager.cache.size}/${APPLICATION_EMOJI_LIMIT}).`,
+      );
+      state.fullWarningExpiresAt =
+        now + APPLICATION_EMOJI_FULL_WARNING_TTL_MS;
+    }
+  }
+
+  private canCreateApplicationEmoji(
+    manager: ApplicationEmojiManager,
+    label: string,
+  ) {
+    if (manager.cache.size < APPLICATION_EMOJI_LIMIT) {
+      return true;
+    }
+
+    this.markApplicationEmojiFull(manager, label);
+    return false;
+  }
+
+  private async createApplicationEmoji(
+    manager: ApplicationEmojiManager,
+    name: string,
+    attachment: Buffer,
+    label: string,
+  ) {
+    if (!this.canCreateApplicationEmoji(manager, label)) {
+      return null;
+    }
+
+    const key = `${manager.application.id}:${name}`;
+    const existing = this.applicationEmojiCreates.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const created = manager
+      .create({ attachment, name })
+      .catch(async (error) => {
+        if (this.isDiscordEmojiCapacityError(error)) {
+          this.markApplicationEmojiFull(manager, label);
+          return null;
+        }
+        const recovered = await this.refreshApplicationEmojiManager(
+          manager,
+        ).then((refreshedManager) =>
+          refreshedManager ? this.findApplicationEmoji(refreshedManager, name) : null,
+        );
+        if (recovered) {
+          return recovered;
+        }
+        console.warn(
+          `${label} application emoji could not be prepared: ${String(error)}`,
+        );
+        return null;
+      })
+      .finally(() => {
+        this.applicationEmojiCreates.delete(key);
+      });
+    this.applicationEmojiCreates.set(key, created);
+    return created;
+  }
+
+  private async refreshApplicationEmojiManager(
+    manager: ApplicationEmojiManager,
+  ) {
+    const state = this.applicationEmojiCacheState(manager);
+    try {
+      await manager.fetch(undefined, { force: true });
+      state.expiresAt = Date.now() + APPLICATION_EMOJI_CACHE_TTL_MS;
+      return manager;
+    } catch (error) {
+      state.expiresAt = Date.now() + 10_000;
+      console.warn(`Application emoji cache refresh failed: ${String(error)}`);
+      return null;
+    }
+  }
+
+  private async refreshGuildEmojis(guild: Guild, label: string) {
+    try {
+      const fetched = await guild.emojis.fetch();
+      if (!fetched || typeof fetched.keys !== "function") {
+        return false;
+      }
+      // Application emojis can appear in the in-memory guild emoji cache even
+      // though they are not guild emojis. Discord turns those emoji mentions
+      // into raw colon-name-colon text inside embeds. Keep only the authoritative
+      // guild-emoji response so a legacy application logo is never reused in
+      // a slot or waitlist list.
+      const fetchedIds = new Set(fetched.keys());
+      for (const [emojiId] of guild.emojis.cache) {
+        if (!fetchedIds.has(emojiId)) {
+          guild.emojis.cache.delete(emojiId);
+        }
+      }
+      return true;
+    } catch (error) {
+      console.warn(`${label} guild emoji cache refresh failed: ${String(error)}`);
+      return false;
+    }
+  }
+
+  private async createGuildEmoji(
+    guild: Guild,
+    name: string,
+    attachment: () => Promise<Buffer> | Buffer,
+    reason: string,
+    label: string,
+    signal?: AbortSignal,
+  ) {
+    const cached = this.findGuildEmoji(guild, name);
+    if (cached) {
+      return cached;
+    }
+
+    const key = `${guild.id}:${name}`;
+    const existingCreate = this.guildEmojiCreates.get(key);
+    if (existingCreate) {
+      return existingCreate;
+    }
+
+    const created = (async () => {
+      this.throwIfAborted(signal);
+      if (!this.canCreateStaticEmoji(guild, label)) {
+        return null;
+      }
+
+      try {
+        const emoji = await guild.emojis.create({
+          attachment: await attachment(),
+          name,
+          reason,
+        });
+        return emoji;
+      } catch (error) {
+        if (this.isAbortError(error)) {
+          throw error;
+        }
+        await this.refreshGuildEmojis(guild, label);
+        const recovered = this.findGuildEmoji(guild, name);
+        if (recovered) {
+          return recovered;
+        }
+        console.warn(`${label} could not be prepared: ${String(error)}`);
+        return null;
+      }
+    })().finally(() => {
+      this.guildEmojiCreates.delete(key);
+    });
+
+    this.guildEmojiCreates.set(key, created);
+    return created;
+  }
+
+  private isUnknownDiscordEmojiError(error: unknown) {
+    const code = (error as { code?: unknown })?.code;
+    return code === 10014 || /Unknown Emoji/i.test(String(error));
   }
 
   private staticEmojiCapacity(guild: Guild) {
@@ -3548,33 +4073,227 @@ export class ScrimDiscordSetupService {
     return false;
   }
 
+  private removeEmojiFromCache(guild: Guild, emoji: GuildEmoji) {
+    for (const [key, cachedEmoji] of guild.emojis.cache) {
+      if (cachedEmoji.id === emoji.id) {
+        guild.emojis.cache.delete(key);
+      }
+    }
+  }
+
+  private scheduleManagedTeamLogoEmojiCleanup(guild: Guild) {
+    if (
+      !guild?.id ||
+      !guild.emojis?.cache ||
+      typeof guild.emojis.fetch !== "function"
+    ) {
+      return;
+    }
+    const now = Date.now();
+    if (
+      (this.teamLogoEmojiCleanupAfter.get(guild.id) ?? 0) > now ||
+      this.teamLogoEmojiCleanups.has(guild.id)
+    ) {
+      return;
+    }
+
+    this.teamLogoEmojiCleanupAfter.set(
+      guild.id,
+      now + TEAM_LOGO_EMOJI_CLEANUP_INTERVAL_MS,
+    );
+    const cleanup = this.pruneManagedTeamLogoEmojis(guild)
+      .then(() => undefined)
+      .catch((error) => {
+        console.warn(
+          `Managed team logo emoji cleanup failed in guild ${guild.id}: ${String(
+            error,
+          )}`,
+        );
+      })
+      .finally(() => {
+        this.teamLogoEmojiCleanups.delete(guild.id);
+      });
+    this.teamLogoEmojiCleanups.set(guild.id, cleanup);
+  }
+
+  private async pruneManagedTeamLogoEmojis(guild: Guild) {
+    const refreshed = await this.refreshGuildEmojis(
+      guild,
+      "Managed team logo emoji cleanup",
+    );
+    if (!refreshed) {
+      return 0;
+    }
+    let remaining = MAX_STALE_TEAM_LOGO_EMOJI_DELETE;
+    let guildDeleted = 0;
+    let applicationDeleted = 0;
+    const guildCandidates = [...guild.emojis.cache.values()]
+      .filter((emoji) => this.managedRosterLogoEmojiName(emoji.name))
+      .slice(0, remaining);
+
+    for (const emoji of guildCandidates) {
+      try {
+        await emoji.delete(
+          "Arenzyra native roster rows no longer use generated logo emojis",
+        );
+        this.removeEmojiFromCache(guild, emoji);
+        guildDeleted += 1;
+        remaining -= 1;
+      } catch (error) {
+        if (this.isUnknownDiscordEmojiError(error)) {
+          this.removeEmojiFromCache(guild, emoji);
+          guildDeleted += 1;
+          remaining -= 1;
+          continue;
+        }
+        console.warn(
+          `Managed guild team logo emoji cleanup failed for ${emoji.name}: ${String(
+            error,
+          )}`,
+        );
+      }
+    }
+
+    if (remaining > 0) {
+      const manager = await this.prepareApplicationEmojiManager(guild);
+      const applicationCandidates = manager
+        ? [...manager.cache.values()]
+            .filter((emoji) => this.managedRosterLogoEmojiName(emoji.name))
+            .slice(0, remaining)
+        : [];
+      for (const emoji of applicationCandidates) {
+        try {
+          await emoji.delete();
+          manager?.cache.delete(emoji.id);
+          applicationDeleted += 1;
+          remaining -= 1;
+        } catch (error) {
+          if (this.isUnknownDiscordEmojiError(error)) {
+            manager?.cache.delete(emoji.id);
+            applicationDeleted += 1;
+            remaining -= 1;
+            continue;
+          }
+          console.warn(
+            `Managed application team logo emoji cleanup failed for ${emoji.name}: ${String(
+              error,
+            )}`,
+          );
+        }
+      }
+    }
+
+    const deleted = guildDeleted + applicationDeleted;
+    if (deleted > 0) {
+      console.log(
+        `Cleaned ${deleted} Arenzyra roster logo emoji(s) in guild ${guild.id} (${guildDeleted} guild, ${applicationDeleted} application); native roster rows use zero logo emoji slots.`,
+      );
+    }
+    return deleted;
+  }
+
+  private async pruneDuplicateTeamLogoEmojis(guild: Guild) {
+    const seenNames = new Set<string>();
+    const duplicateCandidates: GuildEmoji[] = [];
+    for (const emoji of guild.emojis.cache.values()) {
+      if (emoji.animated || !this.managedTeamLogoEmojiName(emoji.name)) {
+        continue;
+      }
+      const name = emoji.name ?? "";
+      if (seenNames.has(name)) {
+        duplicateCandidates.push(emoji);
+        continue;
+      }
+      seenNames.add(name);
+    }
+
+    const candidates = duplicateCandidates.slice(
+      0,
+      MAX_STALE_TEAM_LOGO_EMOJI_DELETE,
+    );
+    if (candidates.length <= 0) {
+      return 0;
+    }
+
+    let deleted = 0;
+    for (const emoji of candidates) {
+      try {
+        await emoji.delete(
+          "Arenzyra cleanup of duplicate generated team logo emoji",
+        );
+        this.removeEmojiFromCache(guild, emoji);
+        deleted += 1;
+      } catch (error) {
+        if (this.isUnknownDiscordEmojiError(error)) {
+          this.removeEmojiFromCache(guild, emoji);
+          deleted += 1;
+          continue;
+        }
+        console.warn(
+        `Duplicate team logo emoji cleanup failed for ${emoji.name}: ${String(
+            error,
+          )}`,
+        );
+      }
+    }
+
+    if (deleted > 0) {
+      console.log(
+        `Cleaned ${deleted} duplicate Arenzyra team logo emoji(s) in guild ${guild.id}`,
+      );
+    }
+    return deleted;
+  }
+
   private async ensureDefaultTeamLogoEmoji(
     guild: Guild,
     config?: SessionDiscordConfigResponse | null,
+    applicationEmojis?: ApplicationEmojiManager | null,
+    signal?: AbortSignal,
   ) {
     const existing = this.findGuildEmoji(guild, DEFAULT_TEAM_LOGO_EMOJI_NAME);
     if (existing) {
       return this.emojiMention(existing);
     }
-    if (!this.canCreateStaticEmoji(guild, "Default team logo emoji")) {
-      return resolveDiscordEmoji("team", config);
+    const defaultAttachment = () =>
+      readFileSync(this.emojiAssetPath("arenzyra-discord-icon-blue-a.png"));
+    if (this.canCreateStaticEmoji(guild, "Default team logo emoji")) {
+      const emoji = await this.createGuildEmoji(
+        guild,
+        DEFAULT_TEAM_LOGO_EMOJI_NAME,
+        defaultAttachment,
+        "Arenzyra default team logo for scrim slot lists",
+        "Default team logo emoji",
+        signal,
+      );
+      if (emoji) {
+        return this.emojiMention(emoji);
+      }
     }
 
-    try {
-      const emoji = await guild.emojis.create({
-        attachment: readFileSync(
-          this.emojiAssetPath("arenzyra-discord-icon-blue-a.png"),
-        ),
-        name: DEFAULT_TEAM_LOGO_EMOJI_NAME,
-        reason: "Arenzyra default team logo for scrim slot lists",
-      });
-      return this.emojiMention(emoji);
-    } catch (error) {
-      console.warn(
-        `Default team logo emoji could not be prepared: ${String(error)}`,
-      );
-      return resolveDiscordEmoji("team", config);
+    const existingApplicationEmoji = this.findApplicationEmoji(
+      applicationEmojis ?? null,
+      DEFAULT_TEAM_LOGO_EMOJI_NAME,
+    );
+    if (existingApplicationEmoji) {
+      return this.emojiMention(existingApplicationEmoji);
     }
+    if (
+      applicationEmojis &&
+      this.canCreateApplicationEmoji(applicationEmojis, "Default team logo")
+    ) {
+      const emoji = await this.createApplicationEmoji(
+        applicationEmojis,
+        DEFAULT_TEAM_LOGO_EMOJI_NAME,
+        defaultAttachment(),
+        "Default team logo",
+      );
+      if (emoji) {
+        return this.emojiMention(emoji);
+      }
+    }
+
+    return resolveDiscordEmoji("team", config);
   }
 
   private serverIconUrl(guild: Guild) {
@@ -3585,7 +4304,12 @@ export class ScrimDiscordSetupService {
     return `${DISCORD_CDN_BASE_URL}/icons/${guild.id}/${iconHash}.png?size=${EMOJI_IMAGE_SIZE}`;
   }
 
-  private async ensureServerTeamLogoEmoji(guild: Guild, fallbackEmoji: string) {
+  private async ensureServerTeamLogoEmoji(
+    guild: Guild,
+    fallbackEmoji: string,
+    applicationEmojis?: ApplicationEmojiManager | null,
+    signal?: AbortSignal,
+  ) {
     const iconUrl = this.serverIconUrl(guild);
     if (!iconUrl) {
       return fallbackEmoji;
@@ -3596,28 +4320,70 @@ export class ScrimDiscordSetupService {
     if (existing) {
       return this.emojiMention(existing);
     }
-    if (!this.canCreateStaticEmoji(guild, "Server default team logo emoji")) {
-      return fallbackEmoji;
+
+    let attachment: Buffer | null = null;
+    if (this.canCreateStaticEmoji(guild, "Server default team logo emoji")) {
+      const emoji = await this.createGuildEmoji(
+        guild,
+        name,
+        async () => {
+          attachment = await this.fetchEmojiImage(iconUrl, signal);
+          return attachment;
+        },
+        "Arenzyra server default team logo for scrim slot lists",
+        "Server default team logo emoji",
+        signal,
+      );
+      if (emoji) {
+        return this.emojiMention(emoji);
+      }
     }
 
-    try {
-      const emoji = await guild.emojis.create({
-        attachment: await this.fetchEmojiImage(iconUrl),
-        name,
-        reason: "Arenzyra server default team logo for scrim slot lists",
-      });
-      return this.emojiMention(emoji);
-    } catch (error) {
-      console.warn(
-        `Server default team logo emoji could not be prepared: ${String(error)}`,
-      );
-      return fallbackEmoji;
+    const existingApplicationEmoji = this.findApplicationEmoji(
+      applicationEmojis ?? null,
+      name,
+    );
+    if (existingApplicationEmoji) {
+      return this.emojiMention(existingApplicationEmoji);
     }
+    if (
+      applicationEmojis &&
+      this.canCreateApplicationEmoji(
+        applicationEmojis,
+        "Server default team logo",
+      )
+    ) {
+      try {
+        attachment = await this.fetchEmojiImage(iconUrl, signal);
+        const emoji = await this.createApplicationEmoji(
+          applicationEmojis,
+          name,
+          attachment,
+          "Server default team logo",
+        );
+        if (emoji) {
+          return this.emojiMention(emoji);
+        }
+      } catch (error) {
+        if (this.isAbortError(error)) {
+          throw error;
+        }
+        console.warn(
+          `Server default team logo application emoji could not be prepared: ${String(
+            error,
+          )}`,
+        );
+      }
+    }
+
+    return fallbackEmoji;
   }
 
   private async ensureTeamLogoEmoji(
     guild: Guild,
     registration: SessionRegistrationResponse,
+    applicationEmojis?: ApplicationEmojiManager | null,
+    signal?: AbortSignal,
   ) {
     const logoUrl = registration.team?.logoUrl?.trim();
     if (!logoUrl) {
@@ -3630,38 +4396,65 @@ export class ScrimDiscordSetupService {
     if (existing) {
       return this.emojiMention(existing);
     }
-    if (!this.canCreateStaticEmoji(guild, "Team logo emoji")) {
-      return null;
-    }
 
-    try {
-      const emoji = await guild.emojis.create({
-        attachment: await this.fetchEmojiImage(logoUrl),
+    let attachment: Buffer | null = null;
+    if (this.canCreateStaticEmoji(guild, "Team logo emoji")) {
+      const emoji = await this.createGuildEmoji(
+        guild,
         name,
-        reason: `Arenzyra team logo for ${(
+        async () => {
+          attachment = await this.fetchEmojiImage(logoUrl, signal);
+          return attachment;
+        },
+        `Arenzyra team logo for ${(
           registration.team?.tag ||
           registration.team?.name ||
           registration.teamId
         ).slice(0, 80)}`,
-      });
-      return this.emojiMention(emoji);
-    } catch (error) {
-      console.warn(
-        `Team logo emoji could not be prepared for ${registration.teamId}: ${String(
-          error,
-        )}`,
+        `Team logo emoji for ${registration.teamId}`,
+        signal,
       );
-      return null;
-    }
-  }
-
-  private resolveLogoUrl(logoUrl: string) {
-    if (/^https?:\/\//i.test(logoUrl)) {
-      return logoUrl;
+      if (emoji) {
+        return this.emojiMention(emoji);
+      }
     }
 
-    const baseUrl = botConfig.apiBaseUrl.replace(/\/+$/, "");
-    return `${baseUrl}/${logoUrl.replace(/^\/+/, "")}`;
+    const existingApplicationEmoji = this.findApplicationEmoji(
+      applicationEmojis ?? null,
+      name,
+    );
+    if (existingApplicationEmoji) {
+      return this.emojiMention(existingApplicationEmoji);
+    }
+
+    if (
+      applicationEmojis &&
+      this.canCreateApplicationEmoji(applicationEmojis, "Team logo")
+    ) {
+      try {
+        attachment = await this.fetchEmojiImage(logoUrl, signal);
+        const emoji = await this.createApplicationEmoji(
+          applicationEmojis,
+          name,
+          attachment,
+          `Team logo for ${registration.teamId}`,
+        );
+        if (emoji) {
+          return this.emojiMention(emoji);
+        }
+      } catch (error) {
+        if (this.isAbortError(error)) {
+          throw error;
+        }
+        console.warn(
+          `Team logo application emoji could not be prepared for ${registration.teamId}: ${String(
+            error,
+          )}`,
+        );
+      }
+    }
+
+    return null;
   }
 
   private pixelOffset(x: number, y: number, width: number) {
@@ -3923,23 +4716,18 @@ export class ScrimDiscordSetupService {
       .toBuffer();
   }
 
-  private async fetchEmojiImage(logoUrl: string) {
-    const response = await fetch(this.resolveLogoUrl(logoUrl));
-    if (!response.ok) {
-      throw new Error(`logo request failed with ${response.status}`);
-    }
-
-    const contentLength = Number(response.headers.get("content-length") ?? "0");
-    if (contentLength > MAX_SOURCE_LOGO_BYTES) {
-      throw new Error("logo is larger than the source logo limit");
-    }
-
-    const source = Buffer.from(await response.arrayBuffer());
-    if (source.length > MAX_SOURCE_LOGO_BYTES) {
-      throw new Error("logo is larger than the source logo limit");
-    }
+  private async fetchEmojiImage(logoUrl: string, signal?: AbortSignal) {
+    this.throwIfAborted(signal);
+    const { buffer: source } = await fetchRemoteRasterImage(logoUrl, {
+      apiBaseUrl: botConfig.apiBaseUrl,
+      maxBytes: MAX_SOURCE_LOGO_BYTES,
+      maxPixels: 4096 * 4096,
+      signal,
+    });
+    this.throwIfAborted(signal);
 
     const optimized = await this.optimizeLogoForEmoji(source);
+    this.throwIfAborted(signal);
 
     if (optimized.length > MAX_EMOJI_IMAGE_BYTES) {
       throw new Error(
@@ -3954,12 +4742,17 @@ export class ScrimDiscordSetupService {
     guild: Guild,
     registrations: SessionRegistrationResponse[],
     config?: SessionDiscordConfigResponse | null,
+    signal?: AbortSignal,
   ): Promise<
     Pick<
       SlotListRenderOptions,
       "teamLogoEmojiByTeamId" | "defaultTeamLogoEmoji"
     >
   > {
+    if (botConfig.nodeEnv !== "test") {
+      this.scheduleManagedTeamLogoEmojiCleanup(guild);
+      return this.emptyTeamLogoRenderOptions();
+    }
     if (config?.slotTeamEmojiEnabled === false) {
       return {
         teamLogoEmojiByTeamId: new Map(),
@@ -3967,18 +4760,29 @@ export class ScrimDiscordSetupService {
       };
     }
 
-    await guild.emojis.fetch().catch((error) => {
-      console.warn(`Guild emoji cache refresh failed: ${String(error)}`);
-      return null;
-    });
+    this.throwIfAborted(signal);
+    await this.refreshGuildEmojis(guild, "Guild emoji cache");
+    this.throwIfAborted(signal);
+
+    await this.pruneDuplicateTeamLogoEmojis(guild);
+    this.throwIfAborted(signal);
+    // Legacy implementation retained temporarily for compatibility tests.
+    // Production message sync no longer calls this method: native Discord
+    // roster rows intentionally avoid generated logo emojis.
+    const applicationEmojis: ApplicationEmojiManager | null = null;
+    this.throwIfAborted(signal);
 
     const arenzyraFallbackEmoji = await this.ensureDefaultTeamLogoEmoji(
       guild,
       config,
+      applicationEmojis,
+      signal,
     );
     const defaultTeamLogoEmoji = await this.ensureServerTeamLogoEmoji(
       guild,
       arenzyraFallbackEmoji,
+      applicationEmojis,
+      signal,
     );
     const teamLogoEmojiByTeamId = new Map<string, string>();
     const seenTeamIds = new Set<string>();
@@ -3992,7 +4796,12 @@ export class ScrimDiscordSetupService {
       }
       seenTeamIds.add(registration.teamId);
 
-      const emoji = await this.ensureTeamLogoEmoji(guild, registration);
+      const emoji = await this.ensureTeamLogoEmoji(
+        guild,
+        registration,
+        applicationEmojis,
+        signal,
+      );
       if (emoji) {
         teamLogoEmojiByTeamId.set(registration.teamId, emoji);
       }
@@ -4001,6 +4810,234 @@ export class ScrimDiscordSetupService {
     return {
       teamLogoEmojiByTeamId,
       defaultTeamLogoEmoji,
+    };
+  }
+
+  private emptyTeamLogoRenderOptions(): Pick<
+    SlotListRenderOptions,
+    "teamLogoEmojiByTeamId" | "defaultTeamLogoEmoji"
+  > {
+    return {
+      teamLogoEmojiByTeamId: new Map(),
+      defaultTeamLogoEmoji: null,
+    };
+  }
+
+  private async resolveTeamLogoEmojisForMessage(
+    guild: Guild,
+    _registrations: SessionRegistrationResponse[],
+    _config: SessionDiscordConfigResponse | null | undefined,
+    _context: string,
+  ): Promise<
+    Pick<
+      SlotListRenderOptions,
+      "teamLogoEmojiByTeamId" | "defaultTeamLogoEmoji"
+    >
+  > {
+    // Kept as a safe compatibility shim for older internal call sites. Team
+    // logo emojis must never be created or rendered in managed list messages.
+    this.scheduleManagedTeamLogoEmojiCleanup(guild);
+    return this.emptyTeamLogoRenderOptions();
+  }
+
+  private buildSlotRosterImageRows(
+    session: SessionResponse,
+    registrations: SessionRegistrationResponse[],
+    config?: SessionDiscordConfigResponse | null,
+  ): SlotRosterImageRow[] {
+    const normalRange = slotRangeForSession(session, config);
+    const vipRange = vipSlotRangeForSession(session, config, normalRange);
+    const bySlot = new Map(
+      registrations
+        .filter(
+          (registration) =>
+            activeRegistration(registration) &&
+            registration.slotNumber !== null,
+        )
+        .map((registration) => [registration.slotNumber, registration]),
+    );
+    const rows: SlotRosterImageRow[] = [];
+    const append = (slot: number, position: string) => {
+      const registration = bySlot.get(slot);
+      if (!registration) {
+        rows.push({
+          position,
+          teamName: "EMPTY",
+          empty: true,
+        });
+        return;
+      }
+      const playStatus = registrationPlayStatus(registration);
+      rows.push({
+        position,
+        teamName:
+          registration.team?.name?.trim() ||
+          registration.team?.tag?.trim() ||
+          registration.teamId,
+        teamTag: registration.team?.tag,
+        status: playStatus?.status ?? registration.status,
+        logoUrl: registration.team?.logoUrl,
+      });
+    };
+
+    for (
+      let slot = normalRange.startSlot;
+      slot <= normalRange.endSlot;
+      slot += 1
+    ) {
+      append(slot, `#${slot}`);
+    }
+    for (let vip = 1; vip <= vipRange.capacity; vip += 1) {
+      append(vipRange.startSlot + vip - 1, `VIP ${vip}`);
+    }
+    return rows;
+  }
+
+  private buildWaitlistRosterImageRows(
+    registrations: SessionRegistrationResponse[],
+  ): SlotRosterImageRow[] {
+    return registrations
+      .filter(
+        (registration) =>
+          activeRegistration(registration) &&
+          registration.status === "WAITLIST" &&
+          registration.waitlistPosition !== null,
+      )
+      .sort(
+        (left, right) =>
+          (left.waitlistPosition ?? Number.MAX_SAFE_INTEGER) -
+          (right.waitlistPosition ?? Number.MAX_SAFE_INTEGER),
+      )
+      .map((registration) => ({
+        position: `#${registration.waitlistPosition}`,
+        teamName:
+          registration.team?.name?.trim() ||
+          registration.team?.tag?.trim() ||
+          registration.teamId,
+        teamTag: registration.team?.tag,
+        status: "WAITLIST",
+        logoUrl: registration.team?.logoUrl,
+      }));
+  }
+
+  private async renderTeamLogoRosterImages(
+    guild: Guild,
+    session: SessionResponse,
+    registrations: SessionRegistrationResponse[],
+    config: SessionDiscordConfigResponse | null | undefined,
+    context: string,
+  ): Promise<{ slots: SlotRosterImagePage[]; waitlist: SlotRosterImagePage[] }> {
+    // `slotTeamEmojiEnabled` is now a legacy custom-emoji switch. Roster
+    // images consume zero emoji slots, so they remain enabled even when an
+    // organizer previously disabled team emojis to avoid guild capacity.
+    const slotRows = this.buildSlotRosterImageRows(
+      session,
+      registrations,
+      config,
+    );
+    const waitlistRows = this.buildWaitlistRosterImageRows(registrations);
+    const serverDefaultLogoUrl = this.serverIconUrl(guild);
+    try {
+      const [slots, waitlist] = await Promise.all([
+        this.slotRosterImageRenderer.render(
+          "slots",
+          session.id,
+          `${session.name} — Slot List`,
+          slotRows,
+          { serverDefaultLogoUrl },
+        ),
+        this.slotRosterImageRenderer.render(
+          "waitlist",
+          session.id,
+          `${session.name} — Waitlist`,
+          waitlistRows,
+          { serverDefaultLogoUrl },
+        ),
+      ]);
+      return { slots, waitlist };
+    } catch (error) {
+      console.warn(
+        `Team logo roster image rendering failed for ${context}: ${String(
+          error,
+        )}; retaining the accessible text roster.`,
+      );
+      return { slots: [], waitlist: [] };
+    }
+  }
+
+  private withoutRosterImageAttachments(
+    payload: ManagedMessagePayload,
+  ): ManagedMessagePayload {
+    return {
+      ...payload,
+      // Native Discord rows are now authoritative. Explicitly remove any
+      // roster image left by an earlier managed-message edit.
+      files: [],
+      attachments: [],
+    };
+  }
+
+  private withRosterImagePages(
+    payload: ManagedMessagePayload,
+    pages: SlotRosterImagePage[],
+  ): ManagedMessagePayload {
+    if (pages.length === 0) {
+      return this.withoutRosterImageAttachments(payload);
+    }
+
+    const sourceEmbed = payload.embeds?.[0]?.toJSON();
+    const contentTitle = (payload.content ?? "")
+      .split(/\r?\n/, 1)[0]
+      .replace(/^\*\*|\*\*$/g, "")
+      .trim();
+    const pageTitle = pages[0].description
+      .replace(/,\s*page\s+\d+\s+of\s+\d+$/i, "")
+      .trim();
+    const title = (
+      sourceEmbed?.title?.trim() ||
+      contentTitle ||
+      pageTitle ||
+      "Team Roster"
+    ).slice(0, 256);
+    const primaryEmbed = new EmbedBuilder()
+      .setColor(sourceEmbed?.color ?? 0x0f172a)
+      .setTitle(title)
+      .setImage(`attachment://${pages[0].name}`);
+    if (sourceEmbed?.fields?.length) {
+      primaryEmbed.addFields(sourceEmbed.fields);
+    }
+    const embeds = [
+      primaryEmbed,
+      ...pages.slice(1).map((page) =>
+        new EmbedBuilder()
+          .setColor(0x0f172a)
+          .setImage(`attachment://${page.name}`),
+        ),
+    ];
+    const managerMentions = mentionMirrorContent(
+      [payload.content ?? "", sourceEmbed?.description ?? ""].join("\n"),
+    );
+
+    return {
+      ...payload,
+      // The generated roster is the slot list. Do not repeat every row as
+      // message text above the same image. Keep only the compact mention
+      // mirror when the original plain list was responsible for notifying
+      // team managers.
+      content: managerMentions,
+      embeds,
+      allowedMentions: managerMentions
+        ? allowedMentionsForRenderedMentions(managerMentions)
+        : { parse: [] },
+      files: pages.map(({ attachment, name, description }) => ({
+        attachment,
+        name,
+        description,
+      })),
+      // Message edits retain old files unless their ids are explicitly
+      // omitted. Clearing this list makes every deterministic roster render
+      // replace the previous pages instead of accumulating attachments.
+      attachments: [],
     };
   }
 
@@ -4090,15 +5127,14 @@ export class ScrimDiscordSetupService {
     for (const field of view.fields) {
       embed.addFields(field);
     }
-    const mirroredContent = mentionMirrorContent(plainContent);
-
     return {
-      content: mirroredContent,
+      // Manager mentions already live in their native roster rows. Keep the
+      // message content empty so Discord does not render or notify a duplicate
+      // "Managers:" line above the embed.
+      content: null,
       embeds: [embed],
       components: safeComponents,
-      allowedMentions: mirroredContent
-        ? allowedMentionsForRenderedMentions(mirroredContent)
-        : { parse: [] },
+      allowedMentions: { parse: [] },
     };
   }
 

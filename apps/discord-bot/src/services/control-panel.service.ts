@@ -22,6 +22,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
+import { randomUUID } from "node:crypto";
 import type {
   DiscordNoShowTeamBanCommand,
   DiscordResultControlBanTarget,
@@ -46,6 +47,7 @@ import type {
   MatchResultRowResponse,
   MatchResultsResponse,
   ManualMatchResultRowPayload,
+  PreviewConditionalBanEnrollmentResponse,
   UpdateMatchResultPayload,
   UpdateResultBackupRowPayload,
 } from "../api/api-client";
@@ -133,6 +135,7 @@ type ParsedWaitlistControlSelectAction = {
 type BanControlAction =
   | "create"
   | "missing"
+  | "conditional"
   | "list"
   | "refresh"
   | "confirm"
@@ -306,6 +309,15 @@ type PendingBanControlAction =
       sessionId: string;
       command: DiscordNoShowTeamBanCommand;
       expiresAt: number;
+    }
+  | {
+      kind: "conditional";
+      userId: string;
+      sessionId: string;
+      requestKey: string;
+      preview: PreviewConditionalBanEnrollmentResponse;
+      reason: string;
+      expiresAt: number;
     };
 
 type PendingResultUnbanAction = {
@@ -463,7 +475,10 @@ function banControlCustomId(
     : `banctl:${action}`;
 }
 
-function banControlModalId(action: "create" | "missing", sessionId: string) {
+function banControlModalId(
+  action: "create" | "missing" | "conditional",
+  sessionId: string,
+) {
   return `banctl-modal:${action}:${sessionId}`;
 }
 
@@ -483,14 +498,18 @@ function banControlActionFromCustomId(
   return { action, sessionId: value ?? null, token: null };
 }
 
-function banControlModalFromCustomId(
-  customId: string,
-): { action: "create" | "missing"; sessionId: string } | null {
+function banControlModalFromCustomId(customId: string): {
+  action: "create" | "missing" | "conditional";
+  sessionId: string;
+} | null {
   if (!customId.startsWith("banctl-modal:")) {
     return null;
   }
   const [, action, sessionId] = customId.split(":");
-  if ((action !== "create" && action !== "missing") || !sessionId) {
+  if (
+    (action !== "create" && action !== "missing" && action !== "conditional") ||
+    !sessionId
+  ) {
     return null;
   }
   return { action, sessionId };
@@ -855,9 +874,15 @@ function isResultControlSettingsKind(
 }
 
 function isBanControlAction(value: string): value is BanControlAction {
-  return ["create", "missing", "list", "refresh", "confirm", "cancel"].includes(
-    value,
-  );
+  return [
+    "create",
+    "missing",
+    "conditional",
+    "list",
+    "refresh",
+    "confirm",
+    "cancel",
+  ].includes(value);
 }
 
 function playStatusActionFromCustomId(
@@ -990,6 +1015,24 @@ export class ControlPanelService {
   >();
 
   constructor(private readonly sessionService: DiscordSessionService) {}
+
+  private async syncWinnerRoleAccessForSourceSession(
+    guild: Guild | null,
+    sessionId: string,
+    sourceRunFallbackId?: string | null,
+  ) {
+    const syncer = (
+      this.sessionService as unknown as {
+        syncWinnerRoleAccessForSourceSession?: DiscordSessionService["syncWinnerRoleAccessForSourceSession"];
+      }
+    ).syncWinnerRoleAccessForSourceSession;
+    if (typeof syncer !== "function") {
+      return;
+    }
+    await syncer.call(this.sessionService, guild, sessionId, {
+      sourceRunFallbackId,
+    });
+  }
 
   private async resolveInteractionOrganizationId(
     interaction: PanelInteraction,
@@ -2646,10 +2689,7 @@ export class ControlPanelService {
 
     await interaction.deferReply({ ephemeral: true });
 
-    if (
-      parsed.action === "final-refresh" ||
-      parsed.action === "final-repost"
-    ) {
+    if (parsed.action === "final-refresh" || parsed.action === "final-repost") {
       await this.handleFinalResultPostControl(
         interaction,
         context,
@@ -3309,8 +3349,15 @@ export class ControlPanelService {
     return numberLabel;
   }
 
-  private resultEditBackupLabel(backup: Pick<ResultBackupSummaryResponse, "matchNumber" | "matchName" | "title">) {
-    const numberLabel = backup.matchNumber ? `G${backup.matchNumber}` : "Saved match";
+  private resultEditBackupLabel(
+    backup: Pick<
+      ResultBackupSummaryResponse,
+      "matchNumber" | "matchName" | "title"
+    >,
+  ) {
+    const numberLabel = backup.matchNumber
+      ? `G${backup.matchNumber}`
+      : "Saved match";
     const name = backup.matchName?.trim() || backup.title?.trim();
     if (name && name.toLowerCase() !== numberLabel.toLowerCase()) {
       return `${numberLabel} - ${name}`;
@@ -3356,7 +3403,12 @@ export class ControlPanelService {
         Number.isFinite(backup.rowCount ?? null)
           ? `${backup.rowCount} rows`
           : null,
-        backup.createdAt ? new Date(backup.createdAt).toISOString().slice(0, 16).replace("T", " ") : null,
+        backup.createdAt
+          ? new Date(backup.createdAt)
+              .toISOString()
+              .slice(0, 16)
+              .replace("T", " ")
+          : null,
       ]
         .filter(Boolean)
         .join(" | "),
@@ -3443,14 +3495,12 @@ export class ControlPanelService {
   ): MatchResultPlayerResponse[] {
     const normalized: MatchResultPlayerResponse[] = [];
     for (const [index, player] of (players ?? []).entries()) {
-      const name =
-        player.name?.trim() || player.playerName?.trim() || null;
+      const name = player.name?.trim() || player.playerName?.trim() || null;
       if (!name) {
         continue;
       }
       const id =
-        player.id?.trim() ||
-        this.backupResultEditPlayerId(name, index);
+        player.id?.trim() || this.backupResultEditPlayerId(name, index);
       normalized.push({
         id,
         playerId: player.playerId?.trim() || id,
@@ -3524,10 +3574,10 @@ export class ControlPanelService {
       .addOptions(
         sources.slice(0, 25).map((source) =>
           new StringSelectMenuOptionBuilder()
-            .setLabel(this.truncateSelectText(this.resultEditSourceLabel(source), 100))
-            .setDescription(
-              this.truncateSelectText(source.description, 100),
+            .setLabel(
+              this.truncateSelectText(this.resultEditSourceLabel(source), 100),
             )
+            .setDescription(this.truncateSelectText(source.description, 100))
             .setValue(source.key),
         ),
       );
@@ -3594,7 +3644,9 @@ export class ControlPanelService {
   }> {
     const source = resultEditSourceFromKey(sourceKey);
     if (!source) {
-      throw new Error("This result edit source is invalid. Open Edit Results again.");
+      throw new Error(
+        "This result edit source is invalid. Open Edit Results again.",
+      );
     }
     if (source.kind === "backup") {
       const backup = await this.sessionService.withOrganization(
@@ -3622,8 +3674,7 @@ export class ControlPanelService {
     );
     const match = matches.find((entry) => entry.id === source.id) ?? null;
     const locked =
-      results.locked === true ||
-      results.lockState?.toUpperCase() === "LOCKED";
+      results.locked === true || results.lockState?.toUpperCase() === "LOCKED";
     return {
       source,
       label: match ? this.resultEditMatchLabel(match) : source.id,
@@ -3642,7 +3693,8 @@ export class ControlPanelService {
   ) {
     const { source, label, rows, locked, lockReason, hasTruncatedSources } =
       await this.loadResultEditRows(context, sourceKey);
-    const manualRows = source.kind === "match" ? this.manualResultRows(rows) : [];
+    const manualRows =
+      source.kind === "match" ? this.manualResultRows(rows) : [];
     const pageCount = Math.max(
       1,
       Math.ceil(rows.length / RESULT_CONTROL_RESULT_ROWS_PAGE_SIZE),
@@ -3668,7 +3720,12 @@ export class ControlPanelService {
     }
     if (pageCount > 1) {
       components.push(
-        this.buildResultEditPageRow(context.session.id, source.key, page, pageCount),
+        this.buildResultEditPageRow(
+          context.session.id,
+          source.key,
+          page,
+          pageCount,
+        ),
       );
     }
     if (source.kind === "match" && manualRows.length > 0) {
@@ -3702,7 +3759,9 @@ export class ControlPanelService {
       lines.push("No result rows are available for this match yet.");
     }
     if (source.kind === "backup") {
-      lines.push("Editing saved backup rows because no live match records were found.");
+      lines.push(
+        "Editing saved backup rows because no live match records were found.",
+      );
     }
     if (hasTruncatedSources) {
       lines.push("Only the first 25 matches are shown in the match picker.");
@@ -3734,12 +3793,14 @@ export class ControlPanelService {
   ) {
     const matches = await this.sessionService.withOrganization(
       context.config.organizationId,
-      () => this.sessionService.listSessionMatchesForDiscord(context.session.id),
+      () =>
+        this.sessionService.listSessionMatchesForDiscord(context.session.id),
     );
     const sorted = matches
       .slice()
       .sort(
-        (left, right) => (left.matchNumber ?? 9999) - (right.matchNumber ?? 9999),
+        (left, right) =>
+          (left.matchNumber ?? 9999) - (right.matchNumber ?? 9999),
       );
     const backups = sorted.length
       ? []
@@ -3772,7 +3833,9 @@ export class ControlPanelService {
       ]
         .filter((line): line is string => Boolean(line))
         .join("\n"),
-      components: [this.buildResultEditMatchSelectRow(context.session.id, sources)],
+      components: [
+        this.buildResultEditMatchSelectRow(context.session.id, sources),
+      ],
       allowedMentions: { parse: [] },
     });
   }
@@ -3899,7 +3962,8 @@ export class ControlPanelService {
       sessionId: parsed.sessionId,
       source,
       rowKey,
-      teamId: source.kind === "match" ? row.teamId : row.backupRow?.teamId ?? null,
+      teamId:
+        source.kind === "match" ? row.teamId : (row.backupRow?.teamId ?? null),
       page: parsed.page,
       row,
       expiresAt: Date.now() + RESULT_CONTROL_EDIT_TTL_MS,
@@ -4087,7 +4151,10 @@ export class ControlPanelService {
     return (players ?? [])
       .filter((player) => player.id && player.name?.trim())
       .slice(0, 8)
-      .map((player, index) => `${index + 1}. ${player.name.trim()}=${player.kills ?? 0}`)
+      .map(
+        (player, index) =>
+          `${index + 1}. ${player.name.trim()}=${player.kills ?? 0}`,
+      )
       .join("\n");
   }
 
@@ -4164,7 +4231,8 @@ export class ControlPanelService {
     if (!players.length) {
       return {
         ok: false,
-        error: "This row has no player result rows. Leave player kills blank and edit team kills only.",
+        error:
+          "This row has no player result rows. Leave player kills blank and edit team kills only.",
       };
     }
     const byName = new Map(
@@ -4187,19 +4255,17 @@ export class ControlPanelService {
     const playerKills: NonNullable<UpdateMatchResultPayload["playerKills"]> =
       [];
     for (const entry of entries) {
-      const numbered = /^(?:#?\s*)?(\d{1,2})\s*(?:[.)])?\s*(?:=|:|-|\s+)\s*(\d+)$/.exec(
-        entry,
-      );
-      const named = numbered
-        ? null
-        : /^(.+?)\s*(?:=|:|-)\s*(\d+)$/.exec(entry);
+      const numbered =
+        /^(?:#?\s*)?(\d{1,2})\s*(?:[.)])?\s*(?:=|:|-|\s+)\s*(\d+)$/.exec(entry);
+      const named = numbered ? null : /^(.+?)\s*(?:=|:|-)\s*(\d+)$/.exec(entry);
       const namedLabel = named
         ? this.stripResultPlayerListPrefix(named[1])
         : null;
       const player = numbered
         ? players[Number.parseInt(numbered[1], 10) - 1]
         : named
-          ? byName.get(this.normalizeResultPlayerName(namedLabel ?? "")) ?? null
+          ? (byName.get(this.normalizeResultPlayerName(namedLabel ?? "")) ??
+            null)
           : null;
       const killsRaw = numbered ? numbered[2] : named?.[2];
       const kills = Number(killsRaw);
@@ -4271,19 +4337,16 @@ export class ControlPanelService {
     const seen = new Set<string>();
     const players: NonNullable<UpdateResultBackupRowPayload["players"]> = [];
     for (const [index, entry] of entries.entries()) {
-      const numbered = /^(?:#?\s*)?(\d{1,2})\s*(?:[.)])?\s*(?:=|:|-|\s+)\s*(\d+)$/.exec(
-        entry,
-      );
-      const named = numbered
-        ? null
-        : /^(.+?)\s*(?:=|:|-)\s*(\d+)$/.exec(entry);
+      const numbered =
+        /^(?:#?\s*)?(\d{1,2})\s*(?:[.)])?\s*(?:=|:|-|\s+)\s*(\d+)$/.exec(entry);
+      const named = numbered ? null : /^(.+?)\s*(?:=|:|-)\s*(\d+)$/.exec(entry);
       const namedLabel = named
         ? this.stripResultPlayerListPrefix(named[1])
         : null;
       const existing = numbered
-        ? existingPlayers[Number.parseInt(numbered[1], 10) - 1] ?? null
+        ? (existingPlayers[Number.parseInt(numbered[1], 10) - 1] ?? null)
         : namedLabel
-          ? byName.get(this.normalizeResultPlayerName(namedLabel)) ?? null
+          ? (byName.get(this.normalizeResultPlayerName(namedLabel)) ?? null)
           : null;
       const name = existing?.name?.trim() || namedLabel?.trim() || "";
       const killsRaw = numbered ? numbered[2] : named?.[2];
@@ -4375,7 +4438,8 @@ export class ControlPanelService {
       const existing = byKey.get(key) ?? [];
       if (
         !existing.some(
-          (entry) => this.resultEditRowKey(entry) === this.resultEditRowKey(row),
+          (entry) =>
+            this.resultEditRowKey(entry) === this.resultEditRowKey(row),
         )
       ) {
         existing.push(row);
@@ -4505,7 +4569,9 @@ export class ControlPanelService {
   private resultEditPayloadFromModal(
     interaction: ModalSubmitInteraction,
     pending: PendingResultEditAction,
-  ): { ok: true; payload: UpdateMatchResultPayload } | { ok: false; error: string } {
+  ):
+    | { ok: true; payload: UpdateMatchResultPayload }
+    | { ok: false; error: string } {
     const placement = this.parseResultEditInteger(
       optionalInputValue(interaction, "placement"),
       "Placement",
@@ -4589,7 +4655,8 @@ export class ControlPanelService {
       return placementPoints;
     }
     const resolvedPlacementPoints =
-      placementPoints.value ?? this.defaultResultEditPlacementPoints(placement.value);
+      placementPoints.value ??
+      this.defaultResultEditPlacementPoints(placement.value);
     const totalPoints = this.parseOptionalResultEditInteger(
       optionalInputValue(interaction, "total-points"),
       "Total points",
@@ -4803,22 +4870,20 @@ export class ControlPanelService {
     return row.id?.trim() || row.teamId?.trim() || `rank-${row.rank}`;
   }
 
-  private resultBackupRowPayload(
-    row: {
-      rank: number;
-      teamId?: string | null;
-      teamName?: string | null;
-      teamTag?: string | null;
-      logoUrl?: string | null;
-      slotNumber?: number | null;
-      placement?: number | null;
-      wwcd?: number | null;
-      placementPoints?: number | null;
-      kills?: number | null;
-      totalPoints?: number | null;
-      players?: UpdateResultBackupRowPayload["players"];
-    },
-  ): UpdateResultBackupRowPayload {
+  private resultBackupRowPayload(row: {
+    rank: number;
+    teamId?: string | null;
+    teamName?: string | null;
+    teamTag?: string | null;
+    logoUrl?: string | null;
+    slotNumber?: number | null;
+    placement?: number | null;
+    wwcd?: number | null;
+    placementPoints?: number | null;
+    kills?: number | null;
+    totalPoints?: number | null;
+    players?: UpdateResultBackupRowPayload["players"];
+  }): UpdateResultBackupRowPayload {
     return {
       rank: row.rank,
       teamId: row.teamId,
@@ -4912,6 +4977,30 @@ export class ControlPanelService {
     guild: Guild | null,
     context: ResolvedSessionContext,
   ) {
+    const sessionService = this.sessionService as DiscordSessionService & {
+      rebuildOverallResultBackupFromDiscord?: (
+        sessionId: string,
+      ) => Promise<ResultBackupDetailResponse | null>;
+    };
+    if (
+      typeof sessionService.rebuildOverallResultBackupFromDiscord === "function"
+    ) {
+      await this.sessionService
+        .withOrganization(context.config.organizationId, () =>
+          sessionService.rebuildOverallResultBackupFromDiscord!(
+            context.session.id,
+          ),
+        )
+        .catch((error) => {
+          console.warn(
+            `Overall result backup rebuild failed session=${context.session.id}: ${String(
+              error,
+            )}`,
+          );
+          return null;
+        });
+    }
+
     if (!guild) {
       return null;
     }
@@ -4927,11 +5016,7 @@ export class ControlPanelService {
     try {
       const result = await this.sessionService.withOrganization(
         context.config.organizationId,
-        () =>
-          this.sessionService.buildFinalResultBackupPost(
-            context.session.id,
-            context.config,
-          ),
+        () => this.buildFinalResultControlPost(context),
       );
       const edited = await this.editStoredFinalResultPost(
         guild,
@@ -5016,7 +5101,8 @@ export class ControlPanelService {
       try {
         const backup = await this.sessionService.withOrganization(
           context.config.organizationId,
-          () => this.sessionService.getResultBackupForDiscord(pending.source.id),
+          () =>
+            this.sessionService.getResultBackupForDiscord(pending.source.id),
         );
         const updated = await this.sessionService.withOrganization(
           context.config.organizationId,
@@ -5103,9 +5189,8 @@ export class ControlPanelService {
           ),
       );
       const updatedRow =
-        this.matchResultRows(result).find(
-          (entry) => entry.teamId === teamId,
-        ) ?? null;
+        this.matchResultRows(result).find((entry) => entry.teamId === teamId) ??
+        null;
       const playerKillCount = parsedPayload.payload.playerKills?.length ?? 0;
       const finalRefreshLine = await this.refreshStoredFinalPostAfterResultEdit(
         interaction.guild,
@@ -5572,6 +5657,13 @@ export class ControlPanelService {
       return;
     }
 
+    if (parsed.action === "conditional") {
+      await interaction.showModal(
+        this.buildConditionalBannedTeamRegistrationModal(parsed.sessionId),
+      );
+      return;
+    }
+
     if (parsed.action === "list") {
       await interaction.deferReply({ ephemeral: true });
       const content = await this.withInteractionOrganization(
@@ -5703,6 +5795,87 @@ export class ControlPanelService {
       });
       return;
     }
+    const guild = interaction.guild;
+
+    if (pending.kind === "conditional") {
+      await interaction.update({
+        content: "Applying conditional banned-team registration...",
+        components: [],
+      });
+      try {
+        const response = await this.withInteractionOrganization(
+          interaction,
+          pending.sessionId,
+          () =>
+            this.sessionService.createConditionalBannedTeamRegistration(
+              pending.sessionId,
+              {
+                requestKey: pending.requestKey,
+                confirmationToken: pending.preview.confirmationToken,
+                teamId: pending.preview.team.id,
+                managerDiscordUserIds: pending.preview.managerDiscordUserIds,
+                requiredMatchCount: pending.preview.requiredMatchCount,
+                approvedByDiscordId: interaction.user.id,
+                approvedByDiscordUsername: interaction.user.tag,
+                reason: pending.reason,
+              },
+              guild,
+            ),
+        );
+        this.pendingBanActions.delete(token);
+        const teamLabel = response.registration.team?.tag
+          ? `${response.registration.team.name} (${response.registration.team.tag})`
+          : response.registration.team?.name || response.registration.teamId;
+        await interaction.editReply({
+          content: limitDiscordContent(
+            [
+              response.recovered
+                ? `Conditional registration recovered for ${teamLabel}.`
+                : `Conditional registration active for ${teamLabel}.`,
+              `Confirmed slot: #${response.registration.slotNumber}`,
+              `Manager(s): ${response.enrollment.managerDiscordUserIds
+                .map((id) => `<@${id}>`)
+                .join(", ")}`,
+              `Required matches: ${response.enrollment.requiredMatchCount}`,
+              `Slot/IDP roles added: ${response.roleSync.addedAccessRoles}`,
+              `Ban roles restored or preserved: ${response.roleSync.restoredBanRoles}`,
+              "Only the exact snapshotted bans can be released after every required match is present and applied in a successfully posted final result.",
+            ].join("\n"),
+          ),
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+      } catch (error) {
+        const stillActive = Date.now() <= pending.expiresAt;
+        if (!stillActive) {
+          this.pendingBanActions.delete(token);
+        }
+        const message =
+          error instanceof Error ? error.message : "Unknown registration error";
+        await interaction.editReply({
+          content: limitDiscordContent(
+            [
+              "Conditional registration was not fully applied.",
+              message,
+              stillActive
+                ? "You can retry this same idempotent confirmation, or cancel and open a fresh preview if the team, slot, managers, or bans changed."
+                : "The confirmation expired; open a fresh preview.",
+            ].join("\n"),
+          ),
+          components: stillActive
+            ? [
+                this.buildBanConfirmationRow(
+                  token,
+                  "Retry Conditional Registration",
+                  ButtonStyle.Success,
+                ),
+              ]
+            : [],
+          allowedMentions: { parse: [] },
+        });
+      }
+      return;
+    }
 
     this.pendingBanActions.delete(token);
     await interaction.update({
@@ -5717,7 +5890,7 @@ export class ControlPanelService {
         pending.kind === "team"
           ? this.sessionService.createTeamBanFromDiscord(
               pending.command,
-              interaction.guild,
+              guild,
               {
                 actorDiscordId: interaction.user.id,
                 actorLabel: interaction.user.tag,
@@ -5726,7 +5899,7 @@ export class ControlPanelService {
             )
           : this.sessionService.createNoShowTeamBansFromDiscord(
               pending.command,
-              interaction.guild,
+              guild,
               {
                 actorDiscordId: interaction.user.id,
                 actorLabel: interaction.user.tag,
@@ -5832,7 +6005,10 @@ export class ControlPanelService {
 
   private async handleBanControlModal(
     interaction: ModalSubmitInteraction,
-    parsed: { action: "create" | "missing"; sessionId: string },
+    parsed: {
+      action: "create" | "missing" | "conditional";
+      sessionId: string;
+    },
   ) {
     if (!(await this.canUseStaffControls(interaction, parsed.sessionId))) {
       await interaction.reply({
@@ -5857,6 +6033,14 @@ export class ControlPanelService {
     await interaction.deferReply({ ephemeral: true });
     if (parsed.action === "create") {
       await this.handleBanTeamModal(
+        interaction,
+        parsed.sessionId,
+        resolved.config,
+      );
+      return;
+    }
+    if (parsed.action === "conditional") {
+      await this.handleConditionalBannedTeamRegistrationModal(
         interaction,
         parsed.sessionId,
         resolved.config,
@@ -5916,6 +6100,153 @@ export class ControlPanelService {
     await interaction.editReply({
       content: preview.content,
       components: [this.buildBanConfirmationRow(token, "Apply Ban")],
+      allowedMentions: { parse: [] },
+    });
+  }
+
+  private parseConditionalManagerMentions(value: string) {
+    const ids = [
+      ...new Set(
+        [...value.matchAll(/<@!?(\d{15,25})>/g)]
+          .map((match) => match[1])
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const leftover = value
+      .replace(/<@!?\d{15,25}>/g, "")
+      .replace(/[\s,;]+/g, "");
+    if (!ids.length || leftover) {
+      throw new Error(
+        "Manager input must contain Discord @mentions only (for example: @Manager1 @Manager2).",
+      );
+    }
+    return ids;
+  }
+
+  private parseConditionalRequiredMatchCount(value: string) {
+    const count = Number(value.trim());
+    if (!Number.isInteger(count) || count < 1 || count > 50) {
+      throw new Error("Required matches must be a whole number from 1 to 50.");
+    }
+    return count;
+  }
+
+  private async handleConditionalBannedTeamRegistrationModal(
+    interaction: ModalSubmitInteraction,
+    sessionId: string,
+    config: SessionDiscordConfigResponse,
+  ) {
+    if (!interaction.guild) {
+      throw new Error("Run this control inside the Discord server.");
+    }
+    const teamQuery = inputValue(interaction, "conditional-team");
+    const managerDiscordUserIds = this.parseConditionalManagerMentions(
+      inputValue(interaction, "conditional-managers"),
+    );
+    const maxManagers = Math.min(
+      10,
+      Math.max(1, Number(config.maxManagersPerTeam) || 2),
+    );
+    if (managerDiscordUserIds.length > maxManagers) {
+      throw new Error(
+        `This scrim allows at most ${maxManagers} manager mention${maxManagers === 1 ? "" : "s"} per team.`,
+      );
+    }
+    for (const discordUserId of managerDiscordUserIds) {
+      let member: GuildMember;
+      try {
+        member = await interaction.guild.members.fetch({
+          user: discordUserId,
+          force: true,
+        });
+      } catch {
+        throw new Error(
+          `Manager <@${discordUserId}> is not an active member of this Discord server.`,
+        );
+      }
+      if (member.user.bot) {
+        throw new Error(`Manager <@${discordUserId}> cannot be a bot account.`);
+      }
+    }
+
+    const requiredMatchCount = this.parseConditionalRequiredMatchCount(
+      inputValue(interaction, "conditional-matches"),
+    );
+    const reason =
+      optionalInputValue(interaction, "conditional-reason") ||
+      "Staff-approved conditional banned-team participation";
+    const preview = await this.withInteractionOrganization(
+      interaction,
+      sessionId,
+      () =>
+        this.sessionService.previewConditionalBannedTeamRegistration(
+          sessionId,
+          { teamQuery, managerDiscordUserIds, requiredMatchCount },
+        ),
+    );
+    const token = this.storePendingBanAction({
+      kind: "conditional",
+      userId: interaction.user.id,
+      sessionId,
+      requestKey: randomUUID(),
+      preview,
+      reason,
+      expiresAt: Date.now() + BAN_CONTROL_CONFIRMATION_TTL_MS,
+    });
+    const teamLabel = preview.team.tag
+      ? `${preview.team.name} (${preview.team.tag})`
+      : preview.team.name;
+    const teamBanLines = preview.teamBans.map(
+      (ban) => `- ${ban.scope} team ban ${ban.id.slice(0, 8)}: ${ban.reason}`,
+    );
+    const managerBanLines = preview.managerBans.map(
+      (ban) =>
+        `- <@${ban.discordUserId}> ${ban.scope} ban ${ban.id.slice(0, 8)}: ${ban.reason}`,
+    );
+    const plannedCompanionLines = (
+      preview.plannedManagerBanCompanions ?? []
+    ).map(
+      (ban) =>
+        `- <@${ban.discordUserId}> ${ban.scope} manager companion for team ban${ban.sourceTeamBanIds.length === 1 ? "" : "s"} ${ban.sourceTeamBanIds.map((id) => id.slice(0, 8)).join(", ")}: ${ban.reason}`,
+    );
+    await interaction.editReply({
+      content: limitDiscordContent(
+        [
+          preview.recovery
+            ? "Conditional banned-team registration recovery preview"
+            : "Conditional banned-team registration preview",
+          `Team: ${teamLabel}`,
+          `Confirmed slot: #${preview.proposedSlotNumber}`,
+          `Manager(s): ${managerDiscordUserIds.map((id) => `<@${id}>`).join(", ")}`,
+          `Required matches: ${preview.requiredMatchCount}`,
+          `Reason: ${reason}`,
+          ...(preview.recovery
+            ? [
+                "Recovery mode: no new registration or enrollment will be created; Discord roles will be reconciled from the existing exact snapshot.",
+              ]
+            : []),
+          "",
+          `Exact team bans to release after full attendance (${teamBanLines.length}):`,
+          ...(teamBanLines.length ? teamBanLines : ["- None"]),
+          `Exact manager bans to release after full attendance (${managerBanLines.length}):`,
+          ...(managerBanLines.length ? managerBanLines : ["- None"]),
+          `Manager-ban companions that confirmation will create and release after full attendance (${plannedCompanionLines.length}):`,
+          ...(plannedCompanionLines.length
+            ? plannedCompanionLines
+            : ["- None"]),
+          "",
+          "The ban role stays during play. Slot + IDP access is added now. Any missed, absent, duplicate, unapplied, new, or unrelated ban remains enforced.",
+        ].join("\n"),
+      ),
+      components: [
+        this.buildBanConfirmationRow(
+          token,
+          preview.recovery
+            ? "Recover Conditional Registration"
+            : "Register Conditionally",
+          ButtonStyle.Success,
+        ),
+      ],
       allowedMentions: { parse: [] },
     });
   }
@@ -6163,9 +6494,45 @@ export class ControlPanelService {
     ]);
   }
 
+  private buildConditionalBannedTeamRegistrationModal(sessionId: string) {
+    return this.banModal(
+      "Conditional Team Registration",
+      "conditional",
+      sessionId,
+      [
+        {
+          customId: "conditional-team",
+          label: "Banned team exact name, tag, or ID",
+          placeholder: "Example: DXB",
+          maxLength: 120,
+        },
+        {
+          customId: "conditional-managers",
+          label: "Manager Discord mentions",
+          placeholder: "Example: @Manager1 @Manager2",
+          maxLength: 160,
+        },
+        {
+          customId: "conditional-matches",
+          label: "Matches required for automatic unban",
+          placeholder: "Example: 4",
+          maxLength: 3,
+        },
+        {
+          customId: "conditional-reason",
+          label: "Approval reason / note",
+          placeholder: "Why this banned team may play this event",
+          required: false,
+          style: TextInputStyle.Paragraph,
+          maxLength: 300,
+        },
+      ],
+    );
+  }
+
   private banModal(
     title: string,
-    action: "create" | "missing",
+    action: "create" | "missing" | "conditional",
     sessionId: string,
     inputs: TextInputConfig[],
   ) {
@@ -6194,12 +6561,16 @@ export class ControlPanelService {
     return modal;
   }
 
-  private buildBanConfirmationRow(token: string, label: string) {
+  private buildBanConfirmationRow(
+    token: string,
+    label: string,
+    confirmStyle: ButtonStyle = ButtonStyle.Danger,
+  ) {
     return new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(banControlCustomId("confirm", token))
         .setLabel(label)
-        .setStyle(ButtonStyle.Danger),
+        .setStyle(confirmStyle),
       new ButtonBuilder()
         .setCustomId(banControlCustomId("cancel", token))
         .setLabel("Cancel")
@@ -6927,19 +7298,19 @@ export class ControlPanelService {
       return false;
     }
 
-    const message = (await messages.fetch(messageId).catch(() => null)) as
-      | {
-          editable?: boolean;
-          edit?: (payload: unknown) => Promise<unknown>;
-        }
-      | null;
+    const message = (await messages.fetch(messageId).catch(() => null)) as {
+      editable?: boolean;
+      edit?: (payload: unknown) => Promise<unknown>;
+    } | null;
     if (!message?.edit || message.editable === false) {
       return false;
     }
 
-    await message.edit(this.finalResultPostPayload(result, {
-      replaceAttachments: true,
-    }));
+    await message.edit(
+      this.finalResultPostPayload(result, {
+        replaceAttachments: true,
+      }),
+    );
     return true;
   }
 
@@ -6955,6 +7326,98 @@ export class ControlPanelService {
     return (await channel.send(this.finalResultPostPayload(result))) as {
       id?: string | null;
     };
+  }
+
+  private latestMatchForFinalResultPost(matches: SessionMatchResponse[]) {
+    return matches
+      .filter((match) => match.id?.trim())
+      .slice()
+      .sort((left, right) => {
+        const leftNumber = Number.isInteger(left.matchNumber)
+          ? (left.matchNumber as number)
+          : -1;
+        const rightNumber = Number.isInteger(right.matchNumber)
+          ? (right.matchNumber as number)
+          : -1;
+        if (rightNumber !== leftNumber) {
+          return rightNumber - leftNumber;
+        }
+        const leftTime =
+          Date.parse(
+            left.endedAt ??
+              left.updatedAt ??
+              left.startedAt ??
+              left.createdAt ??
+              "",
+          ) || 0;
+        const rightTime =
+          Date.parse(
+            right.endedAt ??
+              right.updatedAt ??
+              right.startedAt ??
+              right.createdAt ??
+              "",
+          ) || 0;
+        return rightTime - leftTime;
+      })[0];
+  }
+
+  private async buildFinalResultControlPost(
+    context: ResolvedSessionContext,
+  ): Promise<ApplyResultsDiscordResponse & { backupId?: string }> {
+    const service = this.sessionService as DiscordSessionService & {
+      listSessionMatchesForDiscord?: (
+        sessionId: string,
+      ) => Promise<SessionMatchResponse[]>;
+      rebuildOverallResultBackupFromDiscord?: (
+        sessionId: string,
+      ) => Promise<ResultBackupDetailResponse | null>;
+    };
+    const liveMatches =
+      typeof service.listSessionMatchesForDiscord === "function"
+        ? await service
+            .listSessionMatchesForDiscord(context.session.id)
+            .catch((error) => {
+              console.warn(
+                `Final result live match lookup failed session=${context.session.id}: ${String(
+                  error,
+                )}`,
+              );
+              return [];
+            })
+        : [];
+    const rebuiltBackup =
+      typeof service.rebuildOverallResultBackupFromDiscord === "function"
+        ? await service
+            .rebuildOverallResultBackupFromDiscord(context.session.id)
+            .catch((error) => {
+              console.warn(
+                `Overall result backup rebuild failed session=${context.session.id}: ${String(
+                  error,
+                )}`,
+              );
+              return null;
+            })
+        : null;
+    const latestMatch = this.latestMatchForFinalResultPost(liveMatches);
+    if (latestMatch) {
+      const result = await this.sessionService.buildFinalResultPost(
+        latestMatch.id,
+        {
+          ...context.config,
+          sessionId: context.session.id,
+        },
+      );
+      return {
+        ...result,
+        backupId: result.backupId ?? rebuiltBackup?.id,
+      };
+    }
+
+    return this.sessionService.buildFinalResultBackupPost(context.session.id, {
+      ...context.config,
+      sessionId: context.session.id,
+    });
   }
 
   private async handleFinalResultPostControl(
@@ -6973,12 +7436,9 @@ export class ControlPanelService {
     try {
       const result = await this.sessionService.withOrganization(
         context.config.organizationId,
-        () =>
-          this.sessionService.buildFinalResultBackupPost(
-            context.session.id,
-            context.config,
-          ),
+        () => this.buildFinalResultControlPost(context),
       );
+      const backupId = result.backupId;
       const storedChannelId = this.configuredChannelId(
         context.config.emojis?.finalResultPostChannelId,
       );
@@ -7001,9 +7461,24 @@ export class ControlPanelService {
                 context.session.id,
                 storedChannelId,
                 storedMessageId,
-                result.backupId,
+                backupId,
               ),
           );
+          await this.sessionService
+            .withOrganization(context.config.organizationId, () =>
+              this.syncWinnerRoleAccessForSourceSession(
+                interaction.guild,
+                context.session.id,
+                storedMessageId,
+              ),
+            )
+            .catch((error) => {
+              console.warn(
+                `Winner access sync after final refresh failed session=${context.session.id}: ${String(
+                  error,
+                )}`,
+              );
+            });
           await interaction.editReply({
             content: `Final result post refreshed in <#${storedChannelId}>.`,
             allowedMentions: { parse: [] },
@@ -7045,9 +7520,24 @@ export class ControlPanelService {
             context.session.id,
             targetChannelId,
             messageId,
-            result.backupId,
+            backupId,
           ),
       );
+      await this.sessionService
+        .withOrganization(context.config.organizationId, () =>
+          this.syncWinnerRoleAccessForSourceSession(
+            interaction.guild,
+            context.session.id,
+            messageId,
+          ),
+        )
+        .catch((error) => {
+          console.warn(
+            `Winner access sync after final repost failed session=${context.session.id}: ${String(
+              error,
+            )}`,
+          );
+        });
       await interaction.editReply({
         content:
           mode === "refresh"
@@ -7378,7 +7868,7 @@ export class ControlPanelService {
           customId: "message-template",
           label: "Message template",
           placeholder:
-            "{trophy} Final Results\\n\\nChampion: {winner}\\n\\n{winners}",
+            "{trophy} Final Results\\n\\nChampion:\\n{top1}\\n\\nRunner-up:\\n{top2}",
           required: false,
           style: TextInputStyle.Paragraph,
           maxLength: 1800,
@@ -7847,7 +8337,7 @@ export class ControlPanelService {
       .setColor(0xef4444)
       .setTitle("Arenzyra Ban Control")
       .setDescription(
-        "Staff controls for manager bans, no-show previews, active ban review, and server-level actions.",
+        "Staff controls for manager bans, no-show previews, conditional banned-team registration, active ban review, and server-level actions.",
       )
       .addFields(
         {
@@ -7875,6 +8365,10 @@ export class ControlPanelService {
         .setCustomId(banControlCustomId("missing", sessionId))
         .setLabel("No-Show Assistant")
         .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(banControlCustomId("conditional", sessionId))
+        .setLabel("Conditional Register")
+        .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(banControlCustomId("list", sessionId))
         .setLabel("Active Bans")
