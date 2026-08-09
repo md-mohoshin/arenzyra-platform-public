@@ -50,10 +50,15 @@ release-safety check. It inventories every row in `_prisma_migrations`, binds
 each successfully applied migration to the exact SHA-256 of the candidate SQL,
 and compares pending migrations with
 [`production-api-migration-safety.json`](production-api-migration-safety.json).
-Missing or malformed ledger fields, unfinished non-rolled-back rows, multiple
-active rows for one migration, source-history divergence, and checksum drift
-all fail closed. The gate also scans pending migration SQL for contract and
-data-impact operations. The
+The read uses PostgreSQL's transaction-level read-only default, connection,
+statement, and lock timeouts, and a 4,097-row query ceiling; the verifier accepts
+at most 4,096 bounded rows. Missing or malformed ledger fields, a non-first
+target with no successfully applied migration, unfinished non-rolled-back rows,
+multiple active rows for one migration, source-history divergence, a successful
+history that is not the ordered prefix of the candidate, and checksum drift all
+fail closed. Candidate migration names are bounded and must not collide when
+case-folded across release filesystems. The gate also
+scans pending migration SQL for contract and data-impact operations. The
 scanner includes destructive schema changes, row `UPDATE`/`DELETE`/`TRUNCATE`,
 column-default changes, and required columns with defaults. A classified
 contract or data-impact migration requiring controlled maintenance, or an

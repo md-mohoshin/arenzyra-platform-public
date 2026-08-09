@@ -18,6 +18,11 @@ const defaultMigrationsPath = path.join(
   "prisma",
   "migrations",
 );
+const MAX_MIGRATION_NAME_BYTES = 255;
+const MAX_CANDIDATE_MIGRATIONS = 4096;
+const MAX_MIGRATION_SQL_BYTES = 16 * 1024 * 1024;
+const MAX_MIGRATION_LEDGER_ROWS = 4096;
+const MAX_MIGRATION_LEDGER_INPUT_BYTES = 16 * 1024 * 1024;
 
 const obviousContractPatterns = Object.freeze([
   Object.freeze({ name: "drop-column", pattern: /\bDROP\s+COLUMN\b/i }),
@@ -98,11 +103,48 @@ const obviousDataImpactPatterns = Object.freeze([
 function assertSafeMigrationName(value, label = "migration name") {
   if (
     typeof value !== "string" ||
-    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+    Buffer.byteLength(value, "utf8") > MAX_MIGRATION_NAME_BYTES ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/.test(value)
   ) {
-    throw new Error(`Invalid ${label}: ${String(value)}`);
+    throw new Error(`Invalid ${label}.`);
   }
   return value;
+}
+
+function assertUnambiguousMigrationNames(
+  values,
+  label = "candidate migration",
+) {
+  if (!Array.isArray(values)) {
+    throw new Error(`${label} names must be an array.`);
+  }
+  if (values.length === 0) {
+    throw new Error(`At least one ${label} is required.`);
+  }
+  if (values.length > MAX_CANDIDATE_MIGRATIONS) {
+    throw new Error(`Too many ${label} directories.`);
+  }
+
+  const exactNames = new Set();
+  const portableNames = new Map();
+  return values.map((value) => {
+    const name = assertSafeMigrationName(value, `${label} name`);
+    if (exactNames.has(name)) {
+      throw new Error(`Duplicate ${label} name.`);
+    }
+    exactNames.add(name);
+
+    // Production runs on Linux, but release candidates are also reviewed and
+    // assembled on case-insensitive filesystems. Names that collapse there are
+    // not one portable, auditable Prisma lineage.
+    const portableName = name.toLowerCase();
+    const previousName = portableNames.get(portableName);
+    if (previousName !== undefined && previousName !== name) {
+      throw new Error(`Case-ambiguous ${label} names are not allowed.`);
+    }
+    portableNames.set(portableName, name);
+    return name;
+  });
 }
 
 function loadManifest(manifestPath = defaultManifestPath) {
@@ -211,11 +253,12 @@ function migrationChecksum(sqlBytes) {
 }
 
 function loadCandidateMigrations(migrationsPath = defaultMigrationsPath) {
-  const migrationNames = fs
-    .readdirSync(migrationsPath, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => assertSafeMigrationName(entry.name))
-    .sort();
+  const migrationNames = assertUnambiguousMigrationNames(
+    fs
+      .readdirSync(migrationsPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name),
+  ).sort();
 
   return migrationNames.map((name) => {
     const sqlPath = path.join(migrationsPath, name, "migration.sql");
@@ -231,7 +274,21 @@ function loadCandidateMigrations(migrationsPath = defaultMigrationsPath) {
     if (!stat.isFile()) {
       throw new Error(`Migration SQL must be a regular file: ${name}`);
     }
+    if (
+      !Number.isSafeInteger(stat.size) ||
+      stat.size > MAX_MIGRATION_SQL_BYTES
+    ) {
+      throw new Error(
+        `Migration SQL exceeds the release-safety size limit: ${name}`,
+      );
+    }
     const sqlBytes = fs.readFileSync(sqlPath);
+    if (
+      sqlBytes.length !== stat.size ||
+      sqlBytes.length > MAX_MIGRATION_SQL_BYTES
+    ) {
+      throw new Error(`Migration SQL changed while being inspected: ${name}`);
+    }
     return Object.freeze({
       name,
       checksum: migrationChecksum(sqlBytes),
@@ -447,19 +504,28 @@ function validateMigrationLedgerRow(value, index) {
 }
 
 function parseMigrationLedger(input) {
-  const rows = String(input)
+  const serialized = String(input);
+  if (
+    Buffer.byteLength(serialized, "utf8") > MAX_MIGRATION_LEDGER_INPUT_BYTES
+  ) {
+    throw new Error("Migration ledger input exceeds the safety limit.");
+  }
+  const lines = serialized
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      let value;
-      try {
-        value = JSON.parse(line);
-      } catch {
-        throw new Error(`Migration ledger row ${index + 1} is not valid JSON.`);
-      }
-      return validateMigrationLedgerRow(value, index);
-    });
+    .filter(Boolean);
+  if (lines.length > MAX_MIGRATION_LEDGER_ROWS) {
+    throw new Error("Migration ledger has too many rows.");
+  }
+  const rows = lines.map((line, index) => {
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error(`Migration ledger row ${index + 1} is not valid JSON.`);
+    }
+    return validateMigrationLedgerRow(value, index);
+  });
   return Object.freeze(rows);
 }
 
@@ -470,6 +536,7 @@ function evaluateMigrationSafety({
   noOldWriters = false,
   deferDataImpact = false,
   verifiedEmptyTarget = false,
+  requireAppliedMigration = false,
 }) {
   if (deferDataImpact && verifiedEmptyTarget) {
     throw new Error(
@@ -562,6 +629,22 @@ function evaluateMigrationSafety({
   }
 
   const appliedRows = [...activeRowsByName.values()].map(([row]) => row);
+  if (requireAppliedMigration && appliedRows.length === 0) {
+    return {
+      ok: false,
+      reason: "database-migration-ledger-has-no-applied-migration",
+      candidateMigrations: candidateMetadata,
+      incompleteMigrationLedgerRows,
+      ambiguousMigrationLedgerRows,
+      checksumMismatches: [],
+      migrationLineageMismatches: [],
+      divergentAppliedMigrations: [],
+      pendingContract: [],
+      unclassifiedContract: [],
+      pendingDataImpact: [],
+      unclassifiedDataImpact: [],
+    };
+  }
   const applied = new Set(
     appliedRows.map(({ migrationName }) => migrationName),
   );
@@ -604,6 +687,33 @@ function evaluateMigrationSafety({
       incompleteMigrationLedgerRows,
       ambiguousMigrationLedgerRows,
       checksumMismatches,
+      divergentAppliedMigrations,
+      pendingContract: [],
+      unclassifiedContract: [],
+      pendingDataImpact: [],
+      unclassifiedDataImpact: [],
+    };
+  }
+  const expectedAppliedPrefix = migrationNames.slice(0, appliedRows.length);
+  const migrationLineageMismatches = appliedRows
+    .map(({ migrationName }, index) => ({
+      position: index + 1,
+      expectedMigrationName: expectedAppliedPrefix[index],
+      databaseMigrationName: migrationName,
+    }))
+    .filter(
+      ({ expectedMigrationName, databaseMigrationName }) =>
+        expectedMigrationName !== databaseMigrationName,
+    );
+  if (migrationLineageMismatches.length > 0) {
+    return {
+      ok: false,
+      reason: "database-migration-lineage-is-not-candidate-prefix",
+      candidateMigrations: candidateMetadata,
+      incompleteMigrationLedgerRows,
+      ambiguousMigrationLedgerRows,
+      checksumMismatches,
+      migrationLineageMismatches,
       divergentAppliedMigrations,
       pendingContract: [],
       unclassifiedContract: [],
@@ -788,6 +898,9 @@ function main() {
   const noOldWriters = process.argv.includes("--no-old-writers");
   const deferDataImpact = process.argv.includes("--defer-data-impact");
   const verifiedEmptyTarget = process.argv.includes("--verified-empty-target");
+  const requireAppliedMigration = process.argv.includes(
+    "--require-applied-migration",
+  );
   const appliedInput = fs.readFileSync(0, "utf8");
   const manifestPath = path.resolve(
     flagValue("--manifest", defaultManifestPath),
@@ -802,6 +915,7 @@ function main() {
     noOldWriters,
     deferDataImpact,
     verifiedEmptyTarget,
+    requireAppliedMigration,
   });
 
   if (!result.ok) {
@@ -835,6 +949,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  MAX_MIGRATION_LEDGER_INPUT_BYTES,
+  MAX_MIGRATION_LEDGER_ROWS,
+  assertUnambiguousMigrationNames,
   candidateMigrationMetadata,
   detectedContractOperations,
   detectedDataImpactOperations,

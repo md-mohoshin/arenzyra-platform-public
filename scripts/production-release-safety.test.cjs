@@ -6,6 +6,9 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
+  MAX_MIGRATION_LEDGER_INPUT_BYTES,
+  MAX_MIGRATION_LEDGER_ROWS,
+  assertUnambiguousMigrationNames,
   candidateMigrationMetadata,
   detectedContractOperations,
   detectedDataImpactOperations,
@@ -540,6 +543,26 @@ test("candidate migration metadata hashes the exact SQL bytes", (t) => {
   );
 });
 
+test("candidate migration names fail closed on duplicate or portable ambiguity", () => {
+  assert.deepEqual(assertUnambiguousMigrationNames(["001_one", "002_two"]), [
+    "001_one",
+    "002_two",
+  ]);
+  assert.throws(
+    () => assertUnambiguousMigrationNames(["001_one", "001_one"]),
+    /Duplicate candidate migration name/,
+  );
+  assert.throws(
+    () => assertUnambiguousMigrationNames(["001_Name", "001_name"]),
+    /Case-ambiguous candidate migration names/,
+  );
+  assert.throws(() => assertUnambiguousMigrationNames([]), /At least one/);
+  assert.throws(
+    () => assertUnambiguousMigrationNames(["001_trailing."]),
+    /Invalid candidate migration name/,
+  );
+});
+
 test("database migration ledger input requires closed, complete JSON rows", () => {
   const valid = ledgerRow("one", "a".repeat(64));
   assert.deepEqual(parseMigrationLedger(`${JSON.stringify(valid)}\n`), [valid]);
@@ -563,6 +586,38 @@ test("database migration ledger input requires closed, complete JSON rows", () =
   }
 });
 
+test("malformed ledger values are rejected without echoing their contents", () => {
+  const sensitiveValue = "sensitive-ledger/private-material";
+  assert.throws(
+    () =>
+      parseMigrationLedger(
+        JSON.stringify(ledgerRow(sensitiveValue, "a".repeat(64))),
+      ),
+    (error) => {
+      assert.doesNotMatch(error.message, /sensitive-ledger|private-material/);
+      return true;
+    },
+  );
+});
+
+test("database migration ledger input is bounded by bytes and row count", () => {
+  const valid = JSON.stringify(ledgerRow("one", "a".repeat(64)));
+  assert.throws(
+    () =>
+      parseMigrationLedger(
+        Array.from({ length: MAX_MIGRATION_LEDGER_ROWS + 1 }, () => valid).join(
+          "\n",
+        ),
+      ),
+    /too many rows/,
+  );
+  assert.throws(
+    () =>
+      parseMigrationLedger("x".repeat(MAX_MIGRATION_LEDGER_INPUT_BYTES + 1)),
+    /input exceeds the safety limit/,
+  );
+});
+
 test("applied migration checksum mismatch fails closed", (t) => {
   const migrationsPath = fixture(t, { baseline: "SELECT 1;\n" });
   const result = evaluateMigrationSafety({
@@ -579,6 +634,7 @@ test("applied migration checksum mismatch fails closed", (t) => {
       candidateChecksum: migrationChecksum(Buffer.from("SELECT 1;\n")),
     },
   ]);
+  assert.doesNotMatch(JSON.stringify(result), /SELECT 1/);
 });
 
 test("unfinished and ambiguous migration ledger rows fail closed", (t) => {
@@ -636,17 +692,111 @@ test("unfinished and ambiguous migration ledger rows fail closed", (t) => {
   assert.equal(retried.ok, true);
 });
 
+test("a non-first target requires at least one successfully applied migration", (t) => {
+  const migrationsPath = fixture(t, { baseline: "SELECT 1;" });
+  const checksum = candidateMigrationMetadata(migrationsPath)[0].checksum;
+
+  for (const migrationLedger of [
+    [],
+    [
+      ledgerRow("baseline", checksum, {
+        finished: false,
+        rolledBack: true,
+        appliedStepsCount: 0,
+      }),
+    ],
+  ]) {
+    const result = evaluateMigrationSafety({
+      migrationLedger,
+      manifest: manifestFor([]),
+      migrationsPath,
+      requireAppliedMigration: true,
+    });
+    assert.equal(
+      result.reason,
+      "database-migration-ledger-has-no-applied-migration",
+    );
+  }
+});
+
+test("successfully applied migrations must be the ordered candidate prefix", (t) => {
+  const migrationsPath = fixture(t, {
+    "001_first": "SELECT 1;",
+    "002_second": "SELECT 2;",
+    "003_third": "SELECT 3;",
+  });
+  const checksums = new Map(
+    candidateMigrationMetadata(migrationsPath).map(({ name, checksum }) => [
+      name,
+      checksum,
+    ]),
+  );
+
+  const missingEarlierMigration = evaluateMigrationSafety({
+    migrationLedger: [
+      ledgerRow("001_first", checksums.get("001_first")),
+      ledgerRow("003_third", checksums.get("003_third")),
+    ],
+    manifest: manifestFor([]),
+    migrationsPath,
+    requireAppliedMigration: true,
+  });
+  assert.equal(
+    missingEarlierMigration.reason,
+    "database-migration-lineage-is-not-candidate-prefix",
+  );
+  assert.deepEqual(missingEarlierMigration.migrationLineageMismatches, [
+    {
+      position: 2,
+      expectedMigrationName: "002_second",
+      databaseMigrationName: "003_third",
+    },
+  ]);
+
+  const reorderedHistory = evaluateMigrationSafety({
+    migrationLedger: [
+      ledgerRow("002_second", checksums.get("002_second")),
+      ledgerRow("001_first", checksums.get("001_first")),
+    ],
+    manifest: manifestFor([]),
+    migrationsPath,
+    requireAppliedMigration: true,
+  });
+  assert.equal(
+    reorderedHistory.reason,
+    "database-migration-lineage-is-not-candidate-prefix",
+  );
+
+  const validPrefix = evaluateMigrationSafety({
+    migrationLedger: [
+      ledgerRow("001_first", checksums.get("001_first")),
+      ledgerRow("002_second", checksums.get("002_second")),
+    ],
+    manifest: manifestFor([]),
+    migrationsPath,
+    requireAppliedMigration: true,
+  });
+  assert.equal(validPrefix.ok, true);
+});
+
 test("production ledger collection emits every checksum and row state as JSON", () => {
   const gate = fs.readFileSync(
     path.join(__dirname, "production-release-safety-gate.sh"),
     "utf8",
   );
   assert.match(gate, /row_to_json\(ledger_row\)::text/);
-  assert.match(gate, /migration_name AS \\"migrationName\\"/);
-  assert.match(gate, /\bchecksum\b/);
+  assert.match(gate, /octet_length\(migration_name\) BETWEEN 1 AND 255/);
+  assert.match(gate, /octet_length\(checksum\) = 64/);
   assert.match(gate, /finished_at IS NOT NULL AS finished/);
   assert.match(gate, /rolled_back_at IS NOT NULL AS \\"rolledBack\\"/);
   assert.match(gate, /applied_steps_count AS \\"appliedStepsCount\\"/);
+  assert.match(gate, /ORDER BY started_at, migration_name, id/);
+  assert.match(gate, /LIMIT 4097/);
+  assert.match(gate, /--require-applied-migration/);
+  assert.match(gate, /default_transaction_read_only=on/);
+  assert.match(gate, /statement_timeout=30000/);
+  assert.match(gate, /lock_timeout=5000/);
+  assert.doesNotMatch(gate, /(?:MIGRATION_)?DATABASE_URL/);
   assert.doesNotMatch(gate, /WHERE\s+finished_at\s+IS\s+NOT\s+NULL/i);
 });
 
@@ -709,10 +859,8 @@ test("the production manifest is complete and points to real migration directori
         )
         .filter((entry) => entry.isDirectory())
         .map((entry) => entry.name)
-        .filter(
-          (name) =>
-            !manifest.contractMigrations.some((entry) => entry.name === name),
-        ),
+        .sort()
+        .filter((name) => name < manifest.contractMigrations[0].name),
     ),
     manifest,
   });

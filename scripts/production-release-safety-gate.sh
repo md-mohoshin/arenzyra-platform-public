@@ -58,13 +58,22 @@ docker exec "${database_binding[0]}" sh -ceu '
   exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$database" -Atc \
     "SELECT row_to_json(ledger_row)::text
        FROM (
-         SELECT migration_name AS \"migrationName\",
-                checksum,
+         SELECT CASE
+                  WHEN octet_length(migration_name) BETWEEN 1 AND 255
+                    THEN migration_name
+                  ELSE NULL
+                END AS \"migrationName\",
+                CASE
+                  WHEN octet_length(checksum) = 64 THEN checksum
+                  ELSE NULL
+                END AS checksum,
                 finished_at IS NOT NULL AS finished,
                 rolled_back_at IS NOT NULL AS \"rolledBack\",
                 applied_steps_count AS \"appliedStepsCount\"
            FROM \"_prisma_migrations\"
-          ORDER BY migration_name, started_at, id
+          ORDER BY started_at, migration_name, id
+          LIMIT 4097
        ) AS ledger_row;"
 ' sh "${database_binding[3]}" "${database_binding[4]}" \
-  | node scripts/verify-production-migration-safety.cjs
+  | node scripts/verify-production-migration-safety.cjs \
+      --require-applied-migration
