@@ -6,9 +6,6 @@ import {
   type Message,
 } from "discord.js";
 
-const DEFAULT_OFFICIAL_GUILD_ID = "775509232354983967";
-const DEFAULT_PRICING_CHANNEL_ID = "1505509492710703184";
-const DEFAULT_PRICING_MESSAGE_ID = "1505510319319945351";
 const PROMO_MARKER = "Arenzyra streaming pricing promo";
 const PRICING_PLAN_MARKER = "Arenzyra Official pricing plan";
 const DEFAULT_TIME_ZONE = "Europe/Bucharest";
@@ -50,16 +47,13 @@ function optionalBooleanEnv(name: string, fallback: boolean) {
 
 function defaultOptions(): OfficialPricingPromoOptions {
   return {
-    enabled: optionalBooleanEnv("ARENZYRA_OFFICIAL_PRICING_PROMO_ENABLED", true),
-    guildId: optionalEnv("ARENZYRA_OFFICIAL_GUILD_ID", DEFAULT_OFFICIAL_GUILD_ID),
-    channelId: optionalEnv(
-      "ARENZYRA_OFFICIAL_PRICING_CHANNEL_ID",
-      DEFAULT_PRICING_CHANNEL_ID,
+    enabled: optionalBooleanEnv(
+      "ARENZYRA_OFFICIAL_PRICING_PROMO_ENABLED",
+      false,
     ),
-    pricingMessageId: optionalEnv(
-      "ARENZYRA_OFFICIAL_PRICING_MESSAGE_ID",
-      DEFAULT_PRICING_MESSAGE_ID,
-    ),
+    guildId: optionalEnv("ARENZYRA_OFFICIAL_GUILD_ID", ""),
+    channelId: optionalEnv("ARENZYRA_OFFICIAL_PRICING_CHANNEL_ID", ""),
+    pricingMessageId: optionalEnv("ARENZYRA_OFFICIAL_PRICING_MESSAGE_ID", ""),
     timeZone: optionalEnv(
       "ARENZYRA_OFFICIAL_PRICING_TIME_ZONE",
       DEFAULT_TIME_ZONE,
@@ -77,6 +71,12 @@ export class OfficialPricingPromoService {
 
   start(client: Client) {
     if (!this.options.enabled || this.timer) {
+      return;
+    }
+    if (!this.options.guildId || !this.options.channelId) {
+      console.warn(
+        "[OfficialPricingPromo] disabled: explicit guild and channel IDs are required",
+      );
       return;
     }
     void this.runOnce(client).catch((error) => {
@@ -214,7 +214,9 @@ export class OfficialPricingPromoService {
     if (message) {
       await message.edit(this.pricingPlanPayload());
       if (!message.pinned) {
-        await message.pin("Refresh Arenzyra official pricing").catch(() => null);
+        await message
+          .pin("Refresh Arenzyra official pricing")
+          .catch(() => null);
       }
       return message;
     }
@@ -264,20 +266,21 @@ export class OfficialPricingPromoService {
   promoPayload(due: DueSchedule) {
     const embed = new EmbedBuilder()
       .setColor(0x10bcd1)
-      .setTitle("Arenzyra Official Streaming Prices")
+      .setTitle("Arenzyra Assisted Streaming Review")
       .setDescription(
-        "Book official Arenzyra streaming support for your scrim or tournament.",
+        "Live-event operations are not included in a monthly software plan and are not generally available. Request a reviewed scope and written quote before relying on Arenzyra for an event.",
       )
       .addFields(
         {
-          name: "Standard",
-          value: "4 matches or less: **16\u20ac**\n5 matches: **20\u20ac**",
+          name: "Availability",
+          value:
+            "Arenzyra confirms operator capacity, event scope, supported workflow, and production readiness before quoting live support.",
           inline: false,
         },
         {
-          name: "Arenzyra Bot Server Discount",
+          name: "Publisher and telemetry boundary",
           value:
-            "If your event server has the Arenzyra bot installed.\n4 matches or less: **14\u20ac**\n5 matches: **18\u20ac**",
+            "Arenzyra does not grant tournament, room, API, telemetry, or broadcast authorization. The organizer must hold every approval required for the event.",
           inline: false,
         },
         {
@@ -293,9 +296,9 @@ export class OfficialPricingPromoService {
       .setTimestamp(new Date());
 
     return {
-      content: "@everyone",
+      content: "",
       embeds: [embed],
-      allowedMentions: { parse: ["everyone"] as const },
+      allowedMentions: { parse: [] as [] },
     };
   }
 
@@ -304,49 +307,25 @@ export class OfficialPricingPromoService {
       .setColor(0x10bcd1)
       .setTitle("Arenzyra Pricing Plans")
       .setDescription(
-        "Applications are reviewed manually. If approved, the workspace starts with a 7-day free trial. Payment is required only to continue after the trial ends.",
+        "Applications are reviewed manually. After setup approval, the 7-day trial starts only when the approved owner completes secure account setup for the prepared workspace. Auto Launcher is a request-only private pilot, not a generally available integration.",
       )
       .addFields(
         {
-          name: "Discord Only - Single Game",
+          name: "Discord Bot Pro",
           value:
-            "$18.99/month - Discord registration, slots, OCR review, and result posts for one selected game.",
+            "$18.99/month - PUBG Mobile Discord registration, slots, OCR-assisted review, result posts, and manager workflows.",
           inline: false,
         },
         {
-          name: "Production - Single Game",
+          name: "PUBG Production - Recommended",
           value:
-            "$29.99/month - Web dashboard, match control, Discord workflow, OCR review, and OBS-ready widgets for one selected game.",
+            "$29.99/month - Web event and match control, Discord workflow, reviewed results, standings, and OBS-ready widgets.",
           inline: false,
         },
         {
-          name: "Multi-Game Production",
+          name: "Auto Launcher - Private Pilot",
           value:
-            "$49.99/month - PUBG Mobile, Free Fire, and VALORANT in one production workspace.",
-          inline: false,
-        },
-        {
-          name: "PUBG Production + Auto Result Launcher",
-          value:
-            "$59.99/month - Full PUBG production plus launcher auto-result workflow for organizers who already have approved API or telemetry access.",
-          inline: false,
-        },
-        {
-          name: "Official Streaming Service",
-          value:
-            "Event streaming from Arenzyra Official.\n4 matches or less: **16\u20ac**\n5 matches: **20\u20ac**",
-          inline: false,
-        },
-        {
-          name: "Arenzyra Bot Server Discount",
-          value:
-            "If your event server has the Arenzyra bot installed.\n4 matches or less: **14\u20ac**\n5 matches: **18\u20ac**",
-          inline: false,
-        },
-        {
-          name: "Add-ons",
-          value:
-            "Extra Discord server: +$12.99/month. Other production widgets, AI production tools, custom setup, and custom streaming requirements may be quoted separately.",
+            "$59.99/month when approved - Software access for a supported telemetry source. Custom integration, installer work, and live-event operations are quoted separately.",
           inline: false,
         },
       )

@@ -58,7 +58,7 @@ test("official pricing promo is due only at configured local times", () => {
   assert.equal(promo.dueSchedule(new Date("2026-05-28T11:01:00Z")), null);
 });
 
-test("official pricing promo refreshes pinned pricing and sends everyone mention", async () => {
+test("official pricing promo refreshes pinned pricing without mass mentions", async () => {
   const promo = service();
   const deleted: string[] = [];
   const pricingEdits: any[] = [];
@@ -95,18 +95,29 @@ test("official pricing promo refreshes pinned pricing and sends everyone mention
   assert.deepEqual(deleted, ["old-promo"]);
   assert.equal(pricingEdits.length, 1);
   const pricingEmbed = pricingEdits[0].embeds[0].toJSON();
+  assert.deepEqual(
+    pricingEmbed.fields.map((field: any) => field.name),
+    [
+      "Discord Bot Pro",
+      "PUBG Production - Recommended",
+      "Auto Launcher - Private Pilot",
+    ],
+  );
+  assert.match(pricingEmbed.fields[0].value, /\$18\.99\/month/);
+  assert.match(pricingEmbed.fields[1].value, /\$29\.99\/month/);
+  assert.match(pricingEmbed.fields[2].value, /\$59\.99\/month when approved/);
+  assert.match(pricingEmbed.description, /request-only private pilot/i);
   assert.match(
-    pricingEmbed.fields.find(
-      (field: any) => field.name === "Official Streaming Service",
-    ).value,
-    /16\u20ac/,
+    pricingEmbed.description,
+    /trial starts only when .* completes secure account setup/i,
   );
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].content, "@everyone");
-  assert.deepEqual(sent[0].allowedMentions, { parse: ["everyone"] });
+  assert.equal(sent[0].content, "");
+  assert.deepEqual(sent[0].allowedMentions, { parse: [] });
   const embed = sent[0].embeds[0].toJSON();
-  assert.match(embed.fields[0].value, /16\u20ac/);
-  assert.match(embed.fields[1].value, /14\u20ac/);
+  assert.match(embed.description, /written quote/i);
+  assert.match(embed.fields[0].value, /operator capacity/i);
+  assert.match(embed.fields[1].value, /does not grant tournament/i);
   assert.match(embed.footer.text, /2026-05-28-1100/);
 });
 
