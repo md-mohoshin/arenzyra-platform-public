@@ -1,0 +1,733 @@
+{
+  "schemaVersion": 1,
+  "databaseSchema": "public",
+  "sourceDigests": {
+    "apiPrismaSchemaSha256": "a84db28b398b65f468472de15643c588db8bbd1c520027dee4d0010b296a2649",
+    "apiMigrationTreeSha256": "a482667e8429080d67d823a83403b295c9b405ddee859c17448bb80b286dd33e",
+    "studioMigrationSha256": "efa1fc3bffec6b2ab3d044c10653e01aafee945c3cfcc041d81a206c81fb94bb"
+  },
+  "apiRuntimeTables": [
+    "AdminAdjustment",
+    "AdminOrganizationLink",
+    "AuditLog",
+    "Ban",
+    "BillingNotificationOutbox",
+    "BillingRateLimitReservation",
+    "BillingSubmission",
+    "ConditionalBanEnrollment",
+    "ConditionalBanEnrollmentManagerBan",
+    "ConditionalBanEnrollmentMatch",
+    "ConditionalBanEnrollmentTeamBan",
+    "ConditionalBanFinalization",
+    "ConditionalBanFinalSnapshot",
+    "ConditionalBanOutbox",
+    "DiscordGuildChannelPause",
+    "DiscordGuildIconAsset",
+    "DiscordIdpSchedule",
+    "DiscordScheduledMessage",
+    "FeedLock",
+    "Game",
+    "GlobalPlayer",
+    "Group",
+    "GroupTeam",
+    "KillEvent",
+    "License",
+    "LivePlayer",
+    "LiveTeam",
+    "ManagerBan",
+    "Match",
+    "match_players",
+    "MatchControlState",
+    "MatchEvent",
+    "MatchRound",
+    "MatchScore",
+    "MatchSlot",
+    "MatchSlotPlayerResult",
+    "MatchSlotResult",
+    "MatchStanding",
+    "MatchStateSnapshot",
+    "MatchTeam",
+    "MatchTelemetry",
+    "MatchTopFragger",
+    "MediaAsset",
+    "NoShowBanSnapshot",
+    "Notification",
+    "ObserverLauncherSession",
+    "OBSScene",
+    "OBSTemplate",
+    "Organization",
+    "OrganizationApplication",
+    "OrganizationBranding",
+    "OrganizationDiscordConfig",
+    "OrganizationDiscordGuild",
+    "OrganizationFeature",
+    "OrganizationWidgetApproval",
+    "OrganizerFeature",
+    "PasswordActionToken",
+    "Payout",
+    "PcobAppliedEvent",
+    "PcobRawEvent",
+    "PcobState",
+    "PcobUnmatchedKill",
+    "PcobUnmatchedPlayer",
+    "PlatformSecurityAuditLog",
+    "PlatformSuperAdminMfaChallenge",
+    "PlatformSuperAdminMfaCredential",
+    "PlatformSuperAdminMfaRecoveryCode",
+    "Player",
+    "PlayerDiscipline",
+    "PlayerMapping",
+    "PrivateAsset",
+    "RefreshToken",
+    "Report",
+    "ResultApproval",
+    "ResultBackup",
+    "ResultBackupRow",
+    "RosterEntry",
+    "RoundPlayerResult",
+    "Ruleset",
+    "Session",
+    "SessionBranding",
+    "SessionDiscordConfig",
+    "SessionPlayerResultSnapshot",
+    "SessionRegistration",
+    "SessionSponsor",
+    "ShopJerseyOrder",
+    "ShopLead",
+    "ShopProduct",
+    "ShopReport",
+    "ShopSeller",
+    "Sponsor",
+    "StaffTask",
+    "StaffTaskEvent",
+    "StaffTaskRun",
+    "StaffTaskTemplate",
+    "StaffTaskTemplateItem",
+    "Stage",
+    "StageTeam",
+    "StandingsSnapshot",
+    "StudioWidget",
+    "StudioWidgetBinding",
+    "StudioWidgetOverlayToken",
+    "StudioWidgetRelease",
+    "StudioWidgetRevision",
+    "SystemFlag",
+    "Tag",
+    "Team",
+    "TeamAlias",
+    "TeamBan",
+    "TeamMapping",
+    "TeamMember",
+    "TeamRoundResult",
+    "TeamTag",
+    "TelemetryEventLog",
+    "Tournament",
+    "TournamentInvite",
+    "TournamentPlayer",
+    "TournamentRegistration",
+    "TournamentTeam",
+    "User",
+    "Wallet",
+    "WalletTransaction",
+    "Widget",
+    "WidgetInstance",
+    "WidgetPreset",
+    "WidgetVersion",
+    "YoutubeAuditLog",
+    "YoutubeAutomationRule",
+    "YoutubeChallenge",
+    "YoutubeChallengeEntry",
+    "YoutubeChannel",
+    "YoutubeChannelSnapshot",
+    "YoutubeChatCommand",
+    "YoutubeChatLog",
+    "YoutubeChatTimer",
+    "YoutubeComment",
+    "YoutubeCommentReply",
+    "YoutubeGiveaway",
+    "YoutubeGiveawayEntry",
+    "YoutubeGiveawayWinner",
+    "YoutubeLiveChatMessage",
+    "YoutubeLiveChatSession",
+    "YoutubeLiveChatViewer",
+    "YoutubePoll",
+    "YoutubePollVote",
+    "YoutubeViewerProfile"
+  ],
+  "apiMigrationLedgers": ["_prisma_migrations"],
+  "studioRuntimeTables": [
+    "StudioMediaAsset",
+    "StudioPublishedMediaAsset",
+    "StudioPublishedRuntimeSnapshot",
+    "StudioPublishedRuntimeVersion",
+    "StudioReviewSnapshot",
+    "StudioWorkspaceSnapshot"
+  ],
+  "studioMigrationLedgers": ["StudioSchemaMigration"],
+  "apiEnumTypes": [
+    {
+      "name": "AdminAdjustmentScope",
+      "labels": ["MATCH", "GROUP", "STAGE", "TOURNAMENT", "SESSION"]
+    },
+    {
+      "name": "AdminAdjustmentType",
+      "labels": [
+        "POINT_DELTA",
+        "ZERO_MATCH_POINTS",
+        "DISQUALIFY_MATCH",
+        "DISQUALIFY_GROUP",
+        "DISQUALIFY_STAGE",
+        "DISQUALIFY_TOURNAMENT",
+        "DISQUALIFY_SESSION"
+      ]
+    },
+    {
+      "name": "AuditAction",
+      "labels": [
+        "MATCH_RESULT_EDIT",
+        "MATCH_RESULT_IMPORT",
+        "MATCH_OFFICIAL",
+        "MATCH_UNLOCK",
+        "MATCH_STATUS_CHANGE",
+        "MATCH_CONTROL_STATE_CHANGED",
+        "AUTO_END",
+        "MATCH_SLOT_ASSIGNED",
+        "SLOT_SET",
+        "SLOT_CLEARED",
+        "ADMIN_ADJUSTMENT",
+        "SYSTEM_FLAG_UPDATE",
+        "USER_ROLE_CHANGE",
+        "USER_BAN",
+        "USER_UNBAN",
+        "WALLET_ADJUST",
+        "PAYOUT_APPROVE",
+        "PAYOUT_REJECT",
+        "BROADCAST_SEND",
+        "IMPERSONATION",
+        "ORGANIZER_APPROVE",
+        "ORGANIZER_SUSPEND",
+        "ORGANIZER_KYC",
+        "ORGANIZATION_CREATE",
+        "ORGANIZATION_STATUS_CHANGE",
+        "ORGANIZATION_KYC_UPDATE",
+        "ORGANIZATION_OWNER_UPDATE",
+        "PLAYER_WARN",
+        "PLAYER_TEMP_BAN",
+        "PLAYER_FORCE_LOGOUT",
+        "REPORT_RESOLVE",
+        "REPORT_ESCALATE",
+        "SESSION_CREATE",
+        "SESSION_TEAM_REGISTER",
+        "SESSION_DISCORD_CONFIG_UPDATE",
+        "SESSION_REGISTRATION_REMOVE",
+        "SESSION_WAITLIST_PROMOTE",
+        "SESSION_MATCH_CREATE",
+        "TOURNAMENT_PAUSE",
+        "TOURNAMENT_REMOVE_TEAM",
+        "TOURNAMENT_HARD_DELETE",
+        "CONTENT_MODERATE"
+      ]
+    },
+    {
+      "name": "BillingNotificationOutboxStatus",
+      "labels": ["PENDING", "CLAIMED", "SENT", "FAILED"]
+    },
+    {
+      "name": "BillingRateReservationStatus",
+      "labels": ["PROCESSING", "COMPLETED", "FAILED"]
+    },
+    {
+      "name": "BillingSubmissionStatus",
+      "labels": ["PENDING", "CLAIMED", "APPROVED", "REJECTED", "CANCELLED"]
+    },
+    {
+      "name": "ConditionalBanEnrollmentStatus",
+      "labels": ["ACTIVE", "COMPLETED", "CANCELLED"]
+    },
+    {
+      "name": "ConditionalBanTargetOutcome",
+      "labels": ["PENDING", "REVOKED", "ALREADY_INACTIVE", "NOT_RELEASED"]
+    },
+    {
+      "name": "ControlState",
+      "labels": [
+        "READY",
+        "COUNTDOWN",
+        "LIVE",
+        "PAUSED",
+        "FINISH_PENDING",
+        "ENDED",
+        "CONFIRMED"
+      ]
+    },
+    {
+      "name": "DataMode",
+      "labels": ["MANUAL", "PCOB"]
+    },
+    {
+      "name": "DisciplineType",
+      "labels": ["WARN", "TEMP_BAN"]
+    },
+    {
+      "name": "DiscordScheduledMessageFrequency",
+      "labels": ["ONCE", "DAILY", "WEEKLY"]
+    },
+    {
+      "name": "FeatureKey",
+      "labels": [
+        "TOURNAMENT",
+        "PRIZE",
+        "BRANDING",
+        "AUTOMATION",
+        "ANALYTICS",
+        "TEAM_LIBRARY"
+      ]
+    },
+    {
+      "name": "GameKey",
+      "labels": [
+        "PUBG_MOBILE",
+        "VALORANT",
+        "CRICKET",
+        "CS2",
+        "DOTA2",
+        "LOL",
+        "FORTNITE",
+        "FREE_FIRE",
+        "CALL_OF_DUTY",
+        "MLBB"
+      ]
+    },
+    {
+      "name": "IdentitySource",
+      "labels": ["MANUAL", "PCOB"]
+    },
+    {
+      "name": "KillSource",
+      "labels": ["AUTO", "MANUAL"]
+    },
+    {
+      "name": "KycStatus",
+      "labels": ["PENDING", "APPROVED", "REJECTED"]
+    },
+    {
+      "name": "LicenseStatus",
+      "labels": ["ACTIVE", "EXPIRED", "SUSPENDED", "REVOKED"]
+    },
+    {
+      "name": "LicenseType",
+      "labels": ["TRIAL", "STANDARD", "ENTERPRISE"]
+    },
+    {
+      "name": "LiveState",
+      "labels": ["UPCOMING", "LIVE", "ENDED"]
+    },
+    {
+      "name": "LobbyStatus",
+      "labels": ["EMPTY", "WAITING", "READY", "OFFLINE"]
+    },
+    {
+      "name": "MappingStatus",
+      "labels": [
+        "UNMAPPED",
+        "MAPPED",
+        "CONFIRMED",
+        "PENDING",
+        "LINKED",
+        "REJECTED"
+      ]
+    },
+    {
+      "name": "MatchDataSource",
+      "labels": ["MANUAL", "AUTO", "SHADOW", "PCOB", "API"]
+    },
+    {
+      "name": "MatchEventType",
+      "labels": [
+        "KILL",
+        "TEAM_PLACEMENT",
+        "MATCH_START",
+        "MATCH_END",
+        "PLAYER_STATE"
+      ]
+    },
+    {
+      "name": "MatchMap",
+      "labels": [
+        "ERANGEL",
+        "MIRAMAR",
+        "SANHOK",
+        "VIKENDI",
+        "LIVIK",
+        "LIVIK_AFTERMATH",
+        "KARAKIN",
+        "DESTON",
+        "RONDO",
+        "NUSA",
+        "TAEGO",
+        "PARAMO",
+        "BERMUDA",
+        "PURGATORY",
+        "KALAHARI",
+        "ALPINE",
+        "NEXTERRA",
+        "SOLARA",
+        "CODM_ISOLATED",
+        "CODM_BLACKOUT",
+        "CODM_CUSTOM",
+        "CORRODE",
+        "ABYSS",
+        "SUNSET",
+        "LOTUS",
+        "PEARL",
+        "FRACTURE",
+        "BREEZE",
+        "ICEBOX",
+        "ASCENT",
+        "SPLIT",
+        "HAVEN",
+        "BIND",
+        "CRICKET_T10",
+        "CRICKET_T20",
+        "CRICKET_ODI",
+        "CRICKET_TEST",
+        "CRICKET_CUSTOM"
+      ]
+    },
+    {
+      "name": "MatchResultSource",
+      "labels": ["MANUAL", "TELEMETRY", "OCR"]
+    },
+    {
+      "name": "MatchStatus",
+      "labels": ["DRAFT", "LIVE", "FINISH_PENDING", "FINISHED", "ENDED"]
+    },
+    {
+      "name": "MatchTeamStatus",
+      "labels": ["ACTIVE", "ELIMINATED", "SUBSTITUTE"]
+    },
+    {
+      "name": "MediaAssetType",
+      "labels": [
+        "TEAM_LOGO",
+        "PLAYER_PHOTO",
+        "TOURNAMENT_BANNER",
+        "TOURNAMENT_LOGO"
+      ]
+    },
+    {
+      "name": "NotificationAudience",
+      "labels": ["ALL", "ORGANIZERS", "PLAYERS"]
+    },
+    {
+      "name": "ObsTemplateKind",
+      "labels": ["FULLSCREEN_RESULT", "MATCH_INTRO", "CUSTOM"]
+    },
+    {
+      "name": "OrganizationApplicationStatus",
+      "labels": ["PENDING", "APPROVED", "REJECTED"]
+    },
+    {
+      "name": "OrganizationStatus",
+      "labels": ["PENDING", "APPROVED", "SUSPENDED"]
+    },
+    {
+      "name": "OrganizationSubscriptionStatus",
+      "labels": ["ACTIVE", "TRIALING", "EXPIRED"]
+    },
+    {
+      "name": "OrganizerAccessMode",
+      "labels": ["FULL_PRODUCTION", "DISCORD_ONLY"]
+    },
+    {
+      "name": "PasswordActionPurpose",
+      "labels": ["RESET", "ACCOUNT_SETUP"]
+    },
+    {
+      "name": "PayoutStatus",
+      "labels": ["PENDING", "APPROVED", "REJECTED"]
+    },
+    {
+      "name": "PcobStatus",
+      "labels": ["PENDING", "READY", "ERROR"]
+    },
+    {
+      "name": "PlatformSuperAdminMfaChallengePurpose",
+      "labels": ["LOGIN", "ENROLLMENT"]
+    },
+    {
+      "name": "PlayerSource",
+      "labels": ["MANUAL", "API"]
+    },
+    {
+      "name": "PrivateAssetKind",
+      "labels": ["SCREENSHOT_EVIDENCE", "PAYMENT_PROOF"]
+    },
+    {
+      "name": "ReportStatus",
+      "labels": ["OPEN", "REVIEWED", "ACTIONED"]
+    },
+    {
+      "name": "Role",
+      "labels": ["SUPER_ADMIN", "ADMIN", "REFEREE", "ORGANIZER"]
+    },
+    {
+      "name": "RoundStatus",
+      "labels": ["PENDING", "LIVE", "COMPLETED", "LOCKED", "ENDED", "APPROVED"]
+    },
+    {
+      "name": "SessionRegistrationStatus",
+      "labels": [
+        "REGISTERED",
+        "WAITLIST",
+        "CONFIRMED",
+        "REMOVED",
+        "CHECKED_IN",
+        "DECLINED"
+      ]
+    },
+    {
+      "name": "SessionStatus",
+      "labels": [
+        "DRAFT",
+        "OPEN",
+        "CHECKIN",
+        "LOCKED",
+        "LIVE",
+        "ENDED",
+        "ARCHIVED"
+      ]
+    },
+    {
+      "name": "SessionType",
+      "labels": ["SCRIM", "EVENT", "CUSTOM", "PRACTICE"]
+    },
+    {
+      "name": "SponsorTier",
+      "labels": ["TITLE", "GOLD", "SILVER", "BRONZE", "MEDIA"]
+    },
+    {
+      "name": "StaffTaskEventType",
+      "labels": [
+        "RUN_CREATED",
+        "BOARD_POSTED",
+        "CLAIM_REQUESTED",
+        "CLAIM_CONFIRMED",
+        "CLAIM_CANCELLED",
+        "RELEASE_REQUESTED",
+        "RELEASE_CONFIRMED",
+        "RELEASE_CANCELLED",
+        "COMPLETION_REQUESTED",
+        "COMPLETION_CONFIRMED",
+        "COMPLETION_CANCELLED",
+        "REVIEW_APPROVED",
+        "POINTS_AWARDED",
+        "RUN_CLOSED"
+      ]
+    },
+    {
+      "name": "StaffTaskRunStatus",
+      "labels": ["OPEN", "CLOSED"]
+    },
+    {
+      "name": "StaffTaskScheduleFrequency",
+      "labels": ["ONCE", "DAILY", "WEEKLY"]
+    },
+    {
+      "name": "StaffTaskStatus",
+      "labels": [
+        "OPEN",
+        "CLAIM_PENDING",
+        "CLAIMED",
+        "RELEASE_PENDING",
+        "COMPLETION_PENDING",
+        "PENDING_REVIEW",
+        "COMPLETED",
+        "CLOSED"
+      ]
+    },
+    {
+      "name": "StageType",
+      "labels": ["GROUP", "FINALS", "CUSTOM"]
+    },
+    {
+      "name": "StudioWidgetBindingScope",
+      "labels": ["ORGANIZATION", "SESSION", "TOURNAMENT", "MATCH"]
+    },
+    {
+      "name": "StudioWidgetReleaseStatus",
+      "labels": ["DRAFT", "ACTIVE", "DISABLED", "REVOKED"]
+    },
+    {
+      "name": "StudioWidgetTarget",
+      "labels": ["OBS_BROWSER", "DISCORD_PNG"]
+    },
+    {
+      "name": "TeamBanScope",
+      "labels": ["TEAM", "SESSION", "MATCH"]
+    },
+    {
+      "name": "TeamMemberRole",
+      "labels": ["LEADER", "PLAYER"]
+    },
+    {
+      "name": "TelemetryAuthorityMode",
+      "labels": ["AUTO", "MANUAL", "HYBRID"]
+    },
+    {
+      "name": "TelemetrySource",
+      "labels": ["AUTO", "LAUNCHER", "PCOB", "API", "SHADOW"]
+    },
+    {
+      "name": "TournamentInviteStatus",
+      "labels": ["PENDING", "ACCEPTED", "EXPIRED"]
+    },
+    {
+      "name": "TournamentRegistrationStatus",
+      "labels": ["PENDING", "APPROVED", "REJECTED"]
+    },
+    {
+      "name": "TournamentRosterLineupType",
+      "labels": ["MAIN", "SUBSTITUTE"]
+    },
+    {
+      "name": "TournamentStatus",
+      "labels": ["DRAFT", "ACTIVE", "COMPLETED", "ARCHIVED"]
+    },
+    {
+      "name": "TournamentTeamStatus",
+      "labels": ["ACTIVE", "ELIMINATED", "SUBSTITUTE", "INVITED"]
+    },
+    {
+      "name": "UserStatus",
+      "labels": ["ACTIVE", "INACTIVE", "BANNED"]
+    },
+    {
+      "name": "WalletTransactionType",
+      "labels": ["CREDIT", "DEBIT", "ADJUSTMENT"]
+    },
+    {
+      "name": "WidgetKind",
+      "labels": [
+        "LIVE_RANKING",
+        "LOWER_THIRD",
+        "LOWER_THIRD_MATCH",
+        "MATCH_INFO",
+        "MATCH_INTRO",
+        "TEAMS_LINEUP",
+        "COUNTDOWN",
+        "OVERALL_RANKING",
+        "CUSTOM"
+      ]
+    },
+    {
+      "name": "WidgetVersionStatus",
+      "labels": ["DRAFT", "STABLE", "DEPRECATED"]
+    },
+    {
+      "name": "YoutubeAutomationMatchMode",
+      "labels": ["KEYWORD", "CONTAINS", "REGEX"]
+    },
+    {
+      "name": "YoutubeChannelStatus",
+      "labels": ["CONNECTED", "REAUTH_REQUIRED", "DISABLED"]
+    },
+    {
+      "name": "YoutubeCommentReviewStatus",
+      "labels": ["NEW", "REVIEWED", "NEEDS_REPLY", "REPLIED", "IGNORED", "HELD"]
+    },
+    {
+      "name": "YoutubeGiveawayMode",
+      "labels": ["KEYWORD", "PREDICTION"]
+    },
+    {
+      "name": "YoutubeGiveawayStatus",
+      "labels": ["DRAFT", "OPEN", "CLOSED", "DRAWN", "CANCELLED"]
+    },
+    {
+      "name": "YoutubeLiveChatSessionStatus",
+      "labels": ["READY", "RUNNING", "PAUSED", "ENDED", "ERROR"]
+    },
+    {
+      "name": "YoutubeReplyStatus",
+      "labels": ["DRAFT", "PENDING_APPROVAL", "POSTED", "FAILED", "CANCELLED"]
+    }
+  ],
+  "apiFunctions": [
+    {
+      "name": "enforceStudioWidgetReleaseRevisionOwner",
+      "ownerProfile": "api",
+      "kind": "f",
+      "identityArguments": "",
+      "resultType": "trigger",
+      "language": "plpgsql",
+      "securityDefiner": false,
+      "configuration": null,
+      "volatility": "volatile",
+      "parallel": "unsafe",
+      "strict": false,
+      "leakproof": false,
+      "returnsSet": false,
+      "argumentDefaults": 0,
+      "cost": 100,
+      "rows": 0,
+      "sourceSha256": "e67ddac3cd5884287f590eedc683da98e736fc416692e1ba961b94ec15f53f76",
+      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+    },
+    {
+      "name": "enforceStudioWidgetRevisionReleaseOwner",
+      "ownerProfile": "api",
+      "kind": "f",
+      "identityArguments": "",
+      "resultType": "trigger",
+      "language": "plpgsql",
+      "securityDefiner": false,
+      "configuration": null,
+      "volatility": "volatile",
+      "parallel": "unsafe",
+      "strict": false,
+      "leakproof": false,
+      "returnsSet": false,
+      "argumentDefaults": 0,
+      "cost": 100,
+      "rows": 0,
+      "sourceSha256": "10827e027f491e7a5bd0d1cedf53090dd056d9605b809fbac01f1a12a52b986e",
+      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+    }
+  ],
+  "apiTriggers": [
+    {
+      "name": "StudioWidgetRelease_revision_widget_owner",
+      "ownerProfile": "api",
+      "tableName": "StudioWidgetRelease",
+      "functionName": "enforceStudioWidgetReleaseRevisionOwner",
+      "functionIdentityArguments": "",
+      "enabled": "O",
+      "internal": false,
+      "timing": "BEFORE",
+      "level": "ROW",
+      "events": ["INSERT", "UPDATE"],
+      "updateColumns": ["widgetId", "revisionId"],
+      "arguments": [],
+      "condition": null,
+      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+    },
+    {
+      "name": "StudioWidgetRevision_release_widget_owner",
+      "ownerProfile": "api",
+      "tableName": "StudioWidgetRevision",
+      "functionName": "enforceStudioWidgetRevisionReleaseOwner",
+      "functionIdentityArguments": "",
+      "enabled": "O",
+      "internal": false,
+      "timing": "BEFORE",
+      "level": "ROW",
+      "events": ["UPDATE"],
+      "updateColumns": ["widgetId"],
+      "arguments": [],
+      "condition": null,
+      "sourceMigration": "20260713130000_studio_widget_release_foundation/migration.sql"
+    }
+  ],
+  "sequences": []
+}

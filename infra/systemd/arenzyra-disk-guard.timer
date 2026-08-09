@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Arenzyra safe disk guard hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=arenzyra-disk-guard.service
+
+[Install]
+WantedBy=timers.target

@@ -35,7 +35,15 @@ Seed data also requires `PLATFORM_ADMIN_EMAIL` and `PLATFORM_ADMIN_PASSWORD` to 
 - Set API CORS origins with `WEB_APP_ORIGIN` and `FRONTEND_ORIGIN`.
 - Set the API public base URL with `API_BASE_URL` or `API_PUBLIC_URL` if the API is published behind a different host.
 - Set `ASSET_BASE_URL` if media assets need a different public base URL than the API itself.
-- Required API credentials for startup are `JWT_SECRET`, `COLLECTOR_SECRET`, `PCOB_SECRET`, `SUPERADMIN_EMAIL`, `SUPERADMIN_PASSWORD`, `OP_EMAIL`, and `OP_PASSWORD`.
+- Required API credentials for production startup are `JWT_SECRET`,
+  `IDP_CREDENTIAL_ENCRYPTION_KEY`, `SUPERADMIN_MFA_ENCRYPTION_KEY`,
+  `SUPERADMIN_MFA_RECOVERY_PEPPER`, `COLLECTOR_SECRET`, and `PCOB_SECRET`;
+  `SUPERADMIN_MFA_REQUIRED` must be `true`.
+  The IDP key must be a separate random value; it encrypts Discord room
+  passwords and must not reuse the JWT signing secret.
+  Both platform-superadministrator MFA secrets must be at least 32 bytes and
+  distinct from every listed application secret and from each other.
+- Login-triggered superadmin/operator creation is disabled by default. For a disposable local database only, explicitly set `AUTH_DEV_BOOTSTRAP_ENABLED=true` with the four `SUPERADMIN_*`/`OP_*` values. The API rejects that mode in production.
 
 ## Stopping/cleaning
 ```bash

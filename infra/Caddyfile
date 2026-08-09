@@ -22,7 +22,14 @@ www.{$PUBLIC_WEB_HOST} {
 		-Server
 		X-Content-Type-Options nosniff
 	}
-	request_body {
+	# PCOB accepts up to 16 MiB after its own validation. The small proxy
+	# allowance covers the raw request body without weakening every API route.
+	@pcob_ingest path /pcob/telemetry* /api/observer/telemetry*
+	request_body @pcob_ingest {
+		max_size 17MB
+	}
+	@standard_api_body not path /pcob/telemetry* /api/observer/telemetry*
+	request_body @standard_api_body {
 		max_size 10MB
 	}
 	reverse_proxy api:3000

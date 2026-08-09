@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const dns = require("node:dns/promises");
+const fs = require("node:fs");
+const path = require("node:path");
 
 function readFlag(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -40,7 +42,26 @@ async function resolveHost(host) {
   return addresses;
 }
 
-async function fetchWithTimeout(url, timeoutMs) {
+function readEnvValue(filePath, key) {
+  if (!filePath || !fs.existsSync(filePath)) return "";
+  for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const equalsAt = trimmed.indexOf("=");
+    if (equalsAt === -1 || trimmed.slice(0, equalsAt).trim() !== key) continue;
+    let value = trimmed.slice(equalsAt + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    return value;
+  }
+  return "";
+}
+
+async function fetchWithTimeout(url, timeoutMs, headers = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -50,6 +71,7 @@ async function fetchWithTimeout(url, timeoutMs) {
       headers: {
         "cache-control": "no-cache",
         "ngrok-skip-browser-warning": "1",
+        ...headers,
       },
     });
   } finally {
@@ -68,7 +90,7 @@ async function readBody(response, asJson) {
 }
 
 async function checkHttp(check, timeoutMs) {
-  const response = await fetchWithTimeout(check.url, timeoutMs);
+  const response = await fetchWithTimeout(check.url, timeoutMs, check.headers);
   const body = await readBody(response, check.json);
   if (!check.status.includes(response.status)) {
     throw new Error(
@@ -85,7 +107,7 @@ async function checkHttp(check, timeoutMs) {
 async function main() {
   if (hasFlag("--help")) {
     console.log(
-      "Usage: node scripts/verify-publish.cjs [--web https://arenzyra.com] [--api https://api.arenzyra.com] [--skip-dns]",
+      "Usage: node scripts/verify-publish.cjs [--web https://arenzyra.com] [--api https://api.arenzyra.com] [--env infra/.env.publish] [--skip-dns]",
     );
     return;
   }
@@ -93,6 +115,10 @@ async function main() {
   const webOrigin = normalizeOrigin(readFlag("--web", "https://arenzyra.com"));
   const apiOrigin = normalizeOrigin(readFlag("--api", "https://api.arenzyra.com"));
   const timeoutMs = Number(readFlag("--timeout-ms", "15000"));
+  const envPath = path.resolve(readFlag("--env", "infra/.env.publish"));
+  const healthToken =
+    process.env.HEALTHCHECK_TOKEN?.trim() ||
+    readEnvValue(envPath, "HEALTHCHECK_TOKEN");
   const skipDns = hasFlag("--skip-dns");
   const failures = [];
 
@@ -148,12 +174,36 @@ async function main() {
       json: true,
     },
     {
-      name: "api health",
-      url: withPath(apiOrigin, "/health"),
+      name: "api liveness",
+      url: withPath(apiOrigin, "/health/live"),
       status: [200],
       json: true,
+      validate(body) {
+        if (!body || body.status !== "ok") {
+          throw new Error("api liveness did not report status=ok.");
+        }
+      },
     },
   ];
+
+  if (healthToken) {
+    checks.push({
+      name: "api readiness",
+      url: withPath(apiOrigin, "/health/ready"),
+      status: [200],
+      json: true,
+      headers: { "X-Healthcheck-Token": healthToken },
+      validate(body) {
+        if (!body || body.status !== "ready") {
+          throw new Error("api readiness did not report status=ready.");
+        }
+      },
+    });
+  } else {
+    failures.push(
+      `HEALTHCHECK_TOKEN was not available from the process or ${envPath}; protected readiness was not verified.`,
+    );
+  }
 
   for (const check of checks) {
     try {

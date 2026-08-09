@@ -1,0 +1,919 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+SAFE_COMMAND_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="$SAFE_COMMAND_PATH"
+
+PRODUCTION_ROOT="${ARENZYRA_PRODUCTION_ROOT:-/opt/arenzyra}"
+EXPECTED_ROOT="/opt/arenzyra"
+EXPECTED_RELEASE_ARCHIVE_ROOT="/opt/arenzyra-release-metadata"
+LOCK_FILE="/run/arenzyra-production-deploy.lock"
+MODE="full"
+FIRST_DEPLOY=0
+LOCK_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_LOCK_TIMEOUT_SECONDS:-10}"
+HEALTH_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_HEALTH_TIMEOUT_SECONDS:-240}"
+RELEASE_ARCHIVE_ROOT="${ARENZYRA_RELEASE_ARCHIVE_ROOT:-$EXPECTED_RELEASE_ARCHIVE_ROOT}"
+prior_release_id=""
+runtime_temp_dir=""
+pinned_override_path=""
+pinned_override_digest=""
+pinned_override_mode=""
+pinned_override_fd_open=0
+pinned_override_validator_args=()
+api_image_id=""
+web_image_id=""
+media_ai_image_id=""
+discord_bot_image_id=""
+schema_change_possible=0
+empty_target_verified=0
+
+cleanup_runtime_files() {
+  if [ "$pinned_override_fd_open" -eq 1 ]; then
+    exec 9<&- 2>/dev/null || true
+    pinned_override_fd_open=0
+  fi
+  if [ -n "$pinned_override_path" ]; then
+    case "$pinned_override_path" in
+      /run/arenzyra-pinned-compose.*)
+        rm -f -- "$pinned_override_path"
+        ;;
+    esac
+    pinned_override_path=""
+  fi
+  if [ -n "$runtime_temp_dir" ]; then
+    case "$runtime_temp_dir" in
+      /run/arenzyra-pre-migration-backup.*)
+        rm -f -- "$runtime_temp_dir/result"
+        rmdir -- "$runtime_temp_dir" 2>/dev/null || true
+        ;;
+    esac
+  fi
+}
+trap cleanup_runtime_files EXIT
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/deploy-production.sh [--discord-bot] [--first-deploy]
+
+Runs the publish configuration check, fail-closed source provenance and
+old-writer migration-safety gates, mandatory disk/service preflight immediately
+before Compose, entitlement/data-impact safety gates, deployment, container
+health convergence, IDP plaintext-zero verification, and public HTTPS
+verification as one chain.
+
+--first-deploy may bypass only the existing-container health portion of the
+preflight. It never bypasses the disk-space or source-provenance gates, and it
+must prove the started PostgreSQL target has zero application relations before
+backup or migration.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --discord-bot) MODE="discord-bot" ;;
+    --first-deploy) FIRST_DEPLOY=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+resolved_root="$(realpath -e -- "$PRODUCTION_ROOT" 2>/dev/null || true)"
+if [ -z "$resolved_root" ]; then
+  printf 'Deployment root does not exist: %s\n' "$PRODUCTION_ROOT" >&2
+  exit 2
+fi
+if [ "$resolved_root" != "$EXPECTED_ROOT" ]; then
+  printf 'Refusing nonstandard production root: %s (expected %s)\n' "$resolved_root" "$EXPECTED_ROOT" >&2
+  exit 2
+fi
+if [ "$RELEASE_ARCHIVE_ROOT" != "$EXPECTED_RELEASE_ARCHIVE_ROOT" ]; then
+  printf 'Refusing nonstandard production release archive root.\n' >&2
+  exit 2
+fi
+if [ "$(id -u)" -ne 0 ]; then
+  printf 'Production deployment must run as root.\n' >&2
+  exit 2
+fi
+account_record="$(getent passwd 0 2>/dev/null || true)"
+IFS=: read -r _ _ _ _ _ account_home _ <<<"$account_record"
+safe_account_home="$(realpath -e -- "${account_home:-/root}" 2>/dev/null || true)"
+ambient_account_home="$(realpath -e -- "${HOME:-$safe_account_home}" 2>/dev/null || true)"
+if [ -z "$safe_account_home" ] || [ ! -d "$safe_account_home" ] || \
+  [ "$ambient_account_home" != "$safe_account_home" ]; then
+  printf 'Production deployment HOME does not match the root account.\n' >&2
+  exit 2
+fi
+
+cd "$resolved_root"
+source scripts/require-local-production-docker.sh
+sanitized_environment=(
+  env -i
+  "PATH=$SAFE_COMMAND_PATH"
+  "HOME=$safe_account_home"
+)
+test -f infra/.env.publish
+test -f infra/docker-compose.publish.yml
+test -f infra/production-api-migration-safety.json
+test -f scripts/production-deploy-preflight.sh
+test -f scripts/production-release-safety-gate.sh
+test -f scripts/verify-production-empty-target.sh
+test -f scripts/verify-production-entitlement-invariants.sh
+test -f scripts/verify-production-idp-encryption.sh
+test -f scripts/production-database-target.cjs
+test -f scripts/verify-production-database-container.sh
+test -f scripts/verify-production-database-roles.sh
+test -f scripts/provision-production-database-roles.sh
+test -f scripts/validate-publish-release-env.cjs
+test -f scripts/validate-release-image-manifest.cjs
+test -f scripts/production-pinned-image-override.cjs
+test -f scripts/verify-production-release-source.cjs
+
+reviewed_env_file="$resolved_root/infra/.env.publish"
+if [ -n "${ARENZYRA_DEPLOY_ENV_FILE:-}" ]; then
+  process_env_file="$(realpath -e -- "$ARENZYRA_DEPLOY_ENV_FILE" 2>/dev/null || true)"
+  if [ "$process_env_file" != "$reviewed_env_file" ]; then
+    printf 'Process environment file differs from reviewed infra/.env.publish.\n' >&2
+    exit 2
+  fi
+fi
+export ARENZYRA_DEPLOY_ENV_FILE="$reviewed_env_file"
+
+reviewed_compose_project="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYRA_DEPLOY_COMPOSE_PROJECT)"
+compose_project="${ARENZYRA_DEPLOY_COMPOSE_PROJECT:-$reviewed_compose_project}"
+if [ "$compose_project" != "$reviewed_compose_project" ]; then
+  printf 'Process Compose project differs from the reviewed production environment.\n' >&2
+  exit 2
+fi
+if ! [[ "$compose_project" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+  printf 'Invalid production Compose project.\n' >&2
+  exit 2
+fi
+export ARENZYRA_DEPLOY_COMPOSE_PROJECT="$compose_project"
+node scripts/production-database-target.cjs --env infra/.env.publish --check
+
+if ! [[ "$LOCK_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$LOCK_TIMEOUT_SECONDS" -gt 300 ]; then
+  printf 'ARENZYRA_DEPLOY_LOCK_TIMEOUT_SECONDS must be 0-300.\n' >&2
+  exit 2
+fi
+if ! [[ "$HEALTH_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || \
+  [ "$HEALTH_TIMEOUT_SECONDS" -lt 30 ] || \
+  [ "$HEALTH_TIMEOUT_SECONDS" -gt 1800 ]; then
+  printf 'ARENZYRA_DEPLOY_HEALTH_TIMEOUT_SECONDS must be 30-1800.\n' >&2
+  exit 2
+fi
+
+verify_lock_directory_safety() {
+  local lock_directory lock_directory_mode lock_directory_owner resolved_lock_directory
+  lock_directory="$(dirname -- "$LOCK_FILE")"
+  if [ -L "$lock_directory" ] || [ ! -d "$lock_directory" ]; then
+    printf 'Production deployment lock directory is unsafe.\n' >&2
+    return 75
+  fi
+  resolved_lock_directory="$(realpath -e -- "$lock_directory" 2>/dev/null || true)"
+  lock_directory_owner="$(stat -c %u -- "$lock_directory")"
+  lock_directory_mode="$(stat -c %a -- "$lock_directory")"
+  if [ "$resolved_lock_directory" != "/run" ] || \
+    [ "$lock_directory_owner" != "0" ] || \
+    ! [[ "$lock_directory_mode" =~ ^[0-7]{3,4}$ ]] || \
+    (( (8#$lock_directory_mode & 8#022) != 0 )); then
+    printf 'Production deployment lock directory ownership or mode is unsafe.\n' >&2
+    return 75
+  fi
+}
+
+verify_lock_file_safety() {
+  local descriptor_identity lock_identity lock_mode lock_owner lock_target
+  if [ -L "$LOCK_FILE" ] || [ ! -f "$LOCK_FILE" ]; then
+    printf 'Production deployment lock path is not a regular non-symlink file.\n' >&2
+    return 75
+  fi
+  lock_target="$(readlink -f "/proc/$$/fd/8" 2>/dev/null || true)"
+  lock_owner="$(stat -Lc %u -- "/proc/$$/fd/8")"
+  lock_mode="$(stat -Lc %a -- "/proc/$$/fd/8")"
+  lock_identity="$(stat -Lc '%d:%i:%h' -- "$LOCK_FILE")"
+  descriptor_identity="$(stat -Lc '%d:%i:%h' -- "/proc/$$/fd/8")"
+  if [ "$lock_target" != "$LOCK_FILE" ] || \
+    [ "$lock_owner" != "0" ] || \
+    ! [[ "$lock_mode" =~ ^[0-7]{3,4}$ ]] || \
+    (( (8#$lock_mode & 8#022) != 0 )) || \
+    [ "$lock_identity" != "$descriptor_identity" ] || \
+    [ "${lock_identity##*:}" != "1" ]; then
+    printf 'Production deployment lock file ownership, mode, or identity is unsafe.\n' >&2
+    return 75
+  fi
+}
+
+verify_lock_directory_safety
+if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
+  if [ -L "$LOCK_FILE" ] || [ ! -f "$LOCK_FILE" ] || \
+    [ "$(stat -c '%u:%h' -- "$LOCK_FILE" 2>/dev/null || true)" != "0:1" ]; then
+    printf 'Production deployment lock path identity or ownership is unsafe.\n' >&2
+    exit 75
+  fi
+  existing_lock_mode="$(stat -c %a -- "$LOCK_FILE")"
+  if ! [[ "$existing_lock_mode" =~ ^[0-7]{3,4}$ ]] || \
+    (( (8#$existing_lock_mode & 8#022) != 0 )); then
+    printf 'Production deployment lock path mode is unsafe.\n' >&2
+    exit 75
+  fi
+fi
+exec 8>"$LOCK_FILE"
+verify_lock_file_safety
+if ! flock -w "$LOCK_TIMEOUT_SECONDS" 8; then
+  printf 'Another full or Discord production deployment holds the deployment lock.\n' >&2
+  exit 75
+fi
+verify_lock_file_safety
+
+validate_release_file() {
+  local source_file="$1"
+  local expected_release="${2:-}"
+  local arguments=(--file "$source_file")
+  if [ -n "$expected_release" ]; then
+    arguments+=(--expected-release "$expected_release")
+  fi
+  "${sanitized_environment[@]}" \
+    node scripts/validate-publish-release-env.cjs "${arguments[@]}" >/dev/null
+}
+
+verify_release_archive_root() {
+  local archive_parent_mode
+  if [ -L /opt ] || [ ! -d /opt ] || \
+    [ "$(realpath -e -- /opt 2>/dev/null || true)" != "/opt" ] || \
+    [ "$(stat -c '%u:%g' -- /opt 2>/dev/null || true)" != "0:0" ]; then
+    printf 'Production release archive parent is not reviewed.\n' >&2
+    return 75
+  fi
+  archive_parent_mode="$(stat -c %a -- /opt)"
+  if ! [[ "$archive_parent_mode" =~ ^[0-7]{3,4}$ ]] || \
+    (( (8#$archive_parent_mode & 8#022) != 0 )); then
+    printf 'Production release archive parent mode is unsafe.\n' >&2
+    return 75
+  fi
+  if [ ! -e "$RELEASE_ARCHIVE_ROOT" ] && [ ! -L "$RELEASE_ARCHIVE_ROOT" ]; then
+    mkdir -m 700 -- "$RELEASE_ARCHIVE_ROOT"
+  fi
+  if [ -L "$RELEASE_ARCHIVE_ROOT" ] || [ ! -d "$RELEASE_ARCHIVE_ROOT" ] || \
+    [ "$(realpath -e -- "$RELEASE_ARCHIVE_ROOT" 2>/dev/null || true)" != "$EXPECTED_RELEASE_ARCHIVE_ROOT" ] || \
+    [ "$(stat -c '%u:%g:%a' -- "$RELEASE_ARCHIVE_ROOT" 2>/dev/null || true)" != "0:0:700" ]; then
+    printf 'Production release archive identity, owner, or mode is not reviewed.\n' >&2
+    return 75
+  fi
+}
+
+verify_archived_release_file() {
+  local archived_file="$1"
+  local expected_release="$2"
+  verify_release_archive_root || return $?
+  if [ -L "$archived_file" ] || [ ! -f "$archived_file" ] || \
+    [ "$(dirname -- "$(realpath -e -- "$archived_file" 2>/dev/null || true)")" != "$RELEASE_ARCHIVE_ROOT" ] || \
+    [ "$(basename -- "$archived_file")" != "$expected_release.env" ] || \
+    [ "$(stat -c '%u:%g:%a:%h' -- "$archived_file" 2>/dev/null || true)" != "0:0:600:1" ]; then
+    printf 'Archived release file identity, owner, mode, or link count is not reviewed.\n' >&2
+    return 75
+  fi
+  validate_release_file "$archived_file" "$expected_release"
+}
+
+archive_release_file() {
+  local source_file="$1"
+  local archived_file release_id temporary_release_file
+  verify_release_archive_root
+  validate_release_file "$source_file"
+  release_id="$("${sanitized_environment[@]}" node scripts/read-dotenv-value.cjs "$source_file" ARENZYRA_RELEASE_ID)"
+  if ! [[ "$release_id" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]]; then
+    printf 'Invalid clean release ID in release metadata.\n' >&2
+    return 75
+  fi
+  archived_file="$RELEASE_ARCHIVE_ROOT/$release_id.env"
+  temporary_release_file="$(
+    mktemp -- "$RELEASE_ARCHIVE_ROOT/.$release_id.release.XXXXXX"
+  )"
+  case "$temporary_release_file" in
+    "$RELEASE_ARCHIVE_ROOT/.$release_id.release."*) ;;
+    *)
+      printf 'Temporary release metadata escaped the reviewed archive.\n' >&2
+      return 75
+      ;;
+  esac
+  if ! install -m 600 -o root -g root -- "$source_file" "$temporary_release_file" || \
+    ! validate_release_file "$temporary_release_file" "$release_id"; then
+    rm -f -- "$temporary_release_file"
+    printf 'Unable to secure the release metadata candidate.\n' >&2
+    return 75
+  fi
+  if [ -e "$archived_file" ] || [ -L "$archived_file" ]; then
+    if ! verify_archived_release_file "$archived_file" "$release_id" || \
+      ! cmp -s -- "$temporary_release_file" "$archived_file"; then
+      rm -f -- "$temporary_release_file"
+      printf 'Archived release metadata differs from the candidate with the same ID.\n' >&2
+      return 75
+    fi
+  elif ! ln -- "$temporary_release_file" "$archived_file"; then
+    if [ ! -e "$archived_file" ] && [ ! -L "$archived_file" ]; then
+      rm -f -- "$temporary_release_file"
+      printf 'Unable to archive release metadata without replacement.\n' >&2
+      return 75
+    fi
+    if ! verify_archived_release_file "$archived_file" "$release_id" || \
+      ! cmp -s -- "$temporary_release_file" "$archived_file"; then
+      rm -f -- "$temporary_release_file"
+      printf 'Concurrent same-ID release metadata is not byte-identical.\n' >&2
+      return 75
+    fi
+  fi
+  rm -f -- "$temporary_release_file"
+  verify_archived_release_file "$archived_file" "$release_id"
+  printf '%s\n' "$release_id"
+}
+
+verify_archived_release_image_manifest() {
+  local manifest_file="$1"
+  local release_environment="$2"
+  local expected_release="$3"
+  local service="$4"
+  local expected_basename
+  case "$service" in
+    api|web|media-ai|discord-bot) ;;
+    *)
+      printf 'Unsupported release image-manifest service.\n' >&2
+      return 75
+      ;;
+  esac
+  expected_basename="$expected_release.${service}-image.json"
+  verify_release_archive_root || return $?
+  if [ "$release_environment" != "$RELEASE_ARCHIVE_ROOT/$expected_release.env" ] || \
+    [ -L "$manifest_file" ] || [ ! -f "$manifest_file" ] || \
+    [ "$(dirname -- "$(realpath -e -- "$manifest_file" 2>/dev/null || true)")" != "$RELEASE_ARCHIVE_ROOT" ] || \
+    [ "$(basename -- "$manifest_file")" != "$expected_basename" ] || \
+    [ "$(stat -c '%u:%g:%a:%h' -- "$manifest_file" 2>/dev/null || true)" != "0:0:600:1" ]; then
+    printf 'Archived release image manifest identity, owner, mode, or link count is not reviewed.\n' >&2
+    return 75
+  fi
+  verify_archived_release_file "$release_environment" "$expected_release"
+  "${sanitized_environment[@]}" \
+    node scripts/validate-release-image-manifest.cjs \
+      --file "$manifest_file" \
+      --release-env "$release_environment" \
+      --expected-release "$expected_release" \
+      --service "$service" >/dev/null
+}
+
+archive_built_image_manifest() {
+  local service="$1"
+  local image_repository image_reference archived_manifest temporary_manifest
+  case "$service" in
+    api) image_repository="arenzyra-api" ;;
+    web) image_repository="arenzyra-web" ;;
+    media-ai) image_repository="arenzyra-media-ai" ;;
+    discord-bot) image_repository="arenzyra-discord-bot" ;;
+    *)
+      printf 'Unsupported built image-manifest service.\n' >&2
+      return 75
+      ;;
+  esac
+  verify_release_archive_root
+  verify_archived_release_file "$release_env" "$new_release_id"
+  image_reference="$image_repository:$new_release_id"
+  archived_manifest="$RELEASE_ARCHIVE_ROOT/$new_release_id.${service}-image.json"
+  temporary_manifest="$(
+    mktemp -- "$RELEASE_ARCHIVE_ROOT/.$new_release_id.${service}.image.XXXXXX"
+  )"
+  case "$temporary_manifest" in
+    "$RELEASE_ARCHIVE_ROOT/.$new_release_id.${service}.image."*) ;;
+    *)
+      printf 'Temporary release image manifest escaped the reviewed archive.\n' >&2
+      return 75
+      ;;
+  esac
+
+  if ! docker image inspect "$image_reference" |
+    "${sanitized_environment[@]}" \
+      node scripts/validate-release-image-manifest.cjs \
+        --from-docker-inspect \
+        --release-env "$release_env" \
+        --expected-release "$new_release_id" \
+        --service "$service" > "$temporary_manifest"; then
+    rm -f -- "$temporary_manifest"
+    printf 'Built image identity does not match the archived release.\n' >&2
+    return 75
+  fi
+  if ! chmod 600 -- "$temporary_manifest" || \
+    ! chown root:root -- "$temporary_manifest"; then
+    rm -f -- "$temporary_manifest"
+    printf 'Unable to secure the release image manifest candidate.\n' >&2
+    return 75
+  fi
+  if ! "${sanitized_environment[@]}" \
+    node scripts/validate-release-image-manifest.cjs \
+      --file "$temporary_manifest" \
+      --release-env "$release_env" \
+      --expected-release "$new_release_id" \
+      --service "$service" >/dev/null; then
+    rm -f -- "$temporary_manifest"
+    return 75
+  fi
+
+  if [ -e "$archived_manifest" ] || [ -L "$archived_manifest" ]; then
+    if ! verify_archived_release_image_manifest \
+      "$archived_manifest" "$release_env" "$new_release_id" "$service" || \
+      ! cmp -s -- "$temporary_manifest" "$archived_manifest"; then
+      rm -f -- "$temporary_manifest"
+      printf 'Archived image manifest differs from the built image with the same release ID.\n' >&2
+      return 75
+    fi
+  elif ! ln -- "$temporary_manifest" "$archived_manifest"; then
+    # Never replace a same-ID path. A root-only concurrent creator is accepted
+    # only when its completed manifest validates and is byte-for-byte identical.
+    if [ ! -e "$archived_manifest" ] && [ ! -L "$archived_manifest" ]; then
+      rm -f -- "$temporary_manifest"
+      printf 'Unable to archive the release image manifest.\n' >&2
+      return 75
+    fi
+    if ! verify_archived_release_image_manifest \
+      "$archived_manifest" "$release_env" "$new_release_id" "$service" || \
+      ! cmp -s -- "$temporary_manifest" "$archived_manifest"; then
+      rm -f -- "$temporary_manifest"
+      printf 'Concurrent same-ID image manifest is not byte-identical.\n' >&2
+      return 75
+    fi
+  fi
+  rm -f -- "$temporary_manifest"
+  verify_archived_release_image_manifest \
+    "$archived_manifest" "$release_env" "$new_release_id" "$service"
+  printf 'RELEASE IMAGE MANIFEST VERIFIED service=%s release=%s path=%s\n' \
+    "$service" "$new_release_id" "$archived_manifest"
+}
+
+read_archived_release_image_id() {
+  local service="$1"
+  local manifest_file="$RELEASE_ARCHIVE_ROOT/$new_release_id.${service}-image.json"
+  verify_archived_release_image_manifest \
+    "$manifest_file" "$release_env" "$new_release_id" "$service"
+  "${sanitized_environment[@]}" \
+    node scripts/validate-release-image-manifest.cjs \
+      --file "$manifest_file" \
+      --release-env "$release_env" \
+      --expected-release "$new_release_id" \
+      --service "$service" \
+      --print-image-id
+}
+
+verify_clean_release_source() {
+  verify_archived_release_file "$release_env" "$new_release_id"
+  "${sanitized_environment[@]}" \
+    node scripts/verify-production-release-source.cjs \
+      --release-env "$release_env"
+}
+
+attest_pinned_compose_override() {
+  local descriptor_identity descriptor_target current_digest path_identity
+  if [ "$pinned_override_fd_open" -ne 1 ] || \
+    [ -z "$pinned_override_path" ] || \
+    [ -z "$pinned_override_digest" ] || \
+    [ -L "$pinned_override_path" ] || [ ! -f "$pinned_override_path" ] || \
+    [ "$(dirname -- "$(realpath -e -- "$pinned_override_path" 2>/dev/null || true)")" != "/run" ] || \
+    [ "$(stat -c '%u:%g:%a:%h' -- "$pinned_override_path" 2>/dev/null || true)" != "0:0:600:1" ]; then
+    printf 'Pinned Compose override path, owner, mode, or link count is unsafe.\n' >&2
+    return 75
+  fi
+  case "$pinned_override_path" in
+    "/run/arenzyra-pinned-compose.$new_release_id.$pinned_override_mode."*) ;;
+    *)
+      printf 'Pinned Compose override path is not bound to this release.\n' >&2
+      return 75
+      ;;
+  esac
+  descriptor_target="$(readlink -f "/proc/$$/fd/9" 2>/dev/null || true)"
+  path_identity="$(stat -Lc '%d:%i:%h' -- "$pinned_override_path" 2>/dev/null || true)"
+  descriptor_identity="$(stat -Lc '%d:%i:%h' -- "/proc/$$/fd/9" 2>/dev/null || true)"
+  if [ "$descriptor_target" != "$pinned_override_path" ] || \
+    [ "$path_identity" != "$descriptor_identity" ] || \
+    [ "${descriptor_identity##*:}" != "1" ]; then
+    printf 'Pinned Compose override descriptor identity is unsafe.\n' >&2
+    return 75
+  fi
+  current_digest="$(
+    "${sanitized_environment[@]}" \
+      node scripts/production-pinned-image-override.cjs \
+        "${pinned_override_validator_args[@]}" \
+        --validate-stdin --print-sha256 < "/proc/$$/fd/9"
+  )"
+  if ! [[ "$current_digest" =~ ^[a-f0-9]{64}$ ]] || \
+    [ "$current_digest" != "$pinned_override_digest" ] || \
+    [ "$(stat -Lc '%d:%i:%h' -- "$pinned_override_path" 2>/dev/null || true)" != "$descriptor_identity" ]; then
+    printf 'Pinned Compose override content or identity changed.\n' >&2
+    return 75
+  fi
+}
+
+create_pinned_compose_override() {
+  local mode="$1"
+  if [ "$pinned_override_fd_open" -ne 0 ] || [ -n "$pinned_override_path" ]; then
+    printf 'Pinned Compose override was already created.\n' >&2
+    return 75
+  fi
+  pinned_override_mode="$mode"
+  case "$mode" in
+    full)
+      pinned_override_validator_args=(
+        --mode full
+        --api-image-id "$api_image_id"
+        --web-image-id "$web_image_id"
+        --media-ai-image-id "$media_ai_image_id"
+      )
+      ;;
+    discord-bot)
+      pinned_override_validator_args=(
+        --mode discord-bot
+        --discord-bot-image-id "$discord_bot_image_id"
+      )
+      ;;
+    *)
+      printf 'Unsupported pinned Compose override mode.\n' >&2
+      return 75
+      ;;
+  esac
+  pinned_override_path="$(
+    mktemp -- "/run/arenzyra-pinned-compose.$new_release_id.$mode.XXXXXX"
+  )"
+  case "$pinned_override_path" in
+    "/run/arenzyra-pinned-compose.$new_release_id.$mode."*) ;;
+    *)
+      printf 'Pinned Compose override escaped /run.\n' >&2
+      return 75
+      ;;
+  esac
+  if ! "${sanitized_environment[@]}" \
+    node scripts/production-pinned-image-override.cjs \
+      "${pinned_override_validator_args[@]}" --create > "$pinned_override_path" || \
+    ! chmod 600 -- "$pinned_override_path" || \
+    ! chown root:root -- "$pinned_override_path"; then
+    printf 'Unable to create the pinned Compose override.\n' >&2
+    return 75
+  fi
+  pinned_override_digest="$(
+    "${sanitized_environment[@]}" \
+      node scripts/production-pinned-image-override.cjs \
+        "${pinned_override_validator_args[@]}" \
+        --validate-stdin --print-sha256 < "$pinned_override_path"
+  )"
+  if ! [[ "$pinned_override_digest" =~ ^[a-f0-9]{64}$ ]]; then
+    printf 'Pinned Compose override digest is invalid.\n' >&2
+    return 75
+  fi
+  exec 9<"$pinned_override_path"
+  pinned_override_fd_open=1
+  attest_pinned_compose_override
+  compose+=( -f "/proc/$$/fd/9" )
+}
+
+verify_running_release_images() {
+  local actual_image_id container_id expected_image_id service
+  local -a runtime_services
+  case "$pinned_override_mode" in
+    full) runtime_services=(api web media-ai) ;;
+    discord-bot) runtime_services=(discord-bot) ;;
+    *) return 75 ;;
+  esac
+  attest_pinned_compose_override
+  for service in "${runtime_services[@]}"; do
+    case "$service" in
+      api) expected_image_id="$api_image_id" ;;
+      web) expected_image_id="$web_image_id" ;;
+      media-ai) expected_image_id="$media_ai_image_id" ;;
+      discord-bot) expected_image_id="$discord_bot_image_id" ;;
+    esac
+    if [ "$service" = "discord-bot" ]; then
+      container_id="$("${compose[@]}" --profile discord-bot ps -q "$service")"
+    else
+      container_id="$("${compose[@]}" ps -q "$service")"
+    fi
+    if ! [[ "$container_id" =~ ^[a-f0-9]{12,64}$ ]]; then
+      printf 'Running release service has ambiguous or missing container identity: %s\n' "$service" >&2
+      return 75
+    fi
+    actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
+    if [ "$actual_image_id" != "$expected_image_id" ]; then
+      printf 'Running release service image differs from its archived image ID: %s\n' "$service" >&2
+      return 75
+    fi
+  done
+}
+
+read_release_pointer() {
+  local pointer_name="$1"
+  local pointer_file="$RELEASE_ARCHIVE_ROOT/$pointer_name"
+  local -a pointer_lines
+  verify_release_archive_root || return $?
+  if [ -L "$pointer_file" ] || [ ! -f "$pointer_file" ] || \
+    [ "$(stat -c '%u:%g:%a:%h' -- "$pointer_file" 2>/dev/null || true)" != "0:0:600:1" ]; then
+    printf 'Release pointer identity, owner, mode, or link count is not reviewed.\n' >&2
+    return 75
+  fi
+  mapfile -t pointer_lines < "$pointer_file"
+  if [ "${#pointer_lines[@]}" -ne 1 ] || \
+    ! [[ "${pointer_lines[0]}" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]]; then
+    printf 'Release pointer content is invalid.\n' >&2
+    return 75
+  fi
+  verify_archived_release_file \
+    "$RELEASE_ARCHIVE_ROOT/${pointer_lines[0]}.env" "${pointer_lines[0]}"
+  printf '%s\n' "${pointer_lines[0]}"
+}
+
+write_release_pointer() {
+  local pointer_name="$1"
+  local release_id="$2"
+  local temporary_pointer
+  [[ "$pointer_name" =~ ^(CURRENT|PREVIOUS)$ ]] || return 75
+  verify_release_archive_root || return $?
+  verify_archived_release_file "$RELEASE_ARCHIVE_ROOT/$release_id.env" "$release_id"
+  temporary_pointer="$(mktemp -- "$RELEASE_ARCHIVE_ROOT/.${pointer_name}.XXXXXX")"
+  printf '%s\n' "$release_id" > "$temporary_pointer"
+  chmod 600 -- "$temporary_pointer"
+  chown root:root -- "$temporary_pointer"
+  mv -T -- "$temporary_pointer" "$RELEASE_ARCHIVE_ROOT/$pointer_name"
+}
+
+deploy_failed() {
+  local status="$?"
+  printf '\nDEPLOYMENT FAILED (status=%s). Database migrations are forward-only and were not rolled back.\n' "$status" >&2
+  printf 'Review infra/PUBLISH.md and infra/BACKUP_RESTORE.md before recovery.\n' >&2
+  if [ "$schema_change_possible" -eq 1 ]; then
+    printf 'Schema changes may have committed. Do not start an older API image or perform an image-only rollback.\n' >&2
+    printf 'Keep incompatible old writers stopped and use a reviewed forward-recovery plan.\n' >&2
+  elif [ "$MODE" = "discord-bot" ] && [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    printf 'Discord-bot-only rollback candidate: bash scripts/rollback-production-images.sh --release %q --discord-bot\n' \
+      "$prior_release_id" >&2
+  else
+    printf 'The API schema was not entered by this run; inspect current service state before any recovery action.\n' >&2
+  fi
+  exit "$status"
+}
+
+node scripts/preflight-publish.cjs --env infra/.env.publish
+# Before release metadata, image builds, backups, migrations, or service
+# changes, prove that the current database has no pending contract migration
+# that an existing API writer cannot survive. A first deploy is exempt only
+# after the standard guard proves the Compose project has no managed services.
+if [ "$MODE" = "full" ]; then
+  if [ "$FIRST_DEPLOY" -eq 1 ]; then
+    bash scripts/production-deploy-preflight.sh --skip-health
+    bash scripts/production-release-safety-gate.sh --first-deploy
+  else
+    bash scripts/production-deploy-preflight.sh
+    bash scripts/production-release-safety-gate.sh
+    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+      bash scripts/verify-production-database-roles.sh
+    # Aggregate-only and read-only: no organization identifiers or mutable
+    # reconciliation are part of a routine release.
+    bash scripts/verify-production-entitlement-invariants.sh
+    # If IDP storage has not been migrated or any legacy plaintext remains,
+    # routine deployment must not build or mutate first and fail only afterward.
+    # Controlled maintenance keeps old writers stopped for the manual backfill.
+    bash scripts/verify-production-idp-encryption.sh
+  fi
+fi
+
+verify_release_archive_root
+if [ -e "$RELEASE_ARCHIVE_ROOT/CURRENT" ] || [ -L "$RELEASE_ARCHIVE_ROOT/CURRENT" ]; then
+  prior_release_id="$(read_release_pointer CURRENT)"
+elif [ -f infra/.env.release ]; then
+  if validate_release_file infra/.env.release >/dev/null 2>&1; then
+    prior_release_id="$(archive_release_file infra/.env.release)"
+  else
+    printf 'Existing unverified release metadata is not eligible for rollback and was not archived.\n' >&2
+  fi
+fi
+
+trap deploy_failed ERR
+# This fails closed for dirty, missing, or unavailable root/API/web Git
+# provenance. The emergency override is intentionally not exposed here.
+"${sanitized_environment[@]}" \
+  node scripts/verify-production-release-source.cjs --check-checkout-only
+"${sanitized_environment[@]}" node scripts/create-publish-release-metadata.cjs
+new_release_id="$(archive_release_file infra/.env.release)"
+release_env="$RELEASE_ARCHIVE_ROOT/$new_release_id.env"
+verify_archived_release_file "$release_env" "$new_release_id"
+verify_clean_release_source
+
+compose=(
+  "${sanitized_environment[@]}"
+  "DOCKER_HOST=$DOCKER_HOST"
+  docker compose
+  -p "$compose_project"
+  --env-file infra/.env.publish
+  --env-file "$release_env"
+  -f infra/docker-compose.publish.yml
+)
+if ! "${compose[@]}" --profile migration config --format json \
+  | node scripts/production-database-target.cjs \
+      --env infra/.env.publish --assert-compose-json; then
+  printf 'DEPLOYMENT BLOCKED: resolved Compose database bindings differ from the reviewed environment.\n' >&2
+  exit 75
+fi
+guard_args=()
+if [ "$FIRST_DEPLOY" -eq 1 ]; then
+  guard_args+=(--skip-health)
+fi
+
+wait_for_health() {
+  local services=("$@")
+  local deadline=$((SECONDS + 10#$HEALTH_TIMEOUT_SECONDS))
+  while true; do
+    pending=()
+    for service in "${services[@]}"; do
+      container_id="$("${compose[@]}" --profile discord-bot ps -q "$service")"
+      if [ -z "$container_id" ]; then
+        pending+=("${service}:missing")
+        continue
+      fi
+      state="$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}not-configured{{end}}' "$container_id")"
+      IFS='|' read -r status health <<<"$state"
+      if [ "$status" != "running" ] || [ "$health" != "healthy" ]; then
+        pending+=("${service}:${status}/${health}")
+      fi
+    done
+    [ "${#pending[@]}" -eq 0 ] && return 0
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      printf 'Deployment health convergence failed: %s\n' "${pending[*]}" >&2
+      "${compose[@]}" --profile discord-bot ps >&2 || true
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+create_pre_migration_backup() {
+  local backup_start_epoch backup_root backup_id backup_dir resolved_backup_dir
+  local marker_epoch result_file
+  local -a backup_result backup_environment
+
+  runtime_temp_dir="$(mktemp -d /run/arenzyra-pre-migration-backup.XXXXXX)"
+  chmod 700 "$runtime_temp_dir"
+  result_file="$runtime_temp_dir/result"
+  backup_start_epoch="$(date +%s)"
+  backup_environment=(
+    "ARENZYRA_BACKUP_ENV_FILE=$resolved_root/infra/.env.publish"
+    "ARENZYRA_DEPLOY_COMPOSE_PROJECT=$compose_project"
+    "ARENZYRA_BACKUP_REASON=pre-migration:$new_release_id"
+    "ARENZYRA_BACKUP_RESULT_FILE=$result_file"
+    "ARENZYRA_BACKUP_REQUIRE_OFFSITE=1"
+    "ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES=0"
+  )
+  if [ "$FIRST_DEPLOY" -eq 1 ]; then
+    # A genuinely empty first deployment has no upload/storage volumes yet.
+    # Its PostgreSQL recovery point is still mandatory and encrypted.
+    backup_environment[${#backup_environment[@]}-1]="ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES=1"
+  fi
+
+  env "${backup_environment[@]}" bash scripts/production-backup.sh
+  test -f "$result_file"
+  mapfile -t backup_result < "$result_file"
+  if [ "${#backup_result[@]}" -ne 2 ]; then
+    printf 'Pre-migration backup returned an invalid result.\n' >&2
+    return 1
+  fi
+  backup_id="${backup_result[0]}"
+  backup_dir="${backup_result[1]}"
+  if ! [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]]; then
+    printf 'Pre-migration backup returned an invalid backup ID: %s\n' "$backup_id" >&2
+    return 1
+  fi
+
+  backup_root="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYRA_BACKUP_ROOT)"
+  backup_root="${backup_root:-/opt/arenzyra-backups}"
+  backup_root="$(realpath -e -- "$backup_root")"
+  resolved_backup_dir="$(realpath -e -- "$backup_dir")"
+  if [ "$(dirname -- "$resolved_backup_dir")" != "$backup_root" ] || \
+    [ "$(basename -- "$resolved_backup_dir")" != "$backup_id" ]; then
+    printf 'Pre-migration backup escaped its configured root: %s\n' "$resolved_backup_dir" >&2
+    return 1
+  fi
+  for artifact in BACKUP_COMPLETE database.dump.age database-globals.sql.age metadata.txt.age manifest.sha256.age; do
+    if [ ! -s "$resolved_backup_dir/$artifact" ]; then
+      printf 'Pre-migration backup artifact is missing or empty: %s\n' "$artifact" >&2
+      return 1
+    fi
+  done
+  marker_epoch="$(stat -c %Y -- "$resolved_backup_dir/BACKUP_COMPLETE")"
+  if ! [[ "$marker_epoch" =~ ^[0-9]+$ ]] || [ "$marker_epoch" -lt "$backup_start_epoch" ]; then
+    printf 'Pre-migration backup completion marker is stale.\n' >&2
+    return 1
+  fi
+
+  printf 'PRE-MIGRATION BACKUP VERIFIED id=%s path=%s\n' "$backup_id" "$resolved_backup_dir"
+  rm -f -- "$result_file"
+  rmdir -- "$runtime_temp_dir"
+  runtime_temp_dir=""
+}
+
+if [ "$MODE" = "discord-bot" ]; then
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" --profile discord-bot build discord-bot
+  verify_clean_release_source
+  archive_built_image_manifest discord-bot
+  discord_bot_image_id="$(read_archived_release_image_id discord-bot)"
+  create_pinned_compose_override discord-bot
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  "${compose[@]}" --profile discord-bot up --no-build -d --pull never discord-bot
+  services=(discord-bot)
+else
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" build api media-ai web
+  verify_clean_release_source
+  archive_built_image_manifest api
+  archive_built_image_manifest web
+  archive_built_image_manifest media-ai
+  api_image_id="$(read_archived_release_image_id api)"
+  web_image_id="$(read_archived_release_image_id web)"
+  media_ai_image_id="$(read_archived_release_image_id media-ai)"
+  create_pinned_compose_override full
+  if [ "$FIRST_DEPLOY" -eq 1 ]; then
+    bash scripts/production-deploy-preflight.sh --skip-health
+    attest_pinned_compose_override
+    "${compose[@]}" up --no-build -d --pull never postgres redis
+    wait_for_health postgres redis
+    # --first-deploy proves only that there were no managed old writers. An
+    # existing volume or pre-populated target must still fail closed here.
+    bash scripts/verify-production-empty-target.sh
+    empty_target_verified=1
+    printf 'ENTITLEMENT INVARIANT GATE SKIPPED verified_empty_target=1\n'
+    # The empty-target proof must precede this first mutation. The child verifies
+    # that it inherited this deployment's lock, provisions only the reviewed
+    # least-privilege roles, and proves all four credentials reach this target.
+    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+      bash scripts/provision-production-database-roles.sh \
+        --env infra/.env.publish --apply --first-deploy-create-only
+    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+      ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY=1 \
+      bash scripts/verify-production-database-roles.sh
+    guard_args=()
+  fi
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  if [ "$FIRST_DEPLOY" -eq 1 ] && [ "$empty_target_verified" -ne 1 ]; then
+    printf 'DEPLOYMENT BLOCKED: first deployment has no verified empty database target.\n' >&2
+    exit 75
+  fi
+  create_pre_migration_backup
+  # Backup creation can consume enough root-disk capacity to invalidate the
+  # preceding guard, so the mandatory preflight is repeated immediately before
+  # the first schema mutation.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  if [ "$FIRST_DEPLOY" -ne 1 ]; then
+    bash scripts/verify-production-entitlement-invariants.sh
+    # The entitlement query is read-only but can take time; repeat the required
+    # disk/service preflight literally immediately before schema mutation.
+    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  fi
+  schema_change_possible=1
+  attest_pinned_compose_override
+  "${compose[@]}" --profile migration run --rm --no-deps --pull never api-migrate
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  "${compose[@]}" --profile migration run --rm --no-deps --pull never studio-migrate
+  # Reconcile explicit runtime grants only after both migration owners have
+  # created their objects. Ownership drift and runtime ledger access fail shut.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/provision-production-database-roles.sh \
+      --env infra/.env.publish --apply
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/verify-production-database-roles.sh
+  if [ "$FIRST_DEPLOY" -ne 1 ]; then
+    bash scripts/verify-production-entitlement-invariants.sh
+  fi
+  # Preserve the literal immediate-operation guard after all grant and
+  # entitlement checks, including on a first deployment.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  "${compose[@]}" up --no-build -d --pull never
+  services=(proxy postgres redis api media-ai web)
+fi
+
+verify_running_release_images
+wait_for_health "${services[@]}"
+
+"${compose[@]}" --profile discord-bot ps
+if [ "$MODE" = "full" ]; then
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/verify-production-database-roles.sh
+  bash scripts/verify-production-entitlement-invariants.sh
+  # Defense in depth against a writer or operator reintroducing plaintext after
+  # the pre-build check. No risky backfill is hidden in deployment.
+  bash scripts/verify-production-idp-encryption.sh
+fi
+node scripts/verify-publish.cjs --env infra/.env.publish
+verify_running_release_images
+if [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "$prior_release_id" != "$new_release_id" ]; then
+  write_release_pointer PREVIOUS "$prior_release_id"
+fi
+write_release_pointer CURRENT "$new_release_id"
+trap - ERR
+cleanup_runtime_files
+trap - EXIT
+printf 'DEPLOYMENT VERIFIED mode=%s release=%s\n' "$MODE" "$new_release_id"

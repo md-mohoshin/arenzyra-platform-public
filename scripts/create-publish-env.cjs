@@ -32,7 +32,9 @@ function line(key, value) {
 function databaseUrl(user, password, database) {
   return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(
     password,
-  )}@postgres:5432/${encodeURIComponent(database)}?schema=public`;
+  )}@postgres:5432/${encodeURIComponent(
+    database,
+  )}?schema=public&options=-c%20search_path%3Dpublic`;
 }
 
 function main() {
@@ -43,17 +45,25 @@ function main() {
     return;
   }
 
-  const outPath = path.resolve(repoRoot, readFlag("--out", "infra/.env.publish"));
+  const outPath = path.resolve(
+    repoRoot,
+    readFlag("--out", "infra/.env.publish"),
+  );
   const force = hasFlag("--force");
   const webHost = readFlag("--web-host", "arenzyra.com");
   const apiHost = readFlag("--api-host", "api.arenzyra.com");
   const acmeEmail = readFlag("--email", "ops@arenzyra.com");
-  const postgresUser = readFlag("--postgres-user", "arenzyra");
+  const postgresUser = readFlag("--postgres-user", "arenzyra_admin");
   const postgresDb = readFlag("--postgres-db", "pubg_prod");
   const postgresPassword = secret(24);
-  const superadminPassword = secret(32);
-  const operatorPassword = secret(32);
-  const platformAdminPassword = secret(32);
+  const apiRuntimePassword = secret(24);
+  const apiMigrationPassword = secret(24);
+  const studioRuntimePassword = secret(24);
+  const studioMigrationPassword = secret(24);
+  const maintenanceReadPassword = secret(24);
+  const idpMaintenancePassword = secret(24);
+  const youtubeMaintenancePassword = secret(24);
+  const apiServiceToken = secret(32);
   const webOrigin = `https://${webHost}`;
   const apiOrigin = `https://${apiHost}`;
 
@@ -77,22 +87,62 @@ function main() {
     line("POSTGRES_USER", postgresUser),
     line("POSTGRES_PASSWORD", postgresPassword),
     line("POSTGRES_DB", postgresDb),
-    line("DATABASE_URL", databaseUrl(postgresUser, postgresPassword, postgresDb)),
-    line("STUDIO_DATABASE_URL", ""),
+    line(
+      "DATABASE_URL",
+      databaseUrl("arenzyra_api_runtime", apiRuntimePassword, postgresDb),
+    ),
+    line(
+      "MIGRATION_DATABASE_URL",
+      databaseUrl("arenzyra_api_migrator", apiMigrationPassword, postgresDb),
+    ),
+    line(
+      "STUDIO_DATABASE_URL",
+      databaseUrl("arenzyra_studio_runtime", studioRuntimePassword, postgresDb),
+    ),
+    line(
+      "STUDIO_MIGRATION_DATABASE_URL",
+      databaseUrl(
+        "arenzyra_studio_migrator",
+        studioMigrationPassword,
+        postgresDb,
+      ),
+    ),
+    line(
+      "MAINTENANCE_READ_DATABASE_URL",
+      databaseUrl(
+        "arenzyra_maintenance_read",
+        maintenanceReadPassword,
+        postgresDb,
+      ),
+    ),
+    line(
+      "IDP_MAINTENANCE_DATABASE_URL",
+      databaseUrl(
+        "arenzyra_idp_maintenance",
+        idpMaintenancePassword,
+        postgresDb,
+      ),
+    ),
+    line(
+      "YOUTUBE_MAINTENANCE_DATABASE_URL",
+      databaseUrl(
+        "arenzyra_youtube_maintenance",
+        youtubeMaintenancePassword,
+        postgresDb,
+      ),
+    ),
     line("STUDIO_DATABASE_SSL", ""),
     line("STUDIO_DATABASE_POOL_SIZE", ""),
     "",
     line("JWT_SECRET", secret(48)),
+    line("IDP_CREDENTIAL_ENCRYPTION_KEY", secret(48)),
+    line("SUPERADMIN_MFA_REQUIRED", "true"),
+    line("SUPERADMIN_MFA_ENCRYPTION_KEY", secret(48)),
+    line("SUPERADMIN_MFA_RECOVERY_PEPPER", secret(48)),
+    line("HEALTHCHECK_TOKEN", secret(32)),
+    line("STUDIO_MEDIA_SIGNING_SECRET", secret(32)),
     line("COLLECTOR_SECRET", secret(48)),
     line("PCOB_SECRET", secret(48)),
-    "",
-    line("SUPERADMIN_EMAIL", `superadmin@${webHost}`),
-    line("SUPERADMIN_PASSWORD", superadminPassword),
-    line("OP_EMAIL", `operator@${webHost}`),
-    line("OP_PASSWORD", operatorPassword),
-    "",
-    line("PLATFORM_ADMIN_EMAIL", `platform-admin@${webHost}`),
-    line("PLATFORM_ADMIN_PASSWORD", platformAdminPassword),
     "",
     line("WEB_APP_ORIGIN", webOrigin),
     line("FRONTEND_ORIGIN", webOrigin),
@@ -102,23 +152,35 @@ function main() {
     line("API_PUBLIC_URL", apiOrigin),
     line("ASSET_BASE_URL", apiOrigin),
     line("TRUST_PROXY", "true"),
+    line("ARENZYRA_DOCKER_SUBNET", "172.30.50.0/24"),
+    line("ARENZYRA_PROXY_IP", "172.30.50.2"),
+    line("TRUSTED_PROXY_IPS", "172.30.50.2"),
     "",
-    line("ARENZYRA_API_SERVICE_TOKEN_SHA256", ""),
+    line(
+      "ARENZYRA_API_SERVICE_TOKEN_SHA256",
+      crypto.createHash("sha256").update(apiServiceToken).digest("hex"),
+    ),
+    line("ARENZYRA_API_SERVICE_TOKEN", apiServiceToken),
     line("STUDIO_QA_SERVICE_TOKEN_SHA256", ""),
     line("ARENZYRA_API_SERVICE_ORGANIZATION_ID", ""),
     line("ARENZYRA_API_SERVICE_USER_ID", ""),
     line("ARENZYRA_API_SERVICE_USER_EMAIL", "discord-bot@arenzyra.local"),
     "",
     line("DISCORD_CLIENT_ID", ""),
+    line("DISCORD_GUILD_ID", ""),
     line("DISCORD_REDIRECT_URI", `${webOrigin}/organizer/discord/callback`),
     line("DISCORD_INSTALL_STATE_SECRET", ""),
     line("DISCORD_BOT_TOKEN", ""),
+    line("ARENZYRA_DISCORD_BOT_INSTANCE", "production"),
     "",
     line("YOUTUBE_CLIENT_ID", ""),
     line("YOUTUBE_CLIENT_SECRET", ""),
     line("YOUTUBE_REDIRECT_URI", `${webOrigin}/organizer/youtube/callback`),
     line("YOUTUBE_STATE_SECRET", ""),
-    line("YOUTUBE_TOKEN_ENCRYPTION_KEY", ""),
+    line("YOUTUBE_TOKEN_ENCRYPTION_KEY_ID", `yt_${secret(9)}`),
+    line("YOUTUBE_TOKEN_ENCRYPTION_KEY", secret(48)),
+    line("YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS", "{}"),
+    line("YOUTUBE_TOKEN_ENCRYPTION_LEGACY_V1_KEY", ""),
     "",
     line("STUDIO_MEDIA_AI_URL", ""),
     line("STUDIO_MEDIA_AI_TIMEOUT_MS", "60000"),
@@ -136,17 +198,37 @@ function main() {
     line("MATCH_STATE_BASE", "http://host.docker.internal:4000"),
     line("LIVE_SYNC_RESULTS_WRITE_ENABLED", ""),
     line("MEDIA_AI_URL", "http://media-ai:5055"),
+    line("ARENZYRA_MEDIA_ALLOWED_ORIGINS", ""),
+    "",
+    "# Required before deployment: public age recipient; private identity stays off-host.",
+    line("ARENZYRA_BACKUP_AGE_RECIPIENT", ""),
+    line("ARENZYRA_BACKUP_ROOT", "/opt/arenzyra-backups"),
+    line("ARENZYRA_BACKUP_RCLONE_REMOTE", ""),
+    line(
+      "ARENZYRA_BACKUP_HELPER_IMAGE",
+      "postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+    ),
+    line("ARENZYRA_DEPLOY_COMPOSE_PROJECT", "infra"),
     line("OPENAI_API_KEY", ""),
     line("OPENAI_VISION_MODEL", "gpt-4.1-mini"),
     line("OPENAI_VISION_MAX_IMAGE_EDGE", "2048"),
     "",
   ].join("\n");
 
-  fs.writeFileSync(outPath, content, { encoding: "utf8", flag: "w" });
+  fs.writeFileSync(outPath, content, {
+    encoding: "utf8",
+    flag: "w",
+    mode: 0o600,
+  });
+  fs.chmodSync(outPath, 0o600);
 
   console.log(`[publish-env] wrote ${path.relative(repoRoot, outPath)}`);
-  console.log("[publish-env] generated database, API, operator, and admin secrets.");
-  console.log("[publish-env] review optional Discord, YouTube, SMTP, OpenAI, and Studio remove.bg values before deploy.");
+  console.log(
+    "[publish-env] generated distinct database-role URLs and application secrets.",
+  );
+  console.log(
+    "[publish-env] provision the generated database roles, add the age recipient, and review integration values before deploy.",
+  );
 }
 
 main();

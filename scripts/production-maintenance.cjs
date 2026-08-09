@@ -37,6 +37,7 @@ const criticalPercent = Number(process.env.ARENZYRA_DISK_CRITICAL_PERCENT || 90)
 const backupDir = process.env.ARENZYRA_BACKUP_DIR || '/opt/arenzyra-backups';
 const backupRetentionDays = Number(process.env.ARENZYRA_BACKUP_RETENTION_DAYS || 30);
 const dockerBuilderKeepStorage = process.env.ARENZYRA_DOCKER_BUILDER_KEEP_STORAGE || '15GB';
+const allowGlobalBuilderPrune = process.env.ARENZYRA_MAINTENANCE_ALLOW_GLOBAL_BUILDER_PRUNE === '1';
 const alertWebhookUrl = process.env.ARENZYRA_DISK_ALERT_WEBHOOK_URL || process.env.DISK_ALERT_WEBHOOK_URL || '';
 
 function log(message) {
@@ -44,8 +45,10 @@ function log(message) {
 }
 
 function commandExists(command) {
-  const probe = process.platform === 'win32' ? 'where.exe' : 'command';
-  const probeArgs = process.platform === 'win32' ? [command] : ['-v', command];
+  const probe = process.platform === 'win32' ? 'where.exe' : 'sh';
+  const probeArgs = process.platform === 'win32'
+    ? [command]
+    : ['-lc', 'command -v -- "$1" >/dev/null 2>&1', 'sh', command];
   return spawnSync(probe, probeArgs, { stdio: 'ignore' }).status === 0;
 }
 
@@ -82,9 +85,56 @@ function diskPercentPosix() {
 function diskPercent() {
   try {
     return process.platform === 'win32' ? diskPercentWindows() : diskPercentPosix();
-  } catch {
-    return 0;
+  } catch (error) {
+    log(`disk inspection failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
   }
+}
+
+function validateMaintenanceConfiguration() {
+  const errors = [];
+  if (!Number.isFinite(warnPercent) || warnPercent < 1 || warnPercent > 100) {
+    errors.push("ARENZYRA_DISK_WARN_PERCENT must be between 1 and 100");
+  }
+  if (
+    !Number.isFinite(criticalPercent) ||
+    criticalPercent < 1 ||
+    criticalPercent > 100
+  ) {
+    errors.push("ARENZYRA_DISK_CRITICAL_PERCENT must be between 1 and 100");
+  }
+  if (Number.isFinite(warnPercent) && Number.isFinite(criticalPercent) && warnPercent > criticalPercent) {
+    errors.push("disk warning threshold cannot exceed the critical threshold");
+  }
+  if (!Number.isInteger(backupRetentionDays) || backupRetentionDays < 1) {
+    errors.push("ARENZYRA_BACKUP_RETENTION_DAYS must be a positive whole number");
+  }
+  if (!diskPath.trim()) {
+    errors.push("ARENZYRA_DISK_PATH cannot be empty");
+  }
+
+  const explicitBackupDir = Boolean(process.env.ARENZYRA_BACKUP_DIR);
+  if (!(process.platform === "win32" && !explicitBackupDir) && fs.existsSync(backupDir)) {
+    try {
+      if (!fs.statSync(backupDir).isDirectory()) {
+        errors.push(`backup retention path is not a directory: ${backupDir}`);
+      } else {
+        const resolved = fs.realpathSync(backupDir);
+        const expected = process.platform === "win32"
+          ? path.resolve(backupDir)
+          : "/opt/arenzyra-backups";
+        const relative = path.relative(expected, resolved);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+          errors.push(`backup retention path escapes the approved root: ${resolved}`);
+        }
+      }
+    } catch (error) {
+      errors.push(
+        `unable to validate backup retention path: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return errors;
 }
 
 async function sendAlert(message) {
@@ -101,6 +151,10 @@ async function sendAlert(message) {
 }
 
 function pruneDockerBuilder() {
+  if (!allowGlobalBuilderPrune) {
+    log('global Docker build-cache prune disabled; set ARENZYRA_MAINTENANCE_ALLOW_GLOBAL_BUILDER_PRUNE=1 only after operator review');
+    return;
+  }
   if (!commandExists('docker')) {
     log('docker unavailable; skipped build-cache prune');
     return;
@@ -139,54 +193,130 @@ function pruneOldBackups() {
   const expected = process.platform === 'win32'
     ? path.resolve(backupDir)
     : '/opt/arenzyra-backups';
-  if (!resolved.startsWith(expected)) {
+  const relative = path.relative(expected, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
     log(`refusing to prune unexpected backup directory: ${resolved}`);
     return;
   }
 
   const cutoff = Date.now() - backupRetentionDays * 24 * 60 * 60 * 1000;
   log(`pruning backups older than ${backupRetentionDays} days from ${resolved}`);
-  for (const entry of fs.readdirSync(resolved)) {
-    const entryPath = path.join(resolved, entry);
-    const stat = fs.statSync(entryPath);
-    if (stat.mtimeMs >= cutoff) continue;
+  const backupEntries = fs.readdirSync(resolved)
+    .filter((entry) => /^\d{8}T\d{6}Z-[0-9a-f]{8}$/.test(entry))
+    .map((entry) => {
+      const entryPath = path.join(resolved, entry);
+      const stat = fs.lstatSync(entryPath);
+      return {
+        entryPath,
+        isDirectory: stat.isDirectory() && !stat.isSymbolicLink(),
+        mtimeMs: stat.mtimeMs,
+        verified: hasVerifiedRecoveryMarkers(entryPath),
+      };
+    })
+    .filter((entry) => entry.isDirectory && entry.verified);
+  for (const entry of selectBackupEntriesToPrune(backupEntries, cutoff)) {
     if (dryRun) {
-      log(`dry-run: remove old backup ${entryPath}`);
+      log(`dry-run: remove old backup ${entry.entryPath}`);
       continue;
     }
-    fs.rmSync(entryPath, { recursive: true, force: true });
-    log(`removed old backup ${entryPath}`);
+    fs.rmSync(entry.entryPath, { recursive: true, force: true });
+    log(`removed old backup ${entry.entryPath}`);
   }
 }
 
-async function checkDisk() {
-  const percent = diskPercent();
+function hasVerifiedRecoveryMarkers(entryPath) {
+  return ["OFFSITE_VERIFIED", "RESTORE_DRILL_VERIFIED"].every((name) => {
+    try {
+      const marker = fs.lstatSync(path.join(entryPath, name));
+      return marker.isFile() && !marker.isSymbolicLink() && marker.size > 0;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function selectBackupEntriesToPrune(entries, cutoff) {
+  const verified = entries.filter((entry) => entry.verified);
+  if (verified.length === 0) return [];
+  const preserve = verified
+    .slice()
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)[0];
+  return verified.filter(
+    (entry) => entry.entryPath !== preserve.entryPath && entry.mtimeMs < cutoff,
+  );
+}
+
+async function checkDisk(percent = diskPercent(), alert = sendAlert) {
+  if (percent === null) {
+    const message = `Arenzyra production disk check FAILED for ${diskPath}`;
+    log(message);
+    await alert(message);
+    return 3;
+  }
   log(`disk usage for ${diskPath} is ${percent}%`);
   if (percent >= criticalPercent) {
     const message = `Arenzyra production disk CRITICAL: ${percent}% used on ${diskPath}`;
     log(message);
-    await sendAlert(message);
+    await alert(message);
     return 2;
   }
   if (percent >= warnPercent) {
     const message = `Arenzyra production disk warning: ${percent}% used on ${diskPath}`;
     log(message);
-    await sendAlert(message);
+    await alert(message);
   }
   return 0;
 }
 
-(async () => {
-  log(`maintenance started; disk before=${diskPercent()}%`);
-  if (!checkOnly) {
-    pruneDockerBuilder();
-    pruneOldBackups();
+async function runMaintenance({
+  inspectDisk = diskPercent,
+  pruneBuilder = pruneDockerBuilder,
+  pruneBackups = pruneOldBackups,
+  alert = sendAlert,
+} = {}) {
+  const configurationErrors = validateMaintenanceConfiguration();
+  if (configurationErrors.length > 0) {
+    for (const error of configurationErrors) log(`configuration invalid: ${error}`);
+    return 2;
   }
-  const diskStatus = await checkDisk();
+
+  const before = inspectDisk();
+  log(`maintenance started; disk before=${before === null ? 'unknown' : `${before}%`}`);
+  const beforeStatus = await checkDisk(before, alert);
+  if (beforeStatus === 3) {
+    log('maintenance stopped before cleanup because disk inspection failed');
+    return beforeStatus;
+  }
+  if (!checkOnly) {
+    pruneBuilder();
+    pruneBackups();
+  }
+  const after = checkOnly ? before : inspectDisk();
+  const diskStatus = await checkDisk(after, alert);
   if (diskStatus === 0) {
     log('maintenance completed');
   } else {
     log(`maintenance completed with disk alert status=${diskStatus}`);
-    process.exit(diskStatus);
   }
-})();
+  return diskStatus;
+}
+
+if (require.main === module) {
+  runMaintenance()
+    .then((status) => {
+      process.exitCode = status;
+    })
+    .catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
+}
+
+module.exports = {
+  checkDisk,
+  diskPercent,
+  hasVerifiedRecoveryMarkers,
+  runMaintenance,
+  selectBackupEntriesToPrune,
+  validateMaintenanceConfiguration,
+};

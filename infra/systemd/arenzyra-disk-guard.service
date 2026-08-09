@@ -1,0 +1,14 @@
+[Unit]
+Description=Arenzyra safe disk guard
+Documentation=file:/opt/arenzyra/scripts/production-disk-guard.sh
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/arenzyra-disk-guard.env
+WorkingDirectory=/opt/arenzyra
+ExecStart=/usr/bin/env bash /opt/arenzyra/scripts/production-disk-guard.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

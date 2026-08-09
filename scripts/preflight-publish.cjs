@@ -2,7 +2,13 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
+const net = require("node:net");
 const { spawnSync } = require("node:child_process");
+const {
+  parseEnvText,
+  validateProductionDatabaseTargetContract,
+} = require("./production-database-target.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -25,35 +31,11 @@ function readText(filePath) {
 }
 
 function parseEnvFile(filePath) {
-  const env = {};
-  const lines = readText(filePath).split(/\r?\n/);
-
-  lines.forEach((line, index) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) return;
-
-    const normalized = trimmed.startsWith("export ")
-      ? trimmed.slice("export ".length).trim()
-      : trimmed;
-    const equalsAt = normalized.indexOf("=");
-    if (equalsAt === -1) {
-      throw new Error(
-        `${relative(filePath)}:${index + 1} is not a valid KEY=value line.`,
-      );
-    }
-
-    const key = normalized.slice(0, equalsAt).trim();
-    let value = normalized.slice(equalsAt + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    env[key] = value;
-  });
-
-  return env;
+  try {
+    return parseEnvText(readText(filePath));
+  } catch (error) {
+    throw new Error(`${relative(filePath)}: ${error.message}`);
+  }
 }
 
 function commandExists(command, args) {
@@ -66,10 +48,31 @@ function commandExists(command, args) {
 }
 
 function runCommand(command, args, env) {
+  const inheritedProcessKeys = [
+    "PATH",
+    "Path",
+    "HOME",
+    "USERPROFILE",
+    "SystemRoot",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+  ];
+  const sanitizedProcessEnv = Object.fromEntries(
+    inheritedProcessKeys
+      .filter((key) => process.env[key] !== undefined)
+      .map((key) => [key, process.env[key]]),
+  );
   return spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: {
+      ...sanitizedProcessEnv,
+      ...env,
+      ...(process.platform === "win32"
+        ? {}
+        : { DOCKER_HOST: "unix:///var/run/docker.sock" }),
+    },
     shell: false,
   });
 }
@@ -165,6 +168,41 @@ function validateRedirect(name, value, expected, errors) {
   }
 }
 
+function findSensitiveBuildArguments(compose, sensitiveBuildArgs) {
+  const sensitiveBuildArgSet = new Set(sensitiveBuildArgs);
+  const found = new Set();
+  let argsIndent = null;
+  for (const line of compose.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const indent = line.length - line.trimStart().length;
+    if (argsIndent !== null && trimmed && indent <= argsIndent) {
+      argsIndent = null;
+    }
+    if (/^args:\s*$/.test(trimmed)) {
+      argsIndent = indent;
+      continue;
+    }
+    if (argsIndent !== null && indent > argsIndent) {
+      const variable = trimmed.match(/^([A-Z0-9_]+):/)?.[1];
+      if (variable && sensitiveBuildArgSet.has(variable)) found.add(variable);
+    }
+  }
+  return [...found];
+}
+
+function hasSensitiveComposeLabel(compose, sensitiveVariables) {
+  return compose
+    .split(/\r?\n/)
+    .filter((line) => /com\./i.test(line))
+    .some(
+      (line) =>
+        /token|password|secret/i.test(line) ||
+        sensitiveVariables.some((variable) =>
+          line.toUpperCase().includes(variable),
+        ),
+    );
+}
+
 function validateStaticFiles(errors) {
   const requiredFiles = [
     "infra/docker-compose.publish.yml",
@@ -189,13 +227,54 @@ function validateComposeWiring(errors) {
   const compose = readText(composePath);
   const caddy = readText(caddyPath);
   const deployText = `${compose}\n${caddy}`;
+  const databaseBindings = [
+    ["api", "DATABASE_URL", "DATABASE_URL"],
+    ["api-migrate", "DATABASE_URL", "MIGRATION_DATABASE_URL"],
+    ["web", "STUDIO_DATABASE_URL", "STUDIO_DATABASE_URL"],
+    [
+      "studio-migrate",
+      "STUDIO_MIGRATION_DATABASE_URL",
+      "STUDIO_MIGRATION_DATABASE_URL",
+    ],
+    [
+      "api-maintenance-idp-read",
+      "DATABASE_URL",
+      "MAINTENANCE_READ_DATABASE_URL",
+    ],
+    [
+      "api-maintenance-idp-apply",
+      "DATABASE_URL",
+      "IDP_MAINTENANCE_DATABASE_URL",
+    ],
+    [
+      "api-maintenance-youtube-read",
+      "DATABASE_URL",
+      "MAINTENANCE_READ_DATABASE_URL",
+    ],
+    [
+      "api-maintenance-youtube-apply",
+      "DATABASE_URL",
+      "YOUTUBE_MAINTENANCE_DATABASE_URL",
+    ],
+  ];
+  for (const [service, serviceKey, envKey] of databaseBindings) {
+    const block =
+      compose.match(
+        new RegExp(
+          `\\n  ${service}:\\r?\\n([\\s\\S]*?)(?=\\n  [a-zA-Z0-9_-]+:\\r?\\n|\\nvolumes:\\r?\\n)`,
+        ),
+      )?.[1] ?? "";
+    if (!block.includes(`${serviceKey}: "\${${envKey}:?`)) {
+      errors.push(`Publish ${service} service must receive exactly ${envKey}.`);
+    }
+  }
   const webEnvVars = [
     "NEXT_PUBLIC_API_URL",
     "INTERNAL_API_URL",
-    "DATABASE_URL",
     "STUDIO_DATABASE_URL",
     "STUDIO_DATABASE_SSL",
     "STUDIO_DATABASE_POOL_SIZE",
+    "STUDIO_MEDIA_SIGNING_SECRET",
     "MEDIA_AI_URL",
     "STUDIO_MEDIA_AI_URL",
     "STUDIO_MEDIA_AI_TIMEOUT_MS",
@@ -210,6 +289,96 @@ function validateComposeWiring(errors) {
     if (!compose.includes(`${variable}:`)) {
       errors.push(`Publish web service does not pass ${variable}.`);
     }
+  }
+
+  for (const variable of [
+    "DISTRIBUTED_RATE_LIMIT_REQUIRED",
+    "REDIS_READY_MAX_MEMORY_RATIO",
+    "EVENT_BUS_MAX_PAYLOAD_BYTES",
+    "EVENT_BUS_STREAM_MAXLEN",
+    "ARENZYRA_BILLING_REVIEW_EMAIL",
+    "PAYMENT_PROOF_RETENTION_DAYS",
+    "BILLING_RESERVATION_LOCK_SECONDS",
+    "BILLING_RESERVATION_RETENTION_HOURS",
+    "BILLING_RESERVATION_CLEANUP_BATCH",
+    "BILLING_REVIEW_CLAIM_LEASE_MINUTES",
+    "BILLING_OUTBOX_CLAIM_SECONDS",
+    "BILLING_OUTBOX_WORKER_ENABLED",
+    "BILLING_OUTBOX_WORKER_INTERVAL_SECONDS",
+    "BILLING_OUTBOX_WORKER_BATCH",
+    "BILLING_OUTBOX_SHUTDOWN_MS",
+    "BILLING_SMTP_CONNECTION_TIMEOUT_MS",
+    "BILLING_SMTP_GREETING_TIMEOUT_MS",
+    "BILLING_SMTP_SOCKET_TIMEOUT_MS",
+  ]) {
+    if (!compose.includes(`${variable}:`)) {
+      errors.push(`Publish API service does not pass ${variable}.`);
+    }
+  }
+
+  for (const fragment of [
+    "--maxmemory",
+    "REDIS_MAXMEMORY",
+    "--maxmemory-policy",
+    "noeviction",
+  ]) {
+    if (!compose.includes(fragment)) {
+      errors.push(`Publish Redis service is missing ${fragment}.`);
+    }
+  }
+
+  const webService =
+    compose.match(
+      /\n  web:\r?\n([\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\r?\n|\nvolumes:\r?\n)/,
+    )?.[1] || "";
+  if (/^\s{6}DATABASE_URL:/m.test(webService)) {
+    errors.push(
+      "Publish web service must not receive the primary DATABASE_URL; use the least-privilege STUDIO_DATABASE_URL only.",
+    );
+  }
+  if (
+    /^\s{4}env_file:/m.test(
+      compose.match(
+        /\n  discord-bot:\r?\n([\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\r?\n|\nvolumes:\r?\n)/,
+      )?.[1] || "",
+    )
+  ) {
+    errors.push(
+      "Publish Discord bot must enumerate its environment; broad env_file injection is forbidden.",
+    );
+  }
+
+  const sensitiveBuildArgs = [
+    "DATABASE_URL",
+    "MIGRATION_DATABASE_URL",
+    "STUDIO_DATABASE_URL",
+    "STUDIO_MIGRATION_DATABASE_URL",
+    "MAINTENANCE_READ_DATABASE_URL",
+    "IDP_MAINTENANCE_DATABASE_URL",
+    "YOUTUBE_MAINTENANCE_DATABASE_URL",
+    "JWT_SECRET",
+    "IDP_CREDENTIAL_ENCRYPTION_KEY",
+    "YOUTUBE_TOKEN_ENCRYPTION_KEY",
+    "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS",
+    "YOUTUBE_TOKEN_ENCRYPTION_LEGACY_V1_KEY",
+    "SUPERADMIN_MFA_ENCRYPTION_KEY",
+    "SUPERADMIN_MFA_RECOVERY_PEPPER",
+    "ARENZYRA_BILLING_REVIEW_EMAIL",
+    "HEALTHCHECK_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "ARENZYRA_API_SERVICE_TOKEN",
+    "STUDIO_MEDIA_SIGNING_SECRET",
+  ];
+  for (const variable of findSensitiveBuildArguments(
+    compose,
+    sensitiveBuildArgs,
+  )) {
+    errors.push(`${variable} must never be passed as a Docker build argument.`);
+  }
+  if (hasSensitiveComposeLabel(compose, sensitiveBuildArgs)) {
+    errors.push(
+      "Sensitive values must never be stored in image/container labels.",
+    );
   }
 
   if (!compose.includes("condition: service_healthy")) {
@@ -241,19 +410,47 @@ function checkRequiredEnv(env, allowPlaceholders, errors, warnings) {
     "POSTGRES_PASSWORD",
     "POSTGRES_DB",
     "DATABASE_URL",
+    "MIGRATION_DATABASE_URL",
+    "STUDIO_DATABASE_URL",
+    "STUDIO_MIGRATION_DATABASE_URL",
+    "MAINTENANCE_READ_DATABASE_URL",
+    "IDP_MAINTENANCE_DATABASE_URL",
+    "YOUTUBE_MAINTENANCE_DATABASE_URL",
     "JWT_SECRET",
+    "IDP_CREDENTIAL_ENCRYPTION_KEY",
+    "YOUTUBE_TOKEN_ENCRYPTION_KEY_ID",
+    "YOUTUBE_TOKEN_ENCRYPTION_KEY",
+    "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS",
+    "SUPERADMIN_MFA_REQUIRED",
+    "SUPERADMIN_MFA_ENCRYPTION_KEY",
+    "SUPERADMIN_MFA_RECOVERY_PEPPER",
+    "ARENZYRA_BILLING_REVIEW_EMAIL",
+    "HEALTHCHECK_TOKEN",
+    "STUDIO_MEDIA_SIGNING_SECRET",
+    "ARENZYRA_API_SERVICE_TOKEN",
+    "ARENZYRA_API_SERVICE_TOKEN_SHA256",
+    "ARENZYRA_API_SERVICE_ORGANIZATION_ID",
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_CLIENT_ID",
+    "ARENZYRA_DISCORD_BOT_INSTANCE",
     "COLLECTOR_SECRET",
     "PCOB_SECRET",
-    "SUPERADMIN_EMAIL",
-    "SUPERADMIN_PASSWORD",
-    "OP_EMAIL",
-    "OP_PASSWORD",
+    "ARENZYRA_BACKUP_AGE_RECIPIENT",
+    "ARENZYRA_BACKUP_RCLONE_REMOTE",
     "WEB_APP_ORIGIN",
     "FRONTEND_ORIGIN",
     "NEXT_PUBLIC_API_URL",
     "INTERNAL_API_URL",
     "API_BASE_URL",
     "API_PUBLIC_URL",
+    "ARENZYRA_DOCKER_SUBNET",
+    "ARENZYRA_PROXY_IP",
+    "TRUSTED_PROXY_IPS",
+    "REDIS_MAXMEMORY",
+    "REDIS_READY_MAX_MEMORY_RATIO",
+    "DISTRIBUTED_RATE_LIMIT_REQUIRED",
+    "EVENT_BUS_MAX_PAYLOAD_BYTES",
+    "EVENT_BUS_STREAM_MAXLEN",
   ];
 
   for (const key of required) {
@@ -267,10 +464,12 @@ function checkRequiredEnv(env, allowPlaceholders, errors, warnings) {
 
   const secretKeys = [
     "JWT_SECRET",
+    "HEALTHCHECK_TOKEN",
+    "STUDIO_MEDIA_SIGNING_SECRET",
+    "ARENZYRA_API_SERVICE_TOKEN",
+    "DISCORD_BOT_TOKEN",
     "COLLECTOR_SECRET",
     "PCOB_SECRET",
-    "SUPERADMIN_PASSWORD",
-    "OP_PASSWORD",
   ];
   for (const key of secretKeys) {
     const value = env[key] ?? "";
@@ -278,17 +477,314 @@ function checkRequiredEnv(env, allowPlaceholders, errors, warnings) {
       warnings.push(`${key} is set but short; use a strong production value.`);
     }
   }
+
+  for (const key of [
+    "HEALTHCHECK_TOKEN",
+    "STUDIO_MEDIA_SIGNING_SECRET",
+    "IDP_CREDENTIAL_ENCRYPTION_KEY",
+    "YOUTUBE_TOKEN_ENCRYPTION_KEY",
+    "YOUTUBE_TOKEN_ENCRYPTION_LEGACY_V1_KEY",
+    "SUPERADMIN_MFA_ENCRYPTION_KEY",
+    "SUPERADMIN_MFA_RECOVERY_PEPPER",
+  ]) {
+    const value = env[key] ?? "";
+    if (
+      value &&
+      !isPlaceholder(value) &&
+      Buffer.byteLength(value, "utf8") < 32
+    ) {
+      errors.push(`${key} must be at least 32 bytes in production.`);
+    }
+  }
 }
 
-function validateEnvRelationships(env, errors, warnings) {
+function validateEnvRelationships(
+  env,
+  errors,
+  warnings,
+  allowPlaceholders = false,
+) {
+  for (const reservedKey of [
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS",
+    "DOCKER_TLS_VERIFY",
+    "COMPOSE_PROJECT_NAME",
+    "COMPOSE_FILE",
+    "COMPOSE_ENV_FILES",
+  ]) {
+    if ((env[reservedKey] ?? "").trim()) {
+      errors.push(
+        `${reservedKey} is process control and must not be stored in the production publish environment.`,
+      );
+    }
+  }
   const webHost = env.PUBLIC_WEB_HOST ?? "";
   const apiHost = env.PUBLIC_API_HOST ?? "";
+  const idpCredentialKey = env.IDP_CREDENTIAL_ENCRYPTION_KEY ?? "";
+  const youtubeTokenKey = env.YOUTUBE_TOKEN_ENCRYPTION_KEY ?? "";
+  const youtubeTokenKeyId = env.YOUTUBE_TOKEN_ENCRYPTION_KEY_ID ?? "";
+  const mfaRequired = (env.SUPERADMIN_MFA_REQUIRED ?? "").trim();
+
+  if (mfaRequired !== "true") {
+    errors.push("SUPERADMIN_MFA_REQUIRED must be exactly true in production.");
+  }
+
+  if ((env.DISTRIBUTED_RATE_LIMIT_REQUIRED ?? "").trim() !== "true") {
+    errors.push(
+      "DISTRIBUTED_RATE_LIMIT_REQUIRED must be exactly true in production.",
+    );
+  }
+
+  const redisMaxMemory = (env.REDIS_MAXMEMORY ?? "").trim().toLowerCase();
+  const redisMemoryMatch = redisMaxMemory.match(/^(\d+)(kb|mb|gb)$/);
+  const redisMemoryMultipliers = {
+    kb: 1024,
+    mb: 1024 * 1024,
+    gb: 1024 * 1024 * 1024,
+  };
+  const redisMaxMemoryBytes = redisMemoryMatch
+    ? Number(redisMemoryMatch[1]) * redisMemoryMultipliers[redisMemoryMatch[2]]
+    : Number.NaN;
+  if (
+    !Number.isSafeInteger(redisMaxMemoryBytes) ||
+    redisMaxMemoryBytes < 256 * 1024 * 1024
+  ) {
+    errors.push(
+      "REDIS_MAXMEMORY must be a Redis size of at least 256mb (for example 768mb).",
+    );
+  }
+
+  const redisReadyRatio = Number(env.REDIS_READY_MAX_MEMORY_RATIO);
+  if (
+    !Number.isFinite(redisReadyRatio) ||
+    redisReadyRatio < 0.5 ||
+    redisReadyRatio > 0.9
+  ) {
+    errors.push("REDIS_READY_MAX_MEMORY_RATIO must be between 0.5 and 0.9.");
+  }
+
+  const eventPayloadBytes = Number(env.EVENT_BUS_MAX_PAYLOAD_BYTES);
+  if (
+    !Number.isSafeInteger(eventPayloadBytes) ||
+    eventPayloadBytes < 1024 ||
+    eventPayloadBytes > 1024 * 1024
+  ) {
+    errors.push(
+      "EVENT_BUS_MAX_PAYLOAD_BYTES must be between 1024 and 1048576.",
+    );
+  }
+
+  const eventStreamMaxLength = Number(env.EVENT_BUS_STREAM_MAXLEN);
+  if (
+    !Number.isSafeInteger(eventStreamMaxLength) ||
+    eventStreamMaxLength < 100 ||
+    eventStreamMaxLength > 50_000
+  ) {
+    errors.push("EVENT_BUS_STREAM_MAXLEN must be between 100 and 50000.");
+  }
+
+  if (idpCredentialKey && !isPlaceholder(idpCredentialKey)) {
+    for (const key of ["JWT_SECRET", "COLLECTOR_SECRET", "PCOB_SECRET"]) {
+      if (idpCredentialKey === (env[key] ?? "")) {
+        errors.push(`IDP_CREDENTIAL_ENCRYPTION_KEY must not reuse ${key}.`);
+      }
+    }
+  }
+
+  if (
+    youtubeTokenKeyId &&
+    !isPlaceholder(youtubeTokenKeyId) &&
+    !/^[A-Za-z0-9_-]{1,48}$/.test(youtubeTokenKeyId)
+  ) {
+    errors.push(
+      "YOUTUBE_TOKEN_ENCRYPTION_KEY_ID must contain 1-48 letters, numbers, underscores, or hyphens.",
+    );
+  }
+
+  const youtubeForbiddenSecrets = {
+    JWT_SECRET: env.JWT_SECRET ?? "",
+    TOKEN_ENCRYPTION_KEY: env.TOKEN_ENCRYPTION_KEY ?? "",
+    IDP_CREDENTIAL_ENCRYPTION_KEY: idpCredentialKey,
+    COLLECTOR_SECRET: env.COLLECTOR_SECRET ?? "",
+    PCOB_SECRET: env.PCOB_SECRET ?? "",
+    SUPERADMIN_MFA_ENCRYPTION_KEY: env.SUPERADMIN_MFA_ENCRYPTION_KEY ?? "",
+    SUPERADMIN_MFA_RECOVERY_PEPPER: env.SUPERADMIN_MFA_RECOVERY_PEPPER ?? "",
+  };
+  if (youtubeTokenKey && !isPlaceholder(youtubeTokenKey)) {
+    for (const [key, secret] of Object.entries(youtubeForbiddenSecrets)) {
+      if (secret && !isPlaceholder(secret) && secret === youtubeTokenKey) {
+        errors.push(`YOUTUBE_TOKEN_ENCRYPTION_KEY must not reuse ${key}.`);
+        break;
+      }
+    }
+  }
+
+  const previousKeysRaw = env.YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS ?? "";
+  if (previousKeysRaw && !isPlaceholder(previousKeysRaw)) {
+    try {
+      const previousKeys = JSON.parse(previousKeysRaw);
+      if (
+        !previousKeys ||
+        typeof previousKeys !== "object" ||
+        Array.isArray(previousKeys) ||
+        Object.getPrototypeOf(previousKeys) !== Object.prototype
+      ) {
+        throw new Error("not an object");
+      }
+      const entries = Object.entries(previousKeys);
+      if (entries.length > 8) {
+        errors.push(
+          "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS supports at most 8 keys.",
+        );
+      }
+      const keyMaterials = new Set([youtubeTokenKey]);
+      for (const [keyId, secret] of entries) {
+        if (!/^[A-Za-z0-9_-]{1,48}$/.test(keyId)) {
+          errors.push(
+            "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS contains an invalid key id.",
+          );
+        }
+        if (keyId === youtubeTokenKeyId) {
+          errors.push(
+            "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS must not contain the current key id.",
+          );
+        }
+        if (
+          typeof secret !== "string" ||
+          Buffer.byteLength(secret.trim(), "utf8") < 32
+        ) {
+          errors.push(
+            `YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS.${keyId} must be at least 32 bytes.`,
+          );
+          continue;
+        }
+        if (keyMaterials.has(secret)) {
+          errors.push(
+            "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS must not reuse key material.",
+          );
+        }
+        keyMaterials.add(secret);
+        for (const [otherKey, otherSecret] of Object.entries(
+          youtubeForbiddenSecrets,
+        )) {
+          if (
+            otherSecret &&
+            !isPlaceholder(otherSecret) &&
+            secret === otherSecret
+          ) {
+            errors.push(
+              `YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS.${keyId} must not reuse ${otherKey}.`,
+            );
+            break;
+          }
+        }
+      }
+    } catch {
+      errors.push(
+        "YOUTUBE_TOKEN_ENCRYPTION_PREVIOUS_KEYS must be a JSON object.",
+      );
+    }
+  }
+
+  const applicationSecrets = {
+    JWT_SECRET: env.JWT_SECRET ?? "",
+    IDP_CREDENTIAL_ENCRYPTION_KEY: idpCredentialKey,
+    YOUTUBE_TOKEN_ENCRYPTION_KEY: youtubeTokenKey,
+    COLLECTOR_SECRET: env.COLLECTOR_SECRET ?? "",
+    PCOB_SECRET: env.PCOB_SECRET ?? "",
+    SUPERADMIN_MFA_ENCRYPTION_KEY: env.SUPERADMIN_MFA_ENCRYPTION_KEY ?? "",
+    SUPERADMIN_MFA_RECOVERY_PEPPER: env.SUPERADMIN_MFA_RECOVERY_PEPPER ?? "",
+  };
+  for (const mfaKey of [
+    "SUPERADMIN_MFA_ENCRYPTION_KEY",
+    "SUPERADMIN_MFA_RECOVERY_PEPPER",
+  ]) {
+    const value = applicationSecrets[mfaKey];
+    if (!value || isPlaceholder(value)) continue;
+    for (const [otherKey, otherValue] of Object.entries(applicationSecrets)) {
+      if (
+        otherKey !== mfaKey &&
+        otherValue &&
+        !isPlaceholder(otherValue) &&
+        value === otherValue
+      ) {
+        errors.push(`${mfaKey} must not reuse ${otherKey}.`);
+        break;
+      }
+    }
+  }
+
+  if (
+    /^(?:1|true|yes|on)$/i.test((env.AUTH_DEV_BOOTSTRAP_ENABLED ?? "").trim())
+  ) {
+    errors.push(
+      "AUTH_DEV_BOOTSTRAP_ENABLED is development-only and forbidden in production.",
+    );
+  }
+  for (const key of [
+    "SUPERADMIN_EMAIL",
+    "SUPERADMIN_PASSWORD",
+    "OP_EMAIL",
+    "OP_PASSWORD",
+  ]) {
+    if ((env[key] ?? "").trim()) {
+      errors.push(
+        `${key} is a development bootstrap credential and must not be stored in the production environment.`,
+      );
+    }
+  }
+  for (const key of ["PLATFORM_ADMIN_EMAIL", "PLATFORM_ADMIN_PASSWORD"]) {
+    if ((env[key] ?? "").trim()) {
+      errors.push(
+        `${key} is seed-only and must not be stored in the production runtime environment.`,
+      );
+    }
+  }
+  for (const key of [
+    "ARENZYRA_WEB_ALLOW_OBSERVER_DIRECT",
+    "ARENZYRA_WEB_OBSERVER_LOCAL_PROBE",
+  ]) {
+    const value = (env[key] ?? "0").trim().toLowerCase();
+    if (!["", "0", "false", "off", "no"].includes(value)) {
+      errors.push(
+        `${key} cannot be enabled by the supported production deployment.`,
+      );
+    }
+  }
+
+  if (net.isIP(env.ARENZYRA_PROXY_IP ?? "") === 0) {
+    errors.push("ARENZYRA_PROXY_IP must be one explicit IPv4/IPv6 address.");
+  }
+  if (
+    (env.TRUSTED_PROXY_IPS ?? "").trim() !==
+    (env.ARENZYRA_PROXY_IP ?? "").trim()
+  ) {
+    errors.push(
+      "TRUSTED_PROXY_IPS must equal the single static ARENZYRA_PROXY_IP; broad proxy trust is forbidden.",
+    );
+  }
+  if (
+    ["0.0.0.0", "::", "0.0.0.0/0", "::/0"].includes(
+      (env.TRUSTED_PROXY_IPS ?? "").trim(),
+    )
+  ) {
+    errors.push("TRUSTED_PROXY_IPS cannot trust every network peer.");
+  }
+  if (
+    !/^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(env.ARENZYRA_DOCKER_SUBNET ?? "")
+  ) {
+    errors.push("ARENZYRA_DOCKER_SUBNET must be an explicit IPv4 CIDR.");
+  }
 
   validateHostOnly("PUBLIC_WEB_HOST", webHost, errors);
   validateHostOnly("PUBLIC_API_HOST", apiHost, errors);
 
   if (webHost && apiHost && webHost === apiHost) {
-    errors.push("PUBLIC_WEB_HOST and PUBLIC_API_HOST should be separate hosts.");
+    errors.push(
+      "PUBLIC_WEB_HOST and PUBLIC_API_HOST should be separate hosts.",
+    );
   }
 
   if (env.ACME_EMAIL && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(env.ACME_EMAIL)) {
@@ -296,10 +792,182 @@ function validateEnvRelationships(env, errors, warnings) {
   }
 
   validatePostgresUrl("DATABASE_URL", env.DATABASE_URL ?? "", errors);
-  validatePostgresUrl("STUDIO_DATABASE_URL", env.STUDIO_DATABASE_URL ?? "", errors);
+  validatePostgresUrl(
+    "MIGRATION_DATABASE_URL",
+    env.MIGRATION_DATABASE_URL ?? "",
+    errors,
+  );
+  for (const databaseTargetError of validateProductionDatabaseTargetContract(
+    env,
+  ).errors) {
+    if (
+      allowPlaceholders &&
+      [
+        "POSTGRES_PASSWORD",
+        "DATABASE_URL",
+        "MIGRATION_DATABASE_URL",
+        "STUDIO_DATABASE_URL",
+        "STUDIO_MIGRATION_DATABASE_URL",
+        "MAINTENANCE_READ_DATABASE_URL",
+        "IDP_MAINTENANCE_DATABASE_URL",
+        "YOUTUBE_MAINTENANCE_DATABASE_URL",
+      ].some(
+        (key) =>
+          databaseTargetError.startsWith(`${key} `) &&
+          isPlaceholder(env[key] ?? ""),
+      )
+    ) {
+      continue;
+    }
+    errors.push(databaseTargetError);
+  }
+  validatePostgresUrl(
+    "STUDIO_DATABASE_URL",
+    env.STUDIO_DATABASE_URL ?? "",
+    errors,
+  );
+  validatePostgresUrl(
+    "STUDIO_MIGRATION_DATABASE_URL",
+    env.STUDIO_MIGRATION_DATABASE_URL ?? "",
+    errors,
+  );
+  validatePostgresUrl(
+    "MAINTENANCE_READ_DATABASE_URL",
+    env.MAINTENANCE_READ_DATABASE_URL ?? "",
+    errors,
+  );
+  validatePostgresUrl(
+    "IDP_MAINTENANCE_DATABASE_URL",
+    env.IDP_MAINTENANCE_DATABASE_URL ?? "",
+    errors,
+  );
+  validatePostgresUrl(
+    "YOUTUBE_MAINTENANCE_DATABASE_URL",
+    env.YOUTUBE_MAINTENANCE_DATABASE_URL ?? "",
+    errors,
+  );
+  if (env.STUDIO_DATABASE_URL && env.POSTGRES_USER) {
+    try {
+      const studioUser = decodeURIComponent(
+        new URL(env.STUDIO_DATABASE_URL).username,
+      );
+      if (studioUser && studioUser === env.POSTGRES_USER) {
+        errors.push(
+          "STUDIO_DATABASE_URL must use a dedicated least-privilege role, not POSTGRES_USER.",
+        );
+      }
+    } catch {
+      // validatePostgresUrl reports the malformed URL.
+    }
+  }
+  if (env.DATABASE_URL) {
+    try {
+      const appUser = decodeURIComponent(new URL(env.DATABASE_URL).username);
+      if (
+        appUser &&
+        (appUser === env.POSTGRES_USER ||
+          ["postgres", "root"].includes(appUser.toLowerCase()))
+      ) {
+        errors.push(
+          "DATABASE_URL must use a non-superuser runtime role, not POSTGRES_USER/postgres/root.",
+        );
+      }
+      if (env.STUDIO_DATABASE_URL) {
+        const studioUser = decodeURIComponent(
+          new URL(env.STUDIO_DATABASE_URL).username,
+        );
+        if (studioUser && studioUser === appUser) {
+          errors.push(
+            "DATABASE_URL and STUDIO_DATABASE_URL must use separate database roles.",
+          );
+        }
+      }
+    } catch {
+      // validatePostgresUrl reports malformed URLs.
+    }
+  }
+  try {
+    const appUser = decodeURIComponent(new URL(env.DATABASE_URL).username);
+    const apiMigrationUser = decodeURIComponent(
+      new URL(env.MIGRATION_DATABASE_URL).username,
+    );
+    const studioUser = decodeURIComponent(
+      new URL(env.STUDIO_DATABASE_URL).username,
+    );
+    const studioMigrationUser = decodeURIComponent(
+      new URL(env.STUDIO_MIGRATION_DATABASE_URL).username,
+    );
+    const maintenanceReadUser = decodeURIComponent(
+      new URL(env.MAINTENANCE_READ_DATABASE_URL).username,
+    );
+    const idpMaintenanceUser = decodeURIComponent(
+      new URL(env.IDP_MAINTENANCE_DATABASE_URL).username,
+    );
+    const youtubeMaintenanceUser = decodeURIComponent(
+      new URL(env.YOUTUBE_MAINTENANCE_DATABASE_URL).username,
+    );
+    if (
+      new Set([
+        appUser,
+        apiMigrationUser,
+        studioUser,
+        studioMigrationUser,
+        maintenanceReadUser,
+        idpMaintenanceUser,
+        youtubeMaintenanceUser,
+      ]).size !== 7
+    ) {
+      errors.push(
+        "All seven application database URLs must use distinct roles.",
+      );
+    }
+    if (apiMigrationUser === appUser || studioMigrationUser === studioUser) {
+      errors.push(
+        "Runtime and migration database URLs must use different roles.",
+      );
+    }
+    if (
+      [apiMigrationUser, studioMigrationUser].some(
+        (user) =>
+          user === env.POSTGRES_USER ||
+          ["postgres", "root"].includes(user.toLowerCase()),
+      )
+    ) {
+      errors.push(
+        "Migration URLs must use a dedicated non-superuser DDL owner, not POSTGRES_USER/postgres/root.",
+      );
+    }
+  } catch {
+    // URL validators report malformed or absent values.
+  }
 
-  validateHttpsOrigin("WEB_APP_ORIGIN", env.WEB_APP_ORIGIN ?? "", webHost, errors);
-  validateHttpsOrigin("FRONTEND_ORIGIN", env.FRONTEND_ORIGIN ?? "", webHost, errors);
+  if (env.ARENZYRA_DISCORD_BOT_INSTANCE !== "production") {
+    errors.push("ARENZYRA_DISCORD_BOT_INSTANCE must be exactly production.");
+  }
+  if (env.ARENZYRA_API_SERVICE_TOKEN && env.ARENZYRA_API_SERVICE_TOKEN_SHA256) {
+    const calculated = crypto
+      .createHash("sha256")
+      .update(env.ARENZYRA_API_SERVICE_TOKEN)
+      .digest("hex");
+    if (calculated !== env.ARENZYRA_API_SERVICE_TOKEN_SHA256.toLowerCase()) {
+      errors.push(
+        "ARENZYRA_API_SERVICE_TOKEN_SHA256 does not match ARENZYRA_API_SERVICE_TOKEN.",
+      );
+    }
+  }
+
+  validateHttpsOrigin(
+    "WEB_APP_ORIGIN",
+    env.WEB_APP_ORIGIN ?? "",
+    webHost,
+    errors,
+  );
+  validateHttpsOrigin(
+    "FRONTEND_ORIGIN",
+    env.FRONTEND_ORIGIN ?? "",
+    webHost,
+    errors,
+  );
   validateHttpsOrigin(
     "NEXT_PUBLIC_API_URL",
     env.NEXT_PUBLIC_API_URL ?? "",
@@ -307,10 +975,17 @@ function validateEnvRelationships(env, errors, warnings) {
     errors,
   );
   validateHttpsOrigin("API_BASE_URL", env.API_BASE_URL ?? "", apiHost, errors);
-  validateHttpsOrigin("API_PUBLIC_URL", env.API_PUBLIC_URL ?? "", apiHost, errors);
+  validateHttpsOrigin(
+    "API_PUBLIC_URL",
+    env.API_PUBLIC_URL ?? "",
+    apiHost,
+    errors,
+  );
 
   if ((env.INTERNAL_API_URL ?? "") !== "http://api:3000") {
-    warnings.push("INTERNAL_API_URL should normally be http://api:3000 in publish.");
+    warnings.push(
+      "INTERNAL_API_URL should normally be http://api:3000 in publish.",
+    );
   }
 
   validateRedirect(
@@ -345,7 +1020,9 @@ function validateEnvRelationships(env, errors, warnings) {
 
   const studioPoolSize = env.STUDIO_DATABASE_POOL_SIZE ?? "";
   if (studioPoolSize && !/^\d+$/.test(studioPoolSize)) {
-    errors.push("STUDIO_DATABASE_POOL_SIZE must be a positive integer when set.");
+    errors.push(
+      "STUDIO_DATABASE_POOL_SIZE must be a positive integer when set.",
+    );
   }
 
   const removeBgSize = env.STUDIO_REMOVE_BG_SIZE ?? "";
@@ -353,7 +1030,9 @@ function validateEnvRelationships(env, errors, warnings) {
     removeBgSize &&
     !["auto", "preview", "full", "50mp"].includes(removeBgSize.toLowerCase())
   ) {
-    warnings.push("STUDIO_REMOVE_BG_SIZE should normally be auto, preview, full, or 50mp.");
+    warnings.push(
+      "STUDIO_REMOVE_BG_SIZE should normally be auto, preview, full, or 50mp.",
+    );
   }
 
   const removeBgType = env.STUDIO_REMOVE_BG_TYPE ?? "";
@@ -361,11 +1040,18 @@ function validateEnvRelationships(env, errors, warnings) {
     removeBgType &&
     !["auto", "person", "product", "car"].includes(removeBgType.toLowerCase())
   ) {
-    warnings.push("STUDIO_REMOVE_BG_TYPE should normally be auto, person, product, or car.");
+    warnings.push(
+      "STUDIO_REMOVE_BG_TYPE should normally be auto, person, product, or car.",
+    );
   }
 
-  if (env.STUDIO_REMOVE_BG_API_URL && !isHttpUrl(env.STUDIO_REMOVE_BG_API_URL)) {
-    errors.push("STUDIO_REMOVE_BG_API_URL must be a full http(s) URL when set.");
+  if (
+    env.STUDIO_REMOVE_BG_API_URL &&
+    !isHttpUrl(env.STUDIO_REMOVE_BG_API_URL)
+  ) {
+    errors.push(
+      "STUDIO_REMOVE_BG_API_URL must be a full http(s) URL when set.",
+    );
   }
 
   const mediaAiUrl =
@@ -378,11 +1064,14 @@ function validateEnvRelationships(env, errors, warnings) {
   }
   const mediaAiTimeoutMs = env.STUDIO_MEDIA_AI_TIMEOUT_MS ?? "";
   if (mediaAiTimeoutMs && !/^\d+$/.test(mediaAiTimeoutMs)) {
-    errors.push("STUDIO_MEDIA_AI_TIMEOUT_MS must be a positive integer when set.");
+    errors.push(
+      "STUDIO_MEDIA_AI_TIMEOUT_MS must be a positive integer when set.",
+    );
   }
 
-  const requireExternalStudioImageProvider =
-    (env.STUDIO_REQUIRE_EXTERNAL_IMAGE_PROVIDER ?? "").toLowerCase();
+  const requireExternalStudioImageProvider = (
+    env.STUDIO_REQUIRE_EXTERNAL_IMAGE_PROVIDER ?? ""
+  ).toLowerCase();
   if (
     (requireExternalStudioImageProvider === "1" ||
       requireExternalStudioImageProvider === "true") &&
@@ -404,17 +1093,38 @@ function validateEnvRelationships(env, errors, warnings) {
     }
   }
 
-  const localDevStudio =
-    (env.STUDIO_ALLOW_LOCAL_DEV_WORKSPACE ?? "").toLowerCase();
+  const localDevStudio = (
+    env.STUDIO_ALLOW_LOCAL_DEV_WORKSPACE ?? ""
+  ).toLowerCase();
   if (localDevStudio === "1" || localDevStudio === "true") {
     errors.push("STUDIO_ALLOW_LOCAL_DEV_WORKSPACE must stay false in publish.");
+  }
+
+  const observerDirect = (
+    env.ARENZYRA_WEB_ALLOW_OBSERVER_DIRECT ?? ""
+  ).toLowerCase();
+  if (observerDirect === "1" || observerDirect === "true") {
+    if (
+      env.ARENZYRA_ACK_PUBLIC_WEB_OBSERVER_DIRECT !==
+      "I_ACCEPT_HOST_OBSERVER_EXPOSURE"
+    ) {
+      errors.push(
+        "Public web observer-direct access requires ARENZYRA_ACK_PUBLIC_WEB_OBSERVER_DIRECT=I_ACCEPT_HOST_OBSERVER_EXPOSURE.",
+      );
+    } else {
+      warnings.push(
+        "Public web observer-direct access is explicitly enabled; review host routing and authorization isolation.",
+      );
+    }
   }
 
   if (env.NEXT_PUBLIC_API_URL && env.API_PUBLIC_URL) {
     const browserApi = originFromUrl(env.NEXT_PUBLIC_API_URL);
     const publicApi = originFromUrl(env.API_PUBLIC_URL);
     if (browserApi && publicApi && browserApi !== publicApi) {
-      warnings.push("NEXT_PUBLIC_API_URL and API_PUBLIC_URL point to different origins.");
+      warnings.push(
+        "NEXT_PUBLIC_API_URL and API_PUBLIC_URL point to different origins.",
+      );
     }
   }
 
@@ -422,7 +1132,9 @@ function validateEnvRelationships(env, errors, warnings) {
     const webOrigin = originFromUrl(env.WEB_APP_ORIGIN);
     const frontOrigin = originFromUrl(env.FRONTEND_ORIGIN);
     if (webOrigin && frontOrigin && webOrigin !== frontOrigin) {
-      warnings.push("WEB_APP_ORIGIN and FRONTEND_ORIGIN point to different origins.");
+      warnings.push(
+        "WEB_APP_ORIGIN and FRONTEND_ORIGIN point to different origins.",
+      );
     }
   }
 
@@ -430,14 +1142,18 @@ function validateEnvRelationships(env, errors, warnings) {
     const apiAssetHost = hostFromUrl(env.API_PUBLIC_URL);
     const assetHost = hostFromUrl(env.ASSET_BASE_URL);
     if (apiAssetHost && assetHost && apiAssetHost !== assetHost) {
-      warnings.push("ASSET_BASE_URL uses a different host than API_PUBLIC_URL.");
+      warnings.push(
+        "ASSET_BASE_URL uses a different host than API_PUBLIC_URL.",
+      );
     }
   }
 }
 
 function runComposeConfig(envPath, env, warnings, errors) {
   if (!commandExists("docker", ["compose", "version"])) {
-    warnings.push("Docker Compose was not found; skipped compose config validation.");
+    warnings.push(
+      "Docker Compose was not found; skipped compose config validation.",
+    );
     return;
   }
 
@@ -476,7 +1192,10 @@ function main() {
     return;
   }
 
-  const envPath = path.resolve(repoRoot, readFlag("--env", "infra/.env.publish"));
+  const envPath = path.resolve(
+    repoRoot,
+    readFlag("--env", "infra/.env.publish"),
+  );
   const allowPlaceholders = hasFlag("--allow-placeholders");
   const skipCompose = hasFlag("--skip-compose");
   const errors = [];
@@ -495,7 +1214,7 @@ function main() {
   if (fs.existsSync(envPath)) {
     env = parseEnvFile(envPath);
     checkRequiredEnv(env, allowPlaceholders, errors, warnings);
-    validateEnvRelationships(env, errors, warnings);
+    validateEnvRelationships(env, errors, warnings, allowPlaceholders);
   }
 
   if (!skipCompose && fs.existsSync(envPath) && !allowPlaceholders) {
@@ -506,7 +1225,9 @@ function main() {
   console.log(`[publish-preflight] compose: infra/docker-compose.publish.yml`);
   console.log(`[publish-preflight] caddy: infra/Caddyfile`);
   if (allowPlaceholders) {
-    console.log("[publish-preflight] template mode: placeholders are warnings.");
+    console.log(
+      "[publish-preflight] template mode: placeholders are warnings.",
+    );
   }
   if (skipCompose) {
     console.log("[publish-preflight] compose config validation skipped.");
@@ -523,4 +1244,10 @@ function main() {
   console.log("\n[publish-preflight] OK");
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {
+  findSensitiveBuildArguments,
+  hasSensitiveComposeLabel,
+  validateEnvRelationships,
+};
