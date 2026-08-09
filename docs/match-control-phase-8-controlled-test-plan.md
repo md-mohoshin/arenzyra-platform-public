@@ -1,5 +1,13 @@
 # Arenzyra Match Control Phase 8
 
+> Historical evidence only. The legacy `/realtime` access-JWT transport is
+> quarantined in the current candidate because it did not persistently enforce
+> token expiry, revocation, account state, tenant scope, and entitlement after
+> the handshake. Do not use the socket-binding steps below as a current test
+> plan. A replacement producer/reader transport needs rotatable credentials and
+> bounded, persistent-session authorization before this scenario is rewritten
+> and rerun.
+
 ## Controlled Real-Match Test Plan
 
 ### Scope

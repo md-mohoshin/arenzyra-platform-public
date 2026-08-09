@@ -1,9 +1,9 @@
 # Arenzyra V1 Prisma Model Usage Scan (2026-02-28)
 
-Legend: (A) runtime critical Â· (B) legacy/unused Â· (C) tests only
+Legend: (A) runtime critical · (B) legacy/unused · (C) tests only
 
 ## MatchRound
-- Category: B â€” no runtime/test references; only definitions and archived builds.
+- Category: B — no runtime/test references; only definitions and archived builds.
 - Files: apps/api/prisma/schema.prisma; apps/api/prisma/migrations/20260227202015_init_clean/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260115_results_system/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260116_restore_domain/migration.sql; apps/api/__graveyard/dist/modules/results/results-approval.service.{js,d.ts}; apps/api/__graveyard/dist_backup_20260204025007/modules/results/results-approval.service.{js,d.ts}; docs/cleanup-v1-report.md.
 
 ## TeamRoundResult
@@ -12,15 +12,15 @@ Legend: (A) runtime critical Â· (B) legacy/unused Â· (C) tests only
 - Definitions/archives (B): apps/api/prisma/schema.prisma; apps/api/prisma/migrations/20260227202015_init_clean/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260115_results_system/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260116_restore_domain/migration.sql; apps/api/__graveyard/dist*/modules/results/results.* and results-manual/compute services; docs/cleanup-v1-report.md.
 
 ## RoundPlayerResult
-- Category: B â€” only present in schema/migrations, no runtime or test usage located.
+- Category: B — only present in schema/migrations, no runtime or test usage located.
 - Files: apps/api/prisma/schema.prisma; apps/api/prisma/migrations/20260227202015_init_clean/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260115_results_system/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260116_restore_domain/migration.sql; docs/cleanup-v1-report.md.
 
 ## ResultApproval
-- Category: B â€” model defined but unused in current code; only historical migrations/docs.
+- Category: B — model defined but unused in current code; only historical migrations/docs.
 - Files: apps/api/prisma/schema.prisma; apps/api/prisma/migrations/20260227202015_init_clean/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260115_results_system/migration.sql; apps/api/__graveyard/prisma/migrations_archive/20260116_restore_domain/migration.sql; docs/cleanup-v1-report.md.
 
 ## MatchStanding
-- Category: B â€” no direct Prisma usage; string only appears inside method names (`computeMatchStandings`) plus schema/migrations.
+- Category: B — no direct Prisma usage; string only appears inside method names (`computeMatchStandings`) plus schema/migrations.
 - Files: apps/api/prisma/schema.prisma; apps/api/prisma/migrations/20260227202015_init_clean/migration.sql; apps/api/src/modules/standings/standings.service.ts (method naming only); apps/api/src/modules/standings/standings.controller.ts (route naming only); apps/api/src/modules/standings/standings.service.spec.ts (naming); docs/cleanup-v1-report.md.
 
 ## StandingsSnapshot
