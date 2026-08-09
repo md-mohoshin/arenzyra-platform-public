@@ -32,17 +32,28 @@ test("ownership adoption requires the complete explicit operator contract", () =
 });
 
 test("ownership adoption holds a database fence around the exact transaction", () => {
-  const close = sql.indexOf("ALLOW_CONNECTIONS false");
-  const terminate = sql.indexOf("pg_terminate_backend");
-  const prepared = sql.indexOf("pg_prepared_xacts");
+  const workerConnect = provisioner.indexOf(
+    'psql -X -v ON_ERROR_STOP=1 -f "$fence_fifo"',
+  );
+  const close = provisioner.indexOf("ALLOW_CONNECTIONS false");
+  const terminate = provisioner.indexOf("pg_terminate_backend");
+  const prepared = provisioner.indexOf("pg_prepared_xacts");
+  const release = provisioner.indexOf(': > "$fence_continue"');
+  const workerWait = provisioner.indexOf('if ! wait "$worker_pid"', release);
+  const reopen = provisioner.indexOf("ALLOW_CONNECTIONS true");
   const lock = sql.indexOf("LOCK TABLE %I.%I IN ACCESS EXCLUSIVE MODE");
   const alter = sql.indexOf("ALTER TABLE %I.%I OWNER TO %I");
-  const reopen = sql.lastIndexOf("ALLOW_CONNECTIONS true");
-  assert.ok(close > 0 && close < terminate);
-  assert.ok(terminate < prepared && prepared < lock);
-  assert.ok(lock < alter && alter < reopen);
+  assert.ok(workerConnect > 0 && workerConnect < close);
+  assert.ok(close < terminate && terminate < prepared);
+  assert.ok(prepared < release && release < workerWait && workerWait < reopen);
+  assert.ok(lock > 0 && lock < alter);
+  assert.doesNotMatch(sql, /ALTER DATABASE[\s\S]*ALLOW_CONNECTIONS/);
+  assert.match(sql, /NOT database\.datallowconn/);
   assert.match(sql, /activity\.pid <> pg_backend_pid\(\)/);
   assert.match(sql, /activity\.backend_type = 'client backend'/);
+  assert.doesNotMatch(sql, /ELSE\s+1\s*\/\s*0/);
+  assert.match(provisioner, /\[ "\$fence_state" = "f\|1\|0\|0" \]/);
+  assert.match(provisioner, /if ! wait "\$worker_pid"; then[\s\S]*exit 75/);
 });
 
 test("ownership targets come only from the closed object policy", () => {
@@ -62,6 +73,6 @@ test("ordinary role reconciliation does not activate ownership adoption", () => 
   );
   assert.equal(
     (sql.match(/\\if :object_policy_adopt_ownership/gu) ?? []).length,
-    2,
+    1,
   );
 });

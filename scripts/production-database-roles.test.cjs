@@ -407,7 +407,7 @@ test("bootstrap removes ambient grants and never default-grants runtime DML", ()
   );
   assert.equal(
     (sql.match(/\\if :object_policy_adopt_ownership/gu) ?? []).length,
-    2,
+    1,
   );
   assert.doesNotMatch(
     sql,

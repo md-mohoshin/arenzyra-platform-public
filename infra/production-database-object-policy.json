@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "databaseSchema": "public",
   "sourceDigests": {
-    "apiPrismaSchemaSha256": "4899764f2c94d5d85bb976577bb316eb2ef54f1066e6584c12dece5b7dddfc30",
+    "apiPrismaSchemaSha256": "363237b20e0c7050ef9e376f07b033d42505ab2cfe139757223d7e937141e174",
     "apiMigrationTreeSha256": "e32676d65996077cf5eed7039e8527b0614427436c92be1bb363aafd58ae993a",
     "apiFunctionTriggerMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b",
     "studioMigrationSha256": "efa1fc3bffec6b2ab3d044c10653e01aafee945c3cfcc041d81a206c81fb94bb"
@@ -206,16 +206,16 @@
         "PLAYER_FORCE_LOGOUT",
         "REPORT_RESOLVE",
         "REPORT_ESCALATE",
-        "SESSION_CREATE",
-        "SESSION_TEAM_REGISTER",
-        "SESSION_DISCORD_CONFIG_UPDATE",
-        "SESSION_REGISTRATION_REMOVE",
-        "SESSION_WAITLIST_PROMOTE",
-        "SESSION_MATCH_CREATE",
         "TOURNAMENT_PAUSE",
         "TOURNAMENT_REMOVE_TEAM",
         "TOURNAMENT_HARD_DELETE",
-        "CONTENT_MODERATE"
+        "CONTENT_MODERATE",
+        "SESSION_CREATE",
+        "SESSION_TEAM_REGISTER",
+        "SESSION_REGISTRATION_REMOVE",
+        "SESSION_WAITLIST_PROMOTE",
+        "SESSION_MATCH_CREATE",
+        "SESSION_DISCORD_CONFIG_UPDATE"
       ]
     },
     {
@@ -225,9 +225,9 @@
         "COUNTDOWN",
         "LIVE",
         "PAUSED",
-        "FINISH_PENDING",
         "ENDED",
-        "CONFIRMED"
+        "CONFIRMED",
+        "FINISH_PENDING"
       ]
     },
     {
@@ -258,14 +258,14 @@
       "labels": [
         "PUBG_MOBILE",
         "VALORANT",
-        "CRICKET",
         "CS2",
         "DOTA2",
         "LOL",
         "FORTNITE",
         "FREE_FIRE",
-        "CALL_OF_DUTY",
-        "MLBB"
+        "MLBB",
+        "CRICKET",
+        "CALL_OF_DUTY"
       ]
     },
     {
@@ -309,7 +309,7 @@
     },
     {
       "name": "MatchDataSource",
-      "labels": ["MANUAL", "AUTO", "SHADOW", "PCOB", "API"]
+      "labels": ["MANUAL", "SHADOW", "PCOB", "API", "AUTO"]
     },
     {
       "name": "MatchEventType",
@@ -329,22 +329,16 @@
         "SANHOK",
         "VIKENDI",
         "LIVIK",
-        "LIVIK_AFTERMATH",
         "KARAKIN",
         "DESTON",
         "RONDO",
         "NUSA",
-        "TAEGO",
-        "PARAMO",
         "BERMUDA",
         "PURGATORY",
         "KALAHARI",
         "ALPINE",
         "NEXTERRA",
         "SOLARA",
-        "CODM_ISOLATED",
-        "CODM_BLACKOUT",
-        "CODM_CUSTOM",
         "CORRODE",
         "ABYSS",
         "SUNSET",
@@ -361,7 +355,13 @@
         "CRICKET_T20",
         "CRICKET_ODI",
         "CRICKET_TEST",
-        "CRICKET_CUSTOM"
+        "CRICKET_CUSTOM",
+        "CODM_ISOLATED",
+        "CODM_BLACKOUT",
+        "CODM_CUSTOM",
+        "LIVIK_AFTERMATH",
+        "TAEGO",
+        "PARAMO"
       ]
     },
     {
@@ -370,7 +370,7 @@
     },
     {
       "name": "MatchStatus",
-      "labels": ["DRAFT", "LIVE", "FINISH_PENDING", "FINISHED", "ENDED"]
+      "labels": ["DRAFT", "LIVE", "ENDED", "FINISH_PENDING", "FINISHED"]
     },
     {
       "name": "MatchTeamStatus",

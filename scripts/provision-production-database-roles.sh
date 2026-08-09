@@ -483,7 +483,7 @@ if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
   object_policy_adopt_ownership=true
 fi
 {
-  printf '%s\n' "$postgres_admin_role" "$postgres_admin_password" "$postgres_database" "$schema_name" "$postgres_port"
+  printf '%s\n' "$postgres_admin_role" "$postgres_admin_password" "$postgres_database" "$schema_name" "$postgres_port" "$object_policy_adopt_ownership"
   printf '\\set database_name '\''%s'\''\n' "$postgres_database"
   printf '\\set schema_name '\''%s'\''\n' "$schema_name"
   printf '\\set api_runtime_role '\''%s'\''\n' "$api_runtime_role"
@@ -510,10 +510,113 @@ fi
   IFS= read -r PGDATABASE
   IFS= read -r expected_schema
   IFS= read -r PGPORT
+  IFS= read -r ownership_adoption
   [ "$PGUSER" = "${POSTGRES_USER:-}" ] || exit 75
   export PGUSER PGPASSWORD PGDATABASE PGPORT PGHOST=127.0.0.1 PGCONNECT_TIMEOUT=5
   export PGOPTIONS="-c statement_timeout=30000 -c lock_timeout=5000 -c search_path=$expected_schema"
-  exec psql -X -v ON_ERROR_STOP=1 -f - 2>/dev/null
+  if [ "$ownership_adoption" != true ]; then
+    exec psql -X -v ON_ERROR_STOP=1 -f - 2>/dev/null
+  fi
+
+  case "$PGUSER" in ""|*[!A-Za-z0-9_]*) exit 75 ;; esac
+  case "$PGDATABASE" in ""|*[!A-Za-z0-9_]*) exit 75 ;; esac
+  fence_directory="$(mktemp -d /tmp/arenzyra-db-fence.XXXXXXXX)"
+  fence_fifo="$fence_directory/input.fifo"
+  fence_output="$fence_directory/worker.out"
+  fence_error="$fence_directory/worker.err"
+  fence_connected="$fence_directory/connected"
+  fence_continue="$fence_directory/continue"
+  fence_backend_pid="$fence_directory/backend.pid"
+  fence_application="arenzyra_ownership_adoption_$$"
+  feed_pid=""
+  worker_pid=""
+  fence_closed=0
+
+  cleanup_fence_files() {
+    status="$?"
+    [ -z "$feed_pid" ] || kill "$feed_pid" 2>/dev/null || true
+    [ -z "$worker_pid" ] || kill "$worker_pid" 2>/dev/null || true
+    wait "$feed_pid" 2>/dev/null || true
+    wait "$worker_pid" 2>/dev/null || true
+    rm -f -- "$fence_fifo" "$fence_output" "$fence_error" \
+      "$fence_connected" "$fence_continue" "$fence_backend_pid"
+    rmdir -- "$fence_directory" 2>/dev/null || true
+    exit "$status"
+  }
+  trap cleanup_fence_files EXIT HUP INT TERM
+  [ ! -L "$fence_directory" ] && [ -d "$fence_directory" ] || exit 75
+  chmod 700 -- "$fence_directory"
+  mkfifo -- "$fence_fifo"
+  chmod 600 -- "$fence_fifo"
+  export ARENZYRA_FENCE_DIRECTORY="$fence_directory"
+  export PGAPPNAME="$fence_application"
+
+  {
+    printf "%s\n" \
+      "\\set ON_ERROR_STOP on" \
+      "SELECT pg_backend_pid() AS arenzyra_fence_pid \\gset" \
+      "\\setenv ARENZYRA_FENCE_PID :arenzyra_fence_pid" \
+      "\\! umask 077; printf \"%s\\n\" \"\$ARENZYRA_FENCE_PID\" > \"\$ARENZYRA_FENCE_DIRECTORY/backend.pid\"; : > \"\$ARENZYRA_FENCE_DIRECTORY/connected\"; while [ ! -f \"\$ARENZYRA_FENCE_DIRECTORY/continue\" ]; do sleep 1; done"
+    cat
+  } > "$fence_fifo" &
+  feed_pid="$!"
+  psql -X -v ON_ERROR_STOP=1 -f "$fence_fifo" >"$fence_output" 2>"$fence_error" &
+  worker_pid="$!"
+
+  attempts=0
+  while [ ! -f "$fence_connected" ]; do
+    kill -0 "$worker_pid" 2>/dev/null || {
+      cat "$fence_error" >&2 || true
+      exit 75
+    }
+    attempts=$((attempts + 1))
+    [ "$attempts" -le 15 ] || exit 75
+    sleep 1
+  done
+  worker_backend_pid="$(cat "$fence_backend_pid")"
+  case "$worker_backend_pid" in ""|*[!0-9]*) exit 75 ;; esac
+
+  worker_identity="$(
+    PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
+      psql -X -At -v ON_ERROR_STOP=1 -c \
+      "SELECT count(*) FROM pg_stat_activity WHERE datname = '''$PGDATABASE''' AND pid = $worker_backend_pid AND usename = '''$PGUSER''' AND application_name = '''$fence_application''' AND backend_type = '''client backend''';"
+  )"
+  [ "$worker_identity" = 1 ] || exit 75
+
+  PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
+    psql -X -v ON_ERROR_STOP=1 -c \
+    "ALTER DATABASE \"$PGDATABASE\" WITH ALLOW_CONNECTIONS false;"
+  fence_closed=1
+  PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
+    psql -X -v ON_ERROR_STOP=1 -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '''$PGDATABASE''' AND pid <> $worker_backend_pid AND backend_type = '''client backend''';"
+  fence_state="$(
+    PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
+      psql -X -At -F "|" -v ON_ERROR_STOP=1 -c \
+      "SELECT database.datallowconn, (SELECT count(*) FROM pg_stat_activity activity WHERE activity.datname = '''$PGDATABASE''' AND activity.pid = $worker_backend_pid AND activity.usename = '''$PGUSER''' AND activity.application_name = '''$fence_application''' AND activity.backend_type = '''client backend'''), (SELECT count(*) FROM pg_stat_activity activity WHERE activity.datname = '''$PGDATABASE''' AND activity.pid <> $worker_backend_pid AND activity.backend_type = '''client backend'''), (SELECT count(*) FROM pg_prepared_xacts prepared WHERE prepared.database = '''$PGDATABASE''') FROM pg_database database WHERE database.datname = '''$PGDATABASE''';"
+  )"
+  [ "$fence_state" = "f|1|0|0" ] || exit 75
+  : > "$fence_continue"
+
+  if ! wait "$worker_pid"; then
+    worker_pid=""
+    cat "$fence_error" >&2 || true
+    exit 75
+  fi
+  worker_pid=""
+  wait "$feed_pid"
+  feed_pid=""
+  cat "$fence_output"
+  [ ! -s "$fence_error" ] || cat "$fence_error" >&2
+
+  PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
+    psql -X -v ON_ERROR_STOP=1 -c \
+    "ALTER DATABASE \"$PGDATABASE\" WITH ALLOW_CONNECTIONS true;"
+  fence_closed=0
+  reopened="$(PGDATABASE=postgres psql -X -At -v ON_ERROR_STOP=1 -c "SELECT datallowconn FROM pg_database WHERE datname = '''$PGDATABASE''';")"
+  [ "$reopened" = t ] || exit 75
+  trap - EXIT HUP INT TERM
+  cleanup_fence_files
 '
 
 if [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 1 ]; then

@@ -412,23 +412,22 @@ WHERE granted.rolname = ANY (ARRAY[
 -- separately reviewed ownership repair after the next phase fails closed.
 COMMIT;
 
--- The explicit ownership-adoption mode closes the database before any owner
--- change, then terminates every other client backend. The current psql session
--- remains connected and performs the complete closed-policy transaction. Any
--- failure before the final reopen leaves the database closed, which is the
--- deliberate fail-safe state and requires reviewed administrator recovery.
+-- The explicit ownership-adoption mode is entered only after the provisioner
+-- has established this already-connected worker and, from the postgres
+-- database, closed the target database and terminated every other client. A
+-- session cannot set ALLOW_CONNECTIONS=false for its own current database, so
+-- the two-session fence is intentionally enforced outside this SQL stream.
+-- Recheck that exact fence here before beginning any ownership transaction.
 \if :object_policy_adopt_ownership
-SELECT format(
-  'ALTER DATABASE %I WITH ALLOW_CONNECTIONS false',
-  :'database_name'
-)
-\gexec
-SELECT pg_terminate_backend(activity.pid)
-FROM pg_stat_activity activity
-WHERE activity.datname = :'database_name'
-  AND activity.pid <> pg_backend_pid()
-  AND activity.backend_type = 'client backend';
-SELECT CASE WHEN
+SELECT 1 / CASE WHEN
+  EXISTS (
+    SELECT 1
+    FROM pg_database database
+    WHERE database.datname = :'database_name'
+      AND NOT database.datallowconn
+  )
+  AND current_database() = :'database_name'
+  AND
   NOT EXISTS (
     SELECT 1
     FROM pg_stat_activity activity
@@ -441,7 +440,7 @@ SELECT CASE WHEN
     FROM pg_prepared_xacts prepared
     WHERE prepared.database = :'database_name'
   )
-THEN 1 ELSE 1/0 END AS reviewed_database_fence_attested;
+THEN 1 ELSE 0 END AS reviewed_database_fence_attested;
 \endif
 BEGIN;
 
@@ -451,7 +450,7 @@ BEGIN;
 -- every exact policy table before changing any owner. It never enumerates
 -- objects outside the closed policy and accepts only the administrator,
 -- PostgreSQL's stock owner, or the final reviewed owners as predecessors.
-SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
+SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
   :'object_policy_require_complete'::boolean
   AND (SELECT count(*) FROM arenzyra_object_policy) = (
     SELECT count(*)
@@ -469,7 +468,7 @@ SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
         :'studio_migration_role'
       )
   )
-) THEN 1 ELSE 1/0 END AS reviewed_relation_adoption_precondition;
+) THEN 1 ELSE 0 END AS reviewed_relation_adoption_precondition;
 
 SELECT format(
   'LOCK TABLE %I.%I IN ACCESS EXCLUSIVE MODE',
@@ -495,7 +494,7 @@ WHERE :'object_policy_adopt_ownership'::boolean
 ORDER BY policy.relation_name
 \gexec
 
-SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
+SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
   (SELECT count(*) FROM arenzyra_enum_policy) = (
     SELECT count(*)
     FROM pg_type type
@@ -509,7 +508,7 @@ SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
         :'api_migration_role'
       )
   )
-) THEN 1 ELSE 1/0 END AS reviewed_enum_adoption_precondition;
+) THEN 1 ELSE 0 END AS reviewed_enum_adoption_precondition;
 
 SELECT format(
   'ALTER TYPE %I.%I OWNER TO %I',
@@ -522,7 +521,7 @@ WHERE :'object_policy_adopt_ownership'::boolean
 ORDER BY policy.type_name
 \gexec
 
-SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
+SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
   (SELECT count(*) FROM arenzyra_function_policy) = (
     SELECT count(*)
     FROM pg_proc routine
@@ -538,7 +537,7 @@ SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
         :'api_migration_role'
       )
   )
-) THEN 1 ELSE 1/0 END AS reviewed_function_adoption_precondition;
+) THEN 1 ELSE 0 END AS reviewed_function_adoption_precondition;
 
 SELECT format(
   'ALTER FUNCTION %s OWNER TO %I',
@@ -1302,10 +1301,3 @@ WHERE namespace.nspname = :'schema_name'
 \gexec
 
 COMMIT;
-\if :object_policy_adopt_ownership
-SELECT format(
-  'ALTER DATABASE %I WITH ALLOW_CONNECTIONS true',
-  :'database_name'
-)
-\gexec
-\endif
