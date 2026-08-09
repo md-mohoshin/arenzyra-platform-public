@@ -77,6 +77,7 @@ test("release inputs cover every production Compose build component", () => {
     "infra/docker-compose.discord-bot.remote.yml",
     "infra/production-database-object-policy.json",
     "infra/sql/bootstrap-production-roles.sql",
+    "infra/sql/production-entitlement-inventory.sql",
     "scripts",
   ]) {
     assert.ok(
@@ -326,6 +327,7 @@ test("database policy and only reviewed SQL sources affect release provenance", 
     "apps/api/prisma/migrations/20260805000000_reviewed/migration.sql",
     "apps/arenzyra-web/scripts/studio-migrations/001_reviewed.sql",
     "infra/sql/bootstrap-production-roles.sql",
+    "infra/sql/production-entitlement-inventory.sql",
   ];
   const excludedSqlAndDumps = [
     "apps/api/prisma/migrations/migration.sql",

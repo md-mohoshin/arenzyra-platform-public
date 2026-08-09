@@ -58,6 +58,7 @@ infra/.env.release
 *.dump
 *.sql
 !infra/sql/bootstrap-production-roles.sql
+!infra/sql/production-entitlement-inventory.sql
 *.sqlite
 *.sqlite3
 *.bak

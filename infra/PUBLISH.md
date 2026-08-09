@@ -275,6 +275,13 @@ rerun the read-only gate and record zero inconsistent counts before returning to
 the standard deployment workflow. The detailed billing semantics are in
 [`MANUAL_BILLING_RUNBOOK.md`](../docs/product/MANUAL_BILLING_RUNBOOK.md).
 
+Before deciding whether legacy `ACTIVE` access can become strictly
+future-clock-bounded, run the separate aggregate-only inventory documented in
+[`PRODUCTION_ENTITLEMENT_INVENTORY.md`](../docs/codex/PRODUCTION_ENTITLEMENT_INVENTORY.md).
+It classifies the existing clock, organization, subscription, plan, and owner
+states without emitting identifiers or arbitrary stored values and performs no
+production write.
+
 ### Legacy IDP credential backfill
 
 The canonical checkpoint writes `DiscordIdpSchedule.roomPassword` in plaintext.

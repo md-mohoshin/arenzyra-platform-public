@@ -40,6 +40,7 @@ const defaultIncludedPaths = Object.freeze([
   "infra/production-api-migration-safety.json",
   "infra/production-database-object-policy.json",
   "infra/sql/bootstrap-production-roles.sql",
+  "infra/sql/production-entitlement-inventory.sql",
   "scripts",
 ]);
 
@@ -175,7 +176,8 @@ function isReviewedSqlSource(filePath, rootDir = repoRoot) {
     /^apps\/arenzyra-web\/scripts\/studio-migrations\/[^/]+\.sql$/.test(
       relativePath,
     ) ||
-    relativePath === "infra/sql/bootstrap-production-roles.sql"
+    relativePath === "infra/sql/bootstrap-production-roles.sql" ||
+    relativePath === "infra/sql/production-entitlement-inventory.sql"
   );
 }
 

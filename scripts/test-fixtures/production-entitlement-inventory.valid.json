@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "organizations": {
+    "total": 12,
+    "deleted": 2,
+    "nonDeleted": 10,
+    "approvedAndActive": 7,
+    "notApprovedOrInactive": 3
+  },
+  "nonDeletedOrganizationStatus": {
+    "pending": 1,
+    "approved": 8,
+    "suspended": 1,
+    "legacyOrUnknown": 0
+  },
+  "nonDeletedIsActive": {
+    "active": 9,
+    "inactive": 1,
+    "legacyOrUnknown": 0
+  },
+  "nonDeletedSubscriptionStatus": {
+    "active": 5,
+    "trialing": 3,
+    "expired": 1,
+    "legacyOrUnknown": 1
+  },
+  "nonDeletedPaidUntil": {
+    "null": 6,
+    "future": 3,
+    "expired": 1
+  },
+  "nonDeletedTrialEndsAt": {
+    "null": 7,
+    "future": 2,
+    "expired": 1
+  },
+  "nonDeletedTrialDates": {
+    "bothMissing": 6,
+    "startOnly": 1,
+    "endOnly": 0,
+    "orderedAndStarted": 3,
+    "orderedWithFutureStart": 0,
+    "invalidOrder": 0
+  },
+  "activeState": {
+    "paidUntilNull": 2,
+    "paidUntilFuture": 2,
+    "paidUntilExpired": 1,
+    "trialStartedAtPresent": 1,
+    "trialEndsAtPresent": 1
+  },
+  "trialingState": {
+    "valid": 1,
+    "expired": 1,
+    "missingDates": 1,
+    "paidUntilPresentWithCompleteDates": 0,
+    "invalidOrderOrFutureStart": 0,
+    "anyPaidUntilPresent": 0
+  },
+  "expiredState": {
+    "paidUntilNull": 0,
+    "paidUntilFuture": 1,
+    "paidUntilExpired": 0,
+    "trialEndsAtNull": 1,
+    "trialEndsAtFuture": 0,
+    "trialEndsAtExpired": 0,
+    "trialStartedAtPresent": 0
+  },
+  "nonDeletedPlans": {
+    "null": 1,
+    "nonNull": 9,
+    "discordBasic": 1,
+    "discordOps": 1,
+    "production": 3,
+    "sportsProduction": 1,
+    "multiGameProduction": 1,
+    "pubgAutoLauncher": 1,
+    "legacyOrUnknown": 1
+  },
+  "ownerReferences": {
+    "missing": 1,
+    "linked": 8,
+    "dangling": 1
+  },
+  "ownerAnomalies": {
+    "linkedOwnerDeleted": 1,
+    "linkedOwnerNotActive": 2,
+    "linkedOwnerOrganizationMismatch": 1
+  },
+  "clockBoundedAccessCandidate": {
+    "organizationBlocked": 3,
+    "activePaidUntilFuture": 1,
+    "activePaidUntilNull": 2,
+    "activePaidUntilExpired": 1,
+    "trialingValid": 1,
+    "trialingInvalid": 1,
+    "expired": 0,
+    "legacyOrUnknownSubscription": 1
+  }
+}
