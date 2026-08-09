@@ -153,7 +153,12 @@ a safe four-file copy.
 - Thirteen unproven commercial desktop map rasters totaling 27,411,958 bytes
   were recoverably quarantined. Manifest SHA-256:
   `681addffc18f2354f1e5b11f19f1321bfe28dc88c6d7219fe7735a962c0ef994`.
-  No commercial map raster is bundled. A neutral SVG supports preview only;
+- Ten additional Root source rasters totaling 25,142,675 bytes and their
+  10,120-byte unused generator were double-copied outside the repository and
+  quarantined. The [Root source quarantine record](ROOT_PUBGM_MAP_SOURCE_QUARANTINE_20260809.md)
+  pins every path, size, and SHA-256. Release metadata now rejects either Root
+  quarantine path if it returns. No commercial map raster is bundled in the
+  desktop or Root release-source boundary. A neutral SVG supports preview only;
   production match preflight blocks a selected map without an approved asset.
 - A mutating PCOB diagnostic was recoverably quarantined instead of committed:
   14,876 bytes, SHA-256
@@ -206,9 +211,9 @@ new production inventory.
 
 ## Genuine release blockers
 
-1. Keep the 24 quarantined Root paths outside release input unless individually
-   approved, confirm `ob.js` provenance, and reproduce all revisions from clean
-   checkouts.
+1. Keep every quarantined Root path and external recovery snapshot outside
+   release input unless individually approved, confirm `ob.js` provenance, and
+   reproduce all revisions from clean checkouts.
 2. Complete the 149 direct and 258 manual API overlays without overwriting
    protected gateway or credential-approval changes. Resolve the passwordless
    application/account-setup/trial and catalog/billing incompatibilities.

@@ -7,6 +7,15 @@ const { execFileSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
 const defaultOutput = path.join(repoRoot, "infra", ".env.release");
+const quarantinedCommercialMapSourcePrefix = `${path.posix.join(
+  "scripts",
+  "assets",
+  "pubgm-maps",
+)}/`;
+const quarantinedCommercialMapGenerator = path.posix.join(
+  "scripts",
+  "generate-pubgm-map-assets.mjs",
+);
 
 // These are the source inputs copied by the production Compose build contexts,
 // plus the files that define the publish stack and its provenance gate. Keep the
@@ -106,6 +115,31 @@ function toPosixRelative(rootDir, filePath) {
   return path.relative(rootDir, filePath).replace(/\\/g, "/");
 }
 
+function isQuarantinedCommercialMapSource(filePath, rootDir = repoRoot) {
+  const resolvedRoot = path.resolve(rootDir);
+  const resolvedFile = path.resolve(filePath);
+  const relativePath = toPosixRelative(resolvedRoot, resolvedFile);
+  if (relativePath === ".." || relativePath.startsWith("../")) {
+    return false;
+  }
+
+  const normalizedPath = relativePath.toLowerCase();
+  return (
+    normalizedPath === quarantinedCommercialMapGenerator ||
+    normalizedPath.startsWith(quarantinedCommercialMapSourcePrefix)
+  );
+}
+
+function assertReleaseInputIsNotQuarantined(filePath, rootDir = repoRoot) {
+  if (!isQuarantinedCommercialMapSource(filePath, rootDir)) {
+    return;
+  }
+
+  throw new Error(
+    `Release input is quarantined pending exact-byte redistribution approval: ${toPosixRelative(rootDir, filePath)}`,
+  );
+}
+
 function isIgnoredTemporaryDirectory(name) {
   return (
     name === ".tmp" ||
@@ -188,6 +222,9 @@ function collectFiles(targetPath, files, rootDir) {
     );
   }
   if (stat.isFile()) {
+    // Keep this check ahead of ignore processing so a renamed or ignored file
+    // cannot silently restore the quarantined commercial-map source boundary.
+    assertReleaseInputIsNotQuarantined(targetPath, rootDir);
     const entry = {
       isFile: () => true,
       isDirectory: () => false,
@@ -684,6 +721,7 @@ module.exports = {
   defaultDockerfiles,
   defaultRuntimeComposeFiles,
   inspectGitRepository,
+  isQuarantinedCommercialMapSource,
   isReviewedSqlSource,
   provenanceProblems,
   shouldIgnore,

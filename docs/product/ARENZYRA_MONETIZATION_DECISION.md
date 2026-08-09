@@ -82,11 +82,15 @@ signing gates pass. Quote custom integration and live-event operations
 separately. These candidate prices do not automatically reprice existing legacy
 entitlements or the separate YouTube automation plans.
 
-No commercial PUBG/KRAFTON map raster is currently bundled. Thirteen unproven
-rasters were recoverably quarantined, and production match startup fails closed
-without an approved selected-map asset. Any future raster requires reviewed
-redistribution rights for the exact bytes; an organizer's event license is not
-evidence that a SaaS or launcher vendor may redistribute game assets.
+No commercial PUBG/KRAFTON map raster is currently bundled in the desktop or
+Root release-source boundary. Thirteen unproven desktop rasters plus ten legacy
+Root source rasters and their unused generator were recoverably quarantined;
+the release metadata collector rejects reintroduction of the Root paths, and
+production match startup fails closed without an approved selected-map asset.
+Any future raster requires reviewed redistribution rights for the exact bytes;
+an organizer's event license is not evidence that a SaaS or launcher vendor may
+redistribute game assets. The exact Root inventory is preserved in the
+[2026-08-09 quarantine record](../codex/ROOT_PUBGM_MAP_SOURCE_QUARANTINE_20260809.md).
 
 The unproven 42-file Production Design visual package was also recoverably
 quarantined and stripped from release output. Do not use those visuals in

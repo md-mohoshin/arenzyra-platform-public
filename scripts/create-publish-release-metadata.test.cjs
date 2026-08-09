@@ -144,6 +144,53 @@ test("release inputs cover the entire scripts tree without a brittle helper list
   }
 });
 
+test("release inputs fail closed for quarantined commercial map sources", (t) => {
+  const rootDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "arenzyra-release-map-quarantine-"),
+  );
+  t.after(() => fs.rmSync(rootDir, { force: true, recursive: true }));
+
+  writeFile(
+    rootDir,
+    "scripts/reviewed-release-helper.cjs",
+    "module.exports = {};\n",
+  );
+  writeFile(rootDir, "scripts/assets/neutral/preview.svg", "<svg/>\n");
+  const includedPaths = ["scripts"];
+
+  const initialFiles = collectReleaseFiles({ rootDir, includedPaths }).map(
+    (filePath) => path.relative(rootDir, filePath).replace(/\\/g, "/"),
+  );
+  assert.deepEqual(initialFiles, [
+    "scripts/assets/neutral/preview.svg",
+    "scripts/reviewed-release-helper.cjs",
+  ]);
+
+  const rasterPath = writeFile(
+    rootDir,
+    "scripts/assets/pubgm-maps/erangel.png",
+    "unapproved-raster-bytes\n",
+  );
+  assert.throws(
+    () => collectReleaseFiles({ rootDir, includedPaths }),
+    /Release input is quarantined.*scripts\/assets\/pubgm-maps\/erangel\.png/,
+  );
+  fs.rmSync(rasterPath);
+
+  const generatorPath = writeFile(
+    rootDir,
+    "scripts/generate-pubgm-map-assets.mjs",
+    "// quarantined single-purpose generator\n",
+  );
+  assert.throws(
+    () => collectReleaseFiles({ rootDir, includedPaths }),
+    /Release input is quarantined.*scripts\/generate-pubgm-map-assets\.mjs/,
+  );
+  fs.rmSync(generatorPath);
+
+  assert.doesNotThrow(() => collectReleaseFiles({ rootDir, includedPaths }));
+});
+
 test("content digest changes for every release component and excludes local artifacts", (t) => {
   const rootDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "arenzyra-release-digest-"),
