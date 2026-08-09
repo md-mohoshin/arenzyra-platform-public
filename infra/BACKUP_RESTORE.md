@@ -5,6 +5,12 @@ private identity off the production host; production needs only the public age
 recipient. Configure an off-host rclone destination so loss of the host or its
 disk does not also destroy recovery data.
 
+The 2026-08-10 production inventory found no `/usr/bin/rclone` executable and
+no configured remote. Do not substitute a same-host directory or a placeholder
+remote. Install the reviewed rclone package, configure a genuinely off-host
+encrypted destination, and prove a bounded upload/download/checksum round trip
+before migrating the production env or attempting a deployment.
+
 ## Configure
 
 Install `age` and `rclone`, keep the reviewed helper image

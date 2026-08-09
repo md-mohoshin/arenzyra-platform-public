@@ -31,6 +31,34 @@ For an existing database, follow
 [`docs/YOUTUBE_TOKEN_KEY_ROTATION.md`](../docs/YOUTUBE_TOKEN_KEY_ROTATION.md)
 before changing or removing any YouTube token key.
 
+For a legacy production installation, do not overwrite the live env with
+`deploy:create-env` and do not hand-copy individual secrets. After the reviewed
+checkout bootstrap has prepared (but not activated) an exact staging checkout,
+run the one-shot migration below from a clean parent. The output must still be
+the byte-identical bootstrap copy of the live source env; a second invocation
+is rejected so database-role passwords cannot silently rotate. The migration
+copies only keys present in the reviewed template, drops development bootstrap
+credentials, preserves allowlisted integrations, generates distinct
+least-privilege database/MFA/IDP/service secrets, and keeps public applications
+disabled.
+
+```bash
+env -i \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  HOME=/root \
+  /usr/bin/node <exact-staged-checkout>/scripts/migrate-production-publish-env.cjs \
+  --source /opt/arenzyra/infra/.env.publish \
+  --template <exact-staged-checkout>/infra/.env.publish.example \
+  --out <exact-staged-checkout>/infra/.env.publish \
+  --age-recipient '<reviewed-public-age-recipient>' \
+  --rclone-remote '<reviewed-off-host-rclone-remote:path>' \
+  --confirm MIGRATE_REVIEWED_PRODUCTION_ENV
+```
+
+Do not run that command until the off-host remote is configured and a bounded
+read/write/checksum probe succeeds. An empty or invented remote deliberately
+leaves preflight blocked. The private age identity must remain off the server.
+
 ## Start the publish stack
 
 Every production deployment must enter through the committed-script launcher
@@ -58,6 +86,10 @@ reports 4 expired `ACTIVE` clocks and 2 invalid `TRIALING` clocks; and the
 `api-uploads` and `api-storage` roots are `0:0` mode `0777`. These are current
 hard blockers, not optional warnings. The deploy must not change customer rows,
 volume contents, ownership, modes, or database state to make them pass.
+The follow-up inventory also found no production `rclone` executable or
+configured off-host destination, so environment migration and any mutating
+release step remain blocked until an operator supplies and verifies that
+external recovery target.
 
 For a full API release, the guarded deploy then performs a second read-only
 release-safety check. It inventories every row in `_prisma_migrations`, binds
