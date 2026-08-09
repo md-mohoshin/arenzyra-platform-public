@@ -31,3 +31,20 @@ malicious `BASH_ENV`.
    `npm run deploy:up:discord-bot` commands. For a custom/partial deployment,
    run the same preflight explicitly before the custom command.
 6. After deployment, verify container health and the public HTTPS endpoint.
+
+# Local ignored-data safety
+
+Ignored paths are not disposable by default. They can contain user data, test
+evidence, or runtime state that Git cannot restore.
+
+1. Never use `git clean` to remove individual files inside an ignored
+   directory. Git may select and remove the ignored parent directory instead
+   of only the named descendants.
+2. Before removing any ignored or untracked item, inventory the exact target
+   and its parent, confirm that no additional contents are in scope, and make a
+   recoverable copy when the bytes may matter.
+3. Prefer leaving harmless test output in place or moving exact inspected
+   files to a quarantine outside the release/build context. Do not broaden a
+   cleanup target merely because a narrow command is inconvenient.
+4. If a cleanup command affects more than the verified target, stop all writes,
+   preserve the remaining state, and record both the known and unknown scope.
