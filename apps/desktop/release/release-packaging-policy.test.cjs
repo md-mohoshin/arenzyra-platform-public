@@ -4,7 +4,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const { validateConfiguration } = require("app-builder-lib/out/util/config/config");
+const {
+  validateConfiguration,
+} = require("app-builder-lib/out/util/config/config");
 const { DebugLogger } = require("builder-util");
 
 const candidateConfig = require("../electron-builder.candidate.config.cjs");
@@ -16,6 +18,23 @@ const {
   DEFAULT_POLICY_PATH,
   assertReleasePackagingReady,
 } = require("./release-packaging-policy.cjs");
+
+function withCandidateArgv(callback) {
+  const originalArgv = process.argv;
+  process.argv = [
+    process.execPath,
+    "electron-builder",
+    "--config",
+    "electron-builder.candidate.config.cjs",
+    "--publish",
+    "never",
+  ];
+  try {
+    return callback();
+  } finally {
+    process.argv = originalArgv;
+  }
+}
 
 test("tracked desktop package policy blocks release packaging", () => {
   assert.throws(
@@ -47,6 +66,25 @@ test("review strings cannot unlock production desktop packaging", () => {
   assert.throws(
     () => releaseConfig.beforePack(forgedApproval),
     /release packaging is blocked/i,
+  );
+});
+
+test("direct packaging hooks evaluate exact connector provenance while the production blocker remains unconditional", () => {
+  assert.throws(
+    () => releaseConfig.beforePack(),
+    (error) =>
+      error instanceof AggregateError &&
+      /release packaging is blocked/i.test(error.message) &&
+      /connector commercial provenance.*explicitly unapproved/i.test(
+        error.message,
+      ) &&
+      error.errors.some(
+        (nested) => nested?.code === "ARENZYRA_CONNECTOR_PROVENANCE_UNAPPROVED",
+      ),
+  );
+  assert.throws(
+    () => withCandidateArgv(() => candidateConfig.beforeBuild()),
+    (error) => error?.code === "ARENZYRA_CONNECTOR_PROVENANCE_UNAPPROVED",
   );
 });
 
@@ -122,7 +160,7 @@ test("desktop scripts keep release packaging blocked and isolate the candidate",
   assert.doesNotMatch(releaseCommand, /candidate|--publish/i);
   assert.match(
     candidateCommand,
-    /verify:map-provenance && electron-builder --config electron-builder\.candidate\.config\.cjs --publish never$/,
+    /verify:connector-provenance && npm run verify:map-provenance && electron-builder --config electron-builder\.candidate\.config\.cjs --publish never$/,
   );
   assert.doesNotMatch(
     candidateCommand,

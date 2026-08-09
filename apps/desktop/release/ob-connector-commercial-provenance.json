@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "scope": "Commercial redistribution of the root ob.js connector in the Arenzyra Windows desktop launcher",
+  "repositoryReview": {
+    "state": "reviewed-unapproved",
+    "historyScope": "Available local Git history only; no upstream authorship or license provenance was established.",
+    "exactBytesFirstObservedAtLocalCommit": "929c34d3b102037dba7f606f882273008439a4be",
+    "currentHeaderLicenseNotice": "absent",
+    "commercialRightsEvidence": "not-provided",
+    "reviewMethod": "The exact connector bytes, current file header, and available local revisions were inspected. This technical repository review is not a commercial-rights approval."
+  },
+  "connector": {
+    "path": "ob.js",
+    "sizeBytes": 228486,
+    "sha256": "8e7fce4590389834eaf048c67f530d2f241bca08dbdd5c7faccc539ad61761db",
+    "approvalState": "unapproved",
+    "evidenceIds": []
+  },
+  "commercialReleaseApproval": {
+    "state": "unapproved",
+    "reviewedBy": null,
+    "reviewedAt": null,
+    "reviewReference": null,
+    "notes": "The exact connector is a required launcher resource, but the repository does not contain reviewed evidence authorizing its commercial redistribution."
+  },
+  "evidenceRequirements": {
+    "verificationNote": "A future approval must be bound to these exact connector bytes. The verifier must receive each reviewed evidence document as out-of-band bytes and match documentSha256; approval metadata in this file is insufficient by itself.",
+    "acceptedTypes": [
+      "written-commercial-redistribution-permission",
+      "copyright-assignment-or-work-for-hire",
+      "recognized-open-source-license-provenance-review"
+    ],
+    "requiredFields": [
+      "id",
+      "type",
+      "issuer",
+      "grantedTo",
+      "reference",
+      "documentSha256",
+      "authorizedConnectorSha256",
+      "reviewState",
+      "reviewedBy",
+      "reviewedAt"
+    ]
+  },
+  "evidence": []
+}

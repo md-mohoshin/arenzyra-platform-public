@@ -6,8 +6,38 @@ const {
 const {
   assertReleasePackagingReady,
 } = require("./release/release-packaging-policy.cjs");
+const {
+  verifyDesktopConnectorCommercialProvenance,
+} = require("../../scripts/verify-desktop-connector-provenance.cjs");
 
 const electronRuntimeFiles = listPackagedElectronRuntimeFiles();
+
+function assertProductionPackagingReady() {
+  let provenanceError = null;
+  try {
+    verifyDesktopConnectorCommercialProvenance();
+  } catch (error) {
+    provenanceError = error;
+  }
+  try {
+    // This remains unconditional even when connector provenance is eventually
+    // approved. The independent packaged-runtime blocker has its own closure.
+    assertReleasePackagingReady();
+  } catch (packagingError) {
+    if (provenanceError) {
+      throw new AggregateError(
+        [packagingError, provenanceError],
+        `${packagingError.message} Connector commercial provenance is also blocked: ${
+          provenanceError instanceof Error
+            ? provenanceError.message
+            : String(provenanceError)
+        }`,
+      );
+    }
+    throw packagingError;
+  }
+  if (provenanceError) throw provenanceError;
+}
 
 module.exports = {
   appId: "com.arenzyra.observerlauncher",
@@ -18,7 +48,7 @@ module.exports = {
   asar: false,
   forceCodeSigning: true,
   publish: null,
-  beforePack: () => assertReleasePackagingReady(),
+  beforePack: () => assertProductionPackagingReady(),
   protocols: [
     {
       name: "Arenzyra Observer Launcher",

@@ -11,10 +11,12 @@ const RELEASE_INPUT_PATHS = Object.freeze([
   "package-lock.json",
   "apps/desktop",
   "ob.js",
+  "scripts/blocked-launcher-release-entrypoint.cjs",
   "scripts/launcher-release-artifact-verifier.cjs",
   "scripts/sync-brand-icons.cjs",
   "scripts/sync-desktop-maps.cjs",
   "scripts/sync-launcher-downloads.cjs",
+  "scripts/verify-desktop-connector-provenance.cjs",
   "scripts/verify-desktop-map-provenance.cjs",
   "scripts/verify-desktop-release-inputs.cjs",
 ]);

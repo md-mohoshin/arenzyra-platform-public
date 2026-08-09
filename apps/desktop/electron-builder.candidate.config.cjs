@@ -4,11 +4,15 @@ const releaseConfig = require("./electron-builder.config.cjs");
 const {
   assertCandidatePackagingInvocation,
 } = require("./release/candidate-packaging-policy.cjs");
+const {
+  verifyDesktopConnectorCommercialProvenance,
+} = require("../../scripts/verify-desktop-connector-provenance.cjs");
 
 const { beforePack: _releaseBlock, ...sharedConfig } = releaseConfig;
 
 const assertCandidateInvocation = () => {
   assertCandidatePackagingInvocation();
+  verifyDesktopConnectorCommercialProvenance();
   return true;
 };
 
@@ -45,7 +49,7 @@ module.exports = {
   beforeBuild: assertCandidateInvocation,
   beforePack: assertCandidateInvocation,
   afterAllArtifactBuild: () => {
-    assertCandidatePackagingInvocation();
+    assertCandidateInvocation();
     return [];
   },
 };

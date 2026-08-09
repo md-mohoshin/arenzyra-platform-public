@@ -57,12 +57,22 @@ function createFixture() {
   writeFile(root, "scripts/sync-desktop-maps.cjs", "module.exports = 1;\n");
   writeFile(
     root,
+    "scripts/blocked-launcher-release-entrypoint.cjs",
+    "module.exports = 1;\n",
+  );
+  writeFile(
+    root,
     "scripts/launcher-release-artifact-verifier.cjs",
     "module.exports = 1;\n",
   );
   writeFile(
     root,
     "scripts/sync-launcher-downloads.cjs",
+    "module.exports = 1;\n",
+  );
+  writeFile(
+    root,
+    "scripts/verify-desktop-connector-provenance.cjs",
     "module.exports = 1;\n",
   );
   writeFile(
@@ -135,6 +145,8 @@ for (const releaseInput of [
   "package-lock.json",
   "scripts/sync-brand-icons.cjs",
   "scripts/sync-desktop-maps.cjs",
+  "scripts/blocked-launcher-release-entrypoint.cjs",
+  "scripts/verify-desktop-connector-provenance.cjs",
 ]) {
   fixtureTest(`rejects a dirty release dependency ${releaseInput}`, (root) => {
     writeFile(root, releaseInput, `dirty ${releaseInput}\n`);
@@ -302,6 +314,9 @@ test("desktop release and candidate builds never import maps and guard inputs im
   ]) {
     const command = desktopPackage.scripts[scriptName];
     const firstGuard = command.indexOf("npm run verify:release-inputs");
+    const firstConnectorProvenanceGate = command.indexOf(
+      "npm run verify:connector-provenance",
+    );
     const brandSync = command.indexOf("npm run sync:branding");
     const secondGuard = command.indexOf(
       "npm run verify:release-inputs",
@@ -312,17 +327,26 @@ test("desktop release and candidate builds never import maps and guard inputs im
       "npm run verify:release-inputs",
       secondGuard + 1,
     );
+    const secondConnectorProvenanceGate = command.indexOf(
+      "npm run verify:connector-provenance",
+      firstConnectorProvenanceGate + 1,
+    );
     const provenanceGate = command.indexOf("npm run verify:map-provenance");
     const packager = command.indexOf("electron-builder");
 
     assert.doesNotMatch(command, /sync:maps/);
     assert.ok(firstGuard >= 0, scriptName);
-    assert.ok(firstGuard < brandSync, scriptName);
+    assert.ok(firstGuard < firstConnectorProvenanceGate, scriptName);
+    assert.ok(firstConnectorProvenanceGate < brandSync, scriptName);
     assert.ok(brandSync < secondGuard, scriptName);
     assert.ok(secondGuard < rendererBuild, scriptName);
     assert.ok(rendererBuild < thirdGuard, scriptName);
-    assert.ok(thirdGuard < provenanceGate, scriptName);
+    assert.ok(thirdGuard < secondConnectorProvenanceGate, scriptName);
+    assert.ok(secondConnectorProvenanceGate < provenanceGate, scriptName);
     assert.ok(provenanceGate < packager, scriptName);
-    assert.match(command, new RegExp(`--config ${expectedConfig.replaceAll(".", "\\.")}`));
+    assert.match(
+      command,
+      new RegExp(`--config ${expectedConfig.replaceAll(".", "\\.")}`),
+    );
   }
 });

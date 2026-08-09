@@ -15,10 +15,11 @@
     "lint": "eslint .",
     "build": "vite build",
     "verify:release-inputs": "node ../../scripts/verify-desktop-release-inputs.cjs",
+    "verify:connector-provenance": "node ../../scripts/verify-desktop-connector-provenance.cjs",
     "verify:map-provenance": "node ../../scripts/verify-desktop-map-provenance.cjs",
     "build:electro": "npm run build:electron",
-    "build:electron": "npm run verify:release-inputs && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:map-provenance && electron-builder --config electron-builder.config.cjs",
-    "build:electron:candidate": "npm run verify:release-inputs && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:map-provenance && electron-builder --config electron-builder.candidate.config.cjs --publish never",
+    "build:electron": "npm run verify:release-inputs && npm run verify:connector-provenance && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:connector-provenance && npm run verify:map-provenance && electron-builder --config electron-builder.config.cjs",
+    "build:electron:candidate": "npm run verify:release-inputs && npm run verify:connector-provenance && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:connector-provenance && npm run verify:map-provenance && electron-builder --config electron-builder.candidate.config.cjs --publish never",
     "run:packaged": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process '.\\dist\\win-unpacked\\Arenzyra Observer Launcher.exe'\"",
     "build:electron:run": "npm run build:electron && npm run run:packaged",
     "typecheck": "tsc --noEmit"

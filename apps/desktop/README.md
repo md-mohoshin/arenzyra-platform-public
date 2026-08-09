@@ -98,6 +98,15 @@ enables the supported ASAR-integrity/loading fuses. It is not a release or
 staging input.
 
 The release and candidate commands never run the development-only map importer.
+Both commands also verify the exact root `ob.js` connector against
+`release/ob-connector-commercial-provenance.json` before source generation and
+again immediately before packaging. Direct production, candidate, staging, and
+verification entrypoints apply the same connector gate. The current exact
+bytes are explicitly unapproved because the available local history and source
+header establish no commercial redistribution right. A future approval must
+supply the reviewed evidence-document bytes out of band and match their
+recorded SHA-256 values; editing approval metadata alone cannot pass the gate.
+
 The current source packages only the project-owned neutral
 `map-not-available.svg`; the 13 unproven commercial rasters were recoverably
 quarantined and are absent from the runtime source list. The exact zero-raster

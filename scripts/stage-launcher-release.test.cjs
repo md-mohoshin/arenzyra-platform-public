@@ -366,6 +366,7 @@ test("same-checkout npm release entrypoints are blocked and the adapter has no w
     assert.equal(result.status, 1);
     assert.match(result.stderr, /launcher-release-blocked/);
     assert.match(result.stderr, /reviewed outer Windows launcher/i);
+    assert.match(result.stderr, /connector commercial provenance.*unapproved/i);
   }
   for (const directModule of [
     "sync-launcher-downloads.cjs",
@@ -379,6 +380,7 @@ test("same-checkout npm release entrypoints are blocked and the adapter has no w
     assert.equal(result.status, 1);
     assert.match(result.stderr, /launcher-release-blocked/);
     assert.match(result.stderr, /reviewed outer Windows launcher/i);
+    assert.match(result.stderr, /connector commercial provenance.*unapproved/i);
   }
   assert.doesNotMatch(source, /public[\\/]downloads/i);
   assert.doesNotMatch(source, /["'`]\/downloads\/launcher\//i);
