@@ -1174,6 +1174,211 @@ test("production runtime cannot receive bootstrap or seed credentials", () => {
   assert.match(preflight, /AUTH_DEV_BOOTSTRAP_ENABLED is development-only/);
 });
 
+test("launcher release downloads remain server-only and fail closed", () => {
+  const rootPackage = JSON.parse(read("package.json"));
+  const publishCompose = read("infra/docker-compose.publish.yml");
+  const localCompose = read("infra/docker-compose.yml");
+  const publishExample = read("infra/.env.publish.example");
+  const localExample = read("infra/.env.example");
+  const generator = read("scripts/create-publish-env.cjs");
+  const preflight = read("scripts/preflight-publish.cjs");
+  const stageAdapter = read("scripts/sync-launcher-downloads.cjs");
+  const launcherReleaseDocs = read(
+    "apps/arenzyra-web/docs/launcher-release-downloads.md",
+  );
+  const publishGuide = read("infra/PUBLISH.md");
+  const dockerIgnore = read(".dockerignore");
+  const runtimeSources = [
+    "apps/arenzyra-web/app/launcher/page.tsx",
+    "apps/arenzyra-web/app/(protected)/organizer/launcher/page.tsx",
+    "apps/arenzyra-web/src/features/launcher/LauncherDownloadCards.tsx",
+    "apps/arenzyra-web/src/features/launcher/launcher-links.ts",
+    "apps/arenzyra-web/src/lib/server/launcher-release.ts",
+  ]
+    .map(read)
+    .join("\n");
+  const binding =
+    'ARENZYRA_LAUNCHER_RELEASE_JSON: "${ARENZYRA_LAUNCHER_RELEASE_JSON:-}"';
+
+  for (const [name, compose] of [
+    ["publish", publishCompose],
+    ["local", localCompose],
+  ]) {
+    const webService =
+      compose.match(
+        /\n  web:\r?\n([\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\r?\n|\nvolumes:\r?\n)/,
+      )?.[1] ?? "";
+    const environmentAt = webService.indexOf("\n    environment:");
+    assert.ok(environmentAt >= 0, `${name} web environment is missing`);
+    assert.equal(
+      webService.split(binding).length - 1,
+      1,
+      `${name} must pass one optional launcher release value`,
+    );
+    assert.ok(
+      webService.indexOf(binding) > environmentAt,
+      `${name} launcher metadata must be runtime-only`,
+    );
+    assert.doesNotMatch(
+      webService.slice(0, environmentAt),
+      /ARENZYRA_LAUNCHER_RELEASE_JSON/,
+      `${name} launcher metadata must not be a build argument`,
+    );
+  }
+
+  const reviewedSources = [
+    publishCompose,
+    localCompose,
+    publishExample,
+    localExample,
+    generator,
+    runtimeSources,
+  ].join("\n");
+  assert.doesNotMatch(
+    reviewedSources,
+    /NEXT_PUBLIC_ARENZYRA_LAUNCHER_RELEASE/i,
+  );
+  assert.match(publishExample, /^ARENZYRA_LAUNCHER_RELEASE_JSON=$/m);
+  assert.match(localExample, /^ARENZYRA_LAUNCHER_RELEASE_JSON=$/m);
+  assert.match(generator, /line\("ARENZYRA_LAUNCHER_RELEASE_JSON", ""\)/);
+  assert.match(preflight, /MAX_LAUNCHER_RELEASE_CONFIG_BYTES = 16 \* 1024/);
+  assert.match(dockerIgnore, /^apps\/arenzyra-web\/public\/downloads\/?$/m);
+  assert.doesNotMatch(runtimeSources, /\/downloads\/launcher\//);
+  assert.equal(
+    Object.hasOwn(rootPackage.scripts, "sync:launcher-downloads"),
+    false,
+  );
+  assert.equal(
+    rootPackage.scripts["stage:launcher-release"],
+    "node scripts/blocked-launcher-release-entrypoint.cjs stage",
+  );
+  assert.equal(
+    rootPackage.scripts["verify:launcher-release"],
+    "node scripts/blocked-launcher-release-entrypoint.cjs verify",
+  );
+  assert.match(stageAdapter, /"deploy-artifacts",\s*"launcher"/);
+  assert.doesNotMatch(stageAdapter, /public[\\/]downloads/i);
+  assert.doesNotMatch(stageAdapter, /["'`]\/downloads\/launcher\//i);
+  assert.match(stageAdapter, /schemaVersion:\s*0/);
+  assert.match(stageAdapter, /runtimeValue:\s*null/);
+  assert.match(
+    stageAdapter,
+    /pending-independent-upload-and-remote-verification/,
+  );
+  assert.match(launcherReleaseDocs, /reviewed outer Windows\s+launcher/i);
+  assert.match(
+    launcherReleaseDocs,
+    /same-checkout npm commands.*fail closed/is,
+  );
+  assert.match(launcherReleaseDocs, /does not generate deploy-ready/i);
+  assert.match(publishGuide, /reviewed outer Windows\s+launcher/i);
+  assert.match(publishGuide, /same-checkout npm commands.*fail closed/is);
+  assert.match(
+    publishGuide,
+    /must never be copied into the publish environment/i,
+  );
+});
+
+test("Studio migration SQL and verified TLS settings reach the web migration image", () => {
+  const dockerIgnore = read(".dockerignore");
+  const migrationRunner = read(
+    "apps/arenzyra-web/scripts/migrate-studio-postgres.cjs",
+  );
+  const publishCompose = read("infra/docker-compose.publish.yml");
+  const sqlDeny = dockerIgnore.indexOf("**/*.sql");
+  const studioAllow = dockerIgnore.indexOf(
+    "!apps/arenzyra-web/scripts/studio-migrations/*.sql",
+  );
+
+  assert.ok(sqlDeny >= 0, "SQL files must remain denied by default");
+  assert.ok(
+    studioAllow > sqlDeny,
+    "only the vetted Studio migration directory may be restored to the context",
+  );
+  assert.match(migrationRunner, /STUDIO_MIGRATION_DATABASE_SSL/);
+  assert.match(migrationRunner, /STUDIO_DATABASE_SSL/);
+  assert.match(migrationRunner, /STUDIO_MIGRATION_DATABASE_CA/);
+  assert.match(migrationRunner, /STUDIO_DATABASE_CA/);
+  assert.doesNotMatch(migrationRunner, /rejectUnauthorized:\s*false/);
+  assert.match(migrationRunner, /refuse TLS modes/);
+  assert.match(
+    publishCompose,
+    /studio-migrate:[\s\S]*STUDIO_DATABASE_SSL:[\s\S]*STUDIO_DATABASE_CA:/,
+  );
+});
+
+test("web container context and deployed package exclude local source artifacts", () => {
+  const dockerIgnore = read(".dockerignore");
+  const webDockerfile = read("apps/arenzyra-web/Dockerfile");
+  const webPackage = JSON.parse(read("apps/arenzyra-web/package.json"));
+  const workspace = read("pnpm-workspace.yaml");
+  const lockfile = read("pnpm-lock.yaml");
+  const expectedFiles = [
+    ".arenzyra-build.json",
+    ".next-build/**",
+    "!.next-build/cache/**",
+    "!.next-build/dev/**",
+    "next.config.mjs",
+    "public/**",
+    "scripts/migrate-studio-postgres.cjs",
+    "scripts/start-prod.cjs",
+    "scripts/studio-migrations/**",
+  ];
+
+  assert.deepEqual(webPackage.files, expectedFiles);
+  for (const ignoredPath of [
+    "apps/arenzyra-web/.arenzyra-build.json",
+    "apps/arenzyra-web/next-env.d.ts",
+    "apps/arenzyra-web/tsconfig.tsbuildinfo",
+    "apps/arenzyra-web/leaderboard-cdp.png",
+    "apps/arenzyra-web/out",
+    "apps/arenzyra-web/.vercel",
+    "apps/arenzyra-web/.pnp*",
+    "apps/arenzyra-web/.yarn",
+  ]) {
+    assert.match(
+      dockerIgnore,
+      new RegExp(
+        `^${ignoredPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        "m",
+      ),
+    );
+  }
+  for (const excludedRuntimeSource of [
+    "app/**",
+    "src/**",
+    "e2e/**",
+    "docs/**",
+  ]) {
+    assert.equal(
+      webPackage.files.includes(excludedRuntimeSource),
+      false,
+      `${excludedRuntimeSource} must not enter the deployed package`,
+    );
+  }
+  const deployAt = webDockerfile.indexOf(
+    "pnpm --filter arenzyra-web deploy --prod /opt/arenzyra-web",
+  );
+  const packageBoundaryAt = webDockerfile.indexOf(
+    "verify-web-runtime-package.cjs /opt/arenzyra-web",
+  );
+  const assetBoundaryAt = webDockerfile.indexOf(
+    "verify-release-asset-boundary.cjs /opt/arenzyra-web",
+  );
+  assert.ok(deployAt >= 0);
+  assert.ok(packageBoundaryAt > deployAt);
+  assert.ok(assetBoundaryAt > packageBoundaryAt);
+  assert.doesNotMatch(
+    webDockerfile,
+    /COPY[^\n]*\/repo\/apps\/arenzyra-web\/(?:public|\.next-build|\.arenzyra-build\.json)/,
+  );
+  assert.match(workspace, /^injectWorkspacePackages:\s*true$/m);
+  assert.match(
+    lockfile,
+    /^\s{2}injectWorkspacePackages:\s*true$/m,
+  );
+});
+
 test("immediate production guard validates the MFA environment before runtime checks", () => {
   const guard = read("scripts/production-deploy-preflight.sh");
   const envGate = guard.indexOf("preflight-publish.cjs");

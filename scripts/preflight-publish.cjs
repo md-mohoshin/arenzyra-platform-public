@@ -11,6 +11,20 @@ const {
 } = require("./production-database-target.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
+const MAX_LAUNCHER_RELEASE_CONFIG_BYTES = 16 * 1024;
+const VERIFIED_STUDIO_DATABASE_SSL_MODES = new Set([
+  "1",
+  "true",
+  "require",
+  "verify-ca",
+  "verify-full",
+]);
+const DISABLED_STUDIO_DATABASE_SSL_MODES = new Set([
+  "0",
+  "false",
+  "disable",
+  "disabled",
+]);
 
 function readFlag(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -271,6 +285,7 @@ function validateComposeWiring(errors) {
   const webEnvVars = [
     "NEXT_PUBLIC_API_URL",
     "INTERNAL_API_URL",
+    "ARENZYRA_LAUNCHER_RELEASE_JSON",
     "STUDIO_DATABASE_URL",
     "STUDIO_DATABASE_SSL",
     "STUDIO_DATABASE_POOL_SIZE",
@@ -334,6 +349,16 @@ function validateComposeWiring(errors) {
   if (/^\s{6}DATABASE_URL:/m.test(webService)) {
     errors.push(
       "Publish web service must not receive the primary DATABASE_URL; use the least-privilege STUDIO_DATABASE_URL only.",
+    );
+  }
+  const launcherReleaseBinding =
+    'ARENZYRA_LAUNCHER_RELEASE_JSON: "${ARENZYRA_LAUNCHER_RELEASE_JSON:-}"';
+  if (
+    webService.split(launcherReleaseBinding).length - 1 !== 1 ||
+    /NEXT_PUBLIC_ARENZYRA_LAUNCHER_RELEASE/i.test(compose)
+  ) {
+    errors.push(
+      "Publish web launcher release metadata must be one optional server-only runtime binding.",
     );
   }
   if (
@@ -498,6 +523,59 @@ function checkRequiredEnv(env, allowPlaceholders, errors, warnings) {
   }
 }
 
+function studioDatabaseSslQueryParameterNames(value) {
+  const connectionString = String(value ?? "").trim();
+  if (!connectionString) return [];
+  try {
+    const parsed = new URL(connectionString);
+    return Array.from(
+      new Set(
+        Array.from(parsed.searchParams.keys())
+          .map((key) => key.trim().toLowerCase())
+          .filter((key) => key.startsWith("ssl") || key === "uselibpqcompat"),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+  } catch {
+    // validatePostgresUrl reports malformed URLs without disclosing credentials.
+    return [];
+  }
+}
+
+function validateStudioDatabaseTls(env, errors) {
+  const sslMode = String(env.STUDIO_DATABASE_SSL ?? "")
+    .trim()
+    .toLowerCase();
+  if (["insecure", "no-verify"].includes(sslMode)) {
+    errors.push(
+      "STUDIO_DATABASE_SSL must not disable certificate verification. Use false or disable only for a trusted local/private no-TLS connection.",
+    );
+  } else if (
+    sslMode &&
+    !VERIFIED_STUDIO_DATABASE_SSL_MODES.has(sslMode) &&
+    !DISABLED_STUDIO_DATABASE_SSL_MODES.has(sslMode)
+  ) {
+    errors.push(
+      "STUDIO_DATABASE_SSL must be true, false, 1, 0, require, verify-ca, verify-full, disable, or disabled.",
+    );
+  }
+
+  for (const envKey of [
+    "STUDIO_DATABASE_URL",
+    "STUDIO_MIGRATION_DATABASE_URL",
+  ]) {
+    const forbiddenParameters = studioDatabaseSslQueryParameterNames(
+      env[envKey],
+    );
+    if (forbiddenParameters.length > 0) {
+      errors.push(
+        `${envKey} must not contain SSL query parameters (${forbiddenParameters.join(
+          ", ",
+        )}). Configure Studio TLS only with STUDIO_DATABASE_SSL and STUDIO_DATABASE_CA.`,
+      );
+    }
+  }
+}
+
 function validateEnvRelationships(
   env,
   errors,
@@ -526,6 +604,12 @@ function validateEnvRelationships(
   const youtubeTokenKey = env.YOUTUBE_TOKEN_ENCRYPTION_KEY ?? "";
   const youtubeTokenKeyId = env.YOUTUBE_TOKEN_ENCRYPTION_KEY_ID ?? "";
   const mfaRequired = (env.SUPERADMIN_MFA_REQUIRED ?? "").trim();
+
+  validateLauncherReleaseConfig(
+    env.ARENZYRA_LAUNCHER_RELEASE_JSON ?? "",
+    errors,
+  );
+  validateStudioDatabaseTls(env, errors);
 
   if (mfaRequired !== "true") {
     errors.push("SUPERADMIN_MFA_REQUIRED must be exactly true in production.");
@@ -1006,18 +1090,6 @@ function validateEnvRelationships(
     errors.push("ASSET_BASE_URL must be a full http(s) URL when set.");
   }
 
-  const studioDatabaseSsl = env.STUDIO_DATABASE_SSL ?? "";
-  if (
-    studioDatabaseSsl &&
-    !["true", "false", "1", "0", "require", "disable"].includes(
-      studioDatabaseSsl.toLowerCase(),
-    )
-  ) {
-    warnings.push(
-      "STUDIO_DATABASE_SSL should be true, false, 1, 0, require, or disable.",
-    );
-  }
-
   const studioPoolSize = env.STUDIO_DATABASE_POOL_SIZE ?? "";
   if (studioPoolSize && !/^\d+$/.test(studioPoolSize)) {
     errors.push(
@@ -1149,6 +1221,45 @@ function validateEnvRelationships(
   }
 }
 
+function validateLauncherReleaseConfig(value, errors) {
+  const input = String(value ?? "");
+  const raw = input.trim();
+  if (!raw) return;
+
+  if (Buffer.byteLength(input, "utf8") > MAX_LAUNCHER_RELEASE_CONFIG_BYTES) {
+    errors.push(
+      `ARENZYRA_LAUNCHER_RELEASE_JSON must not exceed ${MAX_LAUNCHER_RELEASE_CONFIG_BYTES} bytes.`,
+    );
+    return;
+  }
+  if (/[\r\n]/.test(input)) {
+    errors.push("ARENZYRA_LAUNCHER_RELEASE_JSON must be compact one-line JSON.");
+    return;
+  }
+  if (raw.includes("$") || raw.includes("'")) {
+    errors.push(
+      "ARENZYRA_LAUNCHER_RELEASE_JSON must not contain literal apostrophes or $ interpolation markers.",
+    );
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      Object.getPrototypeOf(parsed) !== Object.prototype
+    ) {
+      throw new Error("not an object");
+    }
+  } catch {
+    errors.push(
+      "ARENZYRA_LAUNCHER_RELEASE_JSON must be one valid JSON object when set.",
+    );
+  }
+}
+
 function runComposeConfig(envPath, env, warnings, errors) {
   if (!commandExists("docker", ["compose", "version"])) {
     warnings.push(
@@ -1249,5 +1360,7 @@ if (require.main === module) main();
 module.exports = {
   findSensitiveBuildArguments,
   hasSensitiveComposeLabel,
+  validateLauncherReleaseConfig,
+  validateStudioDatabaseTls,
   validateEnvRelationships,
 };

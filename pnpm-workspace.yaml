@@ -1,6 +1,7 @@
 packages:
   - "apps/arenzyra-web"
   - "packages/*"
+injectWorkspacePackages: true
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver

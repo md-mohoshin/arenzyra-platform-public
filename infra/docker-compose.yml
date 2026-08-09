@@ -229,6 +229,8 @@ services:
       HOSTNAME: 0.0.0.0
       NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:3000}"
       INTERNAL_API_URL: "${INTERNAL_API_URL:-http://api:3000}"
+      # Optional server-only release metadata; empty keeps downloads disabled.
+      ARENZYRA_LAUNCHER_RELEASE_JSON: "${ARENZYRA_LAUNCHER_RELEASE_JSON:-}"
       DATABASE_URL: "${DATABASE_URL:?REQUIRED ENV VARIABLE MISSING: DATABASE_URL}"
       STUDIO_DATABASE_URL: "${STUDIO_DATABASE_URL:-}"
       STUDIO_DATABASE_SSL: "${STUDIO_DATABASE_SSL:-}"

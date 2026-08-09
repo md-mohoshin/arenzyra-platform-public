@@ -578,6 +578,55 @@ Set these public URLs correctly too:
 
 Set `ASSET_BASE_URL` if uploaded/team media should resolve from a different public host than the API.
 
+Launcher downloads are disabled unless the optional server-only
+`ARENZYRA_LAUNCHER_RELEASE_JSON` value passes the web release validator. Keep
+the generated empty value until the installer is signed and the immutable
+artifacts, checksums, certificate fingerprint, and manifest have been reviewed.
+The schema and release checks are documented in
+`apps/arenzyra-web/docs/launcher-release-downloads.md`.
+
+Launcher publication has two separate phases, but the same-checkout npm commands
+`stage:launcher-release` and `verify:launcher-release` currently fail closed.
+Code loaded by Node/npm from the checkout cannot prove the trustworthiness of
+its own parent environment, Git configuration, toolchain, or source directory.
+A future reviewed outer Windows launcher must clear runtime and Git injection,
+pin absolute trusted Node/npm/Git and packaging tools, and build a clean detached
+checkout before invoking the underlying verifier or staging modules.
+
+After that bootstrap exists, the first phase may create a no-overwrite,
+versioned local bundle under
+`deploy-artifacts/launcher/<releaseId>/`. This ignored directory is not part of
+the web image or a public download location. The command does not upload files,
+test remote reachability, create mutable aliases, or generate a usable runtime
+environment value. Its `pending-runtime-config.json` deliberately uses schema
+version 0 and must never be copied into the publish environment.
+
+The staging command is intentionally blocked until all release policies are
+reviewed and the verifier is complete. In particular, the tracked Authenticode
+signer and timestamp-authority allowlists must be approved; commercial map
+redistribution must be supported by the exact reviewed evidence bytes; and a
+representative real NSIS/portable package must prove complete inventories,
+inner executable signatures, dependency hashes, ASAR integrity, and a signed
+immutable digest manifest. Do not weaken or mock those checks to obtain an
+artifact. The current `packaged-runtime-verification.json` state is a release
+blocker, not an operator acknowledgement.
+
+Independently upload the staged artifacts and manifest to one immutable HTTPS
+release prefix. Download all three remote objects again, compare sizes and
+SHA-256 values with the staged manifest, re-verify Authenticode identity and
+timestamp information, and confirm the exact URLs are publicly reachable. Only
+after those checks may an operator construct and review the schema-version-1
+server configuration described in the web launcher release documentation.
+
+When enabling a remotely verified release, encode the independently constructed
+compact JSON on one line as a single-quoted dotenv value, for example
+`ARENZYRA_LAUNCHER_RELEASE_JSON='{"schemaVersion":1,...}'`. The JSON must be no
+larger than 16 KiB and must contain neither a literal apostrophe nor `$`; these
+restrictions keep the reviewed value literal across dotenv and Compose parsing.
+Do not export it through a `NEXT_PUBLIC_` variable or add it as a Docker build
+argument. The publish preflight rejects malformed, oversized, or interpolation-
+capable values.
+
 Studio requires its dedicated `STUDIO_DATABASE_URL` runtime role. The guarded
 deployment requires that URL and `STUDIO_MIGRATION_DATABASE_URL` to use the same
 backed-up `postgres:5432` database and schema as the API URLs; a separate Studio

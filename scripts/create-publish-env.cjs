@@ -148,6 +148,8 @@ function main() {
     line("FRONTEND_ORIGIN", webOrigin),
     line("NEXT_PUBLIC_API_URL", apiOrigin),
     line("INTERNAL_API_URL", "http://api:3000"),
+    "# Optional server-only signed launcher release metadata. Leave empty until reviewed.",
+    line("ARENZYRA_LAUNCHER_RELEASE_JSON", ""),
     line("API_BASE_URL", apiOrigin),
     line("API_PUBLIC_URL", apiOrigin),
     line("ASSET_BASE_URL", apiOrigin),

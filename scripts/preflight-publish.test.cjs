@@ -7,6 +7,8 @@ const test = require("node:test");
 const {
   findSensitiveBuildArguments,
   hasSensitiveComposeLabel,
+  validateLauncherReleaseConfig,
+  validateStudioDatabaseTls,
   validateEnvRelationships,
 } = require("./preflight-publish.cjs");
 
@@ -72,6 +74,104 @@ test("publish preflight rejects sensitive values in Compose labels", () => {
     ]),
     false,
   );
+});
+
+test("optional launcher release JSON is bounded and interpolation-safe", () => {
+  const validErrors = [];
+  validateLauncherReleaseConfig("", validErrors);
+  validateLauncherReleaseConfig('{"schemaVersion":1}', validErrors);
+  assert.deepEqual(validErrors, []);
+
+  for (const [value, expected] of [
+    ["x".repeat(16 * 1024 + 1), "must not exceed 16384 bytes"],
+    ["{", "must be one valid JSON object"],
+    ["[]", "must be one valid JSON object"],
+    ['{"publisher":"Arenzyra$HOME"}', "interpolation markers"],
+    ['{"publisher":"Arenzyra\'s"}', "literal apostrophes"],
+    ['{"publisher":"Arenzyra"}\n', "compact one-line JSON"],
+  ]) {
+    const errors = [];
+    validateLauncherReleaseConfig(value, errors);
+    assert.equal(errors.length, 1, value.slice(0, 80));
+    assert.match(errors[0], new RegExp(expected));
+  }
+});
+
+test("publish preflight accepts only verified TLS or explicit trusted-network no-TLS modes", () => {
+  for (const sslMode of [
+    "",
+    "true",
+    "false",
+    "1",
+    "0",
+    "require",
+    "verify-ca",
+    "verify-full",
+    "disable",
+    "disabled",
+  ]) {
+    const errors = [];
+    validateStudioDatabaseTls(
+      {
+        STUDIO_DATABASE_SSL: sslMode,
+        STUDIO_DATABASE_URL:
+          "postgresql://studio:password@database.internal/arenzyra?application_name=studio",
+      },
+      errors,
+    );
+    assert.deepEqual(errors, [], sslMode);
+  }
+
+  for (const sslMode of ["insecure", "no-verify", "prefer", "unexpected"]) {
+    const errors = [];
+    validateStudioDatabaseTls({ STUDIO_DATABASE_SSL: sslMode }, errors);
+    assert.equal(errors.length, 1, sslMode);
+    assert.match(errors[0], /STUDIO_DATABASE_SSL/);
+  }
+});
+
+test("publish preflight rejects Studio URL SSL overrides as errors without exposing values", () => {
+  for (const query of [
+    "ssl=true",
+    "sslmode=no-verify",
+    "sslcert=client.pem",
+    "sslkey=client-secret.key",
+    "sslrootcert=root-secret.pem",
+    "sslnegotiation=direct",
+    "uselibpqcompat=true",
+    "%73slmode=verify-full",
+  ]) {
+    const errors = [];
+    const credential = "preflight-password-must-not-be-logged";
+    validateStudioDatabaseTls(
+      {
+        STUDIO_DATABASE_SSL: "verify-full",
+        STUDIO_DATABASE_URL: `postgresql://studio:${credential}@database.internal/arenzyra?${query}`,
+      },
+      errors,
+    );
+    assert.equal(errors.length, 1, query);
+    assert.match(
+      errors[0],
+      /STUDIO_DATABASE_URL must not contain SSL query parameters.*STUDIO_DATABASE_SSL.*STUDIO_DATABASE_CA/,
+    );
+    assert.doesNotMatch(
+      errors[0],
+      /preflight-password-must-not-be-logged|client-secret\.key|root-secret\.pem/,
+    );
+  }
+
+  const errors = [];
+  validateStudioDatabaseTls(
+    {
+      STUDIO_MIGRATION_DATABASE_URL:
+        "postgresql://studio_migrate:secret@database.internal/arenzyra?SSLROOTCERT=private.pem",
+    },
+    errors,
+  );
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^STUDIO_MIGRATION_DATABASE_URL must not contain/);
+  assert.doesNotMatch(errors[0], /secret|private\.pem/);
 });
 
 test("publish preflight rejects Docker and Compose process controls in publish env", () => {

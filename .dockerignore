@@ -46,6 +46,7 @@ node_modules
 **/*.bak
 **/*.dump
 **/*.sql
+!apps/arenzyra-web/scripts/studio-migrations/*.sql
 **/*.sql.gz
 **/*.tar
 **/*.tar.*
@@ -59,8 +60,16 @@ node_modules
 apps/api/uploads
 apps/api/storage
 apps/arenzyra-web/.arenzyra-data
+apps/arenzyra-web/.arenzyra-build.json
 apps/arenzyra-web/artifacts
 apps/arenzyra-web/.next-playwright
+apps/arenzyra-web/next-env.d.ts
+apps/arenzyra-web/tsconfig.tsbuildinfo
+apps/arenzyra-web/leaderboard-cdp.png
+apps/arenzyra-web/out
+apps/arenzyra-web/.vercel
+apps/arenzyra-web/.pnp*
+apps/arenzyra-web/.yarn
 apps/arenzyra-web/public/downloads
 apps/arenzyra-web/.tmp
 apps/arenzyra-web/test-results
