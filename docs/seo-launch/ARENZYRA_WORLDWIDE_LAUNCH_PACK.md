@@ -24,7 +24,9 @@ Use this pack after the SEO pages are live on `https://arenzyra.com`.
 
 Arenzyra is an esports tournament operations platform for organizers who need Discord workflows, OCR-assisted result review, match control, and OBS-ready broadcast widgets.
 
-It helps tournament crews move faster without depending fully on official game APIs. The base system supports organizer-controlled workflows, while telemetry/API features are offered only for supported or approved integrations.
+It helps tournament crews coordinate organizer-controlled workflows without depending fully on official game APIs. The pilot ladder is Discord Bot Pro at $18.99/month, PUBG Production at $29.99/month (recommended), and a request-only Auto Launcher private pilot at $59.99/month when the telemetry source is supported and approved. After setup approval, the 7-day trial starts only when the owner completes account setup for the prepared workspace.
+
+Arenzyra is independent software and is not operated by, affiliated with, or endorsed by PUBG MOBILE, KRAFTON, or their affiliates. Arenzyra does not grant publisher approval, tournament licensing, room-card access, or official API access; organizers remain responsible for current publisher rules and licensing.
 
 ## Short Outreach Message
 
@@ -45,13 +47,14 @@ If you want, I can help set up your first event workflow.
 We are opening early access for Arenzyra, an esports tournament platform for Discord organizers and broadcast crews.
 
 What it does:
+
 - Discord registration and slot workflows
 - OCR-assisted result review
 - Web match control
 - Result posts for Discord
 - OBS-ready ranking and post-match widgets
 
-Plans start with Discord Only and can scale into single-game or multi-game production.
+The pilot ladder is Discord Bot Pro ($18.99/month), PUBG Production ($29.99/month and recommended), and a request-only Auto Launcher private pilot ($59.99/month when approved for a supported telemetry source). After setup approval, the 7-day trial starts only when the owner completes account setup for the prepared workspace.
 
 Apply here:
 https://arenzyra.com/apply
@@ -64,6 +67,7 @@ https://arenzyra.com/pubg-tournament-platform
 I am opening early access for Arenzyra, a tournament management and broadcast control platform for esports organizers.
 
 It is useful for community tournaments, scrims, and production teams that need:
+
 - Discord registration and slot control
 - OCR result review from screenshots
 - Match control dashboard
@@ -90,6 +94,7 @@ I am building Arenzyra for esports organizers who run tournaments through Discor
 The goal is to reduce manual result work with OCR-assisted review, keep organizers in control of final results, and publish clean Discord posts and OBS widgets from the same event data.
 
 Core features:
+
 - Discord tournament operations
 - OCR-assisted result review
 - Web match control
@@ -108,6 +113,7 @@ Title:
 How Arenzyra turns Discord tournament results into clean posts
 
 Script:
+
 1. Show a Discord tournament server.
 2. Explain that organizers usually collect screenshots and manually type results.
 3. Open Arenzyra OCR result review.
@@ -124,6 +130,7 @@ Title:
 Esports match control and OBS widgets from one dashboard
 
 Script:
+
 1. Open Arenzyra organizer dashboard.
 2. Show tournament, teams, and match control.
 3. Show result review and apply flow.
@@ -138,11 +145,12 @@ Title:
 PUBG tournament operations with Discord, OCR, and broadcast widgets
 
 Script:
+
 1. Start on `https://arenzyra.com/pubg-tournament-platform`.
 2. Explain the problem: registrations, slots, screenshots, and stream graphics are often separate.
-3. Show Discord Only plan for smaller organizers.
-4. Show Production and Multi-Game Production plans for web control and widgets.
-5. Explain telemetry carefully: only for supported or approved integrations.
+3. Show Discord Bot Pro at $18.99/month for Discord-first organizers.
+4. Show the recommended PUBG Production plan at $29.99/month for web control and widgets.
+5. Describe Auto Launcher as a $59.99/month request-only private software pilot only for a supported and approved telemetry source; quote integration and live operations separately.
 6. Show apply page.
 7. End with: Arenzyra is for organizers who want a cleaner event workflow today.
 
