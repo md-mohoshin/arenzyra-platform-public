@@ -106,7 +106,7 @@ function renderState(state) {
   }
   if (healthButton) {
     healthButton.disabled = busy;
-    healthButton.textContent = state?.healthRunning ? "Running Health..." : "Run Full Health";
+    healthButton.textContent = state?.healthRunning ? "Checking Readiness..." : "Check Readiness";
   }
 
   servicesRoot.replaceChildren(

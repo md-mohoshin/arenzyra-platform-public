@@ -1,5 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  assertSafeManifestReplacement,
+  sha256File,
+  verifyLauncherReleaseArtifacts,
+} = require("./launcher-release-artifact-verifier.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const desktopDistDir = path.join(repoRoot, "apps", "desktop", "dist");
@@ -36,48 +41,20 @@ function copyFile(sourcePath, destinationPath) {
   return fs.statSync(destinationPath).size;
 }
 
-function pickArtifact(entries, matcher) {
-  const matches = entries.filter((entry) => matcher.test(entry.name));
-  matches.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  return matches[0] || null;
+function readOptionalJson(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  return readJson(filePath);
 }
 
 function main() {
-  if (!fs.existsSync(desktopDistDir)) {
-    throw new Error(`Desktop dist directory is missing: ${desktopDistDir}`);
-  }
-
-  const desktopPackage = readJson(desktopPackageJsonPath);
-  const distEntries = fs
-    .readdirSync(desktopDistDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => {
-      const fullPath = path.join(desktopDistDir, entry.name);
-      const stat = fs.statSync(fullPath);
-      return {
-        name: entry.name,
-        fullPath,
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-      };
-    });
-
-  const installer = pickArtifact(
-    distEntries,
-    /^Arenzyra Observer Launcher Setup .+\.exe$/i,
-  );
-  const portableZip = pickArtifact(
-    distEntries,
-    /^Arenzyra Observer Launcher-.+-win\.zip$/i,
-  );
-
-  if (!installer) {
-    throw new Error("Could not find the launcher installer in apps/desktop/dist.");
-  }
-
-  if (!portableZip) {
-    throw new Error("Could not find the launcher ZIP in apps/desktop/dist.");
-  }
+  const verified = verifyLauncherReleaseArtifacts({
+    distDir: desktopDistDir,
+    packageJsonPath: desktopPackageJsonPath,
+  });
+  const installer = verified.installer;
+  const portableZip = verified.portableZip;
 
   ensureDir(webDownloadsDir);
 
@@ -87,33 +64,48 @@ function main() {
   );
   const zipOutputPath = path.join(webDownloadsDir, OUTPUT_FILES.portableZip);
 
-  const installerSize = copyFile(installer.fullPath, installerOutputPath);
-  const zipSize = copyFile(portableZip.fullPath, zipOutputPath);
-
   const manifest = {
-    version: String(desktopPackage.version || "").trim() || "0.0.0",
+    version: verified.version,
     generatedAt: new Date().toISOString(),
     files: {
       installer: {
         path: `/downloads/launcher/${OUTPUT_FILES.installer}`,
-        sourceFile: installer.name,
-        size: installerSize,
+        sourceFile: verified.names.installer,
+        size: installer.size,
+        sha256: installer.sha256,
       },
       portableZip: {
         path: `/downloads/launcher/${OUTPUT_FILES.portableZip}`,
-        sourceFile: portableZip.name,
-        size: zipSize,
+        sourceFile: verified.names.portableZip,
+        size: portableZip.size,
+        sha256: portableZip.sha256,
       },
     },
+    verifiedResources: installer.resources,
   };
 
+  const manifestPath = path.join(webDownloadsDir, "manifest.json");
+  assertSafeManifestReplacement(readOptionalJson(manifestPath), manifest);
+
+  const installerSize = copyFile(installer.path, installerOutputPath);
+  const zipSize = copyFile(portableZip.path, zipOutputPath);
+  if (installerSize !== installer.size || zipSize !== portableZip.size) {
+    throw new Error("Launcher artifact size changed during publication staging.");
+  }
+  if (
+    sha256File(installerOutputPath) !== installer.sha256 ||
+    sha256File(zipOutputPath) !== portableZip.sha256
+  ) {
+    throw new Error("Launcher artifact hash changed during publication staging.");
+  }
+
   fs.writeFileSync(
-    path.join(webDownloadsDir, "manifest.json"),
+    manifestPath,
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
 
   console.log(
-    `[launcher-downloads] synced ${installer.name} and ${portableZip.name} to ${webDownloadsDir}`,
+    `[launcher-downloads] verified and synced ${verified.names.installer} and ${verified.names.portableZip} to ${webDownloadsDir}`,
   );
 }
 

@@ -1,6 +1,7 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { classifyPortOwnership } = require("./process-ownership.cjs");
 
 const electronModule = require("electron");
 
@@ -20,7 +21,18 @@ const isWindows = process.platform === "win32";
 const defaultRepoRoot = "C:\\arenzyra";
 const npmCmd = isWindows ? "npm.cmd" : "npm";
 const shellCommand = process.env.ComSpec || "cmd.exe";
-const allowLegacyShadowApi = process.env.ALLOW_LEGACY_SHADOW_API === "1";
+const allowLegacyShadowApi =
+  !app.isPackaged &&
+  process.env.NODE_ENV !== "production" &&
+  process.env.ALLOW_LEGACY_SHADOW_API === "I_UNDERSTAND_DEV_ONLY";
+// Port 3100 is an older, independent widget renderer. Keep it available for
+// explicitly acknowledged local development only; packaged/production launchers
+// must never expose its unauthenticated state-changing routes.
+const allowLegacyOverlayServer =
+  !app.isPackaged &&
+  process.env.NODE_ENV !== "production" &&
+  process.env.ARENZYRA_ENABLE_LEGACY_OVERLAY_SERVER ===
+    "I_UNDERSTAND_DEV_ONLY";
 
 const projectRoot =
   process.env.ARENZYRA_ROOT && fs.existsSync(process.env.ARENZYRA_ROOT)
@@ -140,6 +152,7 @@ function createServiceDefinitions() {
   const shadowDir = joinAppPath("shadow_api");
   const matchStateDir = joinAppPath("match-state-service");
   const mediaAiDir = joinAppPath("media-ai-service");
+  const overlayServerDir = joinAppPath("overlay-server");
   const services = [
     {
       id: "api",
@@ -152,19 +165,6 @@ function createServiceDefinitions() {
         command: npmCmd,
         args: ["run", "start:prod"],
         preview: "npm run start:prod",
-      }),
-    },
-    {
-      id: "overlay-server",
-      name: "Overlay Server",
-      kind: "optional",
-      cwd: joinAppPath("overlay-server"),
-      port: 3100,
-      startTimeoutMs: 10000,
-      command: () => ({
-        command: npmCmd,
-        args: ["run", "start"],
-        preview: "npm run start",
       }),
     },
     {
@@ -210,6 +210,22 @@ function createServiceDefinitions() {
       }),
     },
   ];
+
+  if (allowLegacyOverlayServer && fs.existsSync(overlayServerDir)) {
+    services.splice(1, 0, {
+      id: "overlay-server",
+      name: "Legacy Overlay Server",
+      kind: "optional",
+      cwd: overlayServerDir,
+      port: 3100,
+      startTimeoutMs: 10000,
+      command: () => ({
+        command: npmCmd,
+        args: ["run", "start"],
+        preview: "npm run start",
+      }),
+    });
+  }
 
   if (allowLegacyShadowApi && fs.existsSync(shadowDir)) {
     services.splice(1, 0, {
@@ -458,18 +474,6 @@ function killPid(pid) {
   });
 }
 
-function killPort(port) {
-  return new Promise((resolve) => {
-    const cmd = `for /f "tokens=5" %P in ('netstat -ano ^| findstr :${port}') do taskkill /PID %P /T /F`;
-    const killer = spawn(shellCommand, ["/c", cmd], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    killer.on("close", () => resolve());
-    killer.on("error", () => resolve());
-  });
-}
-
 async function refreshServiceStates() {
   for (const service of serviceDefinitions) {
     const current = serviceStates.get(service.id) ?? {};
@@ -496,11 +500,26 @@ async function refreshServiceStates() {
 
     const busy = await isPortBusy(service.port);
     if (busy) {
-      setServiceState(service.id, {
-        status: "running",
-        detail: runningDetail(service, childProcesses.get(service.id)?.pid ?? current.pid ?? null),
-        pid: childProcesses.get(service.id)?.pid ?? current.pid ?? null,
+      const child = childProcesses.get(service.id);
+      const ownership = classifyPortOwnership({
+        busy,
+        childPid: child?.pid ?? null,
+        managedProcessRunning: isManagedProcessRunning(service.id),
       });
+      setServiceState(
+        service.id,
+        ownership === "managed"
+          ? {
+              status: "running",
+              detail: runningDetail(service, child.pid),
+              pid: child.pid,
+            }
+          : {
+              status: "error",
+              detail: `Port ${service.port} is owned by an unmanaged process. The launcher will not stop or reuse it.`,
+              pid: null,
+            },
+      );
     } else if (!childProcesses.has(service.id)) {
       setServiceState(service.id, {
         status: "stopped",
@@ -515,40 +534,16 @@ function getPackagedHealthScript() {
   if (!app.isPackaged) {
     return null;
   }
-  const resourcePath = path.join(process.resourcesPath, "health.ps1");
+  const resourcePath = path.join(process.resourcesPath, "health-readonly.ps1");
   return fs.existsSync(resourcePath) ? resourcePath : null;
 }
 
 function getHealthScriptPath() {
-  const repoScript = path.join(projectRoot, "infra", "health.ps1");
+  const repoScript = path.join(projectRoot, "infra", "health-readonly.ps1");
   if (fs.existsSync(repoScript)) {
     return repoScript;
   }
   return getPackagedHealthScript();
-}
-
-function prepareHealthScript() {
-  const healthScriptPath = getHealthScriptPath();
-  if (!healthScriptPath) {
-    pushLog("HEALTH", "Health script was not found.");
-    return null;
-  }
-
-  const tempScriptPath = path.join(app.getPath("userData"), "arenzyra-health-run.ps1");
-
-  try {
-    const rawScript = fs.readFileSync(healthScriptPath, "utf8");
-    const cleanedScript = rawScript.replace(/(^|\r?\n)Set-Location[^\r\n]*(\r?\n)?/, "$1");
-    const rewritten = [
-      `Set-Location -Path "${projectRoot.replace(/\\/g, "\\\\")}"`,
-      cleanedScript.trimStart(),
-    ].join("\n");
-    fs.writeFileSync(tempScriptPath, `\uFEFF${rewritten}`, "utf16le");
-    return tempScriptPath;
-  } catch (error) {
-    pushLog("HEALTH", `Failed to prepare health script: ${error.message}`);
-    return null;
-  }
 }
 
 async function runHealthCheck() {
@@ -556,8 +551,8 @@ async function runHealthCheck() {
     return lastHealth.ok === true;
   }
 
-  const tempScriptPath = prepareHealthScript();
-  if (!tempScriptPath) {
+  const healthScriptPath = getHealthScriptPath();
+  if (!healthScriptPath) {
     lastHealth = {
       ok: false,
       finishedAt: new Date().toISOString(),
@@ -571,13 +566,13 @@ async function runHealthCheck() {
   lastHealth = {
     ok: null,
     finishedAt: null,
-    summary: "Running full health check...",
+    summary: "Running read-only readiness check...",
   };
-  pushLog("HEALTH", "Running full health check.");
+  pushLog("HEALTH", "Running read-only readiness check.");
   broadcastState();
 
   const ok = await new Promise((resolve) => {
-    const child = spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tempScriptPath], {
+    const child = spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", healthScriptPath, "-RepoRoot", projectRoot], {
       cwd: projectRoot,
       windowsHide: true,
       stdio: "pipe",
@@ -595,12 +590,10 @@ async function runHealthCheck() {
     });
   });
 
-  fs.rm(tempScriptPath, { force: true }, () => {});
-
   lastHealth = {
     ok,
     finishedAt: new Date().toISOString(),
-    summary: ok ? "Health check passed." : "Health check failed.",
+    summary: ok ? "Read-only readiness passed." : "Read-only readiness failed.",
   };
   healthRunning = false;
   pushLog("HEALTH", lastHealth.summary);
@@ -621,12 +614,27 @@ async function startService(service) {
   } else {
     const running = await isPortBusy(service.port);
     if (running) {
+      const child = childProcesses.get(service.id);
+      if (
+        classifyPortOwnership({
+          busy: true,
+          childPid: child?.pid ?? null,
+          managedProcessRunning: isManagedProcessRunning(service.id),
+        }) === "managed"
+      ) {
+        setServiceState(service.id, {
+          status: "running",
+          detail: runningDetail(service, child.pid),
+          pid: child.pid,
+        });
+        return true;
+      }
       setServiceState(service.id, {
-        status: "running",
-        detail: `Already listening on port ${service.port}.`,
-        pid: childProcesses.get(service.id)?.pid ?? null,
+        status: "error",
+        detail: `Port ${service.port} is already owned by an unmanaged process. Refusing to start ${service.name}.`,
+        pid: null,
       });
-      return true;
+      return false;
     }
   }
 
@@ -661,8 +669,8 @@ async function startService(service) {
         const stillBusy = await isPortBusy(service.port);
         if (stillBusy) {
           setServiceState(service.id, {
-            status: "running",
-            detail: runningDetail(service, null),
+            status: "error",
+            detail: `The managed process exited but port ${service.port} is owned by another process.`,
             pid: null,
           });
           return;
@@ -733,23 +741,27 @@ async function stopService(service) {
   });
 
   const child = childProcesses.get(service.id);
-  if (child?.pid) {
-    await killPid(child.pid);
+  if (!child?.pid || !isManagedProcessRunning(service.id)) {
+    const busy = isPortService(service) ? await isPortBusy(service.port) : false;
+    stoppingServices.delete(service.id);
+    setServiceState(service.id, {
+      status: busy ? "error" : "stopped",
+      detail: busy
+        ? `Refusing to stop the unmanaged process using port ${service.port}.`
+        : stoppedDetail(service),
+      pid: null,
+    });
+    return !busy;
   }
 
-  if (isPortService(service)) {
-    await killPort(service.port);
-    childProcesses.delete(service.id);
-  }
+  await killPid(child.pid);
 
   const stopped = isProcessService(service)
     ? await waitForManagedProcess(service.id, false, 10000)
     : await waitForPort(service.port, false, 10000);
   stoppingServices.delete(service.id);
 
-  if (isProcessService(service)) {
-    childProcesses.delete(service.id);
-  }
+  childProcesses.delete(service.id);
 
   setServiceState(service.id, {
     status: stopped ? "stopped" : "error",
@@ -871,6 +883,23 @@ if (isWindows) {
   app.setAppUserModelId(APP_USER_MODEL_ID);
 }
 
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) {
+      return;
+    }
+    if (window.isMinimized()) {
+      window.restore();
+    }
+    window.show();
+    window.focus();
+  });
+}
+
 ipcMain.handle("launcher:get-state", async () => {
   await refreshServiceStates();
   return snapshotState();
@@ -948,7 +977,9 @@ app.whenReady().then(async () => {
   broadcastState();
 
   if (isWindows) {
-    app.setLoginItemSettings({ openAtLogin: true });
+    app.setLoginItemSettings({
+      openAtLogin: process.env.ARENZYRA_LAUNCHER_OPEN_AT_LOGIN === "1",
+    });
   }
 
   app.on("activate", () => {
