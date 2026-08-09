@@ -5,6 +5,7 @@
 .codex
 .codex-*
 .deploy-safety-backups
+.worktrees
 .tmp
 .tmp-*
 .tmp_*
