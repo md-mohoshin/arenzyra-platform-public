@@ -36,12 +36,25 @@ test("owned lockfiles contain only their declared application importers", () => 
   );
   assert.equal(Object.hasOwn(npmLock.packages, "apps/api"), false);
   assert.equal(Object.hasOwn(npmLock.packages, "apps/arenzyra-web"), false);
+  assert.equal(
+    fs.existsSync(path.join(repositoryRoot, "apps/desktop/package-lock.json")),
+    false,
+  );
+  assert.equal(
+    npmLock.packages["apps/desktop"].devDependencies["electron-builder"],
+    "26.15.3",
+  );
+  assert.equal(
+    npmLock.packages["apps/desktop"].devDependencies["7zip-bin"],
+    "5.2.0",
+  );
+  assert.equal(npmLock.packages["node_modules/7zip-bin"].version, "5.2.0");
 
   const pnpmLock = fs.readFileSync(
     path.join(repositoryRoot, "pnpm-lock.yaml"),
     "utf8",
   );
-  assert.match(pnpmLock, /^  apps\/arenzyra-web:$/m);
+  assert.match(pnpmLock, /^ {2}apps\/arenzyra-web:$/m);
   for (const excluded of [
     "api",
     "desktop",

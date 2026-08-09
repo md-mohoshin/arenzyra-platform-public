@@ -180,6 +180,8 @@ function extractRawMapName(snapshot) {
   const candidates = [
     snapshot?.allInfo,
     snapshot?.circlePayload,
+    asRecord(snapshot?.observerSnapshot),
+    asRecord(snapshot?.raw),
     Array.isArray(snapshot?.players) ? asRecord(snapshot.players[0]) : null,
     asRecord(snapshot?.observer),
   ];
@@ -305,6 +307,16 @@ function extractWorldPoint(source) {
   }
 
   return { x, y };
+}
+
+function extractLiveState(record) {
+  const value = pickFirstNumber(asRecord(record), [
+    "liveState",
+    "LiveState",
+    "lifeState",
+    "LifeState",
+  ]);
+  return value === null ? null : Math.trunc(value);
 }
 
 function extractFlightPath(source, depth = 0) {
@@ -476,6 +488,115 @@ function extractFlightPath(source, depth = 0) {
   }
 
   return null;
+}
+
+function unwrapRoutePayload(value) {
+  const record = asRecord(value);
+  return record && Object.prototype.hasOwnProperty.call(record, "payload")
+    ? record.payload
+    : value;
+}
+
+function extractNamedRoutePayload(routePayloads, routeNames) {
+  const root = asRecord(routePayloads);
+  if (!root) {
+    return null;
+  }
+
+  for (const routeName of routeNames) {
+    const payload = asRecord(unwrapRoutePayload(root[routeName]));
+    if (payload) {
+      return payload;
+    }
+  }
+
+  return null;
+}
+
+function extractFlightPathFromRoutePayloads(routePayloads) {
+  const root = asRecord(routePayloads);
+  if (!root) {
+    return null;
+  }
+
+  for (const routeName of [
+    "/setgameglobalinfo",
+    "/getgameglobalinfo",
+    "setgameglobalinfo",
+    "getgameglobalinfo",
+  ]) {
+    const flightPath = extractFlightPath(unwrapRoutePayload(root[routeName]));
+    if (flightPath) {
+      return flightPath;
+    }
+  }
+
+  return extractFlightPath(root);
+}
+
+function extractSnapshotFlightPath(snapshot) {
+  const observerSnapshot = asRecord(snapshot?.observerSnapshot);
+  const rawSnapshot = asRecord(snapshot?.raw);
+
+  return (
+    extractFlightPath(observerSnapshot?.normalized?.flightPath) ??
+    extractFlightPath(rawSnapshot?.normalized?.flightPath) ??
+    extractFlightPathFromRoutePayloads(observerSnapshot?.routePayloads) ??
+    extractFlightPathFromRoutePayloads(observerSnapshot?.rawRoutePayloads) ??
+    extractFlightPathFromRoutePayloads(rawSnapshot?.routePayloads) ??
+    extractFlightPathFromRoutePayloads(rawSnapshot?.rawRoutePayloads) ??
+    extractFlightPath(snapshot?.circlePayload) ??
+    extractFlightPathFromRoutePayloads(snapshot?.routePayloads) ??
+    extractFlightPathFromRoutePayloads(snapshot?.rawRoutePayloads) ??
+    extractFlightPath(snapshot?.allInfo)
+  );
+}
+
+function extractSnapshotCirclePayload(snapshot) {
+  const observerSnapshot = asRecord(snapshot?.observerSnapshot);
+  const rawSnapshot = asRecord(snapshot?.raw);
+  const routeStores = [
+    observerSnapshot?.rawRoutePayloads,
+    observerSnapshot?.routePayloads,
+    rawSnapshot?.rawRoutePayloads,
+    rawSnapshot?.routePayloads,
+    snapshot?.rawRoutePayloads,
+    snapshot?.routePayloads,
+  ];
+  const globalPayloads = routeStores
+    .map((routeStore) =>
+      extractNamedRoutePayload(routeStore, [
+        "/setgameglobalinfo",
+        "/getgameglobalinfo",
+        "setgameglobalinfo",
+        "getgameglobalinfo",
+      ]),
+    )
+    .filter(Boolean);
+  const timerPayloads = routeStores
+    .map((routeStore) =>
+      extractNamedRoutePayload(routeStore, [
+        "/setcircleinfo",
+        "/getcircleinfo",
+        "setcircleinfo",
+        "getcircleinfo",
+      ]),
+    )
+    .filter(Boolean);
+  const records = [
+    ...globalPayloads,
+    asRecord(observerSnapshot?.gameGlobalInfo),
+    asRecord(rawSnapshot?.gameGlobalInfo),
+    asRecord(observerSnapshot?.circleInfo),
+    asRecord(rawSnapshot?.circleInfo),
+    asRecord(observerSnapshot?.normalized?.circle),
+    asRecord(rawSnapshot?.normalized?.circle),
+    ...timerPayloads,
+    asRecord(snapshot?.circle),
+    asRecord(snapshot?.circlePayload),
+  ].filter(Boolean);
+
+  return records.length > 0 ? Object.assign({}, ...records) : null;
 }
 
 function clipFlightPathToMapBounds(flightPath, definition, options = {}) {
@@ -864,8 +985,7 @@ function resolveCircleTimeRemaining(circlePayload) {
     return Math.max(0, remainingMs / 1000);
   }
 
-  return (
-    pickCirclePayloadNumber(circlePayload, [
+  const explicitRemaining = pickCirclePayloadNumber(circlePayload, [
       "timeRemaining",
       "TimeRemaining",
       "timeRemainingSeconds",
@@ -874,10 +994,16 @@ function resolveCircleTimeRemaining(circlePayload) {
       "remainingSeconds",
       "RemainTime",
       "remainTime",
-    ]) ??
-    pickCirclePayloadNumber(circlePayload, ["Counter", "counter"]) ??
-    null
-  );
+    ]);
+  if (explicitRemaining !== null) {
+    return explicitRemaining;
+  }
+
+  // PCOB Counter is elapsed time whenever MaxTime is present. In particular,
+  // MaxTime=0 does not turn Counter into a remaining-time value.
+  return timer.maxTime === null
+    ? pickCirclePayloadNumber(circlePayload, ["Counter", "counter"])
+    : null;
 }
 
 function resolveCirclePhaseDuration(circlePayload) {
@@ -1039,12 +1165,20 @@ function extractPosition(record) {
     "locationY",
     "LocationY",
   ]);
+  const z = pickFirstNumber(nested, [
+    "z",
+    "Z",
+    "posZ",
+    "PosZ",
+    "locationZ",
+    "LocationZ",
+  ]);
 
   if (x === null || y === null) {
     return null;
   }
 
-  return { x, y };
+  return { x, y, z };
 }
 
 function extractAlive(record) {
@@ -1053,10 +1187,24 @@ function extractAlive(record) {
     return null;
   }
 
-  for (const key of ["alive", "Alive", "isAlive", "IsAlive", "bAlive"]) {
-    if (typeof root[key] === "boolean") {
-      return root[key];
-    }
+  const explicitAlive = pickFirstBoolean(root, [
+    "alive",
+    "Alive",
+    "isAlive",
+    "IsAlive",
+    "bAlive",
+  ]);
+  const explicitDead = pickFirstBoolean(root, [
+    "bHasDied",
+    "hasDied",
+    "HasDied",
+    "isDead",
+    "IsDead",
+    "dead",
+    "eliminated",
+  ]);
+  if (explicitAlive === false || explicitDead === true) {
+    return false;
   }
 
   const aliveState = pickFirstString(root, ["aliveState", "AliveState", "state", "State"]);
@@ -1083,15 +1231,13 @@ function extractAlive(record) {
     return Math.trunc(liveState) !== 5;
   }
 
-  for (const key of ["bHasDied", "hasDied", "isDead", "IsDead"]) {
-    if (typeof root[key] === "boolean") {
-      return !root[key];
-    }
-  }
-
   const hp = pickFirstNumber(root, ["hp", "HP", "health", "Health"]);
   if (hp !== null) {
     return hp > 0;
+  }
+
+  if (explicitAlive === true || explicitDead === false) {
+    return true;
   }
 
   return null;
@@ -1364,6 +1510,50 @@ function extractTeamKey(record) {
   }
 
   return pickFirstIdentity(record, ["teamId", "TeamId", "teamID", "TeamID", "teamNo", "TeamNo"]);
+}
+
+function extractPlayerControlIdentity(record) {
+  return pickFirstIdentity(asRecord(record), [
+    "uId",
+    "uid",
+    "UID",
+    "playerOpenId",
+    "playerOpenID",
+    "PlayerOpenId",
+    "PlayerOpenID",
+    "openId",
+    "OpenId",
+    "openid",
+    "playerId",
+    "PlayerId",
+    "playerID",
+    "PlayerID",
+    "playerKey",
+    "PlayerKey",
+  ]);
+}
+
+function extractExpectedRosterSize(record) {
+  const size = pickFirstNumber(asRecord(record), [
+    "totalPlayers",
+    "TotalPlayers",
+    "totalPlayerCount",
+    "playerCount",
+    "memberNum",
+    "MemberNum",
+    "playerNum",
+    "PlayerNum",
+    "liveMemberNum",
+    "LiveMemberNum",
+    "aliveMemberNum",
+    "AliveMemberNum",
+  ]);
+  if (size === null) {
+    return null;
+  }
+
+  const normalized = Math.trunc(size);
+  return normalized >= 1 && normalized <= 9 ? normalized : null;
 }
 
 function filterObserverCurrentRosterPlayers(players, teams) {
@@ -1672,6 +1862,20 @@ function extractCombatKind(record) {
     return "kill";
   }
 
+  // ShadowTracker PCOB reports 1 when the victim is knocked and 2 when the
+  // victim is eliminated. This field is more authoritative than the generic
+  // route/status labels used by other telemetry providers.
+  const resultHealthStatus = pickFirstStatus(root, [
+    "ResultHealthStatus",
+    "resultHealthStatus",
+  ]);
+  if (resultHealthStatus === "1") {
+    return "knock";
+  }
+  if (resultHealthStatus === "2") {
+    return "kill";
+  }
+
   const eventType = pickFirstString(root, [
     "eventType",
     "EventType",
@@ -1698,47 +1902,21 @@ function extractCombatKind(record) {
   return "kill";
 }
 
-function resolveCombatFallbackPosition(record, playerLookup) {
-  const root = asRecord(record);
-  if (!root || !(playerLookup instanceof Map)) {
+function resolveCombatParticipant(playerLookup, teamId, identities) {
+  if (!(playerLookup instanceof Map)) {
     return null;
   }
 
-  const killerTeamId = pickFirstString(root, [
-    "killerTeamId",
-    "killerTeam",
-    "killerTeamID",
-    "teamId",
-  ]);
-  const victimTeamId = pickFirstString(root, [
-    "victimTeamId",
-    "victimTeam",
-    "targetTeamId",
-    "targetTeam",
-  ]);
-  const candidateKeys = [
-    [victimTeamId, pickFirstString(root, ["victimId", "victimPlayerId", "targetPlayerId"])],
-    [victimTeamId, pickFirstString(root, ["victimName", "victim", "targetName"])],
-    [killerTeamId, pickFirstString(root, ["killerId", "killerPlayerId", "attackerPlayerId"])],
-    [killerTeamId, pickFirstString(root, ["killerName", "killer", "attackerName"])],
-    [null, pickFirstString(root, ["victimName", "victim", "targetName"])],
-    [null, pickFirstString(root, ["victimId", "victimPlayerId", "targetPlayerId"])],
-    [null, pickFirstString(root, ["killerName", "killer", "attackerName"])],
-    [null, pickFirstString(root, ["killerId", "killerPlayerId", "attackerPlayerId"])],
-  ];
-
-  for (const [teamId, playerKey] of candidateKeys) {
-    const lookupKey = buildPlayerLookupKey(teamId, playerKey);
-    if (!lookupKey) {
-      continue;
-    }
-
-    const matchedPlayer = playerLookup.get(lookupKey);
-    if (matchedPlayer) {
-      return {
-        x: matchedPlayer.x,
-        y: matchedPlayer.y,
-      };
+  for (const identity of identities) {
+    for (const candidateTeamId of [teamId, null]) {
+      const lookupKey = buildPlayerLookupKey(candidateTeamId, identity);
+      if (!lookupKey) {
+        continue;
+      }
+      const matchedPlayer = playerLookup.get(lookupKey);
+      if (matchedPlayer) {
+        return matchedPlayer;
+      }
     }
   }
 
@@ -1788,14 +1966,87 @@ function extractCombatEvents({
       continue;
     }
 
+    const explicitKillerTeamId = pickFirstIdentity(record, [
+      "killerTeamId",
+      "killerTeam",
+      "killerTeamID",
+      "CauserTeamID",
+      "CauserTeamId",
+      "causerTeamId",
+      "teamId",
+    ]);
+    const killerPlayerId = pickFirstIdentity(record, [
+      "CauserUID",
+      "causerUID",
+      "causerUid",
+      "killerPlayerId",
+      "killerId",
+      "attackerPlayerId",
+      "attackerId",
+      "killerUid",
+      "killerUID",
+    ]);
+    const explicitVictimTeamId = pickFirstIdentity(record, [
+      "victimTeamId",
+      "victimTeam",
+      "targetTeamId",
+      "targetTeam",
+      "VictimTeamID",
+      "VictimTeamId",
+    ]);
+    const victimPlayerId = pickFirstIdentity(record, [
+      "VictimUID",
+      "victimUID",
+      "victimUid",
+      "victimPlayerId",
+      "victimId",
+      "targetPlayerId",
+      "targetId",
+    ]);
+    const killerName = pickFirstString(record, [
+      "CauserName",
+      "causerName",
+      "killerName",
+      "killer",
+      "killerPlayer",
+      "attackerName",
+    ]);
+    const victimName = pickFirstString(record, [
+      "VictimName",
+      "victimName",
+      "victim",
+      "targetName",
+    ]);
+    const resolvedKiller = resolveCombatParticipant(
+      playerLookup,
+      explicitKillerTeamId,
+      [killerPlayerId, killerName],
+    );
+    const resolvedVictim = resolveCombatParticipant(
+      playerLookup,
+      explicitVictimTeamId,
+      [victimPlayerId, victimName],
+    );
+    const killerTeamId =
+      explicitKillerTeamId ||
+      normalizeIdentityValue(resolvedKiller?.teamId) ||
+      normalizeIdentityValue(resolvedKiller?.teamSlot);
+    const victimTeamId =
+      explicitVictimTeamId ||
+      normalizeIdentityValue(resolvedVictim?.teamId) ||
+      normalizeIdentityValue(resolvedVictim?.teamSlot);
     const rawPosition =
-      extractCombatPosition(record) || resolveCombatFallbackPosition(record, playerLookup);
+      extractCombatPosition(record) ||
+      (resolvedVictim ? { x: resolvedVictim.x, y: resolvedVictim.y } : null) ||
+      (resolvedKiller ? { x: resolvedKiller.x, y: resolvedKiller.y } : null);
     if (!rawPosition) {
       continue;
     }
 
     const timestamp =
       pickFirstTimestamp(record, [
+        "_pcobReceivedAtMs",
+        "receivedAtMs",
         "ts",
         "TS",
         "timestamp",
@@ -1807,46 +2058,15 @@ function extractCombatEvents({
         "eventTime",
         "EventTime",
       ]) ?? fallbackTimestamp;
+    const relativeEventTime = pickFirstNumber(record, [
+      "CurGameTime",
+      "curGameTime",
+      "gameTime",
+      "GameTime",
+    ]);
+    const identityTimestamp =
+      relativeEventTime === null ? timestamp : Math.round(relativeEventTime * 1000);
     const kind = extractCombatKind(record);
-    const killerTeamId = pickFirstString(record, [
-      "killerTeamId",
-      "killerTeam",
-      "killerTeamID",
-      "teamId",
-    ]);
-    const killerPlayerId = pickFirstString(record, [
-      "killerPlayerId",
-      "killerId",
-      "attackerPlayerId",
-      "attackerId",
-      "killerUid",
-      "killerUID",
-    ]);
-    const victimTeamId = pickFirstString(record, [
-      "victimTeamId",
-      "victimTeam",
-      "targetTeamId",
-      "targetTeam",
-    ]);
-    const victimPlayerId = pickFirstString(record, [
-      "victimPlayerId",
-      "victimId",
-      "targetPlayerId",
-      "targetId",
-      "victimUid",
-      "victimUID",
-    ]);
-    const killerName = pickFirstString(record, [
-      "killerName",
-      "killer",
-      "killerPlayer",
-      "attackerName",
-    ]);
-    const victimName = pickFirstString(record, [
-      "victimName",
-      "victim",
-      "targetName",
-    ]);
     const x = normalizeWorldX(rawPosition.x, definition, {
       detectedScaleFactor: scaleFactor,
     });
@@ -1857,7 +2077,7 @@ function extractCombatEvents({
     events.push({
       id: buildCombatEventId({
         kind,
-        timestamp,
+        timestamp: identityTimestamp,
         x,
         y,
         killerPlayerId,
@@ -1920,6 +2140,38 @@ function extractEventTimestamp(snapshot) {
   return null;
 }
 
+function extractRouteReceivedAt(routePayloads, routeName) {
+  const root = asRecord(routePayloads);
+  const entry = asRecord(root?.[routeName]);
+  return pickFirstTimestamp(entry, [
+    "receivedAt",
+    "receivedAtMs",
+    "updatedAt",
+    "timestamp",
+  ]);
+}
+
+function extractPlayerEventTimestamp(snapshot) {
+  const observerSnapshot = asRecord(snapshot?.observerSnapshot);
+  const rawSnapshot = asRecord(snapshot?.raw);
+  const routeStores = [
+    observerSnapshot?.rawRoutePayloads,
+    rawSnapshot?.rawRoutePayloads,
+    observerSnapshot?.routePayloads,
+    rawSnapshot?.routePayloads,
+    snapshot?.rawRoutePayloads,
+    snapshot?.routePayloads,
+  ];
+
+  for (const routeStore of routeStores) {
+    const timestamp = extractRouteReceivedAt(routeStore, "/totalmessage");
+    if (timestamp !== null) {
+      return timestamp;
+    }
+  }
+  return null;
+}
+
 function detectCoordinateScale(mapDefinition, values) {
   const hint = toFiniteNumber(mapDefinition?.coordinateScaleHint) ?? 1;
   if (hint <= 1) {
@@ -1935,12 +2187,253 @@ function detectCoordinateScale(mapDefinition, values) {
   return maxValue <= mapDefinition.worldSize / 20 ? hint : 1;
 }
 
+function buildCoordinateBoundsDiagnostics({
+  definition,
+  scaleFactor,
+  players,
+  primaryZone,
+  nextZone,
+}) {
+  const worldSize = toFiniteNumber(definition?.worldSize);
+  const safeScaleFactor = toFiniteNumber(scaleFactor) ?? 1;
+  const tolerance = worldSize === null ? 0 : Math.max(1, worldSize * 0.001);
+  const isOutside = (value) => {
+    const numeric = toFiniteNumber(value);
+    return (
+      worldSize !== null &&
+      worldSize > 0 &&
+      numeric !== null &&
+      (numeric * safeScaleFactor < -tolerance ||
+        numeric * safeScaleFactor > worldSize + tolerance)
+    );
+  };
+  const playerPoints = (Array.isArray(players) ? players : []).filter(
+    (player) => Number.isFinite(player?.x) && Number.isFinite(player?.y),
+  );
+  const zonePoints = [primaryZone, nextZone].filter(
+    (zone) => Number.isFinite(zone?.x) && Number.isFinite(zone?.y),
+  );
+  const playerOutOfBoundsCount = playerPoints.filter(
+    (player) => isOutside(player.x) || isOutside(player.y),
+  ).length;
+  const zoneCenterOutOfBoundsCount = zonePoints.filter(
+    (zone) => isOutside(zone.x) || isOutside(zone.y),
+  ).length;
+
+  return {
+    boundsStatus:
+      playerOutOfBoundsCount > 0 || zoneCenterOutOfBoundsCount > 0
+        ? "out-of-bounds-observed"
+        : "within-nominal-bounds",
+    playerCoordinateSampleCount: playerPoints.length,
+    playerOutOfBoundsCount,
+    zoneCenterSampleCount: zonePoints.length,
+    zoneCenterOutOfBoundsCount,
+  };
+}
+
+function hasExplicitPcobWorldCoordinates(snapshot, source) {
+  const normalizedSource = normalizeLookupValue(source);
+  if (normalizedSource === "direct-observer" || normalizedSource === "telemetry-bridge") {
+    return true;
+  }
+
+  const observerSnapshot = asRecord(snapshot?.observerSnapshot);
+  const rawSnapshot = asRecord(snapshot?.raw);
+  const producer = normalizeLookupValue(
+    observerSnapshot?.producer || rawSnapshot?.producer,
+  );
+  const coordinateSystem = normalizeLookupValue(
+    observerSnapshot?.normalized?.flightPath?.coordinateSystem ||
+      rawSnapshot?.normalized?.flightPath?.coordinateSystem,
+  );
+  return producer.includes("shadowtracker") || coordinateSystem === "world";
+}
+
+function extractSnapshotPlayers(snapshot) {
+  if (Array.isArray(snapshot?.players) && snapshot.players.length > 0) {
+    return snapshot.players;
+  }
+
+  const observerSnapshot = asRecord(snapshot?.observerSnapshot);
+  const rawSnapshot = asRecord(snapshot?.raw);
+  const candidates = [
+    observerSnapshot?.normalized?.players,
+    observerSnapshot?.playerInfoList,
+    observerSnapshot?.allInfo?.TotalPlayerList,
+    rawSnapshot?.normalized?.players,
+    rawSnapshot?.playerInfoList,
+    rawSnapshot?.allInfo?.TotalPlayerList,
+  ];
+  return candidates.find((candidate) => Array.isArray(candidate) && candidate.length > 0) || [];
+}
+
+function extractSnapshotTeams(snapshot) {
+  if (Array.isArray(snapshot?.teams) && snapshot.teams.length > 0) {
+    return snapshot.teams;
+  }
+
+  const observerSnapshot = asRecord(snapshot?.observerSnapshot);
+  const rawSnapshot = asRecord(snapshot?.raw);
+  const candidates = [
+    observerSnapshot?.normalized?.teams,
+    observerSnapshot?.teamInfoList,
+    observerSnapshot?.allInfo?.TeamInfoList,
+    rawSnapshot?.normalized?.teams,
+    rawSnapshot?.teamInfoList,
+    rawSnapshot?.allInfo?.TeamInfoList,
+  ];
+  return candidates.find((candidate) => Array.isArray(candidate) && candidate.length > 0) || [];
+}
+
+function unwrapPcobKillEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  return entries
+    .map((entry) => {
+      const wrapper = asRecord(entry);
+      const payload = asRecord(wrapper?.payload);
+      if (!payload) {
+        return null;
+      }
+
+      const receivedAtMs = toFiniteNumber(wrapper.receivedAtMs);
+      return receivedAtMs === null
+        ? payload
+        : { ...payload, _pcobReceivedAtMs: receivedAtMs };
+    })
+    .filter(Boolean);
+}
+
+function extractSnapshotKills(snapshot) {
+  const observerSnapshot = asRecord(snapshot?.observerSnapshot);
+  const rawSnapshot = asRecord(snapshot?.raw);
+  const retainedEntries = [
+    ...unwrapPcobKillEntries(observerSnapshot?.killInfoEntries),
+    ...unwrapPcobKillEntries(rawSnapshot?.killInfoEntries),
+  ];
+  if (retainedEntries.length > 0) {
+    return retainedEntries;
+  }
+
+  const candidates = [
+    snapshot?.kills,
+    observerSnapshot?.killInfo,
+    rawSnapshot?.killInfo,
+  ];
+  return candidates.find((candidate) => Array.isArray(candidate) && candidate.length > 0) || [];
+}
+
 function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
   let lastResolvedMapKey = null;
   const lastFlightPathByMapKey = new Map();
   const firstCircleVisibleAtByMapKey = new Map();
+  const coordinateScaleByMapAndSource = new Map();
+  const flightPathRetentionEligibleByMapKey = new Set();
+  const playerControlRosterByMapAndTeam = new Map();
 
-  function ingestSnapshot(snapshot) {
+  function resolvePcobPlayerControlNumbers({ players, teams, mapKey, matchPhase }) {
+    const numbersByPlayerKey = new Map();
+    const unresolvedTeamKeys = new Set();
+    const playersByTeam = new Map();
+    const expectedRosterSizeByTeam = new Map();
+
+    for (const team of Array.isArray(teams) ? teams : []) {
+      const teamKey = extractTeamKey(asRecord(team));
+      const expectedRosterSize = extractExpectedRosterSize(team);
+      if (teamKey && expectedRosterSize !== null) {
+        expectedRosterSizeByTeam.set(teamKey, expectedRosterSize);
+      }
+    }
+
+    for (const player of Array.isArray(players) ? players : []) {
+      const record = asRecord(player);
+      const teamKey = extractTeamKey(record);
+      if (!record || !teamKey) {
+        continue;
+      }
+      const group = playersByTeam.get(teamKey) || [];
+      group.push(record);
+      playersByTeam.set(teamKey, group);
+    }
+
+    const canSeedFromCurrentPhase = MATCH_OPENING_PHASES.has(matchPhase);
+    for (const [teamKey, teamPlayers] of playersByTeam) {
+      const rosterCacheKey = `${mapKey}:${teamKey}`;
+      let roster = playerControlRosterByMapAndTeam.get(rosterCacheKey) || null;
+      const identities = teamPlayers.map((player) =>
+        normalizeLookupValue(extractPlayerControlIdentity(player)),
+      );
+      const expectedRosterSize = expectedRosterSizeByTeam.get(teamKey) ?? null;
+      const uniqueIdentities = new Set(identities.filter(Boolean));
+      const trustworthyOpeningRoster =
+        canSeedFromCurrentPhase &&
+        expectedRosterSize !== null &&
+        expectedRosterSize === teamPlayers.length &&
+        identities.every(Boolean) &&
+        uniqueIdentities.size === teamPlayers.length &&
+        teamPlayers.every((player) => extractAlive(player) === true);
+
+      if (!roster && trustworthyOpeningRoster) {
+        roster = new Map();
+        identities.forEach((identity, index) => roster.set(identity, index + 1));
+        playerControlRosterByMapAndTeam.set(rosterCacheKey, roster);
+      } else if (roster && trustworthyOpeningRoster) {
+        const usedNumbers = new Set(roster.values());
+        for (const identity of identities) {
+          if (roster.has(identity)) {
+            continue;
+          }
+          let nextNumber = 1;
+          while (usedNumbers.has(nextNumber) && nextNumber <= 9) {
+            nextNumber += 1;
+          }
+          if (nextNumber <= 9) {
+            roster.set(identity, nextNumber);
+            usedNumbers.add(nextNumber);
+          }
+        }
+      }
+
+      for (let index = 0; index < teamPlayers.length; index += 1) {
+        const identity = identities[index];
+        const controlKey = identity ? `${teamKey}:${identity}` : null;
+        const playerNumber = identity && roster ? roster.get(identity) ?? null : null;
+        if (controlKey && playerNumber !== null) {
+          numbersByPlayerKey.set(controlKey, playerNumber);
+        } else {
+          unresolvedTeamKeys.add(teamKey);
+        }
+      }
+    }
+
+    return {
+      numbersByPlayerKey,
+      unresolvedTeamKeys,
+      get(record) {
+        const teamKey = extractTeamKey(record);
+        const identity = normalizeLookupValue(extractPlayerControlIdentity(record));
+        return teamKey && identity
+          ? numbersByPlayerKey.get(`${teamKey}:${identity}`) ?? null
+          : null;
+      },
+    };
+  }
+
+  function reset() {
+    lastResolvedMapKey = null;
+    lastFlightPathByMapKey.clear();
+    firstCircleVisibleAtByMapKey.clear();
+    coordinateScaleByMapAndSource.clear();
+    flightPathRetentionEligibleByMapKey.clear();
+    playerControlRosterByMapAndTeam.clear();
+  }
+
+  function ingestSnapshot(snapshot, options = {}) {
+    const skipZoneUpdate = options?.skipZoneUpdate === true;
+    const circlePayload = extractSnapshotCirclePayload(snapshot);
     const rawMapName = extractRawMapName(snapshot) || lastResolvedMapKey;
     const definition = registry.resolve(rawMapName);
     if (!definition) {
@@ -1950,6 +2443,7 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
     const receivedAt = Date.now();
     const eventTimestamp = extractEventTimestamp(snapshot);
     const timestamp = eventTimestamp ?? receivedAt;
+    const playerTimestamp = extractPlayerEventTimestamp(snapshot) ?? timestamp;
     const source =
       typeof snapshot?.source === "string" && snapshot.source.trim()
         ? snapshot.source.trim()
@@ -1959,43 +2453,93 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
       typeof snapshot?.phase === "string" && snapshot.phase.trim()
         ? snapshot.phase.trim().toLowerCase()
         : null;
-    const circlesVisible = shouldShowZoneCircles(matchPhase, snapshot?.circlePayload);
-    const primaryZone = extractPrimaryZone(snapshot?.circlePayload);
-    const nextZone = extractNextZone(snapshot?.circlePayload);
-    const blueZone = extractBlueZone(snapshot?.circlePayload, definition);
-    const extractedFlightPath =
-      extractFlightPath(snapshot?.circlePayload) ??
-      extractFlightPath(snapshot?.routePayloads);
-    if (extractedFlightPath?.start && extractedFlightPath?.end) {
+    const openingPhaseActive = MATCH_OPENING_PHASES.has(matchPhase);
+    const circlesVisible = shouldShowZoneCircles(matchPhase, circlePayload);
+    const primaryZone = extractPrimaryZone(circlePayload);
+    const nextZone = extractNextZone(circlePayload);
+    const blueZone = extractBlueZone(circlePayload, definition);
+    const extractedFlightPath = extractSnapshotFlightPath(snapshot);
+    const previousFlightPath = lastFlightPathByMapKey.get(definition.key) ?? null;
+    const flightPathChanged =
+      Boolean(extractedFlightPath?.start && extractedFlightPath?.end) &&
+      previousFlightPath === null;
+    if (
+      extractedFlightPath?.start &&
+      extractedFlightPath?.end &&
+      previousFlightPath === null
+    ) {
       lastFlightPathByMapKey.set(definition.key, {
         start: { ...extractedFlightPath.start },
         end: { ...extractedFlightPath.end },
       });
+      if (openingPhaseActive || !primaryZone) {
+        flightPathRetentionEligibleByMapKey.add(definition.key);
+      }
     }
+    // Keep the first official opening route for the match. Rondo emits later
+    // recall-plane routes through the same PCOB fields and can alternate them
+    // with the opening route; allowing those updates here makes both the line
+    // and synthetic plane marker jump. reset() releases the lock for the next
+    // match, while the connector's raw-event spool retains every supplied path.
     const retainedFlightPathForScale =
-      extractedFlightPath ?? lastFlightPathByMapKey.get(definition.key) ?? null;
-    const rawKills = Array.isArray(snapshot?.kills) ? snapshot.kills : [];
-    const rawPlayerSource = Array.isArray(snapshot?.players) ? snapshot.players : [];
+      lastFlightPathByMapKey.get(definition.key) ?? null;
+    const rawKills = extractSnapshotKills(snapshot);
+    const rawPlayerSource = extractSnapshotPlayers(snapshot);
+    const rawTeamSource = extractSnapshotTeams(snapshot);
     const rosterFilterResult = filterObserverCurrentRosterPlayers(
       rawPlayerSource,
-      snapshot?.teams,
+      rawTeamSource,
     );
     const rawPlayers = rosterFilterResult.players;
+    const explicitPcobWorldCoordinates = hasExplicitPcobWorldCoordinates(
+      snapshot,
+      source,
+    );
+    const pcobPlayerControlNumbers = explicitPcobWorldCoordinates
+      ? resolvePcobPlayerControlNumbers({
+          players: rawPlayers,
+          teams: rawTeamSource,
+          mapKey: definition.key,
+          matchPhase,
+        })
+      : null;
+    const playerCountByTeam = new Map();
     const extractedPlayers = rawPlayers
       .map((player, index) => {
         const record = asRecord(player);
+        if (!record) {
+          return null;
+        }
+
+        const teamSlot = extractTeamSlot(record);
+        const teamKey = extractTeamKey(record);
+        let playerNumber = pcobPlayerControlNumbers?.get(record) ?? null;
+        if (!pcobPlayerControlNumbers && teamKey) {
+          playerNumber = (playerCountByTeam.get(teamKey) || 0) + 1;
+          playerCountByTeam.set(teamKey, playerNumber);
+        }
+
         const position = extractPosition(record);
-        if (!record || !position) {
+        if (!position) {
           return null;
         }
 
         return {
           playerId:
-            pickFirstString(record, [
+            pickFirstIdentity(record, [
+              "uId",
+              "uid",
+              "UID",
               "playerId",
               "PlayerId",
+              "playerID",
+              "PlayerID",
               "playerKey",
               "PlayerKey",
+              "playerOpenId",
+              "playerOpenID",
+              "PlayerOpenId",
+              "PlayerOpenID",
               "uid",
               "UID",
               "name",
@@ -2058,9 +2602,12 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
               "TeamNo",
               "teamIndex",
             ]) || null,
-          teamSlot: extractTeamSlot(record),
+          teamSlot,
+          playerNumber,
           x: position.x,
           y: position.y,
+          z: position.z,
+          liveState: extractLiveState(record),
           kills: Math.max(
             0,
             Math.trunc(
@@ -2087,7 +2634,7 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
     const dedupeResult = dedupePositionedPlayers(extractedPlayers);
     const positionedPlayers = dedupeResult.players;
 
-    const scaleFactor = detectCoordinateScale(definition, [
+    const coordinateValues = [
       primaryZone?.x,
       primaryZone?.y,
       primaryZone?.radius,
@@ -2102,12 +2649,32 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
       retainedFlightPathForScale?.end?.x,
       retainedFlightPathForScale?.end?.y,
       ...positionedPlayers.flatMap((player) => [player.x, player.y]),
-    ]);
+    ];
+    const scaleCacheKey = `${definition.key}:${source.toLowerCase()}`;
+    const cachedScaleFactor = coordinateScaleByMapAndSource.get(scaleCacheKey);
+    const scaleFactor = explicitPcobWorldCoordinates
+      ? 1
+      : cachedScaleFactor ?? detectCoordinateScale(definition, coordinateValues);
+    coordinateScaleByMapAndSource.set(scaleCacheKey, scaleFactor);
+    const calibrationStatus =
+      typeof definition.telemetryCalibrationStatus === "string" &&
+      definition.telemetryCalibrationStatus.trim()
+        ? definition.telemetryCalibrationStatus.trim()
+        : "provisional";
+    const boundsDiagnostics = buildCoordinateBoundsDiagnostics({
+      definition,
+      scaleFactor,
+      players: positionedPlayers,
+      primaryZone,
+      nextZone,
+    });
     const coordinate = {
       scaleHint: definition.coordinateScaleHint ?? 1,
       detectedScaleFactor: scaleFactor,
       scaleMode: scaleFactor > 1 ? `scaled_x${scaleFactor}` : "full_units",
       worldSize: definition.worldSize,
+      calibrationStatus,
+      ...boundsDiagnostics,
     };
     const warnings = [];
     if (scaleFactor > 1) {
@@ -2115,6 +2682,16 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
     }
     if (definition.notes) {
       warnings.push(`Map calibration note: ${definition.notes}`);
+    }
+    if (calibrationStatus !== "recording-backed") {
+      warnings.push(
+        `Telemetry-to-image alignment is provisional for ${definition.label}; nominal bounds and north-up orientation are not recording-backed.`,
+      );
+    }
+    if (boundsDiagnostics.boundsStatus === "out-of-bounds-observed") {
+      warnings.push(
+        `Observed coordinates outside ${definition.label}'s nominal ${definition.worldSize}-unit bounds (${boundsDiagnostics.playerOutOfBoundsCount} player, ${boundsDiagnostics.zoneCenterOutOfBoundsCount} zone center); rendered edge clamping is not calibration evidence.`,
+      );
     }
     if (dedupeResult.duplicateCount > 0) {
       warnings.push(
@@ -2124,6 +2701,11 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
     if (rosterFilterResult.staleCount > 0) {
       warnings.push(
         `Filtered ${rosterFilterResult.staleCount} stale observer player record(s).`,
+      );
+    }
+    if (pcobPlayerControlNumbers?.unresolvedTeamKeys.size > 0) {
+      warnings.push(
+        `PCOB map control is disabled for ${pcobPlayerControlNumbers.unresolvedTeamKeys.size} team(s) without a trustworthy opening roster order.`,
       );
     }
 
@@ -2149,18 +2731,14 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
         ? null
         : firstCircleVisibleAt + FLIGHT_PATH_POST_CIRCLE_RETENTION_MS;
     const flightPathRetentionActive =
-      flightPathVisibleUntil !== null && receivedAt <= flightPathVisibleUntil;
-    const openingPhaseActive = MATCH_OPENING_PHASES.has(matchPhase);
+      flightPathRetentionEligibleByMapKey.has(definition.key) &&
+      flightPathVisibleUntil !== null &&
+      receivedAt <= flightPathVisibleUntil;
     const preCircleFlightPathActive = !primaryZone;
-    if (!openingPhaseActive && !flightPathRetentionActive && !preCircleFlightPathActive) {
-      lastFlightPathByMapKey.delete(definition.key);
-    }
-
     const flightPath =
-      extractedFlightPath ??
-      (openingPhaseActive || preCircleFlightPathActive || flightPathRetentionActive
+      openingPhaseActive || preCircleFlightPathActive || flightPathRetentionActive
         ? lastFlightPathByMapKey.get(definition.key) ?? null
-        : null);
+        : null;
     const shouldKeepFlightPath =
       Boolean(flightPath) &&
       (!primaryZone ||
@@ -2172,12 +2750,12 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
         })
       : null;
 
-    if (primaryZone || flightPath) {
+    if ((!skipZoneUpdate || flightPathChanged) && (primaryZone || flightPath)) {
       engine.applyZoneUpdate(
         {
           mapKey: definition.key,
           phase:
-            pickCirclePayloadNumber(snapshot?.circlePayload, [
+            pickCirclePayloadNumber(circlePayload, [
               "phase",
               "Phase",
               "phaseIndex",
@@ -2190,14 +2768,14 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
           matchPhase,
           circlesVisible,
           status:
-            pickCirclePayloadStatus(snapshot?.circlePayload, [
+            pickCirclePayloadStatus(circlePayload, [
               "CircleStatus",
               "circleStatus",
               "status",
               "Status",
             ]) ?? null,
-          mode: resolveCircleMode(snapshot?.circlePayload),
-          zoneMode: resolveCircleMode(snapshot?.circlePayload),
+          mode: resolveCircleMode(circlePayload),
+          zoneMode: resolveCircleMode(circlePayload),
           centerX: primaryZone
             ? normalizeWorldX(primaryZone.x, definition, {
                 detectedScaleFactor: scaleFactor,
@@ -2258,8 +2836,8 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
                 },
           flightPathVisibleUntil:
             normalizedFlightPath === null ? null : flightPathVisibleUntil,
-          phaseDuration: resolveCirclePhaseDuration(snapshot?.circlePayload),
-          timeRemaining: resolveCircleTimeRemaining(snapshot?.circlePayload),
+          phaseDuration: resolveCirclePhaseDuration(circlePayload),
+          timeRemaining: resolveCircleTimeRemaining(circlePayload),
           timestamp,
           receivedAt,
           source,
@@ -2299,12 +2877,15 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
             playerName: player.playerName,
             teamId: player.teamId,
             teamSlot: player.teamSlot,
+            playerNumber: player.playerNumber,
             x: normalizeWorldX(player.x, definition, {
               detectedScaleFactor: scaleFactor,
             }),
             y: normalizeWorldY(player.y, definition, {
               detectedScaleFactor: scaleFactor,
             }),
+            z: player.z,
+            liveState: player.liveState,
             kills: player.kills,
             alive: player.alive,
             knocked: player.knocked,
@@ -2314,7 +2895,7 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
             fireAngle: player.fireAngle,
             fireDirection: player.fireDirection,
           })),
-          timestamp,
+          timestamp: playerTimestamp,
           receivedAt,
           source,
           coordinate,
@@ -2339,6 +2920,7 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
 
   return {
     ingestSnapshot,
+    reset,
   };
 }
 

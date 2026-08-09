@@ -37,6 +37,8 @@ export type LauncherDefaults = {
 export type LauncherSettings = {
   rememberedEmail?: string;
   keepSignedIn?: boolean;
+  widgetLanEnabled?: boolean;
+  pinnedMapControlAlwaysOnTop?: boolean;
   [key: string]: unknown;
 };
 
@@ -65,6 +67,11 @@ export type LauncherOrganization = {
 export type LauncherSession = {
   user: LauncherUser;
   organization: LauncherOrganization;
+  credentialStorage?: {
+    mode: "os-encrypted" | "memory-only";
+    persistentRefreshToken: boolean;
+    reason: string | null;
+  };
 };
 
 export type LauncherAccessReason =
@@ -442,9 +449,31 @@ export type ObserverFeedStatus = {
   lastError: string | null;
   lastStartedAt: string | null;
   lastStoppedAt: string | null;
+  recoveryState:
+    | "idle"
+    | "healthy"
+    | "waiting"
+    | "restarting"
+    | "blocked"
+    | "circuit-open";
+  restartAttempts: number;
+  maxRestartAttempts: number;
+  nextRestartAt: string | null;
+  lastUnexpectedExitAt: string | null;
+  lastRestartAt: string | null;
+  restartBlockedReason: string | null;
+  healthState: "idle" | "healthy" | "degraded" | "recycling";
+  consecutiveHealthFailures: number;
+  healthFailureThreshold: number;
+  lastHealthCheckAt: string | null;
+  lastHealthyAt: string | null;
 };
 
-export type VisualModeRegionKey = "killFeed" | "teamPanel" | "scoreboard";
+export type VisualModeRegionKey =
+  | "killFeed"
+  | "teamPanel"
+  | "scoreboard"
+  | "roster";
 export type VisualGamePresetKey =
   | "pubgMobile"
   | "freeFire"
@@ -474,6 +503,8 @@ export type VisualModeConfig = {
   coordinateMode: "percent";
   reviewBeforePublish: true;
   autoPublish: false;
+  autoOcrEnabled: boolean;
+  stableFrameSamples: number;
   ocrEnabled: false;
   aiEnabled: false;
 };
@@ -499,6 +530,7 @@ export type VisualModeStatus = VisualModeConfig & {
   stoppedAt: string | null;
   pipeline: "screen-monitor";
   calibrationReady: boolean;
+  stableFrameCount: number;
   reviewQueueSize: number;
   lastReviewCandidateAt: string | null;
 };
@@ -520,6 +552,7 @@ export type VisualReviewItem = {
   matchId: string | null;
   sessionId: string | null;
   gamePresetKey: VisualGamePresetKey;
+  reviewKind: "results" | "slot-map";
   sourceId: string | null;
   sourceName: string | null;
   regionKey: VisualModeRegionKey;
@@ -533,6 +566,8 @@ export type VisualReviewItem = {
   reason: string;
   frameHash: string;
   imagePath: string | null;
+  assetId: string | null;
+  /** Legacy only. New OCR uploads retain a private assetId, never a URL. */
   imageUrl: string | null;
   ocrStatus: VisualReviewItemOcrStatus;
   ocrError: string | null;
@@ -596,6 +631,10 @@ export type WidgetServerStatus = {
   baseUrl: string | null;
   localBaseUrl?: string | null;
   networkBaseUrl?: string | null;
+  authorizedBaseUrl?: string | null;
+  authorizedLocalBaseUrl?: string | null;
+  authorizedNetworkBaseUrl?: string | null;
+  accessControlled?: boolean;
 };
 
 export type PinnedCommentatorDeskWindowStatus = {
@@ -605,6 +644,44 @@ export type PinnedCommentatorDeskWindowStatus = {
   alwaysOnTop: boolean;
   transparent: boolean;
   url: string | null;
+};
+
+export type PinnedMapControlWindowStatus = {
+  open: boolean;
+  visible: boolean;
+  alwaysOnTop: boolean;
+  url: string | null;
+};
+
+export type PcobMapControlStatus = {
+  enabled: boolean;
+  available: boolean;
+  busy: boolean;
+  message: string;
+  eligible: boolean;
+  matchId: string | null;
+  matchStatus: string | null;
+  matchLive: boolean;
+  matchFinished: boolean;
+  telemetrySource: "telemetry-bridge" | "observer-feed" | null;
+  telemetrySourceReady: boolean;
+  sourceError: string | null;
+  pcobRunning: boolean;
+  telemetryReady: boolean;
+  telemetryError: string | null;
+  inputReady: boolean;
+  inputError: string | null;
+  lastSelection: {
+    status: "pending" | "sent" | "confirmed" | "unconfirmed" | "failed";
+    requestId: string;
+    playerId: string;
+    playerName: string;
+    confirmedAt: number | null;
+    sentAt: number | null;
+    digitMode?: string | null;
+    inputElapsedMs?: number | null;
+    error: string | null;
+  } | null;
 };
 
 export type LauncherMapAssetStatus = {
@@ -749,6 +826,13 @@ export type WidgetCatalogItemState = {
   widgetKey: string;
   widgetInstanceId: string | null;
   widgetInstanceKey: string | null;
+  capabilityPrefix: string | null;
+  capabilityStatus: "ACTIVE" | "INACTIVE" | "REVOKED" | "EXPIRED" | "MISSING";
+  capabilityGeneration: number | null;
+  capabilityIssuedAt: string | null;
+  capabilityExpiresAt: string | null;
+  capabilityRevokedAt: string | null;
+  canRotate: boolean;
   organizationSlug: string | null;
   matchId: string | null;
   tournamentId: string | null;

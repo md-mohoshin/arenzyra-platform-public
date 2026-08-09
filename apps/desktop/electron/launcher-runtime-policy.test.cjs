@@ -42,6 +42,17 @@ test("production debug overrides must be explicit", () => {
   );
 });
 
+test("production widget host can be opened by launcher LAN setting", () => {
+  assert.equal(
+    resolveWidgetServerHost({
+      isPackaged: true,
+      env: {},
+      allowNetwork: true,
+    }),
+    "0.0.0.0",
+  );
+});
+
 test("direct observer widget polling can be explicitly disabled", () => {
   const env = {
     ARENZYRA_WIDGET_DISABLE_DIRECT_OBSERVER: "1",

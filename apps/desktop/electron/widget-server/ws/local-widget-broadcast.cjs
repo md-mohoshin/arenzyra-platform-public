@@ -5,10 +5,13 @@ const { WebSocketServer, WebSocket } = require("ws");
 function createLocalWidgetBroadcast({
   path = "/ws",
   heartbeatIntervalMs = 5000,
+  resolveMapKey = null,
+  authorizeRequest = null,
   log = () => {},
 } = {}) {
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set();
+  const requestedMapKeyByClient = new WeakMap();
   let snapshotProvider = null;
   let lastBroadcastAt = null;
 
@@ -28,16 +31,48 @@ function createLocalWidgetBroadcast({
     return true;
   }
 
+  function normalizeMapKey(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return null;
+    }
+    if (typeof resolveMapKey === "function") {
+      const resolved = resolveMapKey(raw);
+      const resolvedValue =
+        resolved && typeof resolved === "object" ? resolved.key : resolved;
+      const normalizedResolved = String(resolvedValue || "").trim();
+      if (normalizedResolved) {
+        return normalizedResolved.toLowerCase();
+      }
+    }
+    return raw.toLowerCase();
+  }
+
+  function getPayloadMapKey(payload) {
+    return normalizeMapKey(payload?.mapKey ?? payload?.mapContext?.mapKey);
+  }
+
+  function shouldSendToClient(client, payload) {
+    const requestedMapKey = requestedMapKeyByClient.get(client) || null;
+    if (!requestedMapKey) {
+      return true;
+    }
+    const payloadMapKey = getPayloadMapKey(payload);
+    return !payloadMapKey || payloadMapKey === requestedMapKey;
+  }
+
   function broadcast(type, payload, timestamp = Date.now()) {
     for (const client of clients) {
-      send(client, type, payload, timestamp);
+      if (shouldSendToClient(client, payload)) {
+        send(client, type, payload, timestamp);
+      }
     }
   }
 
   function getRequestedMapKey(request) {
     try {
       const parsed = new URL(request.url || path, "ws://127.0.0.1");
-      return parsed.searchParams.get("map");
+      return normalizeMapKey(parsed.searchParams.get("map"));
     } catch {
       return null;
     }
@@ -124,6 +159,7 @@ function createLocalWidgetBroadcast({
 
   wss.on("connection", (client, request) => {
     clients.add(client);
+    requestedMapKeyByClient.set(client, getRequestedMapKey(request));
 
     client.on("close", () => {
       clients.delete(client);
@@ -154,6 +190,23 @@ function createLocalWidgetBroadcast({
     const url = request.url || "";
     if (!url.startsWith(path)) {
       return false;
+    }
+
+    if (
+      typeof authorizeRequest === "function" &&
+      authorizeRequest(request) !== true
+    ) {
+      log("[widget-ws] rejected unauthorized upgrade", {
+        path: url.split("?")[0],
+      });
+      try {
+        socket.write(
+          "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        );
+      } finally {
+        socket.destroy();
+      }
+      return true;
     }
 
     wss.handleUpgrade(request, socket, head, (client) => {

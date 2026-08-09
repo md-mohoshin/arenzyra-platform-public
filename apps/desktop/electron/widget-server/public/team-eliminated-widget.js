@@ -1,11 +1,13 @@
 (function () {
   const bootstrap = window.__ARENZYRA_LOCAL_WIDGET_BOOTSTRAP__ || {};
   const root = document.getElementById("team-eliminated-root");
+  const banner = root?.querySelector(".team-eliminated-banner");
   const logo = document.getElementById("team-eliminated-logo");
+  const eyebrow = document.getElementById("team-eliminated-eyebrow");
   const name = document.getElementById("team-eliminated-name");
   const placement = document.getElementById("team-eliminated-placement");
 
-  if (!root || !logo || !name || !placement) {
+  if (!root || !banner || !logo || !eyebrow || !name || !placement) {
     return;
   }
 
@@ -95,8 +97,12 @@
   const apiBase = normalizeBaseUrl(bootstrap.apiBase);
   const matchId = asString(bootstrap.matchId);
   const fadeInMs = Math.max(150, toFiniteNumber(bootstrap.fadeInMs, 420));
-  const holdMs = Math.max(4000, toFiniteNumber(bootstrap.holdMs, 4600));
+  const holdMs = Math.max(1200, toFiniteNumber(bootstrap.holdMs, 4600));
   const fadeOutMs = Math.max(250, toFiniteNumber(bootstrap.fadeOutMs, 640));
+  const simultaneousWindowMs = Math.min(
+    1000,
+    Math.max(100, toFiniteNumber(bootstrap.simultaneousWindowMs, 300)),
+  );
   const teamLogoBasePath = asString(bootstrap.teamLogoBasePath) || "/assets/teams";
   const defaultLogoPath = asString(bootstrap.defaultLogoPath) || "/assets/default-team.png";
 
@@ -109,6 +115,8 @@
 
   let activeBanner = null;
   const queuedBanners = [];
+  const pendingSimultaneousEvents = [];
+  let simultaneousTimer = null;
   let hideStartTimer = null;
   let completeTimer = null;
   let socket = null;
@@ -148,11 +156,37 @@
     }
   }
 
-  function renderBanner(item) {
-    name.textContent = item.teamName;
-    placement.textContent =
-      item.placement !== null ? `${ordinal(item.placement).toUpperCase()} PLACE` : "PLACE PENDING";
-    applyLogo(item.teamId, item.teamName);
+  function renderBanner(items) {
+    const events = Array.isArray(items) ? items : [];
+    const firstEvent = events[0] || null;
+    if (!firstEvent) {
+      return;
+    }
+
+    const isGroup = events.length > 1;
+    banner.classList.toggle("is-grouped", isGroup);
+    if (!isGroup) {
+      eyebrow.textContent = "TEAM ELIMINATED";
+      name.textContent = firstEvent.teamName;
+      placement.textContent =
+        firstEvent.placement !== null
+          ? `${ordinal(firstEvent.placement).toUpperCase()} PLACE`
+          : "PLACE PENDING";
+      applyLogo(firstEvent.teamId, firstEvent.teamName);
+      return;
+    }
+
+    const visibleNames = events.slice(0, 3).map((event) => event.teamName);
+    const remainingCount = events.length - visibleNames.length;
+    eyebrow.textContent = `${events.length} TEAMS ELIMINATED`;
+    name.textContent = [
+      visibleNames.join(" • "),
+      remainingCount > 0 ? `+${remainingCount} MORE` : "",
+    ]
+      .filter(Boolean)
+      .join(" • ");
+    placement.textContent = "SIMULTANEOUS ELIMINATION";
+    applyLogo(firstEvent.teamId, firstEvent.teamName);
   }
 
   function showNextBanner() {
@@ -170,7 +204,7 @@
       return;
     }
 
-    renderBanner(activeBanner);
+    renderBanner(activeBanner.events);
     resetBannerClasses();
     void root.offsetWidth;
     root.classList.add("is-visible");
@@ -187,13 +221,16 @@
     }, fadeInMs + holdMs + fadeOutMs);
   }
 
-  function queueBanner(event) {
+  function queueBanner(events) {
+    const normalizedEvents = (Array.isArray(events) ? events : []).filter(Boolean);
+    if (normalizedEvents.length === 0) {
+      return;
+    }
+
     queuedBanners.push({
-      teamId: event.teamId,
-      teamName: event.teamName,
-      placement: event.placement,
-      eliminatedAt: event.eliminatedAt,
-      eventId: event.eventId,
+      events: normalizedEvents,
+      eliminatedAt: normalizedEvents[0].eliminatedAt,
+      eventId: normalizedEvents[0].eventId,
     });
 
     queuedBanners.sort((left, right) => {
@@ -208,6 +245,27 @@
     if (!activeBanner) {
       showNextBanner();
     }
+  }
+
+  function flushSimultaneousEvents() {
+    simultaneousTimer = null;
+    if (pendingSimultaneousEvents.length === 0) {
+      return;
+    }
+
+    const events = pendingSimultaneousEvents.splice(0, pendingSimultaneousEvents.length);
+    queueBanner(events);
+  }
+
+  function enqueueSimultaneousEvent(event) {
+    pendingSimultaneousEvents.push(event);
+    if (simultaneousTimer) {
+      return;
+    }
+    simultaneousTimer = window.setTimeout(
+      flushSimultaneousEvents,
+      simultaneousWindowMs,
+    );
   }
 
   function mergeEvents(events) {
@@ -230,7 +288,7 @@
       }
 
       processedEventIds.add(event.eventId);
-      queueBanner(event);
+      enqueueSimultaneousEvent(event);
     });
   }
 
@@ -287,13 +345,13 @@
       }
     });
 
-    socket.on("observer:team:eliminated", (payload) => {
+    socket.on("match:team-eliminated", (payload) => {
       const event = normalizeEvent(payload);
       if (!event || event.matchId !== matchId) {
         return;
       }
 
-      console.info("[Widget] Team eliminated event received");
+      console.info("[Widget] Authoritative team eliminated event received");
       mergeEvents([event]);
     });
 
@@ -321,6 +379,9 @@
 
   window.addEventListener("beforeunload", () => {
     clearBannerTimers();
+    if (simultaneousTimer) {
+      window.clearTimeout(simultaneousTimer);
+    }
     if (socket && typeof socket.disconnect === "function") {
       socket.disconnect();
     }

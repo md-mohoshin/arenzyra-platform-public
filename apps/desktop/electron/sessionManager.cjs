@@ -26,6 +26,7 @@ function toIsoTimestamp(value, fallback = null) {
 function createSessionManager(options) {
   const getUserDataPath = options?.getUserDataPath;
   const safeStorage = options?.safeStorage;
+  let memorySession = null;
 
   function getSessionDir() {
     return path.join(getUserDataPath(), "launcher");
@@ -40,7 +41,12 @@ function createSessionManager(options) {
   }
 
   function ensureSessionDir() {
-    fs.mkdirSync(getSessionDir(), { recursive: true });
+    fs.mkdirSync(getSessionDir(), { recursive: true, mode: 0o700 });
+    try {
+      fs.chmodSync(getSessionDir(), 0o700);
+    } catch {
+      // Windows ACLs and some managed filesystems do not expose POSIX modes.
+    }
   }
 
   function canEncrypt() {
@@ -58,7 +64,7 @@ function createSessionManager(options) {
     }
 
     if (!canEncrypt()) {
-      return { value, encrypted: false };
+      return { value: "", encrypted: false };
     }
 
     return {
@@ -72,9 +78,7 @@ function createSessionManager(options) {
       return "";
     }
 
-    if (!encrypted) {
-      return raw;
-    }
+    if (!encrypted) return "";
 
     if (!canEncrypt()) {
       return "";
@@ -84,6 +88,49 @@ function createSessionManager(options) {
       return safeStorage.decryptString(Buffer.from(raw, "base64"));
     } catch {
       return "";
+    }
+  }
+
+  function getCredentialStorageState() {
+    const available = canEncrypt();
+    return {
+      mode: available ? "os-encrypted" : "memory-only",
+      persistentRefreshToken: available,
+      reason: available
+        ? null
+        : "OS credential encryption is unavailable. This login stays in memory and will not survive an app restart.",
+    };
+  }
+
+  function removeSessionFile() {
+    try {
+      if (fs.existsSync(getSessionPath())) fs.unlinkSync(getSessionPath());
+    } catch {
+      // Session removal is best-effort; plaintext is never read back.
+    }
+  }
+
+  function writeAtomic(filePath, content) {
+    ensureSessionDir();
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(temporaryPath, content, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      fs.renameSync(temporaryPath, filePath);
+      try {
+        fs.chmodSync(filePath, 0o600);
+      } catch {
+        // Windows ACLs and some managed filesystems do not expose POSIX modes.
+      }
+    } finally {
+      try {
+        if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+      } catch {
+        // Ignore temporary cleanup errors.
+      }
     }
   }
 
@@ -106,6 +153,12 @@ function createSessionManager(options) {
   }
 
   function readSession() {
+    if (memorySession) {
+      return {
+        ...memorySession,
+        credentialStorage: getCredentialStorageState(),
+      };
+    }
     const sessionPath = getSessionPath();
     if (!fs.existsSync(sessionPath)) {
       return null;
@@ -113,20 +166,25 @@ function createSessionManager(options) {
 
     try {
       const payload = JSON.parse(fs.readFileSync(sessionPath, "utf8"));
-      const accessToken = readSecret(
-        payload,
-        "accessToken",
-        "accessTokenEncrypted",
-        "token",
-        "encrypted",
-      );
+      if (!canEncrypt()) {
+        if (
+          payload?.accessToken ||
+          payload?.token ||
+          (payload?.refreshToken && payload?.refreshTokenEncrypted !== true)
+        ) {
+          removeSessionFile();
+        }
+        return null;
+      }
+      const accessToken = "";
       const refreshToken = readSecret(
         payload,
         "refreshToken",
         "refreshTokenEncrypted",
       );
 
-      if (!accessToken && !refreshToken) {
+      if (!refreshToken) {
+        removeSessionFile();
         return null;
       }
 
@@ -138,7 +196,7 @@ function createSessionManager(options) {
         payload?.lastActiveAt || payload?.lastAuthenticatedAt || payload?.updatedAt,
       );
 
-      return {
+      memorySession = {
         apiBase:
           typeof payload?.apiBase === "string" ? payload.apiBase.trim() : "",
         token: accessToken,
@@ -156,7 +214,21 @@ function createSessionManager(options) {
         user: payload?.user ?? null,
         organization: payload?.organization ?? null,
       };
+      const hasLegacySecretCopies = Boolean(
+        payload?.accessToken ||
+          payload?.token ||
+          (payload?.refreshToken && payload?.refreshTokenEncrypted !== true) ||
+          payload?.version !== 5,
+      );
+      if (hasLegacySecretCopies) {
+        writeSession(memorySession);
+      }
+      return {
+        ...memorySession,
+        credentialStorage: getCredentialStorageState(),
+      };
     } catch {
+      removeSessionFile();
       return null;
     }
   }
@@ -169,8 +241,6 @@ function createSessionManager(options) {
       session?.accessToken || session?.token || "",
     ).trim();
     const refreshTokenValue = String(session?.refreshToken || "").trim();
-    const encodedAccessToken = encodeSecret(accessTokenValue);
-    const encodedRefreshToken = encodeSecret(refreshTokenValue);
     const user = session?.user ?? null;
     const organization = session?.organization ?? null;
     const lastAuthenticatedAt =
@@ -180,17 +250,14 @@ function createSessionManager(options) {
       lastAuthenticatedAt ||
       nowIso;
 
-    const payload = {
-      version: 4,
+    memorySession = {
+      apiBase: "",
+      token: accessTokenValue,
+      accessToken: accessTokenValue,
+      refreshToken: refreshTokenValue,
       updatedAt: nowIso,
       lastAuthenticatedAt,
       lastActiveAt,
-      accessToken: encodedAccessToken.value,
-      accessTokenEncrypted: encodedAccessToken.encrypted,
-      refreshToken: encodedRefreshToken.value,
-      refreshTokenEncrypted: encodedRefreshToken.encrypted,
-      token: encodedAccessToken.value,
-      encrypted: encodedAccessToken.encrypted,
       userId: user?.id ? String(user.id) : "",
       organizationId:
         user?.organizationId || organization?.id
@@ -200,7 +267,33 @@ function createSessionManager(options) {
       organization,
     };
 
-    fs.writeFileSync(sessionPath, JSON.stringify(payload, null, 2));
+    if (!canEncrypt()) {
+      removeSessionFile();
+      return null;
+    }
+
+    const encodedRefreshToken = encodeSecret(refreshTokenValue);
+    if (!encodedRefreshToken.value) {
+      removeSessionFile();
+      return null;
+    }
+    const payload = {
+      version: 5,
+      updatedAt: nowIso,
+      lastAuthenticatedAt,
+      lastActiveAt,
+      refreshToken: encodedRefreshToken.value,
+      refreshTokenEncrypted: encodedRefreshToken.encrypted,
+      userId: user?.id ? String(user.id) : "",
+      organizationId:
+        user?.organizationId || organization?.id
+          ? String(user?.organizationId || organization?.id)
+          : "",
+      user,
+      organization,
+    };
+
+    writeAtomic(sessionPath, JSON.stringify(payload, null, 2));
     return sessionPath;
   }
 
@@ -253,14 +346,8 @@ function createSessionManager(options) {
   }
 
   function clearSession() {
-    const sessionPath = getSessionPath();
-    try {
-      if (fs.existsSync(sessionPath)) {
-        fs.unlinkSync(sessionPath);
-      }
-    } catch {
-      // ignore session cleanup errors
-    }
+    memorySession = null;
+    removeSessionFile();
   }
 
   function getMachineId() {
@@ -271,6 +358,11 @@ function createSessionManager(options) {
       if (fs.existsSync(machineIdPath)) {
         const existing = fs.readFileSync(machineIdPath, "utf8").trim();
         if (existing) {
+          try {
+            fs.chmodSync(machineIdPath, 0o600);
+          } catch {
+            // Best-effort on platforms without POSIX modes.
+          }
           return existing;
         }
       }
@@ -279,7 +371,7 @@ function createSessionManager(options) {
     }
 
     const machineId = randomUUID();
-    fs.writeFileSync(machineIdPath, `${machineId}\n`, "utf8");
+    writeAtomic(machineIdPath, `${machineId}\n`);
     return machineId;
   }
 
@@ -288,6 +380,7 @@ function createSessionManager(options) {
     getMachineIdPath,
     getSessionExpiry,
     getSessionPath,
+    getCredentialStorageState,
     readSession,
     touchSessionActivity,
     writeSession,

@@ -17,12 +17,20 @@ function readHostOverride(env, key) {
   return value || null;
 }
 
-function resolveWidgetServerHost({ isPackaged, env = process.env } = {}) {
+function resolveWidgetServerHost({
+  isPackaged,
+  env = process.env,
+  allowNetwork = false,
+} = {}) {
   if (!isPackaged) {
     return readHostOverride(env, "ARENZYRA_WIDGET_HOST") || NETWORK_HOST;
   }
 
-  if (!isEnabled(env.ARENZYRA_WIDGET_ALLOW_NETWORK)) {
+  if (
+    allowNetwork !== true &&
+    !isEnabled(allowNetwork) &&
+    !isEnabled(env.ARENZYRA_WIDGET_ALLOW_NETWORK)
+  ) {
     return LOOPBACK_HOST;
   }
 

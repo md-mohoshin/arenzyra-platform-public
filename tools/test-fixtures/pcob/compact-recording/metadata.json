@@ -1,0 +1,14 @@
+{
+  "schema": "arenzyra.pcobRecording.v1",
+  "status": "finished",
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "endpoint": "http://127.0.0.1:10086/getobserversnapshot",
+  "intervalMs": 250,
+  "counts": {
+    "total": 3,
+    "ok": 3,
+    "error": 0,
+    "changed": 2
+  },
+  "stopReason": "compact-test-fixture"
+}

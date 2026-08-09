@@ -286,7 +286,9 @@ function createMapWidgetEngine({ registry, broadcast, log = () => {} }) {
       mapContext: buildMapContextPayload(
         registry,
         definition,
-        currentSourceMapName || definition.label,
+        definition.key === currentMapKey && currentSourceMapName
+          ? currentSourceMapName
+          : definition.label,
         Date.now(),
       ),
       observerAssist: observerAssistEngine.get(definition.key),
@@ -490,6 +492,8 @@ function createMapWidgetEngine({ registry, broadcast, log = () => {} }) {
     playerPositionStore.clear();
     observerAssistEngine.clear();
     productionSupportEngine.clear();
+    productionSupportEngine.setTeamBranding(null);
+    teamBrandingStore.clear();
   }
 
   function getReplayMarkers(preferredMapKey = null, limit = 20) {

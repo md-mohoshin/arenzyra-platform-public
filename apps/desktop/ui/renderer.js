@@ -67,8 +67,8 @@ function isComplete(payload) {
 }
 
 function shortId(id) {
-  if (!id) return "â€”";
-  return id.length > 8 ? `${id.slice(0, 4)}â€¦${id.slice(-4)}` : id;
+  if (!id) return "—";
+  return id.length > 8 ? `${id.slice(0, 4)}…${id.slice(-4)}` : id;
 }
 
 function connectMatch() {

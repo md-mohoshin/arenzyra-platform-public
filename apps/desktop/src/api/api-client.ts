@@ -16,6 +16,8 @@ import type {
   ObserverCommandActionResponse,
   ObserverCommandCenterSnapshot,
   PinnedCommentatorDeskWindowStatus,
+  PinnedMapControlWindowStatus,
+  PcobMapControlStatus,
   LauncherLiveMatch,
   MatchControlSnapshot,
   ObserverFeedStatus,
@@ -343,6 +345,12 @@ export const launcherApi = {
     });
   },
 
+  runVisualSlotMap(id: string) {
+    return invoke<VisualReviewQueueState>("launcher:runVisualSlotMap", {
+      id,
+    });
+  },
+
   ignoreVisualReviewItem(id: string) {
     return invoke<VisualReviewQueueState>("launcher:ignoreVisualReviewItem", {
       id,
@@ -409,6 +417,38 @@ export const launcherApi = {
     );
   },
 
+  getPinnedMapControlWindow() {
+    return invoke<PinnedMapControlWindowStatus>(
+      "launcher:getPinnedMapControlWindow",
+    );
+  },
+
+  getPcobMapControlStatus() {
+    return invoke<PcobMapControlStatus>("launcher:getPcobMapControlStatus");
+  },
+
+  openPinnedMapControlWindow(payload?: { mapKey?: string | null }) {
+    return invoke<PinnedMapControlWindowStatus>(
+      "launcher:openPinnedMapControlWindow",
+      payload,
+    );
+  },
+
+  closePinnedMapControlWindow() {
+    return invoke<PinnedMapControlWindowStatus>(
+      "launcher:closePinnedMapControlWindow",
+    );
+  },
+
+  setPinnedMapControlAlwaysOnTop(alwaysOnTop: boolean) {
+    return invoke<PinnedMapControlWindowStatus>(
+      "launcher:setPinnedMapControlAlwaysOnTop",
+      {
+        alwaysOnTop,
+      },
+    );
+  },
+
   getWidgetCatalogState(
     organizationId: string | null,
     widgetKeys: string[],
@@ -416,6 +456,24 @@ export const launcherApi = {
   ) {
     return invoke<WidgetCatalogState>("launcher:getWidgetCatalogState", {
       organizationId,
+      widgetKeys,
+      accessOnlyWidgetKeys,
+    });
+  },
+
+  rotateWidgetCapability(
+    organizationId: string,
+    widgetKey: string,
+    instanceId: string,
+    expectedGeneration: number,
+    widgetKeys: string[],
+    accessOnlyWidgetKeys: string[] = [],
+  ) {
+    return invoke<WidgetCatalogState>("launcher:rotateWidgetCapability", {
+      organizationId,
+      widgetKey,
+      instanceId,
+      expectedGeneration,
       widgetKeys,
       accessOnlyWidgetKeys,
     });
@@ -443,10 +501,7 @@ export const launcherApi = {
     );
   },
 
-  triggerWidgetHotkeyControl(
-    active: boolean,
-    organizationId?: string | null,
-  ) {
+  triggerWidgetHotkeyControl(active: boolean, organizationId?: string | null) {
     return invoke<WidgetHotkeyControlStatus>(
       "launcher:triggerWidgetHotkeyControl",
       {

@@ -4,7 +4,55 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 
-const { createTelemetryBridge } = require("./telemetryBridge.cjs");
+const { MAP_DEFINITIONS } = require("./map-engine/map-registry.cjs");
+const { _testing, createTelemetryBridge } = require("./telemetryBridge.cjs");
+
+test("transport normalization uses the shared world size for every registered map", () => {
+  for (const definition of MAP_DEFINITIONS) {
+    const normalized = _testing.normalizePosition(
+      definition.worldSize / 2,
+      definition.worldSize / 4,
+      definition.aliases[0] || definition.key,
+    );
+    assert.deepEqual(
+      normalized,
+      { x: 0.5, y: 0.75 },
+      `unexpected transport projection for ${definition.key}`,
+    );
+  }
+
+  assert.equal(_testing.normalizePosition(100, 100, "unknown_future_map"), null);
+  assert.equal(_testing.resolveTransportMapDefinition("unknownerangelclone"), null);
+  assert.equal(_testing.resolveTransportMapDefinition("super_miramarish_variant"), null);
+  assert.equal(
+    _testing.resolveTransportMapDefinition("match_neon_main_variant")?.key,
+    "rondo",
+  );
+});
+
+test("transport treats captured PCOB liveState 1 as alive and 5 as dead", () => {
+  assert.equal(
+    _testing.isTransportPlayerAlive({ liveState: 1, bHasDied: false, health: 100 }),
+    true,
+  );
+  assert.equal(
+    _testing.isTransportPlayerAlive({ liveState: 5, bHasDied: true, health: 0 }),
+    false,
+  );
+});
+
+test("transport retry queue expires stale snapshots", () => {
+  const now = 1_800_000_000_000;
+  assert.equal(
+    _testing.isPendingTelemetryEventFresh({ createdAt: now - 29_999 }, now),
+    true,
+  );
+  assert.equal(
+    _testing.isPendingTelemetryEventFresh({ createdAt: now - 30_001 }, now),
+    false,
+  );
+  assert.equal(_testing.isPendingTelemetryEventFresh({}, now), false);
+});
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -100,6 +148,156 @@ function createShadowServer({
     }
   });
 }
+
+for (const { reason, initialOutage } of [
+  { reason: "NO_STATE_CHANGE", initialOutage: false },
+  { reason: "DURABLE_REPLAY_ALREADY_APPLIED", initialOutage: true },
+]) {
+  test(`transport treats ${reason} as a successful non-terminal acknowledgement`, async () => {
+    const backendState = {
+      postCount: 0,
+      acknowledgedCount: 0,
+    };
+    const shadowServer = createShadowServer();
+    const backendServer = http.createServer((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (
+        req.method === "GET" &&
+        /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")
+      ) {
+        res.end(JSON.stringify({ matchStatus: "LIVE" }));
+        return;
+      }
+
+      if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+        backendState.postCount += 1;
+        if (initialOutage && backendState.postCount === 1) {
+          res.statusCode = 503;
+          res.end(JSON.stringify({ error: "temporary-outage" }));
+          return;
+        }
+
+        backendState.acknowledgedCount += 1;
+        res.end(
+          JSON.stringify({
+            ok: true,
+            queued: false,
+            ignored: true,
+            reason,
+          }),
+        );
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: "not-found" }));
+    });
+
+    const shadowAddress = await listen(shadowServer);
+    const backendAddress = await listen(backendServer);
+    const bridge = createTelemetryBridge({
+      log: () => {},
+      shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+    });
+
+    try {
+      await bridge.start({
+        apiBase: `http://127.0.0.1:${backendAddress.port}`,
+        token: "token",
+        refreshToken: "refresh",
+        matchId: `match-${reason.toLowerCase()}`,
+        sessionId: `session-${reason.toLowerCase()}`,
+      });
+
+      const acknowledged = await waitFor(() => {
+        const status = bridge.getStatus();
+        return backendState.acknowledgedCount >= 1 &&
+          status.running === true &&
+          status.totalPackets >= 1
+          ? status
+          : null;
+      });
+      assert.equal(acknowledged.connectionStatus, "connected");
+      assert.equal(acknowledged.queueSize, 0);
+      assert.equal(acknowledged.lastError, null);
+
+      const acknowledgedPostCount = backendState.postCount;
+      await waitFor(() => backendState.postCount > acknowledgedPostCount, 3_000);
+      const continued = bridge.getStatus();
+      assert.equal(continued.running, true);
+      assert.equal(continued.connectionStatus, "connected");
+      assert.ok(continued.totalPackets >= 2);
+    } finally {
+      bridge.stop("stopped");
+      await Promise.all([close(shadowServer), close(backendServer)]);
+    }
+  });
+}
+
+test("explicit terminal ignore reason without lifecycle fields stops transport", async () => {
+  const backendState = { postCount: 0 };
+  const shadowServer = createShadowServer();
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (
+      req.method === "GET" &&
+      /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")
+    ) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      backendState.postCount += 1;
+      res.end(
+        JSON.stringify({
+          ok: true,
+          ignored: true,
+          reason: "MATCH_ENDED",
+        }),
+      );
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: `http://127.0.0.1:${backendAddress.port}`,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-explicit-end",
+      sessionId: "session-explicit-end",
+    });
+
+    const finished = await waitFor(() => {
+      const status = bridge.getStatus();
+      return backendState.postCount >= 1 && status.running === false
+        ? status
+        : null;
+    });
+    assert.equal(finished.connectionStatus, "finished");
+    assert.equal(finished.matchStatus, "FINISHED");
+    assert.equal(finished.isLocked, true);
+    assert.equal(finished.queueSize, 0);
+
+    const stabilizedPostCount = backendState.postCount;
+    await sleep(750);
+    assert.equal(backendState.postCount, stabilizedPostCount);
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
 
 test("finalizing transport response stops the bridge and purges queued telemetry", async () => {
   const backendState = {
@@ -360,6 +558,109 @@ test("transport payload preserves runtime-safe identity fields", async () => {
     assert.equal(capturedPayload.teams[0].teamNo, 7);
     assert.equal(capturedPayload.teams[0].teamName, "Stable Team");
     assert.equal(capturedPayload.teams[0].teamTag, "STB");
+  } finally {
+    bridge.stop("stopped");
+    await Promise.all([close(shadowServer), close(backendServer)]);
+  }
+});
+
+test("transport derives confirmed PCOB placements while leaving unplaced teams unset", async () => {
+  let capturedPayload = null;
+  const shadowServer = createShadowServer({
+    players: [
+      {
+        uId: "team-one-a",
+        playerName: "One A",
+        teamId: 1,
+        liveState: 1,
+        rank: 2,
+      },
+      {
+        uId: "team-one-b",
+        playerName: "One B",
+        teamId: 1,
+        liveState: 1,
+        rank: 2,
+      },
+      {
+        uId: "team-two-a",
+        playerName: "Two A",
+        teamId: 2,
+        liveState: 0,
+        rank: 0,
+      },
+      {
+        uId: "team-two-b",
+        playerName: "Two B",
+        teamId: 2,
+        liveState: 0,
+        rank: 0,
+      },
+      {
+        uId: "team-three-a",
+        playerName: "Three A",
+        teamId: 3,
+        liveState: 1,
+        rank: 3,
+      },
+      {
+        uId: "team-three-b",
+        playerName: "Three B",
+        teamId: 3,
+        liveState: 1,
+        rank: 4,
+      },
+    ],
+    teams: [
+      { teamId: 1, liveMemberNum: 0, memberNum: 2 },
+      { teamId: 2, liveMemberNum: 2, memberNum: 2 },
+      { teamId: 3, liveMemberNum: 0, memberNum: 2 },
+    ],
+  });
+  const backendServer = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "GET" && /^\/me\/matches\/[^/]+\/control$/.test(req.url || "")) {
+      res.end(JSON.stringify({ matchStatus: "LIVE" }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/observer/telemetry") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk.toString("utf8");
+      });
+      req.on("end", () => {
+        capturedPayload = JSON.parse(body);
+        res.end(JSON.stringify({ ok: true }));
+      });
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not-found" }));
+  });
+
+  const shadowAddress = await listen(shadowServer);
+  const backendAddress = await listen(backendServer);
+  const bridge = createTelemetryBridge({
+    log: () => {},
+    shadowBaseUrl: `http://127.0.0.1:${shadowAddress.port}`,
+  });
+
+  try {
+    await bridge.start({
+      apiBase: `http://127.0.0.1:${backendAddress.port}`,
+      token: "token",
+      refreshToken: "refresh",
+      matchId: "match-placement",
+      sessionId: "session-placement",
+    });
+    await waitFor(() => capturedPayload);
+
+    const teamsById = new Map(
+      capturedPayload.teams.map((team) => [team.teamId, team]),
+    );
+    assert.equal(teamsById.get("1").placement, 2);
+    assert.equal(teamsById.get("2").placement, null);
+    assert.equal(teamsById.get("3").placement, null);
   } finally {
     bridge.stop("stopped");
     await Promise.all([close(shadowServer), close(backendServer)]);

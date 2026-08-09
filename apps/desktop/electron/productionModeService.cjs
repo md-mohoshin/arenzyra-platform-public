@@ -1,8 +1,36 @@
 "use strict";
 
 const { normalizeMapKey } = require("./map-engine/map-asset-resolver.cjs");
+const {
+  isMapLookupMatch,
+  MAP_DEFINITIONS,
+  normalizeLookup: normalizeMapLookup,
+} = require("./map-engine/map-registry.cjs");
 
 const READY_STATUSES = new Set(["READY", "READY_WITH_WARNINGS"]);
+
+function resolveRegisteredMapKey(value) {
+  const normalized = normalizeMapLookup(value);
+  if (!normalized) {
+    return null;
+  }
+
+  let mostSpecific = null;
+  let mostSpecificLength = -1;
+  for (const definition of MAP_DEFINITIONS) {
+    for (const candidate of [definition.key, ...(definition.aliases || [])]) {
+      const lookup = normalizeMapLookup(candidate);
+      if (
+        isMapLookupMatch(normalized, lookup) &&
+        lookup.length > mostSpecificLength
+      ) {
+        mostSpecific = definition.key;
+        mostSpecificLength = lookup.length;
+      }
+    }
+  }
+  return mostSpecific;
+}
 
 function asErrorMessage(error, fallback) {
   if (error instanceof Error && error.message) {
@@ -259,7 +287,9 @@ function createProductionModeService(options = {}) {
       });
     }
 
-    const resolvedShadowExecutable = resolveShadowExecutable(shadowTrackerPath);
+    const resolvedShadowExecutable = await resolveShadowExecutable(
+      shadowTrackerPath,
+    );
     if (resolvedShadowExecutable && ensureConnectorInstalled) {
       try {
         const connectorStatus =
@@ -420,7 +450,10 @@ function createProductionModeService(options = {}) {
     }
 
     const assetStatus = getAssetStatus() || {};
-    const selectedMapKey = normalizeMapKey(selectedMatch?.map || "");
+    const rawSelectedMap = selectedMatch?.map || "";
+    const normalizedSelectedMapKey = normalizeMapKey(rawSelectedMap);
+    const registeredSelectedMapKey = resolveRegisteredMapKey(rawSelectedMap);
+    const selectedMapKey = registeredSelectedMapKey || normalizedSelectedMapKey;
     const selectedMapAsset =
       selectedMapKey &&
       assetStatus?.maps &&
@@ -432,9 +465,20 @@ function createProductionModeService(options = {}) {
       ? [...assetStatus.requiredMissingKeys]
       : [];
 
-    if (
+    if (normalizedSelectedMapKey && !registeredSelectedMapKey) {
+      pushCheck({
+        key: "assets",
+        label: "Assets",
+        status: "fail",
+        blocking: true,
+        message: `Selected map is not supported by this launcher: ${normalizedSelectedMapKey}.`,
+        meta: {
+          selectedMapKey: normalizedSelectedMapKey,
+          requiredMissingKeys,
+        },
+      });
+    } else if (
       selectedMapKey &&
-      selectedMapAsset?.required === true &&
       selectedMapAsset?.assetAvailable !== true
     ) {
       pushCheck({
@@ -443,18 +487,6 @@ function createProductionModeService(options = {}) {
         status: "fail",
         blocking: true,
         message: `Selected map asset is missing for ${selectedMapKey}.`,
-        meta: {
-          selectedMapKey,
-          requiredMissingKeys,
-        },
-      });
-    } else if (selectedMapKey && selectedMapAsset?.assetAvailable !== true) {
-      pushCheck({
-        key: "assets",
-        label: "Assets",
-        status: "warning",
-        blocking: false,
-        message: `Selected map asset is not bundled for ${selectedMapKey}; map widgets will use the fallback asset.`,
         meta: {
           selectedMapKey,
           requiredMissingKeys,
@@ -840,4 +872,5 @@ function createProductionModeService(options = {}) {
 module.exports = {
   createProductionModeService,
   isProductionReadyStatus: (status) => READY_STATUSES.has(status),
+  resolveRegisteredMapKey,
 };

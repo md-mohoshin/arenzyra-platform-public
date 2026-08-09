@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Reviewed Authenticode signer allowlist for Arenzyra Windows launcher installers",
+  "identityRequirements": {
+    "subject": "Exact reviewed certificate subject",
+    "certificateSha256": "64-hex SHA-256 of SignerCertificate.RawData (primary identity)",
+    "thumbprint": "40-hex Windows certificate thumbprint (SHA-1 diagnostic identity)",
+    "timestampAuthority": "Exact reviewed timestamp certificate subject, SHA-256, and SHA-1 diagnostic identity"
+  },
+  "approval": {
+    "state": "unapproved",
+    "reviewedBy": null,
+    "reviewedAt": null,
+    "reviewReference": null,
+    "notes": "No production code-signing certificate has been reviewed or approved. Publication must remain blocked."
+  },
+  "trustedSigners": [],
+  "trustedTimestampAuthorities": []
+}

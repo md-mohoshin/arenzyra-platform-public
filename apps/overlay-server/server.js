@@ -1,4 +1,14 @@
 /* eslint-disable no-console */
+if (
+  process.env.NODE_ENV === "production" ||
+  process.env.ARENZYRA_ENABLE_LEGACY_OVERLAY_SERVER !==
+    "I_UNDERSTAND_DEV_ONLY"
+) {
+  throw new Error(
+    "Legacy overlay server is quarantined; use the authenticated widget runtime.",
+  );
+}
+
 const express = require("express");
 const http = require("http");
 const path = require("path");
@@ -7,14 +17,16 @@ const { Server } = require("socket.io");
 
 // Use PORT env; default to 3100 to avoid clashing with backend (3000)
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3100;
+const HOST = "127.0.0.1";
+const allowedOrigins = [`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`];
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: { origin: allowedOrigins, methods: ["GET", "POST"] },
   path: "/ws/overlay",
 });
 
-app.use(cors());
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -65,7 +77,7 @@ app.post("/overlay/update", (req, res) => {
   res.json({ ok: true });
 });
 
-server.listen(PORT, () => {
-  console.log(`Overlay server running on http://localhost:${PORT}`);
-  console.log(`WebSocket namespace: ws://localhost:${PORT}/ws/overlay`);
+server.listen(PORT, HOST, () => {
+  console.log(`Legacy development overlay server running on http://${HOST}:${PORT}`);
+  console.log(`WebSocket namespace: ws://${HOST}:${PORT}/ws/overlay`);
 });

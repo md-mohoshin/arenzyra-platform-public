@@ -1,0 +1,41 @@
+{
+  "source": "sanitized-pcob-recording",
+  "route": "/setgameglobalinfo",
+  "raw": {
+    "mapName": "erangel",
+    "normalized": {
+      "flightPath": {
+        "start": {
+          "x": 543300.625,
+          "y": 951586.5625
+        },
+        "end": {
+          "x": 358180.875,
+          "y": -161006.8125
+        },
+        "coordinateSystem": "WORLD"
+      },
+      "circle": {
+        "phase": 0,
+        "status": 1,
+        "counter": 82,
+        "maxTime": 0,
+        "safeZone": {
+          "x": 603216.5,
+          "y": 278990.8125,
+          "r": 229068
+        }
+      }
+    },
+    "rawRoutePayloads": {
+      "/setgameglobalinfo": {
+        "payload": {
+          "PlaneStartLocX": 543300.625,
+          "PlaneStartLocY": 951586.5625,
+          "PlaneStopLocX": 358180.875,
+          "PlaneStopLocY": -161006.8125
+        }
+      }
+    }
+  }
+}

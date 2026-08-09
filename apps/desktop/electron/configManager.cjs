@@ -114,6 +114,21 @@ function sanitizeSettings(settings) {
     nextSettings.keepSignedIn = nextSettings.keepSignedIn !== false;
   }
 
+  if (Object.prototype.hasOwnProperty.call(nextSettings, "widgetLanEnabled")) {
+    nextSettings.widgetLanEnabled = isEnabled(nextSettings.widgetLanEnabled);
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      nextSettings,
+      "pinnedMapControlAlwaysOnTop",
+    )
+  ) {
+    nextSettings.pinnedMapControlAlwaysOnTop = isEnabled(
+      nextSettings.pinnedMapControlAlwaysOnTop,
+    );
+  }
+
   return nextSettings;
 }
 
@@ -244,8 +259,72 @@ function createConfigManager(options) {
     return isLoopbackApiBase(value) && !allowsLoopbackApiBaseOverride(config);
   }
 
-  function shouldResetStaleLocalApiBaseOverride(config) {
-    return Boolean(config?.apiBase) && isBlockedLoopbackApiBase(config, config.apiBase);
+  function allowedPackagedApiHosts(config) {
+    const hosts = new Set([new URL(DEFAULT_PRODUCTION_API_BASE).hostname.toLowerCase()]);
+    const configuredHosts = String(env.ARENZYRA_ALLOWED_API_HOSTS || "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    for (const hostname of configuredHosts) {
+      hosts.add(hostname);
+    }
+
+    const runtimeEnvironment = resolveRuntimeApiEnvironment(config);
+    const trustedEnvironmentBases =
+      runtimeEnvironment === "staging"
+        ? [env.ARENZYRA_STAGING_API_BASE, env.STAGING_API_BASE_URL]
+        : [env.ARENZYRA_PRODUCTION_API_BASE, env.PRODUCTION_API_BASE_URL];
+    for (const candidate of trustedEnvironmentBases) {
+      const normalized = tryNormalizeApiBaseCandidate(candidate, {
+        apiEnvironment: runtimeEnvironment,
+      });
+      if (!normalized) {
+        continue;
+      }
+      hosts.add(new URL(normalized).hostname.toLowerCase());
+    }
+    return hosts;
+  }
+
+  function packagedApiBasePolicyError(config, value) {
+    if (!isPackaged) {
+      return null;
+    }
+    const runtimeEnvironment = resolveRuntimeApiEnvironment(config);
+    if (!["production", "staging"].includes(runtimeEnvironment)) {
+      return null;
+    }
+    if (isLoopbackApiBase(value) && allowsLoopbackApiBaseOverride(config)) {
+      return null;
+    }
+
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return "Invalid apiBase. Use a valid HTTPS URL.";
+    }
+    if (parsed.protocol !== "https:") {
+      return "Packaged production and staging launchers require an HTTPS apiBase.";
+    }
+    if (isEnabled(env.ARENZYRA_ALLOW_CUSTOM_API_BASE)) {
+      return null;
+    }
+    if (!allowedPackagedApiHosts(config).has(parsed.hostname.toLowerCase())) {
+      return "This apiBase host is not in the packaged launcher allowlist. Configure ARENZYRA_ALLOWED_API_HOSTS only in a trusted deployment environment.";
+    }
+    return null;
+  }
+
+  function isBlockedApiBase(config, value) {
+    return (
+      isBlockedLoopbackApiBase(config, value) ||
+      Boolean(packagedApiBasePolicyError(config, value))
+    );
+  }
+
+  function shouldResetStaleApiBaseOverride(config) {
+    return Boolean(config?.apiBase) && isBlockedApiBase(config, config.apiBase);
   }
 
   function getEnvironmentApiBaseCandidates(apiEnvironment) {
@@ -302,7 +381,7 @@ function createConfigManager(options) {
         apiEnvironment,
         defaultProtocol,
       });
-      if (normalizedCandidate) {
+      if (normalizedCandidate && !isBlockedApiBase(config, normalizedCandidate)) {
         return normalizedCandidate;
       }
     }
@@ -325,7 +404,7 @@ function createConfigManager(options) {
         defaultProtocol,
       },
     );
-    const configuredApiBase = isBlockedLoopbackApiBase(
+    const configuredApiBase = isBlockedApiBase(
       normalizedConfig,
       configuredApiBaseCandidate,
     )
@@ -335,7 +414,7 @@ function createConfigManager(options) {
 
     if (
       normalizedCandidate &&
-      !isBlockedLoopbackApiBase(normalizedConfig, normalizedCandidate)
+      !isBlockedApiBase(normalizedConfig, normalizedCandidate)
     ) {
       return {
         apiBase: normalizedCandidate,
@@ -367,7 +446,10 @@ function createConfigManager(options) {
     }
 
     return {
-      apiBase: getProcessDefaultApiBase(env),
+      apiBase:
+        isPackaged && ["production", "staging"].includes(apiEnvironment)
+          ? DEFAULT_PRODUCTION_API_BASE
+          : getProcessDefaultApiBase(env),
       source: "fallback",
       apiEnvironment,
       configuredApiBase: null,
@@ -396,9 +478,9 @@ function createConfigManager(options) {
       }
     }
 
-    if (shouldResetStaleLocalApiBaseOverride(nextConfig)) {
+    if (shouldResetStaleApiBaseOverride(nextConfig)) {
       logConfigStep(
-        "[config] clearing stale local api base override for production runtime",
+        "[config] clearing api base override rejected by packaged runtime policy",
         {
           path: configPath,
           previousApiBase: nextConfig.apiBase,
@@ -522,11 +604,16 @@ function createConfigManager(options) {
         };
       }
 
-      if (isBlockedLoopbackApiBase(readConfig(), normalizedApiBase)) {
+      const policyError = packagedApiBasePolicyError(
+        readConfig(),
+        normalizedApiBase,
+      );
+      if (isBlockedLoopbackApiBase(readConfig(), normalizedApiBase) || policyError) {
         return {
           valid: false,
           key: normalizedKey,
           error:
+            policyError ||
             "Loopback apiBase is blocked in the packaged production launcher. Set ARENZYRA_ALLOW_LOCAL_API_BASE=1 to allow localhost overrides.",
         };
       }
@@ -634,9 +721,9 @@ function createConfigManager(options) {
       };
     }
 
-    if (isBlockedLoopbackApiBase(currentConfig, normalizedApiBase)) {
+    if (isBlockedApiBase(currentConfig, normalizedApiBase)) {
       logConfigStep(
-        "[config] rejected loopback api base override for packaged production runtime",
+        "[config] rejected api base override for packaged runtime policy",
         {
           source: metadata.source || "unknown",
           value: normalizedApiBase,

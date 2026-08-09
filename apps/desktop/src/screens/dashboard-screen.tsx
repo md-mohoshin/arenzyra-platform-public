@@ -23,6 +23,7 @@ import type {
 } from "../types";
 
 type DashboardScreenProps = {
+  page: "telemetry" | "visual";
   organizationName: string | null;
   liveMatch: LauncherLiveMatch | null;
   workflowState: LauncherWorkflowState;
@@ -64,6 +65,7 @@ type DashboardScreenProps = {
   onVisualGamePresetChange: (gamePresetKey: VisualGamePresetKey) => void;
   onVisualSourceChange: (sourceId: string) => void;
   onVisualFpsChange: (captureFps: number) => void;
+  onVisualAutoOcrChange: (autoOcrEnabled: boolean) => void;
   onVisualRegionKeyChange: (regionKey: VisualModeRegionKey) => void;
   onVisualRegionDraftChange: (
     field: keyof VisualModeRegion,
@@ -72,6 +74,7 @@ type DashboardScreenProps = {
   onSaveVisualCalibration: () => void;
   onCaptureVisualReviewCandidate: () => void;
   onRunVisualReviewOcr: (id: string) => void;
+  onRunVisualSlotMap: (id: string) => void;
   onClearVisualReviewQueue: () => void;
   onIgnoreVisualReviewItem: (id: string) => void;
   onMarkVisualReviewItemReviewed: (id: string) => void;
@@ -89,6 +92,7 @@ const visualRegionOptions: Array<{
   { key: "killFeed", label: "Kill feed" },
   { key: "teamPanel", label: "Team panel" },
   { key: "scoreboard", label: "Scoreboard" },
+  { key: "roster", label: "Roster screen" },
 ];
 
 const visualGameOptions: VisualGamePresetKey[] = [
@@ -99,6 +103,7 @@ const visualGameOptions: VisualGamePresetKey[] = [
 ];
 
 function formatVisualOcrStatus(item: {
+  reviewKind?: string;
   ocrStatus?: string;
   okCount?: number;
   unresolvedCount?: number;
@@ -109,7 +114,9 @@ function formatVisualOcrStatus(item: {
     return "OCR processing";
   }
   if (item.ocrStatus === "ready") {
-    return `${item.okCount || 0} resolved`;
+    return item.reviewKind === "slot-map"
+      ? `${item.okCount || 0} slot mappings saved`
+      : `${item.okCount || 0} resolved`;
   }
   if (item.ocrStatus === "needs_review") {
     return `${item.okCount || 0} ok, ${item.unresolvedCount || 0} unresolved, ${item.ambiguousCount || 0} ambiguous`;
@@ -242,6 +249,7 @@ function formatVisualTimestamp(value: string | null | undefined) {
 }
 
 export function DashboardScreen(props: DashboardScreenProps) {
+  const isVisualPage = props.page === "visual";
   const selectedTournament =
     props.tournaments.find((item) => item.id === props.selectedTournamentId) ||
     null;
@@ -259,6 +267,19 @@ export function DashboardScreen(props: DashboardScreenProps) {
   const observerRunning =
     props.observerFeedStatus.running &&
     props.observerFeedStatus.matchId === props.selectedMatchId;
+  const observerRecovering =
+    props.observerFeedStatus.matchId === props.selectedMatchId &&
+    (props.observerFeedStatus.recoveryState === "waiting" ||
+      props.observerFeedStatus.recoveryState === "restarting");
+  const observerSessionActive =
+    props.observerFeedStatus.matchId === props.selectedMatchId &&
+    (props.observerFeedStatus.enabled || observerRunning || observerRecovering);
+  const observerRecoveryBlocked =
+    props.observerFeedStatus.matchId === props.selectedMatchId &&
+    (props.observerFeedStatus.recoveryState === "blocked" ||
+      props.observerFeedStatus.recoveryState === "circuit-open");
+  const observerHealthDegraded =
+    observerRunning && props.observerFeedStatus.healthState === "degraded";
   const visualRunning =
     props.visualModeStatus.running &&
     props.visualModeStatus.matchId === props.selectedMatchId;
@@ -267,17 +288,33 @@ export function DashboardScreen(props: DashboardScreenProps) {
     : props.nextMatchLoading
       ? "Checking..."
       : "Unavailable";
-  const runtimeLabel = observerRunning
-    ? "OBSERVER"
+  const runtimeLabel = observerRecovering
+    ? props.observerFeedStatus.recoveryState === "restarting"
+      ? "RESTARTING"
+      : "RECOVERING"
+    : observerHealthDegraded
+      ? "HEALTH WARNING"
+      : observerRunning
+      ? "OBSERVER"
+      : observerRecoveryBlocked
+        ? "RECOVERY BLOCKED"
     : visualRunning
       ? "VISUAL"
     : "IDLE";
-  const runtimeTone: DeskTone = observerRunning || visualRunning
-    ? "success"
-    : "neutral";
-  const headerTitle = selectedMatch
-    ? formatMatchLabel(selectedMatch)
-    : "Observer Desk";
+  const runtimeTone: DeskTone = observerRecovering
+    ? "accent"
+    : observerRecoveryBlocked
+      ? "danger"
+      : observerHealthDegraded
+        ? "accent"
+        : observerRunning || visualRunning
+        ? "success"
+        : "neutral";
+  const headerTitle = isVisualPage
+    ? "Visual Mode"
+    : selectedMatch
+      ? formatMatchLabel(selectedMatch)
+      : "Telemetry";
   const compactHeaderMeta = [
     selectedTournament?.name || props.organizationName || null,
     selectedStage?.name || null,
@@ -285,7 +322,11 @@ export function DashboardScreen(props: DashboardScreenProps) {
   ]
     .filter(Boolean)
     .join(" / ");
-  const deskNote = props.nextMatchError
+  const deskNote = observerRecoveryBlocked
+    ? props.observerFeedStatus.restartBlockedReason ||
+      props.observerFeedStatus.lastError ||
+      "Automatic observer recovery stopped. Start Live Desk again after checking PCOB."
+    : props.nextMatchError
     ? props.nextMatchError
     : props.loadingMatch
       ? "Refreshing match assets..."
@@ -293,10 +334,20 @@ export function DashboardScreen(props: DashboardScreenProps) {
         ? props.status.detail
         : null;
   const deskNoteTone: DeskTone =
-    props.nextMatchError || props.status.tone === "error" ? "danger" : "neutral";
+    observerRecoveryBlocked ||
+    props.nextMatchError ||
+    props.status.tone === "error"
+      ? "danger"
+      : "neutral";
   const controlSummary = props.busyAction
     ? "A launcher action is already running. Wait for it to finish before triggering the next step."
-    : observerRunning
+    : observerRecovering
+      ? props.observerFeedStatus.recoveryState === "restarting"
+        ? `Restarting the owned observer connector (${props.observerFeedStatus.restartAttempts}/${props.observerFeedStatus.maxRestartAttempts}).`
+        : `Observer connector stopped; retry ${props.observerFeedStatus.restartAttempts}/${props.observerFeedStatus.maxRestartAttempts} is scheduled for ${formatVisualTimestamp(props.observerFeedStatus.nextRestartAt)}.`
+      : observerHealthDegraded
+        ? `Observer is running, but its exact local health check failed ${props.observerFeedStatus.consecutiveHealthFailures}/${props.observerFeedStatus.healthFailureThreshold} times.`
+        : observerRunning
       ? "Observer desk is live for this round."
       : workflow.detail;
   const liveDeskBusy =
@@ -304,14 +355,16 @@ export function DashboardScreen(props: DashboardScreenProps) {
     props.busyAction === "start-observer-feed" ||
     props.busyAction === "stop-observer-feed";
   const liveDeskActionLabel = liveDeskBusy
-    ? observerRunning || props.busyAction === "stop-observer-feed"
+    ? observerSessionActive || props.busyAction === "stop-observer-feed"
       ? "Stopping..."
       : "Starting..."
-    : observerRunning
+    : observerSessionActive
       ? "Stop Observer"
       : "Start Live Desk";
-  const liveDeskActionDetail = observerRunning
-    ? "End the live observer session."
+  const liveDeskActionDetail = observerRecovering
+    ? "Cancel automatic recovery and end this observer session."
+    : observerRunning
+      ? "End the live observer session."
     : "Validate production and launch live desk.";
   const visualActionLabel = props.visualModeStatus.running ? "Stop" : "Start";
   const visualStatusLabel = props.visualModeStatus.running
@@ -422,44 +475,59 @@ export function DashboardScreen(props: DashboardScreenProps) {
             </div>
           </section>
 
-          <section className="desk-card desk-card--actions">
-            <div className="desk-card__header">
-              <strong>Control</strong>
-              <span>{props.busyAction ? "Working" : "Ready"}</span>
-            </div>
+          {isVisualPage ? (
+            <section className="desk-card desk-card--visual-context">
+              <div className="desk-card__header">
+                <strong>Visual workflow</strong>
+                <span>{props.selectedMatchId ? "Match selected" : "Match required"}</span>
+              </div>
+              <p className="desk-action-note">
+                {props.selectedMatchId
+                  ? "Choose the game screen, calibrate the capture region, then start review-only monitoring."
+                  : "Select a tournament, stage, and match before starting Visual Mode."}
+              </p>
+            </section>
+          ) : (
+            <section className="desk-card desk-card--actions">
+              <div className="desk-card__header">
+                <strong>Control</strong>
+                <span>{props.busyAction ? "Working" : "Ready"}</span>
+              </div>
 
-            <div className="desk-action-bar">
-              <DeskActionButton
-                className="desk-action--primary desk-action--wide"
-                disabled={
-                  Boolean(props.busyAction) ||
-                  (!observerRunning && !props.canStartObserverFeed)
-                }
-                onClick={props.onToggleLiveDesk}
-                type="button"
-                eyebrow="Live desk"
-                label={liveDeskActionLabel}
-                detail={liveDeskActionDetail}
-              />
-              <DeskActionButton
-                disabled={
-                  Boolean(props.busyAction) ||
-                  props.preparingNextMatch ||
-                  props.nextMatchLoading ||
-                  !nextMatch
-                }
-                onClick={props.onPrepareNextMatch}
-                type="button"
-                eyebrow="Round flow"
-                label={props.preparingNextMatch ? "Preparing..." : "Next"}
-                detail="Switch to the next round."
-              />
-            </div>
+              <div className="desk-action-bar">
+                <DeskActionButton
+                  className="desk-action--primary desk-action--wide"
+                  disabled={
+                    Boolean(props.busyAction) ||
+                    (!observerSessionActive && !props.canStartObserverFeed)
+                  }
+                  onClick={props.onToggleLiveDesk}
+                  type="button"
+                  eyebrow="Live desk"
+                  label={liveDeskActionLabel}
+                  detail={liveDeskActionDetail}
+                />
+                <DeskActionButton
+                  disabled={
+                    Boolean(props.busyAction) ||
+                    props.preparingNextMatch ||
+                    props.nextMatchLoading ||
+                    !nextMatch
+                  }
+                  onClick={props.onPrepareNextMatch}
+                  type="button"
+                  eyebrow="Round flow"
+                  label={props.preparingNextMatch ? "Preparing..." : "Next"}
+                  detail="Switch to the next round."
+                />
+              </div>
 
-            <p className="desk-action-note">{controlSummary}</p>
-          </section>
+              <p className="desk-action-note">{controlSummary}</p>
+            </section>
+          )}
         </section>
 
+        {isVisualPage ? (
         <section className="desk-card desk-card--visual">
           <div className="desk-card__header">
             <strong>Visual Mode</strong>
@@ -518,6 +586,20 @@ export function DashboardScreen(props: DashboardScreenProps) {
                     {fps} FPS
                   </option>
                 ))}
+              </select>
+            </label>
+
+            <label className="field field--compact">
+              <span>OCR automation</span>
+              <select
+                value={props.visualModeStatus.autoOcrEnabled ? "enabled" : "manual"}
+                onChange={(event) =>
+                  props.onVisualAutoOcrChange(event.target.value === "enabled")
+                }
+                disabled={props.visualActiveRegionKey === "roster"}
+              >
+                <option value="manual">Manual review</option>
+                <option value="enabled">Auto OCR, review required</option>
               </select>
             </label>
 
@@ -685,14 +767,20 @@ export function DashboardScreen(props: DashboardScreenProps) {
                       <button
                         className="secondary-button"
                         type="button"
-                        onClick={() => props.onRunVisualReviewOcr(item.id)}
+                        onClick={() =>
+                          item.reviewKind === "slot-map" || item.regionKey === "roster"
+                            ? props.onRunVisualSlotMap(item.id)
+                            : props.onRunVisualReviewOcr(item.id)
+                        }
                         disabled={
                           item.status !== "pending" ||
                           item.ocrStatus === "processing" ||
                           !item.imagePath
                         }
                       >
-                        OCR
+                        {item.reviewKind === "slot-map" || item.regionKey === "roster"
+                          ? "Map roster"
+                          : "OCR"}
                       </button>
                       <button
                         className="secondary-button"
@@ -728,9 +816,14 @@ export function DashboardScreen(props: DashboardScreenProps) {
 
           <p className="desk-action-note">
             {props.visualModeError ||
-              "Visual Mode watches the selected source and keeps publishing blocked until a reviewed OCR/AI step exists."}
+              (props.visualActiveRegionKey === "roster"
+                ? "Roster screen captures use a 1920×1080 source image. Capture each page, then choose Map roster before LIVE."
+                : props.visualModeStatus.autoOcrEnabled
+                ? `Stable frames are sent to OCR after ${props.visualModeStatus.stableFrameSamples} matching samples. Results stay local until an operator reviews them.`
+                : "Visual Mode watches the selected source and keeps publishing blocked until a reviewed OCR/AI step exists.")}
           </p>
         </section>
+        ) : null}
 
         <section className="desk-status-panel">
           <div className="desk-status-strip">
@@ -748,8 +841,32 @@ export function DashboardScreen(props: DashboardScreenProps) {
             />
             <DeskStatusChip
               label="Observer"
-              value={observerRunning ? "Running" : "Stopped"}
-              tone={observerRunning ? "success" : "neutral"}
+              value={
+                observerRecovering
+                  ? props.observerFeedStatus.recoveryState === "restarting"
+                    ? `Restarting ${props.observerFeedStatus.restartAttempts}/${props.observerFeedStatus.maxRestartAttempts}`
+                    : `Retry ${props.observerFeedStatus.restartAttempts}/${props.observerFeedStatus.maxRestartAttempts}`
+                  : observerRunning
+                    ? observerHealthDegraded
+                      ? `Health ${props.observerFeedStatus.consecutiveHealthFailures}/${props.observerFeedStatus.healthFailureThreshold}`
+                      : props.observerFeedStatus.ready
+                      ? "Running"
+                      : "Warming up"
+                    : observerRecoveryBlocked
+                      ? "Recovery blocked"
+                      : "Stopped"
+              }
+              tone={
+                observerRecovering
+                  ? "accent"
+                  : observerRunning
+                    ? observerHealthDegraded
+                      ? "accent"
+                      : "success"
+                    : observerRecoveryBlocked
+                      ? "danger"
+                      : "neutral"
+              }
             />
             <DeskStatusChip
               label="Desk"

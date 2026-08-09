@@ -9,8 +9,8 @@ type DesktopSidebarProps = {
   session: LauncherSession;
   workflowState: LauncherWorkflowState;
   observerRunning: boolean;
-  currentRoute: "desk" | "widgets";
-  onNavigate: (route: "desk" | "widgets") => void;
+  currentRoute: "telemetry" | "visual" | "widgets";
+  onNavigate: (route: "telemetry" | "visual" | "widgets") => void;
   onLogout: () => void;
 };
 
@@ -70,6 +70,20 @@ function WidgetsIcon({ className }: IconProps) {
       <rect x="13.75" y="4.75" width="5.5" height="5.5" rx="1.25" stroke="currentColor" strokeWidth="1.5" />
       <rect x="4.75" y="13.75" width="5.5" height="5.5" rx="1.25" stroke="currentColor" strokeWidth="1.5" />
       <rect x="13.75" y="13.75" width="5.5" height="5.5" rx="1.25" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function VisualModeIcon({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none">
+      <path
+        d="M3.75 12s2.9-5 8.25-5 8.25 5 8.25 5-2.9 5-8.25 5-8.25-5-8.25-5Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="2.25" stroke="currentColor" strokeWidth="1.5" />
     </svg>
   );
 }
@@ -146,14 +160,25 @@ export function DesktopSidebar({
       <div className="desktop-sidebar__rail-nav" aria-label="Launcher pages">
         <button
           className={`desktop-sidebar__rail-nav-button${
-            currentRoute === "desk" ? " is-active" : ""
+            currentRoute === "telemetry" ? " is-active" : ""
           }`}
-          onClick={() => onNavigate("desk")}
+          onClick={() => onNavigate("telemetry")}
           type="button"
-          aria-label="Open main desk"
-          title="Main Desk"
+          aria-label="Open telemetry"
+          title="Telemetry"
         >
           <DeskIcon className="desktop-sidebar__icon-svg" />
+        </button>
+        <button
+          className={`desktop-sidebar__rail-nav-button${
+            currentRoute === "visual" ? " is-active" : ""
+          }`}
+          onClick={() => onNavigate("visual")}
+          type="button"
+          aria-label="Open Visual Mode"
+          title="Visual Mode"
+        >
+          <VisualModeIcon className="desktop-sidebar__icon-svg" />
         </button>
         <button
           className={`desktop-sidebar__rail-nav-button${

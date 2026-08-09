@@ -84,6 +84,10 @@ body {
   cursor: grabbing;
 }
 
+.map-stage[data-control-enabled="true"]:not(.is-dragging) {
+  cursor: crosshair;
+}
+
 #map-image {
   position: absolute;
   width: var(--map-image-width, 100%);

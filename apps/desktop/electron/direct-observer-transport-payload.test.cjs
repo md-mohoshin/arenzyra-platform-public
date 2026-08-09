@@ -87,7 +87,38 @@ test("direct observer transport preserves live team rank and strips forbidden ne
   assert.equal(payload.circle.CircleIndex, 3);
   assert.equal(payload.circle.matchStatus, undefined);
 
+  const cursor = transport.captureTransientCursor();
+  transport.ingestKillInfo({ killerName: "Later", victimName: "Still queued" });
+  transport.ingestCircleInfo({ CircleIndex: 4 });
+  transport.ackTransientEvents(cursor);
+  assert.equal(transport.buildPayload({ matchId: "match-1" }).kills.length, 1);
+  assert.equal(
+    transport.buildPayload({ matchId: "match-1" }).kills[0].killerName,
+    "Later",
+  );
+  assert.equal(transport.buildPayload({ matchId: "match-1" }).circle.CircleIndex, 4);
+
   transport.clearTransientEvents();
   assert.deepEqual(transport.buildPayload({ matchId: "match-1" }).kills, []);
   assert.deepEqual(transport.buildPayload({ matchId: "match-1" }).circle, {});
+});
+
+test("direct observer transport queues rapid kills and ignores stale acknowledgements after reset", () => {
+  const transport = createDirectObserverTransportState();
+  transport.ingestKillInfo({ killerName: "One", victimName: "A" });
+  transport.ingestKillInfo({ killerName: "Two", victimName: "B" });
+
+  const cursor = transport.captureTransientCursor();
+  assert.deepEqual(
+    transport.buildPayload({ matchId: "match-1" }).kills.map((kill) => kill.killerName),
+    ["One", "Two"],
+  );
+
+  transport.resetState();
+  transport.ingestKillInfo({ killerName: "New game", victimName: "C" });
+  transport.ackTransientEvents(cursor);
+  assert.deepEqual(
+    transport.buildPayload({ matchId: "match-1" }).kills.map((kill) => kill.killerName),
+    ["New game"],
+  );
 });

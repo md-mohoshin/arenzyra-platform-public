@@ -36,7 +36,7 @@ function renderTemplate(template) {
         if (template === "scoreboard") {
           root.innerHTML = '<div class="bar">' + state.teams.slice(0,10).map(t => '<div class="team"><span>' + (t.tag || t.name || 'Team') + '</span><strong>' + (t.kills || 0) + '</strong></div>').join('') + '</div>';
         } else if (template === "killfeed") {
-          root.innerHTML = '<div class="killfeed">' + (state.killfeed || []).slice(-5).reverse().map(k => '<div class="kill">' + (k.killerName || 'Unknown') + ' â†’ ' + (k.victimName || 'Unknown') + '</div>').join('') + '</div>';
+          root.innerHTML = '<div class="killfeed">' + (state.killfeed || []).slice(-5).reverse().map(k => '<div class="kill">' + (k.killerName || 'Unknown') + ' → ' + (k.victimName || 'Unknown') + '</div>').join('') + '</div>';
         } else {
           const team = state.teams[0];
           const players = state.players.filter(p => p.teamId === (team?.teamId || team?.id || null));

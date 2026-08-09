@@ -1,0 +1,23 @@
+# Arenzyra desktop PUBG map asset quarantine
+
+quarantined_at_date: 2026-08-09
+quarantine_path: C:\Arenzyra-safety-snapshots\quarantined-assets\20260809-desktop-unproven-tracked-maps
+asset_count: 13
+total_size_bytes: 27411958
+reason: Commercial redistribution rights were not proven for these previously tracked raster assets.
+recovery_note: This manifest records hashes only. The binary files remain outside the repository at the quarantine path above and must not be recommitted without reviewed rights evidence.
+
+relative_path | size_bytes | sha256
+apps/desktop/electron/assets/maps/deston.png | 2144617 | 5ea4c9f528ac8ab190926d48470ead235eecaecbd1580cbb1adda592a079dd4f
+apps/desktop/electron/assets/maps/erangel.png | 6481934 | 4fbef9965998b9e80da032eafb165510327437956fd94394546e42e230e46d0f
+apps/desktop/electron/assets/maps/haven.png | 1761248 | 18d5f6be4a095a5716a21849b31d88ca79ba85078a1a907982af8900d76fdb4e
+apps/desktop/electron/assets/maps/karakin.jpg | 98275 | 9df3ae5df740ccedf8ded0ccb8a9411e2ff27ac60cefa9622bf00447642c6aee
+apps/desktop/electron/assets/maps/livik-aftermath.png | 431424 | 82daa2c93f69527516e32021c24f6fd3ef1c74e29ecab3b5faedb15e936cc567
+apps/desktop/electron/assets/maps/livik.jpg | 194989 | 50f88bea38dcfc43d2fd71ca61eb46a9eea3f6e97ecfdafda7c880a0b695af60
+apps/desktop/electron/assets/maps/miramar.png | 6992561 | 326dbde0b514d8789fe25f4f0132d62a0ba23180007d660736cf0f76881e8692
+apps/desktop/electron/assets/maps/nusa.png | 342286 | efc73f3400694fe1b5f572a8159a634edac9c5bb07c847ae264eed7daad216b5
+apps/desktop/electron/assets/maps/paramo.png | 1694944 | 3bc5c96d77e90105b01d26fb3dd18654ec8e900705c7adac7aa6c0f518345d25
+apps/desktop/electron/assets/maps/rondo.webp | 3631596 | 44ff24ce451118faf57504a9362ea9a4e832c5259614fce81ea1ee40eab712c8
+apps/desktop/electron/assets/maps/sanhok.jpg | 785287 | 00bb50491e26ee691fb765203f3d55f27363913b03015b060be08d86c9ebd829
+apps/desktop/electron/assets/maps/taego.png | 1930866 | b7549f4607f5ee9516e48831d7c88bbedf571cb8f4a28828cf31e129139e9c83
+apps/desktop/electron/assets/maps/vikendi.jpg | 921931 | e93e28e2de0718f542e08c7f5f9ea9cd60de867e9b5314f220426acff2173179

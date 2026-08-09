@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "packageManager": "npm",
+  "lockfile": "package-lock.json",
+  "sevenZip": {
+    "package": "7zip-bin",
+    "version": "5.2.0",
+    "npmIntegrity": "sha512-ukTPVhqG4jNzMro2qA9HSCSSVJN3aN7tlb+hfqYCt3ER0yWroeA2VR38MNrOHLQ/cVj+DaIMad0kFCtWWowh/A==",
+    "binaries": {
+      "linux-arm": "3a68d5c794bb8534040f3f93480a7fe8194bf5ed8e0d3e2ac0de4dea9677a64c",
+      "linux-arm64": "d363b0055afb4f7f336152dd5d00f1cc992d6e86a56e4a1ec84b2ac26dee27ff",
+      "linux-ia32": "8400fe1f78c7033ddf16f55b82c3a520a91c424a29d5163c45c6e085c5834373",
+      "linux-x64": "afc9448bd0cc2eeda131cce313ef4994f9656417e0a15c8465fcda9ca859b280",
+      "darwin-arm64": "6f4dd78a82cf574f49118d99be620fd3edcfa9e48971d8523816b7ed20419c47",
+      "darwin-x64": "434075f6ff5ea9250571033ca06b95d464efcad87a528dd0b224816c86b1a444",
+      "win32-arm64": "81f67048b7366870e5d49f00a8c570570c6a0dd11c05df7a09a8c52870cc83bd",
+      "win32-ia32": "31fd52f8996986623cf52c3b4d0f7ac74a9dec63fc16c902cef673eed550c435",
+      "win32-x64": "b0cfdeaf429f5cc53f85123dd8f5a5feb92c19d31aa34df257edf9a26be05f95"
+    }
+  }
+}

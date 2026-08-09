@@ -11,9 +11,10 @@ const SUPPORTED_MAP_ASSET_EXTENSIONS = Object.freeze([
   ".jpeg",
   ".webp",
 ]);
-// Bundled desktop assets that should always exist in this package.
-// Unsupported maps still fail preflight when selected, but they do not
-// raise global warnings when the current production map is covered.
+// Every registered map remains required for production readiness even though
+// the release source intentionally ships no commercial map raster. The
+// project-owned SVG fallback keeps previews stable, while production mode
+// blocks independently when its specifically selected map asset is absent.
 const REQUIRED_PUBG_MAP_KEYS = Object.freeze([
   "erangel",
   "miramar",
@@ -24,6 +25,10 @@ const REQUIRED_PUBG_MAP_KEYS = Object.freeze([
   "karakin",
   "nusa",
   "rondo",
+  "taego",
+  "deston",
+  "paramo",
+  "haven",
 ]);
 
 function resolveDefaultMapAssetsRoot() {

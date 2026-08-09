@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getErrorMessage, launcherApi } from "../api/api-client";
+import {
+  getErrorMessage,
+  launcherApi,
+  launcherConfig,
+} from "../api/api-client";
 import type {
   AiCasterAccessState,
   AiCasterSettings,
+  LauncherConfig,
   PinnedCommentatorDeskWindowStatus,
+  PinnedMapControlWindowStatus,
+  PcobMapControlStatus,
   WidgetCatalogState,
   WidgetHotkeyControlConfig,
   WidgetHotkeyControlSelection,
@@ -15,6 +22,7 @@ import {
   buildWidgetUrl,
   buildWidgetUrlTemplate,
   canBuildWidgetUrl,
+  type ObsWidgetDefinition,
   widgets,
 } from "../widgets/widgets.config";
 
@@ -31,6 +39,20 @@ const NEXT_ZONE_PRO_WIDGET_ID = "next_zone_update_pro_sidebar";
 const NEXT_ZONE_PRO_WIDGET_KEY = "next-zone-update-pro-sidebar";
 const NEXT_ZONE_KINETIC_WIDGET_ID = "next_zone_update_kinetic_hud";
 const NEXT_ZONE_KINETIC_WIDGET_KEY = "next-zone-update-kinetic-hud";
+const NEXT_ZONE_BLADE_WIDGET_ID = "next_zone_update_blade";
+const NEXT_ZONE_BLADE_WIDGET_KEY = "next-zone-update-blade";
+const NEXT_ZONE_RADAR_SWEEP_WIDGET_ID = "next_zone_update_radar_sweep";
+const NEXT_ZONE_RADAR_SWEEP_WIDGET_KEY = "next-zone-update-radar-sweep";
+const NEXT_ZONE_FOLD_DOWN_WIDGET_ID = "next_zone_update_fold_down";
+const NEXT_ZONE_FOLD_DOWN_WIDGET_KEY = "next-zone-update-fold-down";
+const NEXT_ZONE_WIDGET_IDS = new Set([
+  "next_zone_update",
+  NEXT_ZONE_PRO_WIDGET_ID,
+  NEXT_ZONE_KINETIC_WIDGET_ID,
+  NEXT_ZONE_BLADE_WIDGET_ID,
+  NEXT_ZONE_RADAR_SWEEP_WIDGET_ID,
+  NEXT_ZONE_FOLD_DOWN_WIDGET_ID,
+]);
 const HOTKEY_CONTROL_APPROVAL_KEY = "feature.widget-hotkey-control";
 const APPROVAL_ONLY_WIDGET_KEYS = [
   LIVE_MAP_WIDGET_KEY,
@@ -151,6 +173,27 @@ const HOTKEY_WIDGET_OPTIONS: WidgetHotkeyControlSelection[] = [
     direction: "up",
   },
   {
+    id: "next-zone-update-blade",
+    widgetKey: "next-zone-update-blade",
+    label: "Next Zone Blade Countdown",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "next-zone-update-radar-sweep",
+    widgetKey: "next-zone-update-radar-sweep",
+    label: "Next Zone Radar Sweep",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "next-zone-update-fold-down",
+    widgetKey: "next-zone-update-fold-down",
+    label: "Next Zone Fold Down",
+    enabled: false,
+    direction: "up",
+  },
+  {
     id: "match-results",
     widgetKey: "match-results",
     label: "Match Results",
@@ -209,6 +252,15 @@ const HOTKEY_DIRECTION_OPTIONS: Array<{
   { value: "up", label: "Up" },
   { value: "down", label: "Down" },
 ];
+type WidgetCatalogEntry =
+  | {
+      type: "widget";
+      widget: ObsWidgetDefinition;
+    }
+  | {
+      type: "next-zone-group";
+      widgets: ObsWidgetDefinition[];
+    };
 const DEFAULT_SELECTED_WIDGET_ID =
   BASE_WIDGETS.find(
     (widget) =>
@@ -220,9 +272,9 @@ const DEFAULT_SELECTED_WIDGET_ID =
   "";
 const PERMANENT_WIDGET_KEYS = Array.from(
   new Set(
-    BASE_WIDGETS
-      .filter((widget) => widget.routeKind === "permanent" && widget.widgetKey)
-      .map((widget) => widget.widgetKey as string),
+    BASE_WIDGETS.filter(
+      (widget) => widget.routeKind === "permanent" && widget.widgetKey,
+    ).map((widget) => widget.widgetKey as string),
   ),
 );
 const AI_CASTER_VOICE_OPTIONS = [
@@ -244,6 +296,8 @@ const AI_CASTER_VOICE_OPTIONS = [
 ] as const;
 
 const getWidgetPreviewBaseUrl = (widgetServer: WidgetServerStatus | null) =>
+  widgetServer?.authorizedLocalBaseUrl ||
+  widgetServer?.authorizedBaseUrl ||
   widgetServer?.localBaseUrl ||
   widgetServer?.baseUrl ||
   DEFAULT_WIDGET_SERVER_BASE_URL;
@@ -298,12 +352,17 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   const [widgetServer, setWidgetServer] = useState<WidgetServerStatus | null>(
     null,
   );
+  const [launcherConfigView, setLauncherConfigView] =
+    useState<LauncherConfig | null>(null);
   const [widgetCatalog, setWidgetCatalog] = useState<WidgetCatalogState | null>(
     null,
   );
   const [, setServerLoading] = useState(true);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [lanToggleError, setLanToggleError] = useState<string | null>(null);
+  const [lanToggleSaving, setLanToggleSaving] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [capabilityBusy, setCapabilityBusy] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [aiCasterAccess, setAiCasterAccess] =
     useState<AiCasterAccessState | null>(null);
@@ -319,6 +378,17 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   const [pinnedDeskError, setPinnedDeskError] = useState<string | null>(null);
   const [pinnedDeskBusy, setPinnedDeskBusy] = useState<
     "open" | "close" | "click-through" | null
+  >(null);
+  const [pinnedMapStatus, setPinnedMapStatus] =
+    useState<PinnedMapControlWindowStatus | null>(null);
+  const [pinnedMapError, setPinnedMapError] = useState<string | null>(null);
+  const [pcobMapControlStatus, setPcobMapControlStatus] =
+    useState<PcobMapControlStatus | null>(null);
+  const [pcobMapControlError, setPcobMapControlError] = useState<string | null>(
+    null,
+  );
+  const [pinnedMapBusy, setPinnedMapBusy] = useState<
+    "open" | "close" | "always-on-top" | null
   >(null);
   const [hotkeyControl, setHotkeyControl] =
     useState<WidgetHotkeyControlStatus | null>(null);
@@ -336,6 +406,7 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   const [selectedWidgetId, setSelectedWidgetId] = useState(
     DEFAULT_SELECTED_WIDGET_ID,
   );
+  const [nextZoneGroupOpen, setNextZoneGroupOpen] = useState(true);
   const liveMapCatalogState =
     widgetCatalog?.items?.[LIVE_MAP_WIDGET_KEY] ?? null;
   const commentatorDeskCatalogState =
@@ -344,6 +415,12 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     widgetCatalog?.items?.[NEXT_ZONE_PRO_WIDGET_KEY] ?? null;
   const nextZoneKineticCatalogState =
     widgetCatalog?.items?.[NEXT_ZONE_KINETIC_WIDGET_KEY] ?? null;
+  const nextZoneBladeCatalogState =
+    widgetCatalog?.items?.[NEXT_ZONE_BLADE_WIDGET_KEY] ?? null;
+  const nextZoneRadarSweepCatalogState =
+    widgetCatalog?.items?.[NEXT_ZONE_RADAR_SWEEP_WIDGET_KEY] ?? null;
+  const nextZoneFoldDownCatalogState =
+    widgetCatalog?.items?.[NEXT_ZONE_FOLD_DOWN_WIDGET_KEY] ?? null;
   const hotkeyControlCatalogState =
     widgetCatalog?.items?.[HOTKEY_CONTROL_APPROVAL_KEY] ?? null;
   const liveMapApproved = liveMapCatalogState?.approved === true;
@@ -352,6 +429,11 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   const nextZoneProApproved = nextZoneProCatalogState?.approved === true;
   const nextZoneKineticApproved =
     nextZoneKineticCatalogState?.approved === true;
+  const nextZoneBladeApproved = nextZoneBladeCatalogState?.approved === true;
+  const nextZoneRadarSweepApproved =
+    nextZoneRadarSweepCatalogState?.approved === true;
+  const nextZoneFoldDownApproved =
+    nextZoneFoldDownCatalogState?.approved === true;
   const hotkeyControlApproved = hotkeyControlCatalogState?.approved === true;
   const aiCasterApproved = aiCasterAccess?.approved === true;
   const availableWidgets = useMemo(
@@ -372,22 +454,158 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
         if (widget.id === NEXT_ZONE_KINETIC_WIDGET_ID) {
           return nextZoneKineticApproved;
         }
+        if (widget.id === NEXT_ZONE_BLADE_WIDGET_ID) {
+          return nextZoneBladeApproved;
+        }
+        if (widget.id === NEXT_ZONE_RADAR_SWEEP_WIDGET_ID) {
+          return nextZoneRadarSweepApproved;
+        }
+        if (widget.id === NEXT_ZONE_FOLD_DOWN_WIDGET_ID) {
+          return nextZoneFoldDownApproved;
+        }
         return true;
       }),
     [
       aiCasterApproved,
       commentatorDeskApproved,
       liveMapApproved,
+      nextZoneBladeApproved,
+      nextZoneFoldDownApproved,
       nextZoneKineticApproved,
       nextZoneProApproved,
+      nextZoneRadarSweepApproved,
     ],
   );
+  const catalogEntries = useMemo<WidgetCatalogEntry[]>(() => {
+    const entries: WidgetCatalogEntry[] = [];
+    let nextZoneGroupAdded = false;
+    const nextZoneWidgets = availableWidgets.filter((widget) =>
+      NEXT_ZONE_WIDGET_IDS.has(widget.id),
+    );
+
+    for (const widget of availableWidgets) {
+      if (NEXT_ZONE_WIDGET_IDS.has(widget.id)) {
+        if (!nextZoneGroupAdded && nextZoneWidgets.length > 0) {
+          entries.push({
+            type: "next-zone-group",
+            widgets: nextZoneWidgets,
+          });
+          nextZoneGroupAdded = true;
+        }
+        continue;
+      }
+
+      entries.push({
+        type: "widget",
+        widget,
+      });
+    }
+
+    return entries;
+  }, [availableWidgets]);
 
   useEffect(() => {
     if (!availableWidgets.some((widget) => widget.id === selectedWidgetId)) {
       setSelectedWidgetId(availableWidgets[0]?.id ?? "");
     }
   }, [availableWidgets, selectedWidgetId]);
+
+  useEffect(() => {
+    if (NEXT_ZONE_WIDGET_IDS.has(selectedWidgetId)) {
+      setNextZoneGroupOpen(true);
+    }
+  }, [selectedWidgetId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const applyConfig = (config: LauncherConfig) => {
+      if (cancelled) {
+        return;
+      }
+      setLauncherConfigView(config);
+      setLanToggleError(null);
+    };
+
+    void launcherConfig
+      .getConfig()
+      .then(applyConfig)
+      .catch((error) => {
+        if (!cancelled) {
+          setLanToggleError(getErrorMessage(error));
+        }
+      });
+
+    const unsubscribe = launcherConfig.subscribeConfig(applyConfig);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectedWidgetId !== LIVE_MAP_WIDGET_ID) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadPcobMapControlStatus = async () => {
+      try {
+        const status = await launcherApi.getPcobMapControlStatus();
+        if (cancelled) {
+          return;
+        }
+        setPcobMapControlStatus(status);
+        setPcobMapControlError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setPcobMapControlError(getErrorMessage(error));
+      }
+    };
+
+    void loadPcobMapControlStatus();
+    const timer = window.setInterval(() => {
+      void loadPcobMapControlStatus();
+    }, WIDGET_SERVER_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [selectedWidgetId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPinnedMap = async () => {
+      try {
+        const status = await launcherApi.getPinnedMapControlWindow();
+        if (cancelled) {
+          return;
+        }
+        setPinnedMapStatus(status);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setPinnedMapError(getErrorMessage(error));
+      }
+    };
+
+    void loadPinnedMap();
+    const timer = window.setInterval(() => {
+      void loadPinnedMap();
+    }, WIDGET_SERVER_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -617,18 +835,32 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
       : localTemplateUrl
     : "";
   const lanUrl =
-    selectedWidget && selectedCanBuildUrl && widgetServer?.networkBaseUrl
-      ? buildWidgetUrl(widgetServer.networkBaseUrl, selectedWidget, {
-          widgetInstanceKey: selectedWidgetInstanceKey,
-        })
+    selectedWidget &&
+    selectedCanBuildUrl &&
+    (widgetServer?.authorizedNetworkBaseUrl || widgetServer?.networkBaseUrl)
+      ? buildWidgetUrl(
+          widgetServer.authorizedNetworkBaseUrl || widgetServer.networkBaseUrl!,
+          selectedWidget,
+          {
+            widgetInstanceKey: selectedWidgetInstanceKey,
+          },
+        )
       : "";
+  const lanEnabled = launcherConfigView?.settings?.widgetLanEnabled === true;
+  const lanStatusLabel = lanToggleSaving
+    ? "Updating..."
+    : lanEnabled
+      ? "Enabled"
+      : "Disabled";
   const note =
     copyError ||
+    lanToggleError ||
     serverError ||
     (selectedWidget?.id === "ai_caster" ? aiCasterError : null) ||
     (selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID
       ? pinnedDeskError
       : null) ||
+    (selectedWidget?.id === LIVE_MAP_WIDGET_ID ? pinnedMapError : null) ||
     (selectedWidget?.routeKind === "permanent" &&
     selectedPermanentState?.message
       ? selectedPermanentState.message
@@ -637,7 +869,13 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
       ? catalogError
       : null);
   const noteTone =
-    copyError || serverError || catalogError || aiCasterError || pinnedDeskError
+    copyError ||
+    lanToggleError ||
+    serverError ||
+    catalogError ||
+    aiCasterError ||
+    pinnedDeskError ||
+    pinnedMapError
       ? "danger"
       : "neutral";
 
@@ -651,6 +889,58 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
       setCopyError(null);
     } catch (error) {
       setCopyError(getErrorMessage(error));
+    }
+  };
+
+  const handleRotateCapability = async () => {
+    if (
+      !organizationId ||
+      !selectedWidget?.widgetKey ||
+      !selectedPermanentState?.widgetInstanceId ||
+      !selectedPermanentState.capabilityGeneration
+    ) {
+      return;
+    }
+    const confirmed = window.confirm(
+      "Rotate this widget credential? Existing OBS URLs for this widget will stop working and must be replaced with the newly copied URL.",
+    );
+    if (!confirmed) return;
+
+    setCapabilityBusy(true);
+    setCatalogError(null);
+    try {
+      const result = await launcherApi.rotateWidgetCapability(
+        organizationId,
+        selectedWidget.widgetKey,
+        selectedPermanentState.widgetInstanceId,
+        selectedPermanentState.capabilityGeneration,
+        PERMANENT_WIDGET_KEYS,
+        APPROVAL_ONLY_WIDGET_KEYS,
+      );
+      setWidgetCatalog(result);
+    } catch (error) {
+      setCatalogError(getErrorMessage(error));
+    } finally {
+      setCapabilityBusy(false);
+    }
+  };
+
+  const handleLanToggleChange = async (enabled: boolean) => {
+    setLanToggleSaving(true);
+    setLanToggleError(null);
+
+    try {
+      const nextConfig = await launcherConfig.setConfig("settings", {
+        widgetLanEnabled: enabled,
+      });
+      setLauncherConfigView(nextConfig);
+      const nextStatus = await launcherApi.getWidgetServerStatus();
+      setWidgetServer(nextStatus);
+      setServerError(null);
+    } catch (error) {
+      setLanToggleError(getErrorMessage(error));
+    } finally {
+      setLanToggleSaving(false);
     }
   };
 
@@ -682,7 +972,9 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     }
   };
 
-  const setPinnedCommentatorDeskClickThrough = async (clickThrough: boolean) => {
+  const setPinnedCommentatorDeskClickThrough = async (
+    clickThrough: boolean,
+  ) => {
     setPinnedDeskBusy("click-through");
     try {
       const status =
@@ -693,6 +985,46 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
       setPinnedDeskError(getErrorMessage(error));
     } finally {
       setPinnedDeskBusy(null);
+    }
+  };
+
+  const openPinnedMapControl = async () => {
+    setPinnedMapBusy("open");
+    try {
+      const status = await launcherApi.openPinnedMapControlWindow();
+      setPinnedMapStatus(status);
+      setPinnedMapError(null);
+    } catch (error) {
+      setPinnedMapError(getErrorMessage(error));
+    } finally {
+      setPinnedMapBusy(null);
+    }
+  };
+
+  const closePinnedMapControl = async () => {
+    setPinnedMapBusy("close");
+    try {
+      const status = await launcherApi.closePinnedMapControlWindow();
+      setPinnedMapStatus(status);
+      setPinnedMapError(null);
+    } catch (error) {
+      setPinnedMapError(getErrorMessage(error));
+    } finally {
+      setPinnedMapBusy(null);
+    }
+  };
+
+  const setPinnedMapControlAlwaysOnTop = async (alwaysOnTop: boolean) => {
+    setPinnedMapBusy("always-on-top");
+    try {
+      const status =
+        await launcherApi.setPinnedMapControlAlwaysOnTop(alwaysOnTop);
+      setPinnedMapStatus(status);
+      setPinnedMapError(null);
+    } catch (error) {
+      setPinnedMapError(getErrorMessage(error));
+    } finally {
+      setPinnedMapBusy(null);
     }
   };
 
@@ -847,6 +1179,30 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID &&
     widgetServer?.running === true &&
     selectedCanBuildUrl;
+  const pinnedMapOpen = pinnedMapStatus?.open === true;
+  const pinnedMapAlwaysOnTop = pinnedMapStatus?.alwaysOnTop === true;
+  const pcobSwitchingEnabled = pcobMapControlStatus?.enabled === true;
+  const pcobSwitchingHasError = Boolean(
+    pcobMapControlError ||
+    pcobMapControlStatus?.telemetryError ||
+    pcobMapControlStatus?.inputError ||
+    (!pcobMapControlStatus?.telemetrySourceReady &&
+      pcobMapControlStatus?.sourceError) ||
+    (pcobMapControlStatus?.matchLive &&
+      pcobMapControlStatus?.telemetrySourceReady &&
+      !pcobMapControlStatus?.available) ||
+    pcobMapControlStatus?.lastSelection?.status === "failed",
+  );
+  const pcobTelemetrySourceLabel =
+    pcobMapControlStatus?.telemetrySource === "telemetry-bridge"
+      ? "Telemetry Bridge"
+      : pcobMapControlStatus?.telemetrySource === "observer-feed"
+        ? "Observer Feed"
+        : "Not ready";
+  const pinnedMapCanOpen =
+    selectedWidget?.id === LIVE_MAP_WIDGET_ID &&
+    widgetServer?.running === true &&
+    selectedCanBuildUrl;
 
   const previewAiCasterVoice = async (
     role: "play-by-play" | "analyst",
@@ -899,18 +1255,72 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
 
           {availableWidgets.length ? (
             <div className="widgets-minimal__list">
-              {availableWidgets.map((widget) => {
-                const isSelected = widget.id === selectedWidget?.id;
+              {catalogEntries.map((entry) => {
+                if (entry.type === "next-zone-group") {
+                  const nextZoneSelected = entry.widgets.some(
+                    (widget) => widget.id === selectedWidget?.id,
+                  );
+                  return (
+                    <div
+                      className={`widgets-minimal__group${
+                        nextZoneSelected ? " is-active" : ""
+                      }${nextZoneGroupOpen ? " is-open" : ""}`}
+                      key="next-zone-group"
+                    >
+                      <button
+                        className="widgets-minimal__group-trigger"
+                        onClick={() =>
+                          setNextZoneGroupOpen((current) => !current)
+                        }
+                        type="button"
+                        aria-expanded={nextZoneGroupOpen}
+                      >
+                        <span>Next Zone Widgets</span>
+                        <span>{nextZoneGroupOpen ? "Hide" : "Show"}</span>
+                      </button>
+                      {nextZoneGroupOpen ? (
+                        <div className="widgets-minimal__group-list">
+                          {entry.widgets.map((widget) => {
+                            const isSelected = widget.id === selectedWidget?.id;
+                            const styleName = widget.name.replace(
+                              /^Next Zone Update(?: - )?/,
+                              "",
+                            );
+                            return (
+                              <button
+                                key={widget.id}
+                                className={`widgets-minimal__item widgets-minimal__item--nested${
+                                  isSelected ? " is-active" : ""
+                                }`}
+                                onClick={() => setSelectedWidgetId(widget.id)}
+                                type="button"
+                              >
+                                <span>{styleName || widget.name}</span>
+                                {widget.widgetKey === "next-zone-update" ? (
+                                  <small>Default</small>
+                                ) : (
+                                  <small>Approved style</small>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                }
+
+                const isSelected = entry.widget.id === selectedWidget?.id;
                 return (
                   <button
-                    key={widget.id}
+                    key={entry.widget.id}
                     className={`widgets-minimal__item${
                       isSelected ? " is-active" : ""
                     }`}
-                    onClick={() => setSelectedWidgetId(widget.id)}
+                    onClick={() => setSelectedWidgetId(entry.widget.id)}
                     type="button"
                   >
-                    {widget.name}
+                    {entry.widget.name}
                   </button>
                 );
               })}
@@ -958,6 +1368,96 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
             </div>
           </div>
 
+          {selectedWidget?.routeKind === "permanent" &&
+          selectedPermanentState?.widgetInstanceId ? (
+            <div className="widgets-minimal__settings">
+              <div className="widgets-minimal__settings-row">
+                <div>
+                  <span className="widgets-minimal__kicker">
+                    Widget credential
+                  </span>
+                  <strong>
+                    {selectedPermanentState.capabilityStatus}
+                    {selectedPermanentState.capabilityPrefix
+                      ? ` · ${selectedPermanentState.capabilityPrefix}…`
+                      : ""}
+                  </strong>
+                </div>
+                <div className="widgets-minimal__settings-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={
+                      capabilityBusy || !selectedPermanentState.canRotate
+                    }
+                    onClick={() => void handleRotateCapability()}
+                  >
+                    {capabilityBusy ? "Rotating..." : "Rotate credential"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {selectedCanBuildUrl && localUrl ? (
+            <section
+              className="widgets-minimal__preview"
+              aria-label="OBS preview"
+            >
+              <div className="widgets-minimal__preview-header">
+                <div>
+                  <span className="widgets-minimal__kicker">
+                    OBS-faithful preview
+                  </span>
+                  <strong>Same local URL and canvas used by OBS</strong>
+                </div>
+                <span>16:9</span>
+              </div>
+              <div className="widgets-minimal__preview-stage">
+                <iframe
+                  key={localUrl}
+                  className="widgets-minimal__preview-frame"
+                  src={localUrl}
+                  title={`${selectedWidget?.name || "Widget"} OBS preview`}
+                />
+              </div>
+            </section>
+          ) : null}
+
+          <div className="widgets-minimal__settings widgets-minimal__lan">
+            <div className="widgets-minimal__settings-row">
+              <div>
+                <span className="widgets-minimal__kicker">LAN Widget URLs</span>
+                <strong>{lanStatusLabel}</strong>
+              </div>
+              <div className="widgets-minimal__settings-actions">
+                <label className="widgets-minimal__switch">
+                  <input
+                    aria-label="Enable LAN widget URLs"
+                    type="checkbox"
+                    checked={lanEnabled}
+                    disabled={!launcherConfigView || lanToggleSaving}
+                    onChange={(event) => {
+                      void handleLanToggleChange(event.target.checked);
+                    }}
+                  />
+                  <span
+                    className="widgets-minimal__switch-track"
+                    aria-hidden="true"
+                  >
+                    <span className="widgets-minimal__switch-thumb" />
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {lanEnabled && !widgetServer?.networkBaseUrl ? (
+              <div className="widgets-minimal__note">
+                LAN is enabled, but no LAN address is available.
+              </div>
+            ) : null}
+          </div>
+
           {note ? (
             <div
               className={`widgets-minimal__note${
@@ -972,7 +1472,9 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
             <div className="widgets-minimal__settings widgets-minimal__hotkey">
               <div className="widgets-minimal__settings-row">
                 <div>
-                  <span className="widgets-minimal__kicker">Launcher Hotkey</span>
+                  <span className="widgets-minimal__kicker">
+                    Launcher Hotkey
+                  </span>
                   <strong>
                     {hotkeyControl?.registered
                       ? `Registered on ${hotkeyControl.key}`
@@ -1057,7 +1559,7 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
                     ? "Widgets hidden"
                     : hotkeyControl?.registered
                       ? "Listening"
-                      : hotkeyControl?.reason ?? "Not registered"}
+                      : (hotkeyControl?.reason ?? "Not registered")}
                 </span>
               </div>
 
@@ -1129,6 +1631,112 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
             </div>
           ) : null}
 
+          {selectedWidget?.id === LIVE_MAP_WIDGET_ID ? (
+            <div className="widgets-minimal__settings">
+              <div className="widgets-minimal__settings-row">
+                <div>
+                  <span className="widgets-minimal__kicker">
+                    Separate PCOB Control Map
+                  </span>
+                  <strong>
+                    {pinnedMapOpen
+                      ? pinnedMapAlwaysOnTop
+                        ? "Open - Always on top is On"
+                        : "Open - Always on top is Off"
+                      : "Closed"}
+                  </strong>
+                </div>
+                <div className="widgets-minimal__settings-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!pinnedMapCanOpen || pinnedMapBusy !== null}
+                    onClick={() => {
+                      void openPinnedMapControl();
+                    }}
+                  >
+                    {pinnedMapBusy === "open"
+                      ? "Opening..."
+                      : "Open PCOB Control Map"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!pinnedMapOpen || pinnedMapBusy !== null}
+                    onClick={() => {
+                      void closePinnedMapControl();
+                    }}
+                  >
+                    {pinnedMapBusy === "close" ? "Closing..." : "Close"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    aria-pressed={pinnedMapAlwaysOnTop}
+                    disabled={
+                      pinnedMapStatus === null || pinnedMapBusy !== null
+                    }
+                    onClick={() => {
+                      void setPinnedMapControlAlwaysOnTop(
+                        !pinnedMapAlwaysOnTop,
+                      );
+                    }}
+                  >
+                    {pinnedMapBusy === "always-on-top"
+                      ? "Updating..."
+                      : pinnedMapAlwaysOnTop
+                        ? "Always on top: On"
+                        : "Always on top: Off"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="widgets-minimal__settings-row">
+                <div>
+                  <span className="widgets-minimal__kicker">
+                    Automatic PCOB Switching
+                  </span>
+                  <strong>
+                    {pcobMapControlStatus
+                      ? pcobSwitchingEnabled
+                        ? "Enabled"
+                        : "Disabled"
+                      : "Checking..."}
+                  </strong>
+                </div>
+                <div className="widgets-minimal__settings-actions widgets-minimal__status-meta">
+                  <span>
+                    Match: {pcobMapControlStatus?.matchStatus || "Not live"}
+                  </span>
+                  <span>Source: {pcobTelemetrySourceLabel}</span>
+                  <span>
+                    PCOB:{" "}
+                    {pcobMapControlStatus?.available ? "Ready" : "Not ready"}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                className={`widgets-minimal__note${
+                  pcobSwitchingHasError ? " widgets-minimal__note--danger" : ""
+                }`}
+              >
+                {pcobMapControlError ||
+                  pcobMapControlStatus?.message ||
+                  "Checking automatic player-switching status..."}
+              </div>
+
+              <div className="widgets-minimal__note">
+                This is a separate operator window; the OBS Live Map remains
+                unchanged. Always on top is optional and changes without
+                reopening the map. Player switching enables automatically only
+                for a LIVE web-app match with a ready telemetry source and PCOB.
+                It disables automatically when the match finishes or telemetry
+                becomes unavailable.
+              </div>
+            </div>
+          ) : null}
+
           {selectedWidget?.id === COMMENTATOR_DESK_WIDGET_ID ? (
             <div className="widgets-minimal__settings">
               <div className="widgets-minimal__settings-row">
@@ -1151,7 +1759,9 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
                       void openPinnedCommentatorDesk();
                     }}
                   >
-                    {pinnedDeskBusy === "open" ? "Opening..." : "Open Pinned Desk"}
+                    {pinnedDeskBusy === "open"
+                      ? "Opening..."
+                      : "Open Pinned Desk"}
                   </button>
                   <button
                     className="secondary-button"

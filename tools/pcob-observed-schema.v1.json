@@ -1,0 +1,5115 @@
+{
+  "schema": "arenzyra.pcobObservedSchemaManifest.v1",
+  "version": 1,
+  "captureModel": {
+    "endpoint": "/getobserversnapshot",
+    "pollIntervalMs": 250,
+    "rawRoutePayloadSemantics": "latest-payload-per-route",
+    "rawEventsReconstruction": "synthetic-lower-bound"
+  },
+  "sources": [
+    {
+      "id": "normal-no-recall-1783637101011",
+      "recording": "recordings/pcob/normal-no-recall-1783637101011",
+      "packetCount": 6104,
+      "okPacketCount": 6104,
+      "changedPacketCount": 4357,
+      "endpoints": [
+        "http://127.0.0.1:10086/getobserversnapshot"
+      ],
+      "maps": {
+        "erangel": 6104
+      },
+      "phases": {
+        "0": 315,
+        "1": 1675,
+        "2": 1184,
+        "3": 836,
+        "4": 628,
+        "5": 558,
+        "6": 418,
+        "7": 401,
+        "null": 89
+      },
+      "routeVersions": {
+        "/setairdropboxinfo": 5,
+        "/setcircleinfo": 3015,
+        "/setgameglobalinfo": 14,
+        "/setisingame": 3,
+        "/setkillinfo": 108,
+        "/setobservingplayer": 1481,
+        "/setplayerassistinfo": 24,
+        "/setplayersaminfo": 54,
+        "/setplayerssightusageinfo": 1,
+        "/setplayerweapondetailinfo": 54,
+        "/setplayerweaponinfo": 1,
+        "/setteambackpackinfo": 759,
+        "/totalmessage": 912
+      },
+      "reconstructedEventCount": 6445,
+      "recoveredOverwrittenKillEvents": 14
+    },
+    {
+      "id": "rondo-recall-1783635224496",
+      "recording": "recordings/pcob/rondo-recall-1783635224496",
+      "packetCount": 4720,
+      "okPacketCount": 4720,
+      "changedPacketCount": 3294,
+      "endpoints": [
+        "http://127.0.0.1:10086/getobserversnapshot"
+      ],
+      "maps": {
+        "rondo": 4720
+      },
+      "phases": {
+        "0": 251,
+        "1": 1462,
+        "2": 683,
+        "3": 588,
+        "4": 587,
+        "5": 518,
+        "6": 428,
+        "null": 203
+      },
+      "routeVersions": {
+        "/setairdropboxinfo": 3,
+        "/setcircleinfo": 2230,
+        "/setentertopeightafterrevive": 1,
+        "/setgameglobalinfo": 14,
+        "/setisingame": 3,
+        "/setkillinfo": 213,
+        "/setobservingplayer": 902,
+        "/setplayerassistinfo": 40,
+        "/setplayersaminfo": 47,
+        "/setplayerssightusageinfo": 1,
+        "/setplayerweapondetailinfo": 47,
+        "/setplayerweaponinfo": 1,
+        "/setreviveplayer": 27,
+        "/setteambackpackinfo": 584,
+        "/totalmessage": 778
+      },
+      "reconstructedEventCount": 4908,
+      "recoveredOverwrittenKillEvents": 17
+    }
+  ],
+  "observerSnapshotPaths": {
+    "$": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.activeMatchId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.allInfo.CircleInfo": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.allInfo.CircleInfo.CircleIndex": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.CircleInfo.CircleStatus": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.CircleInfo.Counter": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.CircleInfo.GameTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.CircleInfo.MaxTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.CurrentTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.FightingStartTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.FinishedStartTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.GameID": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.GameStartTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 10
+    },
+    "$.allInfo.TeamBackpackInfo[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201050": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201051": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201053": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].201054": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].202001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].202002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].202006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].202007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203015": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].203018": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204013": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].204014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].205001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].205002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].205003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].205010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].301001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].302001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].303001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].304001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].305001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].307001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].307004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].601001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].601002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].601003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].601004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].601005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].601006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602123": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602211": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].602420": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].603001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].6041009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].604127": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].MainWeapon1AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].MainWeapon1ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].MainWeapon2AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].MainWeapon2ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].PlayerKey": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamBackpackInfo[].TeamID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamInfoList": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 17,
+      "maxArrayLength": 19
+    },
+    "$.allInfo.TeamInfoList[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.allInfo.TeamInfoList[].isShowLogo": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.allInfo.TeamInfoList[].killNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamInfoList[].liveMemberNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamInfoList[].logoPicUrl": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TeamInfoList[].teamId": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TeamInfoList[].teamName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TotalPlayerList": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 56,
+      "maxArrayLength": 73
+    },
+    "$.allInfo.TotalPlayerList[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].AIKillNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].assists": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].bHasDied": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].BossKillNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].character": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].damage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].driveDistance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].gotAirDropNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].headShotNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].heal": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].health": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].healthMax": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].inDamage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].isFiring": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].isOutsideBlueCircle": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].killNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].killNumBeforeDie": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].killNumByGrenade": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].killNumInVehicle": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].knockouts": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].liveState": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].location": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].location.x": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].location.y": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].location.z": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].marchDistance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].maxKillDistance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].outsideBlueCircleTime": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 541
+    },
+    "$.allInfo.TotalPlayerList[].picUrl": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].playerKey": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].playerName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].playerOpenId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].PoisonTotalDamage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].rank": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].rescueTimes": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].showPicUrl": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].survivalTime": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].teamId": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].teamName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].uId": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].useBurnGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].UseEmergencyCallTime": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].useFlashGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].useFragGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].UseSelfRescueTime": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.allInfo.TotalPlayerList[].useSmokeGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.bestCircleInfo": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.bestCircleInfo.CircleArray": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 7
+    },
+    "$.bestCircleInfo.CircleArray[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.bestCircleInfo.CircleArray[].Size": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.bestCircleInfo.CircleArray[].X": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.bestCircleInfo.CircleArray[].Y": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.bestCircleInfo.CircleIndex": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.bestCircleInfo.CircleStatus": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.bestCircleInfo.Counter": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.bestCircleInfo.GameTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.bestCircleInfo.MaxTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.circleInfo.CircleArray": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 7
+    },
+    "$.circleInfo.CircleArray[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.circleInfo.CircleArray[].Size": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo.CircleArray[].X": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo.CircleArray[].Y": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo.CircleIndex": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo.CircleStatus": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo.Counter": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo.GameTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.circleInfo.MaxTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.isInGame": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.killInfo": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 100
+    },
+    "$.killInfo[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.killInfo[].CauserName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfo[].CauserUID": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfo[].CurGameTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfo[].Distance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.killInfo[].ItemID": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfo[].ResultHealthStatus": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfo[].VictimName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfo[].VictimUID": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 100
+    },
+    "$.killInfoEntries[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.killInfoEntries[].payload": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.killInfoEntries[].payload.CauserName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries[].payload.CauserUID": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries[].payload.CurGameTime": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries[].payload.Distance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.killInfoEntries[].payload.ItemID": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries[].payload.ResultHealthStatus": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries[].payload.VictimName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries[].payload.VictimUID": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.killInfoEntries[].receivedAtMs": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.mapName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpacks": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 3
+    },
+    "$.normalized.backpacks[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpacks[].equipment": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 1,
+      "maxArrayLength": 41
+    },
+    "$.normalized.backpacks[].equipment[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].ammoInClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].count": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].itemId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].quality": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].raw": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].raw.count": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].raw.MainWeapon1ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].raw.MainWeapon2ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].raw.name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].slot": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].equipment[].worth": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].itemCount": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].items": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 1,
+      "maxArrayLength": 35
+    },
+    "$.normalized.backpacks[].items[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpacks[].items[].count": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].items[].itemId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].items[].name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].items[].quality": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].items[].raw": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpacks[].items[].raw.count": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].items[].raw.name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].items[].worth": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].playerId": {
+      "types": [
+        "null",
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 1,
+      "maxArrayLength": 4
+    },
+    "$.normalized.backpacks[].raw[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201050": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201051": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201053": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].201054": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].202001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].202002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].202006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].202007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203015": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].203018": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204013": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].204014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].205001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].205002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].205003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].205010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].301001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].302001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].303001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].304001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].305001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].307001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].307004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].601001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].601002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].601003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].601004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].601005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].601006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602123": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602211": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].602420": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].603001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].6041009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].604127": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].MainWeapon1AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].MainWeapon1ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].MainWeapon2AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].MainWeapon2ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].PlayerKey": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].raw[].TeamID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].slot": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpacks[].teamId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpackTotals": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpackTotals.byItem": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 45
+    },
+    "$.normalized.backpackTotals.byItem[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.backpackTotals.byItem[].count": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpackTotals.byItem[].name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.backpackTotals.itemCount": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.backpackTotals.teams": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.circle": {
+      "types": [
+        "null",
+        "object"
+      ]
+    },
+    "$.normalized.circle.counterSeconds": {
+      "types": [
+        "null",
+        "number"
+      ]
+    },
+    "$.normalized.circle.maxTimeSeconds": {
+      "types": [
+        "null",
+        "number"
+      ]
+    },
+    "$.normalized.circle.nextShrinkAt": {
+      "types": [
+        "null",
+        "string"
+      ]
+    },
+    "$.normalized.circle.nextZone": {
+      "types": [
+        "null",
+        "object"
+      ]
+    },
+    "$.normalized.circle.nextZone.r": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.circle.nextZone.x": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 7
+    },
+    "$.normalized.circle.nextZone.y": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 7
+    },
+    "$.normalized.circle.phase": {
+      "types": [
+        "null",
+        "number"
+      ]
+    },
+    "$.normalized.circle.safeZone": {
+      "types": [
+        "null",
+        "object"
+      ]
+    },
+    "$.normalized.circle.safeZone.r": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.circle.safeZone.x": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 6548
+    },
+    "$.normalized.circle.safeZone.y": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 7192
+    },
+    "$.normalized.circle.status": {
+      "types": [
+        "null",
+        "string"
+      ]
+    },
+    "$.normalized.flightPath": {
+      "types": [
+        "null",
+        "object"
+      ]
+    },
+    "$.normalized.flightPath.coordinateSystem": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.flightPath.end": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.flightPath.end.x": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 7642
+    },
+    "$.normalized.flightPath.end.y": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 7642
+    },
+    "$.normalized.flightPath.start": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.flightPath.start.x": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 7642
+    },
+    "$.normalized.flightPath.start.y": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 7642
+    },
+    "$.normalized.playerBackpacks": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 10
+    },
+    "$.normalized.playerBackpacks[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 26
+    },
+    "$.normalized.playerBackpacks[].equipment[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].ammoInClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].count": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].itemId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].quality": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].raw": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].raw.count": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].raw.MainWeapon1ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].raw.MainWeapon2ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].raw.name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].slot": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].equipment[].worth": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].itemCount": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 24
+    },
+    "$.normalized.playerBackpacks[].items[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].count": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].itemId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].quality": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].raw": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].raw.count": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].raw.name": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].items[].worth": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].playerId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201050": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201051": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201053": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.201054": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.202001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.202002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.202006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.202007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203015": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.203018": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204013": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.204014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.205001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.205002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.205003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.205010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.301001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.302001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.303001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.304001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.305001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.307001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.307004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.601001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.601002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.601003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.601004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.601005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.601006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602123": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602211": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.602420": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.603001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.6041009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.604127": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.MainWeapon1AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.MainWeapon1ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.MainWeapon2AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.MainWeapon2ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.PlayerKey": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].raw.TeamID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].slot": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.playerBackpacks[].teamId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 73
+    },
+    "$.normalized.players[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.players[].alive": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.players[].assists": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.players[].damage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.players[].externalPlayerId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players[].fireAngle": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.players[].fireDirection": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.players[].health": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.players[].isFiring": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.players[].kills": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.players[].knocked": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.players[].knockouts": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.players[].outsideBlueCircle": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.players[].playerId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players[].playerIds": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 2,
+      "maxArrayLength": 3
+    },
+    "$.normalized.players[].playerIds[]": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players[].playerName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players[].playerOpenId": {
+      "types": [
+        "null",
+        "string"
+      ]
+    },
+    "$.normalized.players[].pubgPlayerId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players[].teamId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players[].teamName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.players[].x": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.players[].y": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 19
+    },
+    "$.normalized.teams[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.teams[].alivePlayers": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].kills": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].logoUrl": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.teams[].placement": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.teams[].players": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 1,
+      "maxArrayLength": 4
+    },
+    "$.normalized.teams[].players[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.normalized.teams[].players[].alive": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.teams[].players[].assists": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].players[].damage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].players[].externalPlayerId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].fireAngle": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.teams[].players[].fireDirection": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.teams[].players[].health": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].players[].isFiring": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.teams[].players[].kills": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].players[].knocked": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.teams[].players[].knockouts": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].players[].outsideBlueCircle": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.normalized.teams[].players[].playerId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].playerIds": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 2,
+      "maxArrayLength": 3
+    },
+    "$.normalized.teams[].players[].playerIds[]": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].playerName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].playerOpenId": {
+      "types": [
+        "null",
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].pubgPlayerId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].teamId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].teamName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].players[].x": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].players[].y": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.normalized.teams[].slot": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.teams[].teamId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].teamName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.normalized.teams[].teamTag": {
+      "types": [
+        "null"
+      ]
+    },
+    "$.normalized.teams[].totalPlayers": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.observingPlayer": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.observingPlayer.0": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.observingPlayer.GunADS": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.playerInfoList": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 73
+    },
+    "$.playerInfoList[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.playerInfoList[].AIKillNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].assists": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].bHasDied": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.playerInfoList[].BossKillNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].character": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.playerInfoList[].damage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].driveDistance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].gotAirDropNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].headShotNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].heal": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].health": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].healthMax": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].inDamage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].isFiring": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.playerInfoList[].isOutsideBlueCircle": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.playerInfoList[].killNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].killNumBeforeDie": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].killNumByGrenade": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].killNumInVehicle": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].knockouts": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].liveState": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].location": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.playerInfoList[].location.x": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].location.y": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].location.z": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].marchDistance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].maxKillDistance": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].outsideBlueCircleTime": {
+      "types": [
+        "number"
+      ],
+      "unsafeNumberCount": 541
+    },
+    "$.playerInfoList[].picUrl": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.playerInfoList[].playerKey": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].playerName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.playerInfoList[].playerOpenId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.playerInfoList[].PoisonTotalDamage": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].rank": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].rescueTimes": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].showPicUrl": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.playerInfoList[].survivalTime": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].teamId": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].teamName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.playerInfoList[].uId": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].useBurnGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].UseEmergencyCallTime": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].useFlashGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].useFragGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].UseSelfRescueTime": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.playerInfoList[].useSmokeGrenadeNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.producer": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.sessionId": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 10
+    },
+    "$.teamBackpackInfo[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.teamBackpackInfo[].201001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201050": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201051": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201053": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].201054": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].202001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].202002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].202006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].202007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203015": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].203018": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204007": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204011": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204012": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204013": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].204014": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].205001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].205002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].205003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].205010": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].301001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].302001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].303001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].304001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].305001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].307001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].307004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].601001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].601002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].601003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].601004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].601005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].601006": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602002": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602003": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602004": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602005": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602123": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602211": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].602420": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].603001": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].6041009": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].604127": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamBackpackInfo[].MainWeapon1AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamBackpackInfo[].MainWeapon1ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamBackpackInfo[].MainWeapon2AmmoNuminClip": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamBackpackInfo[].MainWeapon2ID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamBackpackInfo[].PlayerKey": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamBackpackInfo[].TeamID": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamInfoList": {
+      "types": [
+        "array"
+      ],
+      "minArrayLength": 0,
+      "maxArrayLength": 19
+    },
+    "$.teamInfoList[]": {
+      "types": [
+        "object"
+      ]
+    },
+    "$.teamInfoList[].isShowLogo": {
+      "types": [
+        "boolean"
+      ]
+    },
+    "$.teamInfoList[].killNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamInfoList[].liveMemberNum": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamInfoList[].logoPicUrl": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.teamInfoList[].teamId": {
+      "types": [
+        "number"
+      ]
+    },
+    "$.teamInfoList[].teamName": {
+      "types": [
+        "string"
+      ]
+    },
+    "$.updatedAt": {
+      "types": [
+        "string"
+      ]
+    }
+  },
+  "routes": {
+    "/setairdropboxinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 5,
+          "phases": {
+            "2": 2,
+            "3": 1,
+            "4": 1,
+            "6": 1
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 3,
+          "phases": {
+            "2": 1,
+            "3": 1,
+            "5": 1
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.AirDropBoxInfo": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 6,
+          "maxArrayLength": 9
+        },
+        "$.AirDropBoxInfo[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.AirDropBoxInfo[].AirDropID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.AirDropBoxInfo[].count": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.AirDropBoxInfo[].itemSpesificId": {
+          "types": [
+            "number"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setcircleinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 3015,
+          "phases": {
+            "0": 162,
+            "1": 869,
+            "2": 613,
+            "3": 432,
+            "4": 326,
+            "5": 289,
+            "6": 217,
+            "7": 107
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 2230,
+          "phases": {
+            "0": 127,
+            "1": 745,
+            "2": 348,
+            "3": 298,
+            "4": 297,
+            "5": 263,
+            "6": 152
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CircleIndex": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CircleStatus": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.Counter": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.GameTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.MaxTime": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CircleIndex": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CircleStatus": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.Counter": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.GameTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.MaxTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setentertopeightafterrevive": {
+      "observations": {
+        "rondo-recall-1783635224496": {
+          "observedVersions": 1,
+          "phases": {
+            "5": 1
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.Time": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.UID": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setgameglobalinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 14,
+          "phases": {
+            "0": 1,
+            "1": 3,
+            "3": 1,
+            "4": 1,
+            "5": 3,
+            "6": 2,
+            "7": 2,
+            "null": 1
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 14,
+          "phases": {
+            "1": 3,
+            "2": 1,
+            "3": 2,
+            "4": 1,
+            "5": 2,
+            "6": 2,
+            "null": 3
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CircleArray": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 7
+        },
+        "$.CircleArray[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CircleArray[].Size": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CircleArray[].X": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CircleArray[].Y": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.PlaneStartLocX": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.PlaneStartLocY": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.PlaneStopLocX": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.PlaneStopLocY": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CircleArray": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 7
+        },
+        "$.CircleArray[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CircleArray[].Size": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CircleArray[].X": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CircleArray[].Y": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.flightPath": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.flightPath.coordinateSystem": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.flightPath.end": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.flightPath.end.x": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 28
+        },
+        "$.flightPath.end.y": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 28
+        },
+        "$.flightPath.start": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.flightPath.start.x": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 28
+        },
+        "$.flightPath.start.y": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 28
+        },
+        "$.PlaneStartLocX": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.PlaneStartLocY": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.PlaneStopLocX": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.PlaneStopLocY": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setisingame": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 3,
+          "phases": {
+            "0": 1,
+            "7": 1,
+            "null": 1
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 3,
+          "phases": {
+            "0": 1,
+            "6": 1,
+            "null": 1
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.isInGame": {
+          "types": [
+            "boolean"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setkillinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 108,
+          "phases": {
+            "1": 28,
+            "2": 40,
+            "3": 22,
+            "4": 10,
+            "5": 2,
+            "6": 4,
+            "7": 2
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 213,
+          "phases": {
+            "1": 78,
+            "2": 20,
+            "3": 35,
+            "4": 46,
+            "5": 28,
+            "6": 6
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CauserName": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CauserUID": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.CurGameTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.Distance": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.ItemID": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.ResultHealthStatus": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.VictimName": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.VictimUID": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.attacker": {
+          "types": [
+            "null"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.victim": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setobservingplayer": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 1481,
+          "phases": {
+            "0": 9,
+            "1": 468,
+            "2": 335,
+            "3": 229,
+            "4": 137,
+            "5": 198,
+            "6": 51,
+            "7": 50,
+            "null": 4
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 902,
+          "phases": {
+            "0": 5,
+            "1": 336,
+            "2": 133,
+            "3": 114,
+            "4": 139,
+            "5": 67,
+            "6": 100,
+            "null": 8
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.0": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.GunADS": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.observingPlayer": {
+          "types": [
+            "null"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setplayerassistinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 24,
+          "phases": {
+            "1": 7,
+            "2": 9,
+            "3": 6,
+            "4": 2
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 40,
+          "phases": {
+            "1": 13,
+            "2": 6,
+            "3": 5,
+            "4": 9,
+            "5": 5,
+            "6": 2
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.PlayerAssistInfo": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 2,
+          "maxArrayLength": 2
+        },
+        "$.PlayerAssistInfo[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.PlayerAssistInfo[].assistUIdArray": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 1,
+          "maxArrayLength": 3
+        },
+        "$.PlayerAssistInfo[].assistUIdArray[]": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayerAssistInfo[].killerUId": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayerAssistInfo[].victimUId": {
+          "types": [
+            "number"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setplayersaminfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 54,
+          "phases": {
+            "1": 14,
+            "2": 18,
+            "3": 12,
+            "4": 5,
+            "5": 1,
+            "6": 2,
+            "7": 2
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 47,
+          "phases": {
+            "1": 2,
+            "2": 5,
+            "3": 7,
+            "4": 15,
+            "5": 14,
+            "6": 4
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.PickUpData": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 0
+        },
+        "$.PlayerID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.RoomID": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 101
+        },
+        "$.UseData": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 0
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "unknownArrayElementPaths": [
+        "$.PickUpData",
+        "$.UseData"
+      ]
+    },
+    "/setplayerssightusageinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 1,
+          "phases": {
+            "7": 1
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 1,
+          "phases": {
+            "6": 1
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.PlayersSightUsageInfos": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 64,
+          "maxArrayLength": 71
+        },
+        "$.PlayersSightUsageInfos[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].0": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].1": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].2": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].3": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].4": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].5": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].6": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].7": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayersSightUsageInfos[].PlayerKey": {
+          "types": [
+            "number"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setplayerweapondetailinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 54,
+          "phases": {
+            "1": 14,
+            "2": 18,
+            "3": 12,
+            "4": 5,
+            "5": 1,
+            "6": 2,
+            "7": 2
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 47,
+          "phases": {
+            "1": 2,
+            "2": 5,
+            "3": 7,
+            "4": 15,
+            "5": 14,
+            "6": 4
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CustomRoomID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.PlayerID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.RoomID": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 101
+        },
+        "$.WeaponResult": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 6
+        },
+        "$.WeaponResult[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.WeaponResult[].Associations": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 5
+        },
+        "$.WeaponResult[].Associations[]": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].AvatarID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].BodyShootCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].DIYPlanID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].FireCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].FootShootCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].HandShootCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].HeadShootCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].HitDistanceArray": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 4,
+          "maxArrayLength": 5
+        },
+        "$.WeaponResult[].HitDistanceArray[]": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].KillCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].KnockNumber": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].LimbsShootCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].TotalDamage": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 161
+        },
+        "$.WeaponResult[].TotalOwnTime": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 321
+        },
+        "$.WeaponResult[].TotalUseTime": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 314
+        },
+        "$.WeaponResult[].UniqueHitCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.WeaponResult[].WeaponId": {
+          "types": [
+            "number"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setplayerweaponinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 1,
+          "phases": {
+            "7": 1
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 1,
+          "phases": {
+            "6": 1
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.TotalPlayerWeaponReport": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 0
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "unknownArrayElementPaths": [
+        "$.TotalPlayerWeaponReport"
+      ]
+    },
+    "/setreviveplayer": {
+      "observations": {
+        "rondo-recall-1783635224496": {
+          "observedVersions": 27,
+          "phases": {
+            "1": 18,
+            "2": 3,
+            "3": 5,
+            "4": 1
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.BeRevivedUID": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.Location": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.ReviverUID": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.ReviveTimes": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.Time": {
+          "types": [
+            "string"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/setteambackpackinfo": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 759,
+          "phases": {
+            "0": 41,
+            "1": 218,
+            "2": 154,
+            "3": 108,
+            "4": 73,
+            "5": 72,
+            "6": 54,
+            "7": 26,
+            "null": 13
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 584,
+          "phases": {
+            "0": 32,
+            "1": 187,
+            "2": 88,
+            "3": 75,
+            "4": 75,
+            "5": 65,
+            "6": 38,
+            "null": 24
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.TeamBackPackList": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 4
+        },
+        "$.TeamBackPackList[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.TeamBackPackList[].201001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201002": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201004": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201005": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201006": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201009": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201010": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201011": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201012": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201050": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201051": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201053": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].201054": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].202001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].202002": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].202006": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].202007": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203002": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203003": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203004": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203005": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203014": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203015": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].203018": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204004": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204005": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204006": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204007": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204011": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204012": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204013": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].204014": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].205001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].205002": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].205003": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].205010": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].301001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].302001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].303001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].304001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].305001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].307001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].307004": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].601001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].601002": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].601003": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].601004": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].601005": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].601006": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602002": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602003": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602004": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602005": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602123": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602211": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].602420": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].603001": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].6041009": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].604127": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamBackPackList[].MainWeapon1AmmoNuminClip": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamBackPackList[].MainWeapon1ID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamBackPackList[].MainWeapon2AmmoNuminClip": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamBackPackList[].MainWeapon2ID": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamBackPackList[].PlayerKey": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamBackPackList[].TeamID": {
+          "types": [
+            "number"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.backpacks": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.itemCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.totals": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.totals.byItem": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 0,
+          "maxArrayLength": 35
+        },
+        "$.totals.byItem[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.totals.byItem[].count": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.totals.byItem[].name": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.totals.itemCount": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.totals.teams": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    },
+    "/totalmessage": {
+      "observations": {
+        "normal-no-recall-1783637101011": {
+          "observedVersions": 912,
+          "phases": {
+            "0": 40,
+            "1": 248,
+            "2": 194,
+            "3": 138,
+            "4": 96,
+            "5": 78,
+            "6": 63,
+            "7": 41,
+            "null": 14
+          }
+        },
+        "rondo-recall-1783635224496": {
+          "observedVersions": 778,
+          "phases": {
+            "0": 31,
+            "1": 251,
+            "2": 113,
+            "3": 97,
+            "4": 108,
+            "5": 89,
+            "6": 48,
+            "null": 41
+          }
+        }
+      },
+      "rawPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.CurrentTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.FightingStartTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.FinishedStartTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.GameID": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.GameStartTime": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamInfoList": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 17,
+          "maxArrayLength": 19
+        },
+        "$.TeamInfoList[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.TeamInfoList[].isShowLogo": {
+          "types": [
+            "boolean"
+          ]
+        },
+        "$.TeamInfoList[].killNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamInfoList[].liveMemberNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamInfoList[].logoPicUrl": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TeamInfoList[].teamId": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TeamInfoList[].teamName": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TotalPlayerList": {
+          "types": [
+            "array"
+          ],
+          "minArrayLength": 56,
+          "maxArrayLength": 73
+        },
+        "$.TotalPlayerList[]": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.TotalPlayerList[].AIKillNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].assists": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].bHasDied": {
+          "types": [
+            "boolean"
+          ]
+        },
+        "$.TotalPlayerList[].BossKillNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].character": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TotalPlayerList[].damage": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].driveDistance": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].gotAirDropNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].headShotNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].heal": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].health": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].healthMax": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].inDamage": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].isFiring": {
+          "types": [
+            "boolean"
+          ]
+        },
+        "$.TotalPlayerList[].isOutsideBlueCircle": {
+          "types": [
+            "boolean"
+          ]
+        },
+        "$.TotalPlayerList[].killNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].killNumBeforeDie": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].killNumByGrenade": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].killNumInVehicle": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].knockouts": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].liveState": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].location": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.TotalPlayerList[].location.x": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].location.y": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].location.z": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].marchDistance": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].maxKillDistance": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].outsideBlueCircleTime": {
+          "types": [
+            "number"
+          ],
+          "unsafeNumberCount": 541
+        },
+        "$.TotalPlayerList[].picUrl": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TotalPlayerList[].playerKey": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].playerName": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TotalPlayerList[].playerOpenId": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TotalPlayerList[].PoisonTotalDamage": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].rank": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].rescueTimes": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].showPicUrl": {
+          "types": [
+            "boolean"
+          ]
+        },
+        "$.TotalPlayerList[].survivalTime": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].teamId": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].teamName": {
+          "types": [
+            "string"
+          ]
+        },
+        "$.TotalPlayerList[].uId": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].useBurnGrenadeNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].UseEmergencyCallTime": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].useFlashGrenadeNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].useFragGrenadeNum": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].UseSelfRescueTime": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.TotalPlayerList[].useSmokeGrenadeNum": {
+          "types": [
+            "number"
+          ]
+        }
+      },
+      "reducedPayloadPaths": {
+        "$": {
+          "types": [
+            "object"
+          ]
+        },
+        "$.players": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.teams": {
+          "types": [
+            "number"
+          ]
+        },
+        "$.updatedAt": {
+          "types": [
+            "string"
+          ]
+        }
+      }
+    }
+  },
+  "limitations": [
+    "The recorder polled /getobserversnapshot; it did not capture original PCOB HTTP requests.",
+    "rawRoutePayloads retains only the latest payload per route, so same-route events can be overwritten between polls.",
+    "Payloads were JSON-parsed and are not byte-faithful; synthetic rawBodyBase64 values are deterministic reserializations.",
+    "Routes, optional fields, enum values, and array element shapes absent from the observed matches remain unknown.",
+    "Request headers, query strings, original content types, exact arrival ordering, and upstream queue drops cannot be reconstructed."
+  ]
+}

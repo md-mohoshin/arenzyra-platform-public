@@ -39,6 +39,45 @@ function createBroadcastStub() {
   };
 }
 
+function createMultiMapRegistryStub() {
+  const definitions = [
+    { key: "erangel", label: "Erangel", worldSize: 816000 },
+    { key: "rondo", label: "Rondo", worldSize: 816000 },
+  ];
+
+  return {
+    getDefaultDefinition() {
+      return definitions[0];
+    },
+    resolve(mapKey) {
+      const normalized = String(mapKey || "").trim().toLowerCase();
+      return definitions.find((definition) => definition.key === normalized) || null;
+    },
+    toClientDefinition(value) {
+      return { ...value };
+    },
+  };
+}
+
+test("inactive pinned map snapshots do not inherit the active map source name", () => {
+  const engine = createMapWidgetEngine({
+    registry: createMultiMapRegistryStub(),
+    broadcast: createBroadcastStub(),
+  });
+
+  engine.syncMapContext({
+    mapKey: "erangel",
+    sourceMapName: "BALTIC_MAIN",
+    timestamp: Date.now(),
+  });
+
+  assert.equal(
+    engine.getSnapshot("erangel").mapContext.sourceMapName,
+    "BALTIC_MAIN",
+  );
+  assert.equal(engine.getSnapshot("rondo").mapContext.sourceMapName, "Rondo");
+});
+
 test("clearRuntimeState removes stale zone and player updates from the widget engine", () => {
   const engine = createMapWidgetEngine({
     registry: createRegistryStub(),
@@ -65,11 +104,24 @@ test("clearRuntimeState removes stale zone and player updates from the widget en
     ],
     timestamp: Date.now(),
   });
+  engine.applyTeamBrandingUpdate({
+    matchId: "match-a",
+    teams: [
+      {
+        teamId: "team-1",
+        slot: 1,
+        teamName: "Match A Team",
+        teamTag: "MAT",
+      },
+    ],
+    timestamp: Date.now(),
+  });
 
   const before = engine.getSnapshot("erangel");
   assert.ok(before.zone);
   assert.ok(before.players);
   assert.equal(before.players.players.length, 1);
+  assert.equal(before.teamBranding.matchId, "match-a");
 
   engine.clearRuntimeState({ reason: "finalizing" });
 
@@ -79,8 +131,93 @@ test("clearRuntimeState removes stale zone and player updates from the widget en
   assert.equal(after.players, null);
   assert.equal(after.observerAssist, null);
   assert.equal(after.productionSupport, null);
+  assert.equal(after.teamBranding, null);
   assert.equal(status.latestZoneUpdate, null);
   assert.equal(status.latestPlayerUpdate, null);
+  assert.equal(status.latestTeamBranding, null);
+});
+
+test("local runtime preserves PCOB player numbers for map controls", () => {
+  const engine = createMapWidgetEngine({
+    registry: createRegistryStub(),
+    broadcast: createBroadcastStub(),
+  });
+
+  engine.applyPlayerPositionUpdate({
+    mapKey: "erangel",
+    players: [
+      {
+        playerId: "player-1",
+        playerName: "Player One",
+        teamId: "7",
+        teamSlot: 7,
+        playerNumber: 1,
+        x: 200000,
+        y: 300000,
+      },
+      {
+        playerId: "player-2",
+        playerName: "Player Two",
+        teamId: "7",
+        teamSlot: 7,
+        playerNumber: 2,
+        x: 210000,
+        y: 310000,
+      },
+    ],
+    timestamp: Date.now(),
+  });
+
+  assert.deepEqual(
+    engine.getSnapshot("erangel").players.players.map((player) => ({
+      playerId: player.playerId,
+      teamSlot: player.teamSlot,
+      playerNumber: player.playerNumber,
+    })),
+    [
+      { playerId: "player-1", teamSlot: 7, playerNumber: 1 },
+      { playerId: "player-2", teamSlot: 7, playerNumber: 2 },
+    ],
+  );
+});
+
+test("local runtime suppresses repeated cached player snapshots with the same source timestamp", () => {
+  const engine = createMapWidgetEngine({
+    registry: createRegistryStub(),
+    broadcast: createBroadcastStub(),
+  });
+  const timestamp = Date.now();
+  const update = {
+    mapKey: "erangel",
+    players: [
+      {
+        playerId: "player-1",
+        teamId: "team-1",
+        x: 200000,
+        y: 300000,
+        health: 100,
+      },
+    ],
+    timestamp,
+    receivedAt: timestamp,
+    source: "direct-observer",
+  };
+
+  assert.ok(engine.applyPlayerPositionUpdate(update));
+  assert.equal(
+    engine.applyPlayerPositionUpdate({
+      ...update,
+      receivedAt: timestamp + 700,
+    }),
+    null,
+  );
+  assert.ok(
+    engine.applyPlayerPositionUpdate({
+      ...update,
+      players: [{ ...update.players[0], x: 201000 }],
+      receivedAt: timestamp + 700,
+    }),
+  );
 });
 
 test("local runtime stores reject older dual-source updates", () => {

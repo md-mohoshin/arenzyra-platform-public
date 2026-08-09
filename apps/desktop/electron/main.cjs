@@ -5,6 +5,12 @@ const net = require("node:net");
 const { fileURLToPath } = require("node:url");
 const { createHash, randomUUID } = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
+const {
+  createSingleFlight,
+  discoverExecutablePaths,
+  discoverRunningShadowTrackerProcesses,
+  resolveProductionExecutableCandidates,
+} = require("./shadowTrackerProcessDiscovery.cjs");
 const axios = require("axios");
 const {
   createLauncherApiClient,
@@ -19,7 +25,12 @@ const {
   createProductionModeService,
   isProductionReadyStatus,
 } = require("./productionModeService.cjs");
+const {
+  resolveDesiredObserverFallbackMapKey,
+  resolveLiveMatchMapSyncPlan,
+} = require("./liveMatchMapSync.cjs");
 const { generateShadowBranding } = require("./shadowBranding.cjs");
+const { ensureDefaultTeamLogo } = require("./defaultTeamLogo.cjs");
 const {
   REQUIRED_PUBG_MAP_KEYS,
 } = require("./map-engine/map-asset-resolver.cjs");
@@ -35,15 +46,61 @@ const {
   shouldApplyPreviousMatchSlotRecovery,
 } = require("./slotRecoveryPolicy.cjs");
 const { createSessionManager } = require("./sessionManager.cjs");
+const { createWidgetCapabilityStore } = require("./widgetCapabilityStore.cjs");
+const {
+  downloadAndSanitizeRemoteImage,
+  remoteImageReference,
+  resolveAllowedRemoteImageUrl,
+} = require("./remote-image-policy.cjs");
+const { assertTrustedLauncherIpcSender } = require("./ipc-sender-policy.cjs");
 const { createTelemetryBridge } = require("./telemetryBridge.cjs");
 const { createVisualModeService } = require("./visualModeService.cjs");
 const {
   HOTKEY_CONTROL_APPROVAL_KEY,
   createWidgetHotkeyControl,
 } = require("./widgetHotkeyControl.cjs");
+const {
+  assertPcobMapSelectionMatchesActiveMap,
+  normalizePcobMapSelection,
+  observerMatchesSelection,
+  preparePcobHotkeyInput,
+  runPcobHotkeyInput,
+  stopPcobHotkeyInput,
+} = require("./pcobObserverControl.cjs");
+const {
+  resolvePcobMapControlLifecycle,
+} = require("./pcobMapControlPolicy.cjs");
+const {
+  createObserverFeedStartGate,
+  createObserverFeedSupervisor,
+  isObserverFeedStartCancelledError,
+  sameObserverFeedConfig,
+  stopObserverProcessWithConfirmation,
+} = require("./observerFeedSupervisor.cjs");
+const {
+  getExpectedObserverRuntime,
+  matchesExpectedObserverRuntime,
+} = require("./observer-runtime-health.cjs");
+const {
+  assertConnectorInstallPlan,
+  assertVerifiedRuntimeInputs,
+  atomicReplaceVerifiedFiles,
+  createSanitizedConnectorEnv,
+  inspectWindowsProcessIntegrity,
+  isPathInside: isConnectorPathInside,
+  readVerifiedRegularFile,
+  resolveTrustedWindowsCommand,
+} = require("./connector-runtime-security.cjs");
+const {
+  isLoopbackHostname: isConnectorLoopbackHostname,
+} = require("./connector-http-access-policy.cjs");
+const {
+  createObserverRuntimeWatchdog,
+} = require("./observerRuntimeWatchdog.cjs");
 const { startWidgetsServer } = require("./widget-server/server.cjs");
 let electronModule = require("electron");
 const preloadPath = path.join(__dirname, "preload.cjs");
+const mapControlPreloadPath = path.join(__dirname, "map-control-preload.cjs");
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 const TEAM_ASSETS_DIR = "C:\\ArenzyraObserver\\assets\\teams";
 const PLAYER_ASSETS_DIR = "C:\\ArenzyraObserver\\assets\\players";
@@ -61,8 +118,6 @@ const DEFAULT_SHADOWTRACKER_EXECUTABLE = path.join(
   "Win64",
   "ShadowTrackerExtra.exe",
 );
-const OLDER_TELEMETRY_BRIDGE_SCRIPT = "C:\\PCOB 401\\ObToolsNew\\ob.js";
-const LEGACY_TELEMETRY_BRIDGE_SCRIPT = "C:\\PCOB 402\\ObToolsNew\\ob.js";
 const DEFAULT_TELEMETRY_BRIDGE_SCRIPT = path.join(
   CURRENT_PCOB_ROOT,
   "ObToolsNew",
@@ -72,7 +127,9 @@ const REPO_TELEMETRY_BRIDGE_SCRIPT = path.join(REPO_ROOT, "ob.js");
 const CONNECTOR_RESOURCE_DIR_NAME = "connectors";
 const CONNECTOR_SCRIPT_NAME = "ob.js";
 const CONNECTOR_SUPPORT_FILE_NAMES = Object.freeze([
+  "connector-http-access-policy.cjs",
   "direct-observer-transport-payload.cjs",
+  "observer-runtime-health.cjs",
   "observer-telemetry-contract.cjs",
 ]);
 const CONNECTOR_MANIFEST_NAME = "arenzyra-ob.version.json";
@@ -80,9 +137,6 @@ const CONNECTOR_BACKUP_PREFIX = "ob.arenzyra-backup";
 const OLDER_SHADOWTRACKER_PREFIX = "C:\\PCOB 401\\";
 const LEGACY_SHADOWTRACKER_PREFIX = "C:\\PCOB 402\\";
 const DEFAULT_SHADOWTRACKER_PREFIX = `${CURRENT_PCOB_ROOT}\\`;
-const OLDER_TELEMETRY_BRIDGE_PREFIX = "C:\\PCOB 401\\";
-const LEGACY_TELEMETRY_BRIDGE_PREFIX = "C:\\PCOB 402\\";
-const DEFAULT_TELEMETRY_BRIDGE_PREFIX = `${CURRENT_PCOB_ROOT}\\`;
 const PLACEHOLDER_LOGO_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axzwoAAAAASUVORK5CYII=";
 const HEARTBEAT_INTERVAL_MS = 60 * 1000;
@@ -106,12 +160,30 @@ const SHADOW_TELEMETRY_PROBE_PATHS = [
   "/getteaminfo",
 ];
 const SHADOW_TELEMETRY_PROBE_TIMEOUT_MS = 800;
-const SHADOW_TELEMETRY_READY_TIMEOUT_MS = 4_000;
+const SHADOW_TELEMETRY_READY_TIMEOUT_MS = 8_000;
 const SHADOW_TELEMETRY_READY_POLL_MS = 250;
 const SHADOW_TELEMETRY_RECOVERY_COOLDOWN_MS = 10_000;
 const SHADOW_TELEMETRY_DISCOVERY_CACHE_MS = 2_000;
 const SHADOWTRACKER_PROCESS_DISCOVERY_CACHE_MS = 3_000;
+const PCOB_OBSERVER_CONFIRM_TIMEOUT_MS = 2_500;
+const PCOB_OBSERVER_CONFIRM_POLL_MS = 400;
 const LOCAL_RUNTIME_LIFECYCLE_POLL_INTERVAL_MS = 2_000;
+const LIVE_MATCH_MAP_REFRESH_INTERVAL_MS = 5_000;
+const OBSERVER_FEED_RESTART_DELAYS_MS = Object.freeze([
+  1_000, 2_000, 5_000, 10_000, 30_000,
+]);
+const OBSERVER_FEED_RESTART_WINDOW_MS = 2 * 60 * 1_000;
+const OBSERVER_FEED_STABLE_RUN_MS = 60 * 1_000;
+const OBSERVER_FEED_HEALTH_POLL_INTERVAL_MS = 2_000;
+const OBSERVER_FEED_HEALTH_FAILURE_THRESHOLD = 3;
+const OBSERVER_FEED_GRACEFUL_REQUEST_TIMEOUT_MS = 500;
+const OBSERVER_MAP_FALLBACK_RETRY_DELAYS_MS = Object.freeze([
+  250, 1_000, 5_000, 15_000,
+]);
+const OBSERVER_FEED_STOP_GRACE_TIMEOUT_MS = 1_250;
+const OBSERVER_FEED_STOP_FORCE_TIMEOUT_MS = 1_750;
+const OBSERVER_FEED_STOP_IDENTITY_TIMEOUT_MS = 1_000;
+const OBSERVER_FEED_STOP_IDENTITY_POLL_MS = 100;
 const PLAYER_PHOTO_CACHE_REFRESH_INTERVAL_MS = 15_000;
 const OBSERVER_COMMAND_PATH_PREFIXES = Object.freeze([
   "/debug/operator/",
@@ -405,6 +477,8 @@ const APP_USER_MODEL_ID = "com.arenzyra.observerlauncher";
 let telemetryBridgeProcess = null;
 let telemetryBridgeScriptPath = "";
 let telemetrySourceProcessConfig = null;
+let telemetrySourceProcessGeneration = 0;
+const telemetrySourceStopOperations = new WeakMap();
 let lastConnectorSetupStatus = null;
 let lastShadowTelemetryRecoveryAttemptAt = 0;
 let shadowTelemetryBaseUrl = DEFAULT_SHADOW_TELEMETRY_BASE_URL;
@@ -416,8 +490,26 @@ let shadowTrackerProcessDiscoveryCache = {
   checkedAt: 0,
   entries: [],
 };
-const telemetrySourceStoppingPids = new Set();
+const shadowTrackerProcessDiscoverySingleFlight = createSingleFlight();
+const telemetrySourceStoppingProcesses = new WeakSet();
 let observerFeedState = createDefaultObserverFeedState();
+const observerFeedStartGate = createObserverFeedStartGate();
+const observerFeedSupervisor = createObserverFeedSupervisor({
+  restartDelaysMs: OBSERVER_FEED_RESTART_DELAYS_MS,
+  maxRestartAttempts: OBSERVER_FEED_RESTART_DELAYS_MS.length,
+  restartWindowMs: OBSERVER_FEED_RESTART_WINDOW_MS,
+  stableRunMs: OBSERVER_FEED_STABLE_RUN_MS,
+  canRestart: validateObserverFeedRecoveryAuthority,
+  restart: restartObserverFeedFromSupervisor,
+  onStatusChange: synchronizeObserverFeedRecoveryState,
+});
+const observerFeedHealthWatchdog = createObserverRuntimeWatchdog({
+  intervalMs: OBSERVER_FEED_HEALTH_POLL_INTERVAL_MS,
+  failureThreshold: OBSERVER_FEED_HEALTH_FAILURE_THRESHOLD,
+  probe: probeOwnedObserverRuntimeHealth,
+  onUnhealthy: recycleUnhealthyObserverRuntime,
+  onStatusChange: synchronizeObserverFeedHealthState,
+});
 let widgetDirectObserverPollingAllowed = false;
 let localRuntimeLifecyclePollTimer = null;
 let localRuntimeLifecyclePollInFlight = false;
@@ -430,10 +522,70 @@ let windowLoaded = false;
 let commentatorDeskWindow = null;
 let commentatorDeskWindowClickThrough = false;
 let commentatorDeskWindowUrl = null;
+
+function getMainWindowWebContents() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return null;
+  }
+  return mainWindow.webContents;
+}
+
+function assertLauncherIpcSender(event) {
+  assertTrustedLauncherIpcSender(event, {
+    getMainWebContents: getMainWindowWebContents,
+    rendererFilePath: path.join(__dirname, "../dist/index.html"),
+    isDev,
+    allowedDevOrigins: [`http://localhost:${devPort}`],
+  });
+}
+
+function registerTrustedLauncherHandle(channel, handler) {
+  if (!String(channel || "").startsWith("launcher:")) {
+    throw new Error(
+      "Trusted launcher IPC registrations require launcher:* channels.",
+    );
+  }
+  ipcMain.handle(channel, (event, ...args) => {
+    assertLauncherIpcSender(event);
+    return handler(event, ...args);
+  });
+}
+
+function registerTrustedLauncherOn(channel, handler) {
+  if (!String(channel || "").startsWith("launcher:")) {
+    throw new Error(
+      "Trusted launcher IPC registrations require launcher:* channels.",
+    );
+  }
+  ipcMain.on(channel, (event, ...args) => {
+    try {
+      assertLauncherIpcSender(event);
+    } catch (error) {
+      logWarn("[ipc] rejected untrusted synchronous sender", {
+        channel,
+        code: error?.code || "ARENZYRA_IPC_SENDER_REJECTED",
+      });
+      event.returnValue = false;
+      return;
+    }
+    handler(event, ...args);
+  });
+}
+let mapControlWindow = null;
+let mapControlWindowUrl = null;
+let pcobMapControlBusy = false;
+let pcobMapControlLastSelection = null;
+let pcobMapControlConfirmationController = null;
 let widgetServer = null;
+const widgetAccessToken = `${randomUUID()}${randomUUID()}`.replace(/-/g, "");
+const connectorAccessToken = `${randomUUID()}${randomUUID()}`.replace(/-/g, "");
+if (connectorAccessToken === widgetAccessToken) {
+  throw new Error("Connector and widget capabilities must be distinct.");
+}
 let pendingWidgetTeamBranding = null;
 let cachedAiCasterAccess = null;
 let cachedCommentatorDeskAccess = null;
+let cachedOrganizationWidgetBranding = null;
 const playerPhotoCacheRefreshState = {
   matchId: null,
   lastStartedAt: 0,
@@ -444,13 +596,33 @@ let startupLicenseStatus = null;
 let lastSessionActivityPersistAt = 0;
 let matchFlowState = createDefaultMatchFlowState();
 let productionModeState = createDefaultProductionModeState();
+let liveMatchMapState = {
+  matchId: null,
+  mapKey: null,
+  updatedAt: null,
+};
+let liveMatchMapRefreshPromise = null;
+let lastLiveMatchMapRefreshAt = 0;
+let observerMapFallbackSyncDesired = null;
+let observerMapFallbackSyncPromise = null;
+let observerMapFallbackInFlightIdentity = null;
+let observerMapFallbackSyncEpoch = 0;
+let observerMapFallbackLastAppliedIdentity = null;
+let observerMapFallbackLastWarningAt = 0;
+let observerMapFallbackRetryTimer = null;
+let observerMapFallbackRetryAttempt = 0;
+let observerMapFallbackRetryTarget = null;
 const telemetryBridge = createTelemetryBridge({
   logger: logger.child("telemetry"),
   log,
+  getShadowAccessToken: () =>
+    String(
+      telemetrySourceProcessConfig?.localControlToken || connectorAccessToken,
+    ).trim(),
   refreshAuth: refreshTelemetryAuth,
   onUnauthorized: handleTelemetryUnauthorized,
   onStopped: (details = {}) => {
-    stopObserverFeedSilently(details.reason || "stopped");
+    void stopObserverFeedSilently(details.reason || "stopped");
   },
   onSnapshot: (snapshot) => {
     try {
@@ -464,6 +636,10 @@ const telemetryBridge = createTelemetryBridge({
   },
 });
 const sessionManager = createSessionManager({
+  getUserDataPath: () => app.getPath("userData"),
+  safeStorage,
+});
+const widgetCapabilityStore = createWidgetCapabilityStore({
   getUserDataPath: () => app.getPath("userData"),
   safeStorage,
 });
@@ -491,12 +667,21 @@ const visualModeService = createVisualModeService({
   desktopCapturer,
   logger: logger.child("visual"),
   getCaptureDir: () => path.join(app.getPath("userData"), "visual-captures"),
+  orphanRetentionMs:
+    Number(process.env.ARENZYRA_VISUAL_CAPTURE_RETENTION_HOURS) *
+    60 *
+    60 *
+    1000,
   getSettings: () => configManager.getSettings(),
   setSettings: (settings) => {
     configManager.setSettings(settings);
     broadcastConfigUpdate("visual-mode");
   },
+  onAutoReviewCandidate: (item) => queueAutomatedVisualOcrPreview(item),
 });
+const visualOcrInFlightItemIds = new Set();
+let automatedVisualOcrRunning = false;
+let queuedAutomatedVisualOcrId = null;
 const healthService = createHealthService({
   logger: logger.child("health"),
   getConfig: () => getLauncherConfigView(),
@@ -530,8 +715,20 @@ const productionModeService = createProductionModeService({
       ),
     };
   },
-  resolveShadowExecutable: (shadowTrackerPath) =>
-    resolveShadowTrackerExecutable(shadowTrackerPath, { preferRunning: true }),
+  resolveShadowExecutable: async (shadowTrackerPath) => {
+    const resolvedShadowTrackerPath =
+      await resolveShadowTrackerExecutableForProduction(shadowTrackerPath, {
+        preferRunning: true,
+        forceProcessScan: true,
+      });
+    if (resolvedShadowTrackerPath) {
+      persistDetectedShadowTrackerPath(
+        resolvedShadowTrackerPath,
+        "production-mode",
+      );
+    }
+    return resolvedShadowTrackerPath;
+  },
   ensureConnectorInstalled: (shadowTrackerPath) =>
     ensureManagedTelemetryBridgeInstalled({ shadowTrackerPath }),
   getTelemetryStatus: () => telemetryBridge.getStatus(),
@@ -610,7 +807,7 @@ const bootstrapService = createBootstrapService({
           stopLauncherHeartbeat();
           launcherAccessState = null;
           telemetryBridge.stop("stopped");
-          stopObserverFeedSilently("stopped");
+          await stopObserverFeedSilently("stopped");
           visualModeService.stop("stopped");
         }
 
@@ -747,7 +944,9 @@ const bootstrapService = createBootstrapService({
     {
       name: "START_WIDGET_SERVER",
       run: async () => {
-        const widgetStatus = await ensureWidgetServerReady();
+        const widgetStatus = await ensureWidgetServerReady({
+          refreshAccess: true,
+        });
         return {
           meta: {
             running: widgetStatus.running,
@@ -843,6 +1042,10 @@ function getLauncherConfigView() {
 
 function shouldKeepSignedIn() {
   return configManager.getSettings()?.keepSignedIn !== false;
+}
+
+function isWidgetLanEnabled() {
+  return configManager.getSettings()?.widgetLanEnabled === true;
 }
 
 function broadcastConfigUpdate(source = "system") {
@@ -983,7 +1186,7 @@ const apiClient = createLauncherApiClient({
       )}`,
     );
   },
-  onUnauthorized: (details = {}) => {
+  onUnauthorized: async (details = {}) => {
     if (shouldPreserveSessionAfterUnauthorized(details)) {
       logWarn("[auth] ignoring stale unauthorized after session refresh", {
         path: details?.path || null,
@@ -996,7 +1199,7 @@ const apiClient = createLauncherApiClient({
     launcherAccessState = null;
     startupLicenseStatus = null;
     telemetryBridge.stop("stopped");
-    stopObserverFeedSilently("stopped");
+    await stopObserverFeedSilently("stopped");
     visualModeService.stop("stopped");
     lastSessionActivityPersistAt = 0;
     sessionManager.clearSession();
@@ -1751,16 +1954,51 @@ function persistUserConfiguredApiBase(apiBaseHint, source) {
   return normalizeBaseUrl();
 }
 
-function setLauncherConfigValue(key, value, source = "renderer") {
+async function setLauncherConfigValue(key, value, source = "renderer") {
+  const previousWidgetLanEnabled = isWidgetLanEnabled();
   const result = configManager.setConfigValue(key, value, { source });
+  let configView = getLauncherConfigView();
   if (result.changed) {
     log("[config] renderer config updated", {
       key,
       source,
     });
-    syncRuntimeConfig(source);
+    configView = syncRuntimeConfig(source);
   }
-  return getLauncherConfigView();
+
+  const nextWidgetLanEnabled = isWidgetLanEnabled();
+  if (result.changed && previousWidgetLanEnabled !== nextWidgetLanEnabled) {
+    try {
+      await restartWidgetServerForRuntimePolicyChange("widget-lan-config");
+    } catch (error) {
+      logWarn(
+        "[widget-server] LAN setting restart failed; restoring previous setting",
+        {
+          error: error instanceof Error ? error.message : String(error),
+          previousWidgetLanEnabled,
+          nextWidgetLanEnabled,
+        },
+      );
+      try {
+        configManager.setConfigValue(
+          "settings",
+          { widgetLanEnabled: previousWidgetLanEnabled },
+          { source: `${source}:rollback` },
+        );
+        configView = syncRuntimeConfig(`${source}:rollback`);
+        await restartWidgetServerForRuntimePolicyChange("widget-lan-rollback");
+      } catch (rollbackError) {
+        logWarn("[widget-server] LAN setting rollback failed", {
+          error:
+            rollbackError instanceof Error
+              ? rollbackError.message
+              : String(rollbackError),
+        });
+      }
+      throw error;
+    }
+  }
+  return configView;
 }
 
 function normalizeHttpUrl(value) {
@@ -1814,12 +2052,20 @@ const EXPLICIT_WIDGET_APPROVAL_KEYS = new Set([
   COMMENTATOR_DESK_WIDGET_KEY,
   HOTKEY_CONTROL_APPROVAL_KEY,
   "map",
-  "next-zone-update-kinetic-hud",
+]);
+
+const INCLUDED_WIDGET_KEYS = new Set([
+  "next-zone-update",
   "next-zone-update-pro-sidebar",
+  "next-zone-update-kinetic-hud",
+  "next-zone-update-blade",
+  "next-zone-update-radar-sweep",
+  "next-zone-update-fold-down",
 ]);
 
 function isWidgetApprovedForCatalog(approval, enforced, widgetKey) {
   return (
+    INCLUDED_WIDGET_KEYS.has(widgetKey) ||
     approval?.isApproved === true ||
     (!approval &&
       enforced === false &&
@@ -1934,17 +2180,12 @@ async function getWidgetCatalogState(payload) {
 
   let accessList = null;
   try {
-    const response = await axios.get(
-      `${session.apiBase}/api/widgets/access-list`,
-      {
-        params: { organizationId },
-        timeout: 10000,
-        headers: {
-          Accept: "application/json",
-        },
-      },
-    );
-    accessList = response?.data ?? null;
+    accessList = await apiClient.getWidgetAccessList({
+      apiBase: session.apiBase,
+      token: session.token || session.accessToken,
+      refreshToken: session.refreshToken,
+      organizationId,
+    });
   } catch (error) {
     const message = getWidgetCatalogErrorMessage(
       error,
@@ -1957,6 +2198,29 @@ async function getWidgetCatalogState(payload) {
   const organizationSlug =
     asOptionalString(accessList?.organizationSlug) ||
     asOptionalString(accessList?.organization?.slug);
+  // The launcher can switch organization context while the local widget
+  // server stays alive. Refresh before publishing the new route metadata so
+  // raw OBS pages never keep the previous organization's palette.
+  await refreshOrganizationWidgetBranding(session, {
+    throwOnError: false,
+    organizationId,
+  });
+  const accessListBranding =
+    accessList?.organization?.branding &&
+    typeof accessList.organization.branding === "object"
+      ? accessList.organization.branding
+      : (cachedOrganizationWidgetBranding?.branding ?? null);
+  publishOrganizationWidgetBranding({
+    organizationId,
+    organizationSlug,
+    organization: {
+      id: organizationId,
+      slug: organizationSlug,
+      name: asOptionalString(accessList?.organization?.name),
+      branding: accessListBranding,
+    },
+    branding: accessListBranding,
+  });
   const enforced = accessList?.enforced === true;
   const approvals = new Map(
     (Array.isArray(accessList?.approvals) ? accessList.approvals : [])
@@ -1987,6 +2251,13 @@ async function getWidgetCatalogState(payload) {
           widgetKey,
           widgetInstanceId: null,
           widgetInstanceKey: null,
+          capabilityPrefix: null,
+          capabilityStatus: "MISSING",
+          capabilityGeneration: null,
+          capabilityIssuedAt: null,
+          capabilityExpiresAt: null,
+          capabilityRevokedAt: null,
+          canRotate: false,
           organizationSlug: null,
           matchId: null,
           tournamentId: null,
@@ -2035,6 +2306,13 @@ async function getWidgetCatalogState(payload) {
             widgetKey,
             widgetInstanceId: null,
             widgetInstanceKey: null,
+            capabilityPrefix: null,
+            capabilityStatus: "MISSING",
+            capabilityGeneration: null,
+            capabilityIssuedAt: null,
+            capabilityExpiresAt: null,
+            capabilityRevokedAt: null,
+            canRotate: false,
             organizationSlug,
             matchId: null,
             tournamentId: null,
@@ -2046,51 +2324,84 @@ async function getWidgetCatalogState(payload) {
 
       try {
         const resolveWidgetInstance = async () => {
-          const response = await axios.get(
-            `${session.apiBase}/widgets/${encodeURIComponent(organizationSlug)}/${encodeURIComponent(
-              widgetKey,
-            )}`,
-            {
-              timeout: 10000,
-              headers: {
-                Accept: "application/json",
-              },
-            },
-          );
-          return response?.data ?? null;
+          return apiClient.getWidgetInstance({
+            apiBase: session.apiBase,
+            token: session.token || session.accessToken,
+            refreshToken: session.refreshToken,
+            organizationSlug,
+            widgetKey,
+          });
         };
 
         let resolved = await resolveWidgetInstance();
-        let widgetInstanceKey = asOptionalString(resolved?.key);
         let widgetInstanceId = asOptionalString(resolved?.id);
+        let capabilityStatus =
+          asOptionalString(resolved?.capabilityStatus) ||
+          (widgetInstanceId ? "INACTIVE" : "MISSING");
+        let capabilityGeneration =
+          Number.isSafeInteger(Number(resolved?.capabilityGeneration)) &&
+          Number(resolved?.capabilityGeneration) >= 1
+            ? Number(resolved.capabilityGeneration)
+            : null;
+        let widgetInstanceKey = null;
         let unresolvedReason = null;
+        if (
+          capabilityStatus === "ACTIVE" &&
+          widgetInstanceId &&
+          capabilityGeneration
+        ) {
+          widgetInstanceKey = widgetCapabilityStore.get({
+            organizationId,
+            widgetKey,
+            instanceId: widgetInstanceId,
+            generation: capabilityGeneration,
+          });
+        } else if (capabilityStatus !== "MISSING") {
+          widgetCapabilityStore.remove({ organizationId, widgetKey });
+        }
 
-        if (approved && !widgetInstanceKey) {
+        if (approved && capabilityStatus === "MISSING") {
           try {
-            const ensureResponse = await axios.post(
-              `${session.apiBase}/api/widgets/instances`,
-              {
+            const ensured = await apiClient.ensureWidgetInstance({
+              apiBase: session.apiBase,
+              token: session.token || session.accessToken,
+              refreshToken: session.refreshToken,
+              organizationId,
+              widgetKey,
+            });
+
+            widgetInstanceId =
+              asOptionalString(ensured?.id) ?? widgetInstanceId;
+            capabilityStatus =
+              asOptionalString(ensured?.capabilityStatus) || capabilityStatus;
+            capabilityGeneration =
+              Number.isSafeInteger(Number(ensured?.capabilityGeneration)) &&
+              Number(ensured?.capabilityGeneration) >= 1
+                ? Number(ensured.capabilityGeneration)
+                : capabilityGeneration;
+            const issuedCredential = asOptionalString(ensured?.credential);
+            resolved = { ...resolved, ...ensured };
+
+            if (issuedCredential && widgetInstanceId && capabilityGeneration) {
+              const storage = widgetCapabilityStore.put({
                 organizationId,
                 widgetKey,
-              },
-              {
-                timeout: 10000,
-                headers: {
-                  Accept: "application/json",
-                },
-              },
-            );
-
-            widgetInstanceKey = asOptionalString(ensureResponse?.data?.key);
-            widgetInstanceId =
-              asOptionalString(ensureResponse?.data?.id) ?? widgetInstanceId;
-
-            if (widgetInstanceKey) {
-              resolved = await resolveWidgetInstance();
-              widgetInstanceKey =
-                asOptionalString(resolved?.key) ?? widgetInstanceKey;
-              widgetInstanceId =
-                asOptionalString(resolved?.id) ?? widgetInstanceId;
+                instanceId: widgetInstanceId,
+                generation: capabilityGeneration,
+                credential: issuedCredential,
+              });
+              widgetInstanceKey = issuedCredential;
+              if (!storage.persisted) {
+                unresolvedReason =
+                  "Credential is available for this session only because OS encryption is unavailable.";
+              }
+            } else if (widgetInstanceId && capabilityGeneration) {
+              widgetInstanceKey = widgetCapabilityStore.get({
+                organizationId,
+                widgetKey,
+                instanceId: widgetInstanceId,
+                generation: capabilityGeneration,
+              });
             }
           } catch (ensureError) {
             unresolvedReason = getWidgetCatalogErrorMessage(
@@ -2110,6 +2421,19 @@ async function getWidgetCatalogState(payload) {
             widgetKey,
             widgetInstanceId,
             widgetInstanceKey,
+            capabilityPrefix: asOptionalString(resolved?.capabilityPrefix),
+            capabilityStatus,
+            capabilityGeneration,
+            capabilityIssuedAt: asOptionalString(resolved?.capabilityIssuedAt),
+            capabilityExpiresAt: asOptionalString(
+              resolved?.capabilityExpiresAt,
+            ),
+            capabilityRevokedAt: asOptionalString(
+              resolved?.capabilityRevokedAt,
+            ),
+            canRotate: Boolean(
+              approved && widgetInstanceId && capabilityGeneration,
+            ),
             organizationSlug:
               asOptionalString(resolved?.organization?.slug) ||
               organizationSlug,
@@ -2117,8 +2441,13 @@ async function getWidgetCatalogState(payload) {
             tournamentId: asOptionalString(resolved?.tournament?.id),
             approved,
             message: widgetInstanceKey
-              ? null
-              : unresolvedReason || fallbackMessage,
+              ? unresolvedReason
+              : unresolvedReason ||
+                (capabilityStatus === "ACTIVE"
+                  ? "This credential was issued elsewhere. Existing OBS URLs still work; rotate explicitly to connect this launcher."
+                  : capabilityStatus === "MISSING"
+                    ? fallbackMessage
+                    : `Widget capability is ${capabilityStatus.toLowerCase()}. Rotate explicitly to issue a replacement.`),
           },
         ];
       } catch (error) {
@@ -2138,6 +2467,13 @@ async function getWidgetCatalogState(payload) {
             widgetKey,
             widgetInstanceId: null,
             widgetInstanceKey: null,
+            capabilityPrefix: null,
+            capabilityStatus: "MISSING",
+            capabilityGeneration: null,
+            capabilityIssuedAt: null,
+            capabilityExpiresAt: null,
+            capabilityRevokedAt: null,
+            canRotate: false,
             organizationSlug,
             matchId: null,
             tournamentId: null,
@@ -2174,6 +2510,93 @@ async function getWidgetCatalogState(payload) {
   };
 }
 
+async function rotateWidgetCapability(payload) {
+  assertLauncherAccess();
+  const session = getStoredSession();
+  const organizationId =
+    asOptionalString(payload?.organizationId) ||
+    asOptionalString(session?.organization?.id) ||
+    asOptionalString(session?.user?.organizationId);
+  const widgetKey = asOptionalString(payload?.widgetKey);
+  const requestedInstanceId = asOptionalString(payload?.instanceId);
+  const requestedGeneration = Number(payload?.expectedGeneration);
+  if (
+    !organizationId ||
+    !widgetKey ||
+    !requestedInstanceId ||
+    !Number.isSafeInteger(requestedGeneration) ||
+    requestedGeneration < 1
+  ) {
+    throw new Error(
+      "Widget capability metadata is incomplete. Refresh and try again.",
+    );
+  }
+
+  const currentCatalog = await getWidgetCatalogState({
+    organizationId,
+    widgetKeys: [widgetKey],
+  });
+  const current = currentCatalog?.items?.[widgetKey];
+  if (
+    current?.widgetInstanceId !== requestedInstanceId ||
+    current?.capabilityGeneration !== requestedGeneration
+  ) {
+    throw new Error("Widget capability changed. Refresh before rotating.");
+  }
+
+  const rotated = await apiClient.rotateWidgetCapability({
+    apiBase: session.apiBase,
+    token: session.token || session.accessToken,
+    refreshToken: session.refreshToken,
+    instanceId: requestedInstanceId,
+    expectedGeneration: requestedGeneration,
+    reason: "Desktop operator explicitly rotated widget capability",
+  });
+  const credential = asOptionalString(rotated?.credential);
+  const instanceId = asOptionalString(rotated?.id);
+  const generation = Number(rotated?.capabilityGeneration);
+  if (
+    !credential ||
+    !instanceId ||
+    !Number.isSafeInteger(generation) ||
+    generation < 1
+  ) {
+    throw new Error("The API did not return the newly issued credential.");
+  }
+
+  let storageWarning = null;
+  try {
+    const storage = widgetCapabilityStore.put({
+      organizationId,
+      widgetKey,
+      instanceId,
+      generation,
+      credential,
+    });
+    if (!storage.persisted) {
+      storageWarning =
+        "Credential is available for this session only because OS encryption is unavailable.";
+    }
+  } catch {
+    storageWarning =
+      "Credential is available for this session only; secure persistence was refused.";
+  }
+
+  const catalog = await getWidgetCatalogState({
+    organizationId,
+    widgetKeys: Array.isArray(payload?.widgetKeys)
+      ? payload.widgetKeys
+      : [widgetKey],
+    accessOnlyWidgetKeys: Array.isArray(payload?.accessOnlyWidgetKeys)
+      ? payload.accessOnlyWidgetKeys
+      : [],
+  });
+  if (storageWarning && catalog?.items?.[widgetKey]) {
+    catalog.items[widgetKey].message = storageWarning;
+  }
+  return catalog;
+}
+
 function getWidgetServerStatusView() {
   const fallbackPort = Number(process.env.ARENZYRA_WIDGET_PORT || 5510);
   const resolvedFallbackPort = Number.isInteger(fallbackPort)
@@ -2204,6 +2627,18 @@ function getWidgetServerStatusView() {
     status?.networkBaseUrl && String(status.networkBaseUrl).trim()
       ? String(status.networkBaseUrl)
       : null;
+  const authorizeBaseUrl = (baseUrl) => {
+    if (!baseUrl) {
+      return null;
+    }
+    const url = new URL(baseUrl);
+    url.searchParams.set("access_token", widgetAccessToken);
+    return url.toString();
+  };
+  const authorizedLocalBaseUrl =
+    status?.authorizedLocalBaseUrl || authorizeBaseUrl(localBaseUrl);
+  const authorizedNetworkBaseUrl =
+    status?.authorizedNetworkBaseUrl || authorizeBaseUrl(networkBaseUrl);
 
   return {
     running: status?.running === true,
@@ -2219,62 +2654,157 @@ function getWidgetServerStatusView() {
     baseUrl: localBaseUrl,
     localBaseUrl,
     networkBaseUrl,
+    authorizedBaseUrl: authorizedLocalBaseUrl,
+    authorizedLocalBaseUrl,
+    authorizedNetworkBaseUrl,
+    accessControlled: true,
   };
 }
 
-async function ensureWidgetServerReady() {
+async function ensureWidgetServerReady(options = {}) {
   const isFirstStart = !widgetServer;
   if (!widgetServer) {
-    widgetServer = startWidgetsServer({
-      port: Number(process.env.ARENZYRA_WIDGET_PORT || 5510),
-      host: resolveWidgetServerHost({
-        isPackaged: app.isPackaged,
-        env: process.env,
-      }),
-      enableDebugRoutes: isDev,
-      enableOperatorRoutes: shouldEnableWidgetMutationRoutes({
-        isPackaged: app.isPackaged,
-        env: process.env,
-      }),
-      teamAssetsRoot: TEAM_ASSETS_DIR,
-      playerAssetsRoot: PLAYER_ASSETS_DIR,
-      resolveApiBase: () => normalizeBaseUrl(),
-      getObserverBaseUrl: () => getShadowTelemetryBaseUrl(),
-      shouldPollDirectObserver: () => shouldPollDirectObserverForWidgets(),
-      getForcedMapKey: () => productionModeState.selectedMapKey,
-      getCurrentMatchContext: () => getCurrentWidgetMatchContext(),
-      requestPlayerPhotoRefresh: (matchId) =>
-        requestPlayerPhotoCacheRefresh(matchId),
-      logger: logger.child("widgets"),
-    });
+    try {
+      widgetServer = startWidgetsServer({
+        port: Number(process.env.ARENZYRA_WIDGET_PORT || 5510),
+        host: resolveWidgetServerHost({
+          isPackaged: app.isPackaged,
+          env: process.env,
+          allowNetwork: isWidgetLanEnabled(),
+        }),
+        capabilityToken: widgetAccessToken,
+        enableDebugRoutes: isDev,
+        enableOperatorRoutes: shouldEnableWidgetMutationRoutes({
+          isPackaged: app.isPackaged,
+          env: process.env,
+        }),
+        teamAssetsRoot: TEAM_ASSETS_DIR,
+        playerAssetsRoot: PLAYER_ASSETS_DIR,
+        resolveApiBase: () => normalizeBaseUrl(),
+        resolveWidgetContext: ({ instanceKey }) => {
+          const session = getStoredSession();
+          return apiClient.resolveWidgetContext({
+            apiBase: session.apiBase,
+            token: session.token || session.accessToken,
+            refreshToken: session.refreshToken,
+            instanceKey,
+          });
+        },
+        getObserverBaseUrl: () => getShadowTelemetryBaseUrl(),
+        getObserverAccessToken: () =>
+          String(
+            telemetrySourceProcessConfig?.localControlToken ||
+              connectorAccessToken,
+          ).trim(),
+        shouldPollDirectObserver: () => shouldPollDirectObserverForWidgets(),
+        shouldPollDirectObserverCircle: () =>
+          shouldPollDirectObserverCircleForWidgets(),
+        getForcedMapKey: () => getDesiredObserverFallbackMapKey(),
+        getCurrentMatchContext: () => getCurrentWidgetMatchContext(),
+        requestPlayerPhotoRefresh: (matchId) =>
+          requestPlayerPhotoCacheRefresh(matchId),
+        organizationBranding: cachedOrganizationWidgetBranding,
+        logger: logger.child("widgets"),
+      });
+    } catch (error) {
+      widgetServer = null;
+      throw error;
+    }
   }
 
   if (typeof widgetServer?.whenReady === "function") {
-    await widgetServer.whenReady();
+    try {
+      await widgetServer.whenReady();
+    } catch (error) {
+      widgetServer = null;
+      throw error;
+    }
   }
   if (pendingWidgetTeamBranding) {
     publishTeamBrandingToWidgetServer(pendingWidgetTeamBranding);
   }
-  if (isFirstStart) {
-    await refreshAiCasterAccess(getStoredSession(), {
-      throwOnError: false,
-    });
-    await refreshCommentatorDeskAccess(getStoredSession(), {
-      throwOnError: false,
-    });
-    await refreshWidgetHotkeyControlApproval(getStoredSession(), {
-      throwOnError: false,
-    });
+  if (isFirstStart || options.refreshAccess === true) {
+    let accessSession = null;
+    try {
+      accessSession = getStoredSession();
+    } catch (_) {
+      accessSession = null;
+    }
+    if (accessSession) {
+      await refreshOrganizationWidgetBranding(accessSession, {
+        throwOnError: false,
+      });
+      await refreshAiCasterAccess(accessSession, {
+        throwOnError: false,
+      });
+      await refreshCommentatorDeskAccess(accessSession, {
+        throwOnError: false,
+      });
+      await refreshWidgetHotkeyControlApproval(accessSession, {
+        throwOnError: false,
+      });
+    }
     widgetHotkeyControl.sync("widget-server-ready");
   }
 
   return getWidgetServerStatusView();
 }
 
-function buildPinnedCommentatorDeskUrl(widgetStatus, payload = {}) {
+async function restartWidgetServerForRuntimePolicyChange(reason = "config") {
+  const previousServer = widgetServer;
+  if (previousServer) {
+    log("[widget-server] restarting for runtime policy change", {
+      reason,
+      lanEnabled: isWidgetLanEnabled(),
+    });
+    try {
+      await previousServer.stop();
+    } finally {
+      if (widgetServer === previousServer) {
+        widgetServer = null;
+      }
+    }
+  }
+
+  return ensureWidgetServerReady({ refreshAccess: true });
+}
+
+async function startWidgetServerForObsRecovery(reason = "startup") {
+  try {
+    const widgetStatus = await ensureWidgetServerReady({
+      refreshAccess: false,
+    });
+    log("[widget-server] early startup ready", {
+      reason,
+      running: widgetStatus.running,
+      port: widgetStatus.port,
+      baseUrl: widgetStatus.baseUrl,
+    });
+    return widgetStatus;
+  } catch (error) {
+    logWarn("[widget-server] early startup failed", {
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return getWidgetServerStatusView();
+  }
+}
+
+function buildAuthorizedWidgetUrl(widgetStatus, pathname) {
   const baseUrl =
-    widgetStatus?.localBaseUrl || widgetStatus?.baseUrl || "http://localhost:5510";
-  const url = new URL("/obs/commentator-desk", `${baseUrl}/`);
+    widgetStatus?.authorizedLocalBaseUrl ||
+    widgetStatus?.authorizedBaseUrl ||
+    widgetStatus?.localBaseUrl ||
+    widgetStatus?.baseUrl ||
+    "http://localhost:5510";
+  const source = new URL(baseUrl);
+  const url = new URL(pathname, source.origin);
+  source.searchParams.forEach((value, key) => url.searchParams.set(key, value));
+  return url;
+}
+
+function buildPinnedCommentatorDeskUrl(widgetStatus, payload = {}) {
+  const url = buildAuthorizedWidgetUrl(widgetStatus, "/obs/commentator-desk");
   url.searchParams.set("transparent", "1");
   url.searchParams.set("pinned", "1");
 
@@ -2367,10 +2897,10 @@ async function openPinnedCommentatorDeskWindow(payload = {}) {
 
   if (!win) {
     win = new BrowserWindow({
-      width: 1260,
-      height: 720,
-      minWidth: 860,
-      minHeight: 480,
+      width: 520,
+      height: 650,
+      minWidth: 380,
+      minHeight: 420,
       frame: false,
       transparent: true,
       backgroundColor: "#00000000",
@@ -2420,14 +2950,11 @@ async function openPinnedCommentatorDeskWindow(payload = {}) {
       logWarn("[commentator-desk-window] blocked navigation", { url });
     });
 
-    win.webContents.on(
-      "before-input-event",
-      (_event, input) => {
-        if (input?.key === "Escape" && input.type === "keyDown") {
-          win.close();
-        }
-      },
-    );
+    win.webContents.on("before-input-event", (_event, input) => {
+      if (input?.key === "Escape" && input.type === "keyDown") {
+        win.close();
+      }
+    });
 
     win.on("closed", () => {
       if (commentatorDeskWindow === win) {
@@ -2466,6 +2993,564 @@ function closePinnedCommentatorDeskWindow() {
   commentatorDeskWindow = null;
   commentatorDeskWindowUrl = null;
   return getPinnedCommentatorDeskWindowStatus();
+}
+
+function buildPinnedMapControlUrl(widgetStatus, payload = {}) {
+  const url = buildAuthorizedWidgetUrl(widgetStatus, "/obs/map");
+  url.searchParams.set("control", "1");
+  url.searchParams.set("pinned", "1");
+  url.searchParams.set("maplabels", "1");
+
+  const mapKey = String(payload?.mapKey || "").trim();
+  if (mapKey) {
+    url.searchParams.set("map", mapKey);
+  }
+
+  return url.toString();
+}
+
+function isAllowedPinnedMapControlUrl(urlValue) {
+  try {
+    const parsed = new URL(String(urlValue || ""));
+    const status = getWidgetServerStatusView();
+    return (
+      parsed.protocol === "http:" &&
+      isLoopbackHostname(parsed.hostname) &&
+      Number(parsed.port || "80") === Number(status.port || 5510) &&
+      parsed.pathname === "/obs/map" &&
+      parsed.searchParams.get("control") === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getPinnedMapControlWindowStatus() {
+  const win =
+    mapControlWindow && !mapControlWindow.isDestroyed()
+      ? mapControlWindow
+      : null;
+  if (!win) {
+    return {
+      open: false,
+      visible: false,
+      alwaysOnTop:
+        configManager.getSettings()?.pinnedMapControlAlwaysOnTop === true,
+      url: null,
+    };
+  }
+
+  return {
+    open: true,
+    visible: win.isVisible(),
+    alwaysOnTop: win.isAlwaysOnTop(),
+    url: mapControlWindowUrl,
+  };
+}
+
+function setPinnedMapControlWindowAlwaysOnTop(win, alwaysOnTop) {
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+
+  const enabled = alwaysOnTop === true;
+  if (enabled) {
+    win.setAlwaysOnTop(true, "screen-saver");
+  } else {
+    win.setAlwaysOnTop(false);
+  }
+  if (typeof win.setVisibleOnAllWorkspaces === "function") {
+    win.setVisibleOnAllWorkspaces(
+      enabled,
+      enabled ? { visibleOnFullScreen: true } : undefined,
+    );
+  }
+  if (enabled && typeof win.moveTop === "function") {
+    win.moveTop();
+  }
+}
+
+function applyPinnedMapControlAlwaysOnTop(alwaysOnTop) {
+  assertLauncherAccess();
+  const enabled = alwaysOnTop === true;
+  const settings = configManager.getSettings() || {};
+  if (settings.pinnedMapControlAlwaysOnTop !== enabled) {
+    configManager.setSettings({
+      ...settings,
+      pinnedMapControlAlwaysOnTop: enabled,
+    });
+    broadcastConfigUpdate("pinned-map-always-on-top");
+  }
+
+  const win =
+    mapControlWindow && !mapControlWindow.isDestroyed()
+      ? mapControlWindow
+      : null;
+  setPinnedMapControlWindowAlwaysOnTop(win, enabled);
+  log("[map-control-window] always-on-top updated", { enabled });
+  return getPinnedMapControlWindowStatus();
+}
+
+function assertMapControlSender(event) {
+  const win =
+    mapControlWindow && !mapControlWindow.isDestroyed()
+      ? mapControlWindow
+      : null;
+  const senderUrl = String(event?.sender?.getURL?.() || "");
+  if (
+    !win ||
+    event?.sender !== win.webContents ||
+    !isAllowedPinnedMapControlUrl(senderUrl)
+  ) {
+    const error = new Error("Map control request was rejected.");
+    error.code = "ARENZYRA_MAP_CONTROL_SENDER_REJECTED";
+    throw error;
+  }
+}
+
+function normalizePcobControlError(error) {
+  const message =
+    error instanceof Error && error.message
+      ? error.message
+      : String(error || "PCOB map control failed.");
+  return message.replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+async function readPcobObservingPlayer(options = {}) {
+  const baseUrl = getShadowTelemetryBaseUrl();
+  const endpoint = new URL("/getobservingplayer", `${baseUrl}/`).toString();
+  const response = await axios.get(endpoint, {
+    timeout: 700,
+    signal: options.signal,
+    headers: {
+      "X-Arenzyra-Connector-Token": String(
+        telemetrySourceProcessConfig?.localControlToken || connectorAccessToken,
+      ).trim(),
+    },
+    validateStatus: (status) => status >= 200 && status < 300,
+  });
+  return response?.data && typeof response.data === "object"
+    ? response.data
+    : {};
+}
+
+function getPcobMapControlLifecycleStatus() {
+  return resolvePcobMapControlLifecycle({
+    matchFlow: matchFlowState,
+    telemetry: telemetryBridge.getStatus(),
+    observerFeed: getObserverFeedStatusView(),
+  });
+}
+
+async function getPcobMapControlStatus() {
+  const lifecycle = getPcobMapControlLifecycleStatus();
+  const processEntries =
+    process.platform === "win32" ? getRunningShadowTrackerProcesses() : [];
+  const processEntry = processEntries.length === 1 ? processEntries[0] : null;
+  let telemetryReady = false;
+  let telemetryError = null;
+  let inputReady = false;
+  let inputError = null;
+
+  if (processEntry && lifecycle.eligible) {
+    const [telemetryResult, inputResult] = await Promise.allSettled([
+      readPcobObservingPlayer(),
+      preparePcobHotkeyInput(),
+    ]);
+    if (telemetryResult.status === "fulfilled") {
+      telemetryReady = true;
+    } else {
+      telemetryError = normalizePcobControlError(telemetryResult.reason);
+    }
+    if (inputResult.status === "fulfilled") {
+      inputReady = true;
+    } else {
+      inputError = normalizePcobControlError(inputResult.reason);
+    }
+  }
+
+  const available =
+    process.platform === "win32" &&
+    Boolean(processEntry) &&
+    telemetryReady &&
+    inputReady;
+  const enabled = lifecycle.eligible && available;
+  const lastSelection = pcobMapControlLastSelection
+    ? { ...pcobMapControlLastSelection }
+    : null;
+  const sourceStatus = telemetryBridge.getStatus();
+  const observerFeedStatus = getObserverFeedStatusView();
+  const sourceError =
+    (typeof sourceStatus?.lastError === "string" &&
+      sourceStatus.lastError.trim()) ||
+    (typeof observerFeedStatus?.lastError === "string" &&
+      observerFeedStatus.lastError.trim()) ||
+    null;
+
+  let message = "Automatic player switching is enabled for the live match.";
+  if (lifecycle.matchFinished) {
+    message =
+      "Automatic player switching is disabled because the match is finished.";
+  } else if (!lifecycle.matchLive) {
+    message =
+      "Automatic player switching will enable when the web-app match is LIVE.";
+  } else if (!lifecycle.telemetrySourceReady) {
+    message =
+      sourceError ||
+      "Start an accepted telemetry source for this live match to enable switching.";
+  } else if (process.platform !== "win32") {
+    message = "PCOB map control is only available on Windows.";
+  } else if (processEntries.length > 1) {
+    message =
+      "Close the extra PCOB instance to enable automatic player switching.";
+  } else if (!processEntry) {
+    message = "Start PCOB to enable automatic player switching.";
+  } else if (!telemetryReady) {
+    message =
+      "Start the PCOB telemetry connector to enable automatic player switching.";
+  } else if (!inputReady) {
+    message = "PCOB keyboard control could not be prepared.";
+  } else if (pcobMapControlBusy) {
+    message = "Sending the PCOB player switch.";
+  } else if (lastSelection?.status === "failed") {
+    message = lastSelection.error || "The previous PCOB player switch failed.";
+  } else if (lastSelection?.status === "unconfirmed") {
+    message =
+      lastSelection.error ||
+      "The previous PCOB player switch was sent but not confirmed.";
+  } else if (lastSelection?.status === "confirmed") {
+    const label =
+      String(lastSelection.playerName || lastSelection.playerId || "").trim() ||
+      "player";
+    message = `Automatic switching is enabled. PCOB confirmed ${label}.`;
+  }
+
+  return {
+    enabled,
+    available,
+    busy: pcobMapControlBusy,
+    message,
+    ...lifecycle,
+    pcobRunning: Boolean(processEntry),
+    telemetryReady,
+    telemetryError,
+    inputReady,
+    inputError,
+    sourceError,
+    lastSelection,
+  };
+}
+
+function cancelPcobObserverConfirmation() {
+  const controller = pcobMapControlConfirmationController;
+  pcobMapControlConfirmationController = null;
+  controller?.abort();
+}
+
+async function confirmPcobObserverSelection(selection, requestId) {
+  cancelPcobObserverConfirmation();
+  const controller = new AbortController();
+  pcobMapControlConfirmationController = controller;
+  const deadline = Date.now() + PCOB_OBSERVER_CONFIRM_TIMEOUT_MS;
+  let lastTelemetryError = null;
+
+  try {
+    while (Date.now() <= deadline) {
+      if (
+        controller.signal.aborted ||
+        pcobMapControlLastSelection?.requestId !== requestId
+      ) {
+        return;
+      }
+
+      try {
+        const observingPlayer = await readPcobObservingPlayer({
+          signal: controller.signal,
+        });
+        if (
+          controller.signal.aborted ||
+          pcobMapControlLastSelection?.requestId !== requestId
+        ) {
+          return;
+        }
+        if (observerMatchesSelection(observingPlayer, selection)) {
+          pcobMapControlLastSelection = {
+            ...pcobMapControlLastSelection,
+            status: "confirmed",
+            confirmedAt: Date.now(),
+            error: null,
+          };
+          log("[map-control] PCOB observer switch confirmed", {
+            playerId: selection.playerId,
+            playerName: selection.playerName,
+            requestId,
+          });
+          return;
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        lastTelemetryError = normalizePcobControlError(error);
+      }
+      await sleep(PCOB_OBSERVER_CONFIRM_POLL_MS);
+    }
+
+    if (pcobMapControlLastSelection?.requestId === requestId) {
+      pcobMapControlLastSelection = {
+        ...pcobMapControlLastSelection,
+        status: "unconfirmed",
+        confirmedAt: null,
+        error: lastTelemetryError,
+      };
+      logWarn("[map-control] PCOB observer switch was not confirmed", {
+        playerId: selection.playerId,
+        playerName: selection.playerName,
+        requestId,
+        error: lastTelemetryError,
+      });
+    }
+  } finally {
+    if (pcobMapControlConfirmationController === controller) {
+      pcobMapControlConfirmationController = null;
+    }
+  }
+}
+
+async function selectPcobObserverFromMap(payload) {
+  const selection = normalizePcobMapSelection(payload);
+  const activeMapKey =
+    typeof widgetServer?.engine?.getStatus === "function"
+      ? (widgetServer.engine.getStatus()?.currentMapKey ?? null)
+      : null;
+  assertPcobMapSelectionMatchesActiveMap({
+    selectionMapKey: selection.mapKey,
+    activeMapKey,
+  });
+  const automaticStatus = await getPcobMapControlStatus();
+  if (!automaticStatus.enabled) {
+    const error = new Error(automaticStatus.message);
+    error.code = "ARENZYRA_MAP_CONTROL_AUTOMATICALLY_DISABLED";
+    throw error;
+  }
+  if (pcobMapControlBusy) {
+    throw new Error("Another PCOB player switch is still in progress.");
+  }
+
+  const processEntries = getRunningShadowTrackerProcesses({
+    preferCache: true,
+  });
+  if (processEntries.length > 1) {
+    throw new Error("Multiple PCOB instances are running. No input was sent.");
+  }
+  const targetProcess = processEntries[0] || null;
+  if (!targetProcess?.pid) {
+    throw new Error("PCOB is not running. No input was sent.");
+  }
+
+  cancelPcobObserverConfirmation();
+  const requestId = `map-${Date.now()}-${selection.teamSlot}-${selection.playerNumber}`;
+  pcobMapControlBusy = true;
+  pcobMapControlLastSelection = {
+    status: "pending",
+    requestId,
+    playerId: selection.playerId,
+    playerName: selection.playerName,
+    confirmedAt: null,
+    sentAt: null,
+    error: null,
+  };
+  log("[map-control] switching PCOB observer", {
+    mapKey: selection.mapKey,
+    playerId: selection.playerId,
+    playerName: selection.playerName,
+    teamId: selection.teamId,
+    teamSlot: selection.teamSlot,
+    playerNumber: selection.playerNumber,
+  });
+
+  try {
+    if (!getPcobMapControlLifecycleStatus().eligible) {
+      throw new Error(
+        "Automatic player switching was disabled before input could be sent.",
+      );
+    }
+    const inputResult = await runPcobHotkeyInput({
+      pid: targetProcess.pid,
+      teamSlot: selection.teamSlot,
+      playerNumber: selection.playerNumber,
+    });
+    const sentAt = Date.now();
+    pcobMapControlLastSelection = {
+      status: "sent",
+      requestId,
+      playerId: selection.playerId,
+      playerName: selection.playerName,
+      confirmedAt: null,
+      sentAt,
+      digitMode: inputResult?.digitMode || null,
+      inputElapsedMs: Number(inputResult?.inputElapsedMs) || null,
+      error: null,
+    };
+    log("[map-control] PCOB observer input sent", {
+      playerId: selection.playerId,
+      playerName: selection.playerName,
+      requestId,
+      digitMode: inputResult?.digitMode || null,
+      inputElapsedMs: Number(inputResult?.inputElapsedMs) || null,
+    });
+    void confirmPcobObserverSelection(selection, requestId);
+    return {
+      ok: true,
+      inputSent: true,
+      confirmed: false,
+      requestId,
+      digitMode: inputResult?.digitMode || null,
+      inputElapsedMs: Number(inputResult?.inputElapsedMs) || null,
+      selection,
+    };
+  } catch (error) {
+    const message = normalizePcobControlError(error);
+    pcobMapControlLastSelection = {
+      status: "failed",
+      requestId,
+      playerId: selection.playerId,
+      playerName: selection.playerName,
+      confirmedAt: null,
+      sentAt: null,
+      error: message,
+    };
+    logWarn("[map-control] PCOB observer switch failed", {
+      playerId: selection.playerId,
+      playerName: selection.playerName,
+      error: message,
+    });
+    throw new Error(message);
+  } finally {
+    pcobMapControlBusy = false;
+  }
+}
+
+async function openPinnedMapControlWindow(payload = {}) {
+  assertLauncherAccess();
+  const widgetStatus = await ensureWidgetServerReady();
+  if (widgetStatus.running !== true || !widgetStatus.port) {
+    throw new Error("Local widget server is unavailable.");
+  }
+
+  const nextUrl = buildPinnedMapControlUrl(widgetStatus, payload);
+  const alwaysOnTop =
+    configManager.getSettings()?.pinnedMapControlAlwaysOnTop === true;
+  let win =
+    mapControlWindow && !mapControlWindow.isDestroyed()
+      ? mapControlWindow
+      : null;
+
+  if (!win) {
+    win = new BrowserWindow({
+      width: 980,
+      height: 780,
+      minWidth: 680,
+      minHeight: 560,
+      frame: true,
+      transparent: false,
+      backgroundColor: "#05090e",
+      resizable: true,
+      movable: true,
+      show: false,
+      skipTaskbar: false,
+      alwaysOnTop,
+      autoHideMenuBar: true,
+      title: "Arenzyra PCOB Map Control",
+      webPreferences: {
+        preload: mapControlPreloadPath,
+        partition: "arenzyra-map-control",
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        devTools: isDev,
+      },
+    });
+    mapControlWindow = win;
+
+    setPinnedMapControlWindowAlwaysOnTop(win, alwaysOnTop);
+
+    win.webContents.session.setPermissionRequestHandler(
+      (_webContents, permission, callback) => {
+        logWarn("[map-control-window] blocked permission request", {
+          permission,
+        });
+        callback(false);
+      },
+    );
+
+    win.webContents.setWindowOpenHandler((details) => {
+      logWarn("[map-control-window] blocked new window", {
+        url: details?.url || null,
+      });
+      return { action: "deny" };
+    });
+
+    win.webContents.on("will-navigate", (event, url) => {
+      if (isAllowedPinnedMapControlUrl(url)) {
+        return;
+      }
+      event.preventDefault();
+      logWarn("[map-control-window] blocked navigation", { url });
+    });
+
+    win.webContents.on("will-redirect", (event, url) => {
+      if (isAllowedPinnedMapControlUrl(url)) {
+        return;
+      }
+      event.preventDefault();
+      logWarn("[map-control-window] blocked redirect", { url });
+    });
+
+    win.webContents.on("before-input-event", (_event, input) => {
+      if (input?.key === "Escape" && input.type === "keyDown") {
+        win.close();
+      }
+    });
+
+    win.on("closed", () => {
+      if (mapControlWindow === win) {
+        cancelPcobObserverConfirmation();
+        mapControlWindow = null;
+        mapControlWindowUrl = null;
+        pcobMapControlBusy = false;
+      }
+    });
+  }
+
+  mapControlWindowUrl = nextUrl;
+  await win.loadURL(nextUrl);
+  setPinnedMapControlWindowAlwaysOnTop(win, alwaysOnTop);
+  win.show();
+  win.focus();
+  if (typeof win.moveTop === "function") {
+    win.moveTop();
+  }
+
+  return getPinnedMapControlWindowStatus();
+}
+
+function closePinnedMapControlWindow() {
+  assertLauncherAccess();
+  cancelPcobObserverConfirmation();
+  const win =
+    mapControlWindow && !mapControlWindow.isDestroyed()
+      ? mapControlWindow
+      : null;
+  if (win) {
+    win.close();
+  }
+  mapControlWindow = null;
+  mapControlWindowUrl = null;
+  pcobMapControlBusy = false;
+  return getPinnedMapControlWindowStatus();
 }
 
 function buildFallbackAssetStatusView() {
@@ -2677,12 +3762,14 @@ function getStoredBootstrapSession() {
 
 function clearLauncherRuntimeState(options = {}) {
   stopLauncherHeartbeat();
+  cancelPcobObserverConfirmation();
   launcherAccessState = null;
   startupLicenseStatus = null;
   matchFlowState = createDefaultMatchFlowState();
   productionModeState = createDefaultProductionModeState();
+  resetLiveMatchMapSynchronization();
   telemetryBridge.stop(options?.reason || "stopped");
-  stopObserverFeedSilently(options?.reason || "stopped");
+  void stopObserverFeedSilently(options?.reason || "stopped");
   visualModeService.stop(options?.reason || "stopped");
   if (options?.clearSession === true) {
     sessionManager.clearSession();
@@ -2809,6 +3896,7 @@ function toSessionView(session) {
     ? {
         user: session.user ?? null,
         organization: session.organization ?? null,
+        credentialStorage: sessionManager.getCredentialStorageState(),
       }
     : null;
 }
@@ -2851,6 +3939,222 @@ function assertLauncherAccess() {
   }
 
   throw createAccessDeniedError(launcherAccessState?.reason);
+}
+
+async function runVisualReviewOcrPreview(itemId, options = {}) {
+  const normalizedItemId = String(itemId || "").trim();
+  if (!normalizedItemId) {
+    throw new Error("Review item id is required.");
+  }
+
+  const automated = options.automated === true;
+  if (visualOcrInFlightItemIds.has(normalizedItemId)) {
+    return visualModeService.getReviewQueue();
+  }
+
+  let item;
+  try {
+    item = visualModeService.getReviewItem(normalizedItemId);
+  } catch (error) {
+    if (automated) {
+      return visualModeService.getReviewQueue();
+    }
+    throw error;
+  }
+
+  if (item.status !== "pending" || item.ocrStatus === "processing") {
+    return visualModeService.getReviewQueue();
+  }
+  if (!item.imagePath) {
+    throw new Error("Capture an image before running OCR preview.");
+  }
+
+  if (automated) {
+    const visualStatus = visualModeService.getStatus();
+    if (!visualStatus.running || visualStatus.autoOcrEnabled !== true) {
+      return visualModeService.getReviewQueue();
+    }
+  }
+
+  assertLauncherAccess();
+  const session = getStoredSession();
+  visualOcrInFlightItemIds.add(item.id);
+  visualModeService.markReviewItemOcrProcessing(item.id);
+
+  try {
+    const capturePath = visualModeService.assertReviewItemCaptureReady(item.id);
+    const matchId = requireMatchId(item.matchId);
+    const upload = await apiClient.uploadScreenshot({
+      apiBase: session.apiBase,
+      token: session.token || session.accessToken,
+      refreshToken: session.refreshToken,
+      filePath: capturePath,
+      matchId,
+    });
+    const assetId = String(
+      upload?.assetId || upload?.assets?.[0]?.assetId || "",
+    ).trim();
+    if (!assetId) {
+      throw new Error("Screenshot upload did not return a private asset id.");
+    }
+    const preview = await apiClient.previewScreenshotResults({
+      apiBase: session.apiBase,
+      token: session.token || session.accessToken,
+      refreshToken: session.refreshToken,
+      matchId,
+      assetId,
+    });
+    const queue = visualModeService.attachReviewItemOcrPreview(item.id, {
+      assetId,
+      preview,
+    });
+    log("[visual] OCR preview ready", {
+      matchId: item.matchId,
+      itemId: item.id,
+      automated,
+    });
+    return queue;
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error || "OCR preview failed.");
+    logWarn("[visual] OCR preview failed", {
+      matchId: item.matchId,
+      itemId: item.id,
+      automated,
+      error: message,
+    });
+    try {
+      return visualModeService.markReviewItemOcrFailed(item.id, message);
+    } catch (updateError) {
+      if (automated) {
+        return visualModeService.getReviewQueue();
+      }
+      throw updateError;
+    }
+  } finally {
+    visualOcrInFlightItemIds.delete(item.id);
+  }
+}
+
+async function runVisualSlotMap(itemId) {
+  const normalizedItemId = String(itemId || "").trim();
+  if (!normalizedItemId) {
+    throw new Error("Review item id is required.");
+  }
+
+  const item = visualModeService.getReviewItem(normalizedItemId);
+  if (item.reviewKind !== "slot-map" && item.regionKey !== "roster") {
+    throw new Error(
+      "Capture the Roster screen before mapping slot/player names.",
+    );
+  }
+  if (item.status !== "pending" || item.ocrStatus === "processing") {
+    return visualModeService.getReviewQueue();
+  }
+  if (!item.imagePath) {
+    throw new Error("Capture a roster image before mapping slots.");
+  }
+
+  assertLauncherAccess();
+  const session = getStoredSession();
+  const matchId = requireMatchId(item.matchId);
+  await assertVisualRosterMappingAllowed(session, matchId);
+  visualModeService.markReviewItemSlotMapProcessing(item.id);
+
+  try {
+    const capturePath = visualModeService.assertReviewItemCaptureReady(item.id);
+    const upload = await apiClient.uploadScreenshot({
+      apiBase: session.apiBase,
+      token: session.token || session.accessToken,
+      refreshToken: session.refreshToken,
+      filePath: capturePath,
+      matchId,
+    });
+    const assetId = String(
+      upload?.assetId || upload?.assets?.[0]?.assetId || "",
+    ).trim();
+    if (!assetId) {
+      throw new Error(
+        "Roster screenshot upload did not return a private asset id.",
+      );
+    }
+
+    // This existing endpoint maps by displayed slot number and saves only its
+    // resolved slot/player mappings. It never applies match results.
+    const preview = await apiClient.mapScreenshotSlots({
+      apiBase: session.apiBase,
+      token: session.token || session.accessToken,
+      refreshToken: session.refreshToken,
+      matchId,
+      assetId,
+    });
+    const queue = visualModeService.attachReviewItemSlotMapPreview(item.id, {
+      assetId,
+      preview,
+    });
+    log("[visual] slot/player mapping saved", {
+      matchId,
+      itemId: item.id,
+      mappedCount: Array.isArray(preview?.mapped) ? preview.mapped.length : 0,
+      unresolvedCount: Array.isArray(preview?.unresolved)
+        ? preview.unresolved.length
+        : 0,
+      ambiguousCount: Array.isArray(preview?.ambiguous)
+        ? preview.ambiguous.length
+        : 0,
+    });
+    return queue;
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error || "Slot/player mapping failed.");
+    logWarn("[visual] slot/player mapping failed", {
+      matchId,
+      itemId: item.id,
+      error: message,
+    });
+    return visualModeService.markReviewItemOcrFailed(item.id, message);
+  }
+}
+
+function queueAutomatedVisualOcrPreview(item) {
+  const itemId = String(item?.id || "").trim();
+  if (!itemId || visualModeService.getStatus().autoOcrEnabled !== true) {
+    return;
+  }
+
+  // Keep only the newest stable candidate while a preview is in flight. This
+  // bounds API work during animated screens without dropping the local evidence.
+  queuedAutomatedVisualOcrId = itemId;
+  if (automatedVisualOcrRunning) {
+    return;
+  }
+
+  automatedVisualOcrRunning = true;
+  void (async () => {
+    try {
+      while (queuedAutomatedVisualOcrId) {
+        const nextItemId = queuedAutomatedVisualOcrId;
+        queuedAutomatedVisualOcrId = null;
+        try {
+          await runVisualReviewOcrPreview(nextItemId, { automated: true });
+        } catch (error) {
+          logWarn("[visual] automated OCR preview skipped", {
+            itemId: nextItemId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } finally {
+      automatedVisualOcrRunning = false;
+      if (queuedAutomatedVisualOcrId) {
+        queueAutomatedVisualOcrPreview({ id: queuedAutomatedVisualOcrId });
+      }
+    }
+  })();
 }
 
 async function checkLauncherLicense(session) {
@@ -3024,7 +4328,7 @@ async function maintainLauncherSession() {
       launcherAccessState = null;
       startupLicenseStatus = null;
       telemetryBridge.stop("stopped");
-      stopObserverFeedSilently("stopped");
+      await stopObserverFeedSilently("stopped");
       visualModeService.stop("stopped");
       sessionManager.clearSession();
       return;
@@ -3041,18 +4345,22 @@ async function endLauncherSession(options = {}) {
   stopLauncherHeartbeat();
   launcherAccessState = null;
   startupLicenseStatus = null;
+  telemetryBridge.stop("stopped");
+  const observerFeedStop = await stopObserverFeedSilently("stopped");
+  visualModeService.stop("stopped");
+  resetLiveMatchMapSynchronization();
 
   const storedSession = sessionManager.readSession();
   if (!storedSession?.token && !storedSession?.refreshToken) {
-    telemetryBridge.stop("stopped");
-    stopObserverFeedSilently("stopped");
-    visualModeService.stop("stopped");
     publishAiCasterAccessToWidgetServer(null);
     publishCommentatorDeskAccessToWidgetServer(null);
     if (options.clearAuth === true) {
       sessionManager.clearSession();
     }
-    return { ok: true };
+    return {
+      ok: observerFeedStop.ok === true,
+      observerFeedStop,
+    };
   }
 
   try {
@@ -3085,9 +4393,6 @@ async function endLauncherSession(options = {}) {
         );
       }
     }
-    telemetryBridge.stop("stopped");
-    stopObserverFeedSilently("stopped");
-    visualModeService.stop("stopped");
     publishAiCasterAccessToWidgetServer(null);
     publishCommentatorDeskAccessToWidgetServer(null);
     if (options.clearAuth === true) {
@@ -3095,7 +4400,10 @@ async function endLauncherSession(options = {}) {
     }
   }
 
-  return { ok: true };
+  return {
+    ok: observerFeedStop.ok === true,
+    observerFeedStop,
+  };
 }
 
 async function tryFetchLiveMatch(url) {
@@ -3217,10 +4525,7 @@ function readLiveMatchNumber(payload) {
 
 function readLiveMatchMap(payload) {
   return (
-    payload?.map ||
-    payload?.match?.map ||
-    payload?.activeMatch?.map ||
-    null
+    payload?.map || payload?.match?.map || payload?.activeMatch?.map || null
   );
 }
 
@@ -3234,7 +4539,7 @@ function readLiveMatchExtra(payload) {
   };
 }
 
-async function fetchAuthenticatedLiveMatch(apiBase, session) {
+async function fetchAuthenticatedLiveMatch(apiBase, session, options = {}) {
   const token = String(session?.token || session?.accessToken || "").trim();
   const refreshToken = String(session?.refreshToken || "").trim();
   if (!token && !refreshToken) {
@@ -3245,6 +4550,7 @@ async function fetchAuthenticatedLiveMatch(apiBase, session) {
     apiBase,
     token,
     refreshToken,
+    signal: options?.signal,
   };
 
   const attempts = [
@@ -3272,6 +4578,11 @@ async function fetchAuthenticatedLiveMatch(apiBase, session) {
         );
       }
     } catch (error) {
+      if (options?.signal?.aborted === true) {
+        throw options.signal.reason instanceof Error
+          ? options.signal.reason
+          : error;
+      }
       if (error?.status === 404) {
         continue;
       }
@@ -3320,57 +4631,30 @@ function getBrandingConfigPath() {
 }
 
 function ensurePlaceholderLogo() {
-  ensureDir(TEAM_ASSETS_DIR);
-  const placeholderPath = path.join(TEAM_ASSETS_DIR, "default-team.png");
-  if (!fs.existsSync(placeholderPath)) {
-    const bundledDefaultTeamPath = resolveBundledDefaultTeamPath();
-    if (bundledDefaultTeamPath) {
-      fs.copyFileSync(bundledDefaultTeamPath, placeholderPath);
-    } else {
-      fs.writeFileSync(
-        placeholderPath,
-        Buffer.from(PLACEHOLDER_LOGO_BASE64, "base64"),
-      );
-    }
-  }
-  return placeholderPath;
+  const result = ensureDefaultTeamLogo({
+    teamAssetsDir: TEAM_ASSETS_DIR,
+    bundledDefaultTeamPath: resolveBundledDefaultTeamPath(),
+    fallbackPngBuffer: Buffer.from(PLACEHOLDER_LOGO_BASE64, "base64"),
+  });
+  return result.path;
 }
 
 function resolveLogoUrl(baseUrl, logoUrl) {
-  const rawLogoUrl = typeof logoUrl === "string" ? logoUrl.trim() : "";
-  if (!rawLogoUrl) return null;
-  if (/^[a-zA-Z]:[\\/]/.test(rawLogoUrl) || rawLogoUrl.startsWith("\\\\")) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(rawLogoUrl, `${baseUrl}/`);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
-    return parsed.toString();
-  } catch {
-    return null;
-  }
+  return resolveAllowedRemoteImageUrl(baseUrl, logoUrl);
 }
 
-function detectFileExtension(urlValue, contentType) {
-  const content = String(contentType || "").toLowerCase();
-  if (content.includes("image/jpeg")) return ".jpg";
-  if (content.includes("image/webp")) return ".webp";
-  if (content.includes("image/bmp")) return ".bmp";
-  if (content.includes("image/svg")) return ".svg";
-  if (content.includes("image/png")) return ".png";
-
+function writeAssetFileAtomic(filePath, buffer) {
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    const parsed = new URL(urlValue);
-    const extension = path.extname(parsed.pathname || "").toLowerCase();
-    if (extension) return extension;
-  } catch {
-    // ignore parse errors
+    fs.writeFileSync(temporaryPath, buffer, { flag: "wx", mode: 0o600 });
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    try {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    } catch {
+      // Best-effort cleanup for an interrupted cache update.
+    }
   }
-
-  return ".png";
 }
 
 function normalizePlayerAssetKey(value) {
@@ -3544,30 +4828,16 @@ async function downloadPlayerPhoto(baseUrl, player) {
     };
   }
 
-  const response = await axios.get(photoUrl, {
-    responseType: "arraybuffer",
-    timeout: 15000,
-    headers: {
-      Accept:
-        "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "ngrok-skip-browser-warning": "1",
-    },
+  const { buffer } = await downloadAndSanitizeRemoteImage({
+    baseUrl,
+    url: photoUrl,
   });
-  const contentType = String(response?.headers?.["content-type"] || "");
-  if (contentType && !contentType.toLowerCase().startsWith("image/")) {
-    throw new Error(
-      `Player photo URL did not return an image (${contentType}).`,
-    );
-  }
-
-  const extension = detectFileExtension(photoUrl, contentType);
-  const buffer = Buffer.from(response.data);
   let primaryPath = null;
 
   for (const assetKey of assetKeys) {
     purgePlayerAssetFiles(assetKey);
-    const filePath = path.join(PLAYER_ASSETS_DIR, `${assetKey}${extension}`);
-    fs.writeFileSync(filePath, buffer);
+    const filePath = path.join(PLAYER_ASSETS_DIR, `${assetKey}.png`);
+    writeAssetFileAtomic(filePath, buffer);
     if (!primaryPath) {
       primaryPath = filePath;
     }
@@ -3833,6 +5103,120 @@ async function fetchLiveMatch(apiBase, session = null) {
   );
 }
 
+function getDesiredObserverFallbackMapKey(
+  matchId = null,
+  bootstrapMapKey = null,
+) {
+  const targetMatchId =
+    normalizeOptionalString(matchId) ||
+    normalizeOptionalString(observerFeedState.matchId) ||
+    normalizeOptionalString(productionModeState.matchId);
+  return resolveDesiredObserverFallbackMapKey({
+    matchId: targetMatchId,
+    liveMapState: liveMatchMapState,
+    productionModeState,
+    bootstrapMapKey,
+  });
+}
+
+function resetLiveMatchMapSynchronization() {
+  liveMatchMapState = {
+    matchId: null,
+    mapKey: null,
+    updatedAt: null,
+  };
+  liveMatchMapRefreshPromise = null;
+  lastLiveMatchMapRefreshAt = 0;
+  observerMapFallbackSyncDesired = null;
+  observerMapFallbackSyncEpoch += 1;
+  observerMapFallbackLastAppliedIdentity = null;
+  observerMapFallbackLastWarningAt = 0;
+  clearObserverMapFallbackRetry();
+}
+
+function applyAuthoritativeLiveMatchMap(liveMatch) {
+  const plan = resolveLiveMatchMapSyncPlan({
+    liveMatch,
+    productionModeState,
+    observerFeedState: getObserverFeedStatusView(),
+  });
+  if (!plan) {
+    return null;
+  }
+
+  const previousDesiredMapKey =
+    liveMatchMapState.matchId === plan.matchId
+      ? liveMatchMapState.mapKey
+      : plan.previousMapKey;
+  const desiredMapChanged = previousDesiredMapKey !== plan.mapKey;
+  liveMatchMapState = {
+    matchId: plan.matchId,
+    mapKey: plan.mapKey,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (plan.productionMatch) {
+    productionModeState = {
+      ...productionModeState,
+      selectedMapKey: plan.mapKey,
+    };
+  }
+
+  if (desiredMapChanged) {
+    log("[Observer Feed] Live match map fallback updated", {
+      matchId: plan.matchId,
+      previousMapKey: previousDesiredMapKey || null,
+      mapKey: plan.mapKey,
+      source: liveMatch.source,
+    });
+    if (typeof widgetServer?.refreshDirectObserverSnapshot === "function") {
+      widgetServer.refreshDirectObserverSnapshot();
+    }
+  }
+
+  if (plan.observerMatch) {
+    void scheduleObserverMapFallbackSync(plan.matchId, plan.mapKey);
+  }
+
+  return {
+    ...plan,
+    desiredMapChanged,
+  };
+}
+
+async function refreshAuthoritativeLiveMatchMap(sessionOverride = null) {
+  if (liveMatchMapRefreshPromise) {
+    return liveMatchMapRefreshPromise;
+  }
+
+  const refreshEpoch = observerMapFallbackSyncEpoch;
+  const refreshPromise = (async () => {
+    const session = sessionOverride || getStoredSession();
+    lastLiveMatchMapRefreshAt = Date.now();
+    const liveMatch = await fetchAuthenticatedLiveMatch(
+      normalizeBaseUrl(session.apiBase),
+      session,
+    );
+    if (refreshEpoch === observerMapFallbackSyncEpoch) {
+      applyAuthoritativeLiveMatchMap(liveMatch);
+    }
+    return liveMatch;
+  })();
+  liveMatchMapRefreshPromise = refreshPromise;
+
+  try {
+    return await refreshPromise;
+  } finally {
+    if (liveMatchMapRefreshPromise === refreshPromise) {
+      liveMatchMapRefreshPromise = null;
+    }
+  }
+}
+
+function shouldRefreshAuthoritativeLiveMatchMap(now = Date.now()) {
+  return now - lastLiveMatchMapRefreshAt >= LIVE_MATCH_MAP_REFRESH_INTERVAL_MS;
+}
+
 async function downloadLogoForSlot(baseUrl, slot, placeholderPath) {
   const colorHex = normalizeHexColor(
     slot?.team?.accentLight || slot?.team?.accentDark || "#FFFFFF",
@@ -3853,19 +5237,14 @@ async function downloadLogoForSlot(baseUrl, slot, placeholderPath) {
   }
 
   try {
-    const response = await axios.get(logoUrl, {
-      responseType: "arraybuffer",
-      timeout: 15000,
+    const { buffer: nextBuffer } = await downloadAndSanitizeRemoteImage({
+      baseUrl,
+      url: logoUrl,
     });
-    const extension = detectFileExtension(
-      logoUrl,
-      response?.headers?.["content-type"],
-    );
     const filePath = path.join(
       TEAM_ASSETS_DIR,
-      `${String(slot.slotNumber).padStart(2, "0")}_${teamSlug}${extension}`,
+      `${String(slot.slotNumber).padStart(2, "0")}_${teamSlug}.png`,
     );
-    const nextBuffer = Buffer.from(response.data);
     if (fs.existsSync(filePath)) {
       try {
         const existingBuffer = fs.readFileSync(filePath);
@@ -3886,7 +5265,7 @@ async function downloadLogoForSlot(baseUrl, slot, placeholderPath) {
         // Fall through and rewrite the asset if the comparison fails.
       }
     }
-    fs.writeFileSync(filePath, nextBuffer);
+    writeAssetFileAtomic(filePath, nextBuffer);
     return {
       ...slot,
       localLogoPath: filePath,
@@ -3899,7 +5278,7 @@ async function downloadLogoForSlot(baseUrl, slot, placeholderPath) {
     logWarn(
       "[launcher] logo download failed",
       slot?.slotNumber,
-      logoUrl,
+      remoteImageReference(logoUrl),
       err && err.message ? err.message : err,
     );
     return {
@@ -3932,6 +5311,128 @@ function getSessionOrganizationId(session) {
     asOptionalString(session?.user?.actingOrgId) ||
     null
   );
+}
+
+function publishOrganizationWidgetBranding(context) {
+  const source = context && typeof context === "object" ? context : {};
+  const organization =
+    source.organization && typeof source.organization === "object"
+      ? source.organization
+      : {};
+  const branding =
+    source.branding && typeof source.branding === "object"
+      ? source.branding
+      : organization.branding && typeof organization.branding === "object"
+        ? organization.branding
+        : null;
+  const organizationId =
+    asOptionalString(source.organizationId) ||
+    asOptionalString(organization.id);
+  const organizationSlug =
+    asOptionalString(source.organizationSlug) ||
+    asOptionalString(organization.slug);
+  const organizationName =
+    asOptionalString(source.organizationName) ||
+    asOptionalString(organization.name);
+  const previousOrganizationId = asOptionalString(
+    cachedOrganizationWidgetBranding?.organizationId,
+  );
+  const brandingApiUrl =
+    asOptionalString(source.brandingApiUrl) ||
+    (organizationId && organizationId === previousOrganizationId
+      ? asOptionalString(cachedOrganizationWidgetBranding?.brandingApiUrl)
+      : null);
+
+  cachedOrganizationWidgetBranding = {
+    organizationId: organizationId || null,
+    organizationSlug: organizationSlug || null,
+    brandingApiUrl: brandingApiUrl || null,
+    organization:
+      organizationId || organizationSlug || organizationName || branding
+        ? {
+            id: organizationId || null,
+            slug: organizationSlug || null,
+            name: organizationName || null,
+            branding,
+          }
+        : null,
+    branding,
+  };
+
+  if (
+    widgetServer &&
+    typeof widgetServer.setOrganizationBranding === "function"
+  ) {
+    widgetServer.setOrganizationBranding(cachedOrganizationWidgetBranding);
+  }
+
+  return cachedOrganizationWidgetBranding;
+}
+
+async function refreshOrganizationWidgetBranding(
+  session,
+  { throwOnError = false, organizationId = null } = {},
+) {
+  const resolvedSession = session || getStoredSession();
+  const resolvedOrganizationId =
+    asOptionalString(organizationId) ||
+    getSessionOrganizationId(resolvedSession);
+
+  if (!resolvedOrganizationId) {
+    return cachedOrganizationWidgetBranding;
+  }
+
+  try {
+    const response = await axios.get(
+      `${normalizeBaseUrl(resolvedSession?.apiBase)}/branding/${encodeURIComponent(
+        resolvedOrganizationId,
+      )}`,
+      {
+        timeout: 10000,
+        headers: {
+          Accept: "application/json",
+        },
+      },
+    );
+    const payload = response?.data ?? null;
+    const branding =
+      payload?.branding && typeof payload.branding === "object"
+        ? payload.branding
+        : payload?.data && typeof payload.data === "object"
+          ? payload.data
+          : payload && typeof payload === "object"
+            ? payload
+            : null;
+    const knownOrganization =
+      resolvedSession?.organization &&
+      typeof resolvedSession.organization === "object"
+        ? resolvedSession.organization
+        : {};
+
+    return publishOrganizationWidgetBranding({
+      organizationId: resolvedOrganizationId,
+      brandingApiUrl: `${normalizeBaseUrl(
+        resolvedSession?.apiBase,
+      )}/branding/${encodeURIComponent(resolvedOrganizationId)}`,
+      organization: {
+        id: resolvedOrganizationId,
+        slug: asOptionalString(knownOrganization.slug),
+        name: asOptionalString(knownOrganization.name),
+        branding,
+      },
+      branding,
+    });
+  } catch (error) {
+    const message = getWidgetCatalogErrorMessage(
+      error,
+      "Failed to load organization widget branding.",
+    );
+    logWarn("[widget-branding] refresh failed", message);
+    if (throwOnError) {
+      throw new Error(message);
+    }
+    return cachedOrganizationWidgetBranding;
+  }
 }
 
 function publishAiCasterAccessToWidgetServer(access) {
@@ -4490,13 +5991,14 @@ async function generateBranding(session, matchId, options = {}) {
   return result;
 }
 
-async function pinSelectedMatchLive(session, matchId, sessionId) {
+async function pinSelectedMatchLive(session, matchId, sessionId, options = {}) {
   const requestedMatchId = requireMatchId(matchId);
   const lifecycle = await assertMatchLifecycleStartable(
     session,
     requestedMatchId,
+    options,
   );
-  await assertNoDifferentLiveMatch(session, requestedMatchId);
+  await assertNoDifferentLiveMatch(session, requestedMatchId, options);
   const boundSessionId = String(
     lifecycle?.control?.binding?.sessionId ||
       lifecycle?.control?.pcobSessionId ||
@@ -4518,16 +6020,18 @@ async function pinSelectedMatchLive(session, matchId, sessionId) {
     source: "desktop-launcher",
     clientId: getLauncherClientId(),
     requestedMatchId,
+    signal: options?.signal,
   });
   return requestedMatchId;
 }
 
-async function createObserverFeedToken(session) {
+async function createObserverFeedToken(session, options = {}) {
   const payload =
     (await apiClient.createObserverFeedToken({
       apiBase: session.apiBase,
       token: session.token,
       refreshToken: session.refreshToken,
+      signal: options?.signal,
     })) ?? {};
   const accessToken =
     typeof payload?.accessToken === "string" && payload.accessToken.trim()
@@ -4549,9 +6053,12 @@ async function createObserverFeedToken(session) {
 
 function readWherePaths(binaryName) {
   try {
-    const result = spawnSync("where.exe", [binaryName], {
+    const where = resolveTrustedWindowsCommand("where");
+    const result = spawnSync(where.executablePath, [binaryName], {
       encoding: "utf8",
+      env: where.env,
       windowsHide: true,
+      timeout: 3_000,
     });
     if (result.status !== 0) return [];
     return String(result.stdout || "")
@@ -4581,12 +6088,13 @@ function normalizeMatchLifecycleStatus(value) {
   return normalized;
 }
 
-async function fetchMatchControlState(session, matchId) {
+async function fetchMatchControlState(session, matchId, options = {}) {
   const control = await apiClient.getMatchControl({
     apiBase: session.apiBase,
     token: session.token,
     refreshToken: session.refreshToken,
     matchId,
+    signal: options?.signal,
   });
 
   return {
@@ -4601,11 +6109,12 @@ function getLauncherClientId() {
   return `${os.hostname() || "unknown-host"}:${process.pid}`;
 }
 
-async function assertNoDifferentLiveMatch(session, matchId) {
+async function assertNoDifferentLiveMatch(session, matchId, options = {}) {
   const requestedMatchId = requireMatchId(matchId);
   const liveMatch = await fetchAuthenticatedLiveMatch(
     normalizeBaseUrl(session.apiBase),
     session,
+    options,
   );
   const liveMatchId = String(liveMatch?.matchId || "").trim();
   if (!liveMatchId || liveMatchId === requestedMatchId) {
@@ -4622,10 +6131,11 @@ async function assertNoDifferentLiveMatch(session, matchId) {
   );
 }
 
-async function assertMatchLifecycleStartable(session, matchId) {
+async function assertMatchLifecycleStartable(session, matchId, options = {}) {
   const { control, lifecycleStatus } = await fetchMatchControlState(
     session,
     matchId,
+    options,
   );
 
   if (lifecycleStatus === "FINISHED") {
@@ -4640,6 +6150,24 @@ async function assertMatchLifecycleStartable(session, matchId) {
     lifecycleStatus === "ENDED"
   ) {
     throw new Error("Cannot start telemetry while the match is finalizing.");
+  }
+  return { control, lifecycleStatus };
+}
+
+async function assertVisualRosterMappingAllowed(session, matchId) {
+  const { control, lifecycleStatus } = await fetchMatchControlState(
+    session,
+    matchId,
+  );
+  if (control?.isFinalizing === true || lifecycleStatus === "FINISHED") {
+    throw new Error(
+      "Roster mapping is unavailable after result finalization starts.",
+    );
+  }
+  if (lifecycleStatus !== "READY" && lifecycleStatus !== "COUNTDOWN") {
+    throw new Error(
+      "Map slot/player names during READY or COUNTDOWN, before the match is LIVE.",
+    );
   }
   return { control, lifecycleStatus };
 }
@@ -4711,11 +6239,18 @@ function readRunningShadowTrackerProcessesFromPowerShell() {
     "Select-Object ProcessId,ExecutablePath,CommandLine;",
     "if ($null -eq $items) { '[]' } else { $items | ConvertTo-Json -Compress }",
   ].join(" ");
+  let powerShell;
+  try {
+    powerShell = resolveTrustedWindowsCommand("powershell");
+  } catch {
+    return [];
+  }
   const result = spawnSync(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+    powerShell.executablePath,
+    ["-NoProfile", "-NonInteractive", "-Command", script],
     {
       encoding: "utf8",
+      env: powerShell.env,
       windowsHide: true,
       timeout: 3_000,
     },
@@ -4735,8 +6270,14 @@ function readRunningShadowTrackerProcessesFromWmic() {
     return [];
   }
 
+  let wmic;
+  try {
+    wmic = resolveTrustedWindowsCommand("wmic");
+  } catch {
+    return [];
+  }
   const result = spawnSync(
-    "wmic.exe",
+    wmic.executablePath,
     [
       "process",
       "where",
@@ -4747,6 +6288,7 @@ function readRunningShadowTrackerProcessesFromWmic() {
     ],
     {
       encoding: "utf8",
+      env: wmic.env,
       windowsHide: true,
       timeout: 3_000,
     },
@@ -4785,6 +6327,26 @@ function readRunningShadowTrackerProcessesFromWmic() {
 function getRunningShadowTrackerProcesses(options = {}) {
   const now = Date.now();
   if (
+    options.preferCache === true &&
+    shadowTrackerProcessDiscoveryCache.entries.length > 0 &&
+    shadowTrackerProcessDiscoveryCache.entries.every((entry) => {
+      if (!Number.isInteger(entry?.pid) || entry.pid <= 0) {
+        return false;
+      }
+      try {
+        process.kill(entry.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    })
+  ) {
+    return [...shadowTrackerProcessDiscoveryCache.entries];
+  }
+  if (shadowTrackerProcessDiscoverySingleFlight.isRunning()) {
+    return [...shadowTrackerProcessDiscoveryCache.entries];
+  }
+  if (
     options.force !== true &&
     now - shadowTrackerProcessDiscoveryCache.checkedAt <
       SHADOWTRACKER_PROCESS_DISCOVERY_CACHE_MS
@@ -4815,6 +6377,44 @@ function getRunningShadowTrackerProcesses(options = {}) {
     entries: uniqueEntries,
   };
   return [...uniqueEntries];
+}
+
+async function getRunningShadowTrackerProcessesAsync(options = {}) {
+  const now = Date.now();
+  if (
+    options.force !== true &&
+    now - shadowTrackerProcessDiscoveryCache.checkedAt <
+      SHADOWTRACKER_PROCESS_DISCOVERY_CACHE_MS
+  ) {
+    return [...shadowTrackerProcessDiscoveryCache.entries];
+  }
+
+  return shadowTrackerProcessDiscoverySingleFlight.run(async () => {
+    const refreshedAt = Date.now();
+    if (
+      options.force !== true &&
+      refreshedAt - shadowTrackerProcessDiscoveryCache.checkedAt <
+        SHADOWTRACKER_PROCESS_DISCOVERY_CACHE_MS
+    ) {
+      return [...shadowTrackerProcessDiscoveryCache.entries];
+    }
+
+    let entries = [];
+    try {
+      entries = await discoverRunningShadowTrackerProcesses({
+        platform: process.platform,
+        processName: SHADOWTRACKER_PROCESS_NAME,
+        isExecutableFile: isExistingFile,
+      });
+    } catch {
+      entries = [];
+    }
+    shadowTrackerProcessDiscoveryCache = {
+      checkedAt: Date.now(),
+      entries,
+    };
+    return [...entries];
+  });
 }
 
 function getRunningShadowTrackerExecutableCandidates(options = {}) {
@@ -4861,6 +6461,14 @@ function createConnectorSetupStatus(patch = {}) {
     backupPath: patch.backupPath || null,
     sourceHash: patch.sourceHash || null,
     targetHash: patch.targetHash || null,
+    supportFiles: Array.isArray(patch.supportFiles)
+      ? patch.supportFiles.map((supportFile) => ({
+          fileName: supportFile.fileName || null,
+          sourcePath: supportFile.sourcePath || null,
+          sourceHash: supportFile.sourceHash || null,
+          targetPath: supportFile.targetPath || null,
+        }))
+      : [],
     installed: patch.installed === true,
     repaired: patch.repaired === true,
     upToDate: patch.upToDate === true,
@@ -4901,7 +6509,9 @@ function getManagedTelemetryBridgeSourcePath() {
       )
     : "";
 
-  return findExistingFile([packagedSourcePath, REPO_TELEMETRY_BRIDGE_SCRIPT]);
+  return app.isPackaged
+    ? findExistingFile([packagedSourcePath])
+    : findExistingFile([REPO_TELEMETRY_BRIDGE_SCRIPT]);
 }
 
 function getManagedTelemetryBridgeSupportResources() {
@@ -4912,10 +6522,11 @@ function getManagedTelemetryBridgeSupportResources() {
 
   return CONNECTOR_SUPPORT_FILE_NAMES.map((fileName) => ({
     fileName,
-    sourcePath: findExistingFile([
-      packagedSourceDir ? path.join(packagedSourceDir, fileName) : "",
-      path.join(repoSourceDir, fileName),
-    ]),
+    sourcePath: app.isPackaged
+      ? findExistingFile([
+          packagedSourceDir ? path.join(packagedSourceDir, fileName) : "",
+        ])
+      : findExistingFile([path.join(repoSourceDir, fileName)]),
   }));
 }
 
@@ -4950,122 +6561,69 @@ function createConnectorManifestPayload({
   )}\n`;
 }
 
-function writeConnectorManifest(manifestPath, payload) {
-  try {
-    fs.writeFileSync(manifestPath, payload);
-    return true;
-  } catch (error) {
-    logWarn("[connector] failed to write manifest", {
-      manifestPath,
-      error: error instanceof Error ? error.message : String(error || ""),
-    });
-    return false;
-  }
-}
-
-function quotePowerShellSingleQuoted(value) {
-  return `'${String(value || "").replace(/'/g, "''")}'`;
-}
-
-function shouldAttemptElevatedConnectorCopy(error) {
+function isConnectorPermissionError(error) {
   const code =
     error && typeof error === "object" ? String(error.code || "") : "";
   return process.platform === "win32" && ["EACCES", "EPERM"].includes(code);
 }
 
-function runElevatedConnectorCopy({
+let cachedConnectorProcessIntegrity = null;
+
+function getConnectorProcessIntegrity() {
+  if (!cachedConnectorProcessIntegrity) {
+    cachedConnectorProcessIntegrity = inspectWindowsProcessIntegrity();
+  }
+  return cachedConnectorProcessIntegrity;
+}
+
+function assertManagedConnectorInstallPlan({
   sourcePath,
   targetPath,
-  manifestPath,
-  manifestPayload,
-  backupPath,
+  shadowTrackerPath,
+  supportFiles = [],
+  backupPath = "",
+}) {
+  const manifestPath = path.join(
+    path.dirname(targetPath),
+    CONNECTOR_MANIFEST_NAME,
+  );
+  assertConnectorInstallPlan({
+    sourceFiles: [
+      sourcePath,
+      ...supportFiles.map((supportFile) => supportFile.sourcePath),
+    ],
+    targetFiles: [
+      targetPath,
+      manifestPath,
+      ...(backupPath ? [backupPath] : []),
+      ...supportFiles.map((supportFile) =>
+        getManagedTelemetryBridgeSupportTargetPath(
+          targetPath,
+          supportFile.fileName,
+        ),
+      ),
+    ],
+    allowedTargetRoots:
+      getShadowTrackerInstallRootCandidates(shadowTrackerPath),
+    shadowTrackerPath,
+  });
+}
+
+function assertManagedConnectorInstalledHashes({
+  targetPath,
   sourceHash,
   supportFiles = [],
 }) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "arenzyra-connector-"));
-  const stagedSourcePath = path.join(tempDir, CONNECTOR_SCRIPT_NAME);
-  const stagedManifestPath = path.join(tempDir, CONNECTOR_MANIFEST_NAME);
-  const stagedSupportFiles = supportFiles.map((supportFile) => ({
-    ...supportFile,
-    stagedSourcePath: path.join(tempDir, supportFile.fileName),
-  }));
-  const scriptPath = path.join(tempDir, "install-connector.ps1");
-
-  fs.copyFileSync(sourcePath, stagedSourcePath);
-  fs.writeFileSync(stagedManifestPath, manifestPayload);
-  for (const supportFile of stagedSupportFiles) {
-    fs.copyFileSync(supportFile.sourcePath, supportFile.stagedSourcePath);
+  readVerifiedRegularFile(targetPath, {
+    expectedSha256: sourceHash,
+    label: "Installed connector script",
+  });
+  for (const supportFile of supportFiles) {
+    readVerifiedRegularFile(supportFile.targetPath, {
+      expectedSha256: supportFile.sourceHash,
+      label: `Installed connector support: ${supportFile.fileName}`,
+    });
   }
-  fs.writeFileSync(
-    scriptPath,
-    [
-      "$ErrorActionPreference = 'Stop'",
-      `$source = ${quotePowerShellSingleQuoted(stagedSourcePath)}`,
-      `$target = ${quotePowerShellSingleQuoted(targetPath)}`,
-      `$manifestSource = ${quotePowerShellSingleQuoted(stagedManifestPath)}`,
-      `$manifestTarget = ${quotePowerShellSingleQuoted(manifestPath)}`,
-      `$backup = ${quotePowerShellSingleQuoted(backupPath || "")}`,
-      "$targetDir = Split-Path -Parent -LiteralPath $target",
-      "New-Item -ItemType Directory -Force -Path $targetDir | Out-Null",
-      "$supportFiles = @(",
-      ...stagedSupportFiles.map(
-        (supportFile) =>
-          `  @{ Source = ${quotePowerShellSingleQuoted(
-            supportFile.stagedSourcePath,
-          )}; Target = ${quotePowerShellSingleQuoted(
-            getManagedTelemetryBridgeSupportTargetPath(
-              targetPath,
-              supportFile.fileName,
-            ),
-          )} }`,
-      ),
-      ")",
-      "if ($backup -and (Test-Path -LiteralPath $target)) {",
-      "  Copy-Item -LiteralPath $target -Destination $backup -Force",
-      "}",
-      "Copy-Item -LiteralPath $source -Destination $target -Force",
-      "foreach ($support in $supportFiles) {",
-      "  Copy-Item -LiteralPath $support.Source -Destination $support.Target -Force",
-      "}",
-      "Copy-Item -LiteralPath $manifestSource -Destination $manifestTarget -Force",
-      "",
-    ].join("\r\n"),
-  );
-
-  const command = [
-    "$p = Start-Process -FilePath 'powershell.exe' ",
-    "-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',",
-    quotePowerShellSingleQuoted(scriptPath),
-    ") -Verb RunAs -Wait -PassThru; ",
-    "exit $p.ExitCode",
-  ].join("");
-  const result = spawnSync(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-    {
-      encoding: "utf8",
-      windowsHide: false,
-    },
-  );
-
-  const targetHash = getOptionalFileHash(targetPath);
-  if (targetHash !== sourceHash) {
-    const stderr = String(result.stderr || "").trim();
-    const stdout = String(result.stdout || "").trim();
-    throw new Error(
-      stderr ||
-        stdout ||
-        "Administrator connector install did not write the expected ob.js.",
-    );
-  }
-
-  try {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  } catch {
-    // Temporary installer files are non-sensitive and can be cleaned later.
-  }
-
-  return targetHash;
 }
 
 function copyManagedTelemetryBridge({
@@ -5094,53 +6652,107 @@ function copyManagedTelemetryBridge({
       )
     : "";
 
-  try {
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    if (backupPath) {
-      fs.copyFileSync(targetPath, backupPath);
-    }
-    fs.copyFileSync(sourcePath, targetPath);
-    for (const supportFile of supportFiles) {
-      fs.copyFileSync(
-        supportFile.sourcePath,
-        getManagedTelemetryBridgeSupportTargetPath(
-          targetPath,
-          supportFile.fileName,
-        ),
-      );
-    }
-    writeConnectorManifest(manifestPath, manifestPayload);
-    return {
-      targetHash: fileHash(targetPath),
-      backupPath: backupPath || null,
-      manifestPath,
-      elevated: false,
-    };
-  } catch (error) {
-    if (!shouldAttemptElevatedConnectorCopy(error)) {
-      throw error;
-    }
-
-    const targetHash = runElevatedConnectorCopy({
-      sourcePath,
-      targetPath,
-      manifestPath,
-      manifestPayload,
-      backupPath,
-      sourceHash,
-      supportFiles,
+  assertManagedConnectorInstallPlan({
+    sourcePath,
+    targetPath,
+    shadowTrackerPath,
+    supportFiles,
+    backupPath,
+  });
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  // Validate again after directory creation so a pre-existing junction or a
+  // concurrently substituted target fails before any connector bytes move.
+  // Permission failures remain visible; this path never crosses a UAC boundary.
+  assertManagedConnectorInstallPlan({
+    sourcePath,
+    targetPath,
+    shadowTrackerPath,
+    supportFiles,
+    backupPath,
+  });
+  const sourceData = readVerifiedRegularFile(sourcePath, {
+    expectedSha256: sourceHash,
+    label: "Bundled connector source",
+  }).data;
+  const replacements = [];
+  if (backupPath) {
+    const backupData = readVerifiedRegularFile(targetPath, {
+      expectedSha256: existingTargetHash,
+      label: "Existing connector backup source",
+    }).data;
+    replacements.push({
+      targetPath: backupPath,
+      data: backupData,
+      sha256: existingTargetHash,
     });
-    return {
-      targetHash,
-      backupPath: backupPath || null,
-      manifestPath,
-      elevated: true,
-    };
   }
+  replacements.push({ targetPath, data: sourceData, sha256: sourceHash });
+  for (const supportFile of supportFiles) {
+    const supportData = readVerifiedRegularFile(supportFile.sourcePath, {
+      expectedSha256: supportFile.sourceHash,
+      label: `Bundled connector support: ${supportFile.fileName}`,
+    }).data;
+    replacements.push({
+      targetPath: supportFile.targetPath,
+      data: supportData,
+      sha256: supportFile.sourceHash,
+    });
+  }
+  replacements.push({
+    targetPath: manifestPath,
+    data: Buffer.from(manifestPayload, "utf8"),
+  });
+  atomicReplaceVerifiedFiles({
+    directoryPath: path.dirname(targetPath),
+    replacements,
+    validateDirectory: (context) => {
+      assertManagedConnectorInstallPlan({
+        sourcePath,
+        targetPath,
+        shadowTrackerPath,
+        supportFiles,
+        backupPath,
+      });
+      if (
+        context?.targetPath === manifestPath &&
+        ["before-replace", "after-replace"].includes(context?.phase)
+      ) {
+        assertManagedConnectorInstalledHashes({
+          targetPath,
+          sourceHash,
+          supportFiles,
+        });
+      }
+    },
+  });
+  return {
+    targetHash: readVerifiedRegularFile(targetPath, {
+      expectedSha256: sourceHash,
+      label: "Installed connector script",
+    }).sha256,
+    backupPath: backupPath || null,
+    manifestPath,
+  };
 }
 
 function ensureManagedTelemetryBridgeInstalled(options = {}) {
   const checkedAt = new Date().toISOString();
+  const processIntegrity = getConnectorProcessIntegrity();
+  if (processIntegrity !== "standard") {
+    return setConnectorSetupStatus({
+      ok: false,
+      status:
+        processIntegrity === "elevated"
+          ? "elevated-launcher-refused"
+          : "integrity-check-failed",
+      requiresAdmin: false,
+      error:
+        processIntegrity === "elevated"
+          ? "Connector repair is disabled while the launcher is elevated. Restart Arenzyra normally so mutable PCOB files are never copied or executed at high integrity."
+          : "Connector repair was blocked because the launcher integrity level could not be verified.",
+      checkedAt,
+    });
+  }
   const sourcePath = getManagedTelemetryBridgeSourcePath();
   const supportResources = getManagedTelemetryBridgeSupportResources();
   const requestedShadowTrackerPath =
@@ -5252,32 +6864,100 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
     });
   }
 
+  for (const supportFile of supportFiles) {
+    supportFile.targetPath = getManagedTelemetryBridgeSupportTargetPath(
+      targetPath,
+      supportFile.fileName,
+    );
+  }
+  try {
+    assertManagedConnectorInstallPlan({
+      sourcePath,
+      targetPath,
+      shadowTrackerPath,
+      supportFiles,
+    });
+  } catch (error) {
+    return setConnectorSetupStatus({
+      ok: false,
+      status: "unsafe-install-path",
+      sourcePath,
+      targetPath,
+      targetStrategy: targetResolution?.strategy || null,
+      targetExisting: targetResolution?.targetExisting === true,
+      shadowTrackerPath,
+      sourceHash,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Connector install path failed security validation.",
+      checkedAt,
+    });
+  }
+
   const existingTargetHash = getOptionalFileHash(targetPath);
   const manifestPath = path.join(
     path.dirname(targetPath),
     CONNECTOR_MANIFEST_NAME,
   );
   const supportFilesReady = supportFiles.every((supportFile) => {
-    const targetSupportPath = getManagedTelemetryBridgeSupportTargetPath(
-      targetPath,
-      supportFile.fileName,
+    return (
+      getOptionalFileHash(supportFile.targetPath) === supportFile.sourceHash
     );
-    supportFile.targetPath = targetSupportPath;
-    return getOptionalFileHash(targetSupportPath) === supportFile.sourceHash;
   });
 
   if (existingTargetHash === sourceHash && supportFilesReady) {
-    writeConnectorManifest(
-      manifestPath,
-      createConnectorManifestPayload({
+    try {
+      const manifestPayload = createConnectorManifestPayload({
         sourceHash,
         sourcePath,
         targetPath,
         shadowTrackerPath,
         supportFiles,
-      }),
-    );
-    telemetryBridgeScriptPath = targetPath;
+      });
+      atomicReplaceVerifiedFiles({
+        directoryPath: path.dirname(targetPath),
+        replacements: [
+          {
+            targetPath: manifestPath,
+            data: Buffer.from(manifestPayload, "utf8"),
+          },
+        ],
+        validateDirectory: () => {
+          assertManagedConnectorInstallPlan({
+            sourcePath,
+            targetPath,
+            shadowTrackerPath,
+            supportFiles,
+          });
+          assertManagedConnectorInstalledHashes({
+            targetPath,
+            sourceHash,
+            supportFiles,
+          });
+        },
+      });
+    } catch (error) {
+      return setConnectorSetupStatus({
+        ok: false,
+        status: "manifest-write-failed",
+        sourcePath,
+        targetPath,
+        targetStrategy: targetResolution?.strategy || null,
+        targetExisting: targetResolution?.targetExisting === true,
+        shadowTrackerPath,
+        manifestPath,
+        sourceHash,
+        targetHash: existingTargetHash,
+        supportFiles,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Connector manifest could not be written.",
+        checkedAt,
+      });
+    }
+    telemetryBridgeScriptPath = sourcePath;
     return setConnectorSetupStatus({
       ok: true,
       status: "ready",
@@ -5289,6 +6969,7 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
       manifestPath,
       sourceHash,
       targetHash: existingTargetHash,
+      supportFiles,
       upToDate: true,
       checkedAt,
     });
@@ -5308,10 +6989,10 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
       throw new Error("Connector hash verification failed after install.");
     }
 
-    telemetryBridgeScriptPath = targetPath;
+    telemetryBridgeScriptPath = sourcePath;
     return setConnectorSetupStatus({
       ok: true,
-      status: copyResult.elevated ? "installed-elevated" : "installed",
+      status: "installed",
       sourcePath,
       targetPath,
       targetStrategy: targetResolution?.strategy || null,
@@ -5321,16 +7002,16 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
       backupPath: copyResult.backupPath,
       sourceHash,
       targetHash: copyResult.targetHash,
+      supportFiles,
       installed: true,
       repaired: Boolean(existingTargetHash),
-      requiresAdmin: copyResult.elevated === true,
       checkedAt,
     });
   } catch (error) {
-    const requiresAdmin = shouldAttemptElevatedConnectorCopy(error);
+    const permissionDenied = isConnectorPermissionError(error);
     return setConnectorSetupStatus({
       ok: false,
-      status: requiresAdmin ? "permission-denied" : "install-failed",
+      status: permissionDenied ? "permission-denied" : "install-failed",
       sourcePath,
       targetPath,
       targetStrategy: targetResolution?.strategy || null,
@@ -5339,9 +7020,9 @@ function ensureManagedTelemetryBridgeInstalled(options = {}) {
       manifestPath,
       sourceHash,
       targetHash: existingTargetHash || null,
-      requiresAdmin,
-      error: requiresAdmin
-        ? "Arenzyra connector install needs administrator permission. Run the launcher as administrator and retry."
+      requiresAdmin: false,
+      error: permissionDenied
+        ? "Connector repair cannot write the selected PCOB folder. Arenzyra will not elevate mutable connector files; use an operator-writable PCOB install or have an administrator deploy the verified files separately."
         : error instanceof Error
           ? error.message
           : "Arenzyra connector install failed.",
@@ -5683,24 +7364,6 @@ function resolveTelemetryBridgeScriptFromShadowTrackerPath(executablePath) {
   return target?.targetPath || "";
 }
 
-function getTelemetryBridgeTargetPathsFromShadowTrackerPath(executablePath) {
-  return getTelemetryBridgeTargetCandidatesFromShadowTrackerPath(
-    executablePath,
-  ).map((target) => target.targetPath);
-}
-
-function resolveTelemetryBridgeScriptFromLegacyShadowTrackerPath(
-  executablePath,
-) {
-  const legacyRoot =
-    resolveLegacyTelemetryRootFromShadowTrackerPath(executablePath);
-  if (!legacyRoot) {
-    return "";
-  }
-
-  return path.join(legacyRoot, "ObToolsNew", "ob.js");
-}
-
 function isSupportedTelemetryBridgeScriptPath(scriptPath) {
   const normalizedScriptPath = String(scriptPath || "").trim();
   if (!normalizedScriptPath || !fs.existsSync(normalizedScriptPath)) {
@@ -5712,15 +7375,6 @@ function isSupportedTelemetryBridgeScriptPath(scriptPath) {
   }
 
   return true;
-}
-
-function findSupportedTelemetryBridgePath(candidates) {
-  for (const candidate of candidates) {
-    if (isSupportedTelemetryBridgeScriptPath(candidate)) {
-      return candidate;
-    }
-  }
-  return "";
 }
 
 function findExistingFile(candidates) {
@@ -5761,7 +7415,7 @@ function getShadowTrackerInputCandidates(inputPath) {
   ]);
 }
 
-function getShadowTrackerCandidates() {
+function getShadowTrackerStaticCandidates() {
   return uniquePaths([
     DEFAULT_SHADOWTRACKER_EXECUTABLE,
     LEGACY_SHADOWTRACKER_EXECUTABLE,
@@ -5802,55 +7456,6 @@ function getShadowTrackerCandidates() {
           "ShadowTrackerExtra.exe",
         )
       : "",
-    ...readWherePaths("ShadowTrackerExtra.exe"),
-  ]);
-}
-
-function getTelemetryBridgeCandidates() {
-  const configuredShadowTrackerPath = resolveShadowTrackerExecutable(
-    configManager.getShadowTrackerPath(),
-    { preferRunning: true },
-  );
-  const derivedCandidates = uniquePaths([
-    ...getTelemetryBridgeTargetPathsFromShadowTrackerPath(
-      configuredShadowTrackerPath,
-    ),
-    ...getTelemetryBridgeTargetPathsFromShadowTrackerPath(
-      DEFAULT_SHADOWTRACKER_EXECUTABLE,
-    ),
-    ...getTelemetryBridgeTargetPathsFromShadowTrackerPath(
-      LEGACY_SHADOWTRACKER_EXECUTABLE,
-    ),
-    ...getTelemetryBridgeTargetPathsFromShadowTrackerPath(
-      OLDER_SHADOWTRACKER_EXECUTABLE,
-    ),
-    resolveTelemetryBridgeScriptFromLegacyShadowTrackerPath(
-      DEFAULT_SHADOWTRACKER_EXECUTABLE,
-    ),
-    resolveTelemetryBridgeScriptFromLegacyShadowTrackerPath(
-      LEGACY_SHADOWTRACKER_EXECUTABLE,
-    ),
-    resolveTelemetryBridgeScriptFromLegacyShadowTrackerPath(
-      OLDER_SHADOWTRACKER_EXECUTABLE,
-    ),
-  ]);
-
-  if (app.isPackaged) {
-    return uniquePaths([
-      REPO_TELEMETRY_BRIDGE_SCRIPT,
-      ...derivedCandidates,
-      DEFAULT_TELEMETRY_BRIDGE_SCRIPT,
-      LEGACY_TELEMETRY_BRIDGE_SCRIPT,
-      OLDER_TELEMETRY_BRIDGE_SCRIPT,
-    ]);
-  }
-
-  return uniquePaths([
-    REPO_TELEMETRY_BRIDGE_SCRIPT,
-    ...derivedCandidates,
-    DEFAULT_TELEMETRY_BRIDGE_SCRIPT,
-    LEGACY_TELEMETRY_BRIDGE_SCRIPT,
-    OLDER_TELEMETRY_BRIDGE_SCRIPT,
   ]);
 }
 
@@ -5892,44 +7497,51 @@ function resolveShadowTrackerExecutable(inputPath, options = {}) {
   });
   const preferRunning = options.preferRunning === true;
 
-  const candidates = preferRunning
-    ? [
-        ...runningCandidates,
-        ...inputCandidates,
-        ...getShadowTrackerCandidates(),
-      ]
-    : [
-        ...inputCandidates,
-        ...runningCandidates,
-        ...getShadowTrackerCandidates(),
-      ];
+  const primaryCandidates = preferRunning
+    ? [...runningCandidates, ...inputCandidates]
+    : [...inputCandidates, ...runningCandidates];
+  const primaryMatch = findExistingFile(primaryCandidates);
+  if (primaryMatch) {
+    return primaryMatch;
+  }
 
-  return findExistingFile(candidates);
+  const staticMatch = findExistingFile(getShadowTrackerStaticCandidates());
+  if (staticMatch) {
+    return staticMatch;
+  }
+  return findExistingFile(readWherePaths("ShadowTrackerExtra.exe"));
 }
 
-function resolveTelemetryBridgeScript(inputPath) {
+async function resolveShadowTrackerExecutableForProduction(
+  inputPath,
+  options = {},
+) {
   const providedPath = migrateLegacyPrefix(
     inputPath,
-    [OLDER_TELEMETRY_BRIDGE_PREFIX, LEGACY_TELEMETRY_BRIDGE_PREFIX],
-    DEFAULT_TELEMETRY_BRIDGE_PREFIX,
+    [OLDER_SHADOWTRACKER_PREFIX, LEGACY_SHADOWTRACKER_PREFIX],
+    DEFAULT_SHADOWTRACKER_PREFIX,
   );
-  if (isSupportedTelemetryBridgeScriptPath(providedPath)) {
-    return providedPath;
+  const inputCandidates = getShadowTrackerInputCandidates(providedPath);
+  let runningEntries = [];
+  try {
+    runningEntries = await getRunningShadowTrackerProcessesAsync({
+      force: options.forceProcessScan !== false,
+    });
+  } catch {
+    runningEntries = [];
   }
 
-  const derivedFromConfiguredShadowTracker =
-    resolveTelemetryBridgeScriptFromShadowTrackerPath(
-      resolveShadowTrackerExecutable(configManager.getShadowTrackerPath(), {
-        preferRunning: true,
+  return resolveProductionExecutableCandidates({
+    preferRunning: options.preferRunning !== false,
+    runningCandidates: runningEntries.map((entry) => entry.executablePath),
+    configuredCandidates: inputCandidates,
+    staticCandidates: getShadowTrackerStaticCandidates(),
+    isExecutableFile: isExistingFile,
+    discoverPathCandidates: () =>
+      discoverExecutablePaths("ShadowTrackerExtra.exe", {
+        platform: process.platform,
       }),
-    );
-  if (
-    isSupportedTelemetryBridgeScriptPath(derivedFromConfiguredShadowTracker)
-  ) {
-    return derivedFromConfiguredShadowTracker;
-  }
-
-  return findSupportedTelemetryBridgePath(getTelemetryBridgeCandidates());
+  });
 }
 
 function spawnDetached(command, args, options = {}) {
@@ -5943,46 +7555,85 @@ function spawnDetached(command, args, options = {}) {
   return child;
 }
 
-function spawnNodeScript(scriptPath, envOverrides = null) {
-  const envBase =
-    envOverrides && typeof envOverrides === "object"
-      ? { ...process.env, ...envOverrides }
-      : { ...process.env };
-  const nodePathEntries = String(envBase.NODE_PATH || "")
-    .split(path.delimiter)
-    .map((entry) => String(entry || "").trim())
-    .filter(Boolean);
-
-  if (app.isPackaged) {
-    nodePathEntries.unshift(
-      path.join(process.resourcesPath, "app", "node_modules"),
-      path.join(process.resourcesPath, "app.asar", "node_modules"),
+function getTrustedConnectorDependencyRoots() {
+  const roots = {};
+  const allowedRoots = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, "app"),
+        path.join(process.resourcesPath, "app.asar"),
+      ]
+    : [REPO_ROOT];
+  for (const packageName of ["axios", "express"]) {
+    const packageRoot = path.dirname(
+      require.resolve(`${packageName}/package.json`),
     );
+    if (
+      path.basename(packageRoot).toLowerCase() !== packageName ||
+      !allowedRoots.some((allowedRoot) =>
+        isConnectorPathInside(allowedRoot, packageRoot),
+      )
+    ) {
+      throw new Error(
+        `Managed connector dependency escaped the trusted app resources: ${packageName}`,
+      );
+    }
+    roots[packageName] = packageRoot;
+  }
+  return roots;
+}
+
+function prepareManagedConnectorRuntimeInputs(connector) {
+  const sourcePath = getManagedTelemetryBridgeSourcePath();
+  const supportResources = getManagedTelemetryBridgeSupportResources();
+  if (
+    !connector?.ok ||
+    !sourcePath ||
+    normalizeComparablePath(sourcePath) !==
+      normalizeComparablePath(connector.sourcePath) ||
+    !connector.sourceHash
+  ) {
+    throw new Error("Managed connector source identity is unavailable.");
   }
 
-  const env = {
-    ...envBase,
-    NODE_PATH: Array.from(new Set(nodePathEntries)).join(path.delimiter),
+  const expectedSupportHashes = new Map(
+    (connector.supportFiles || []).map((supportFile) => [
+      supportFile.fileName,
+      supportFile.sourceHash,
+    ]),
+  );
+  const supportFiles = supportResources.map((supportFile) => ({
+    path: supportFile.sourcePath,
+    sha256: expectedSupportHashes.get(supportFile.fileName),
+  }));
+  const trustedRoot = app.isPackaged
+    ? path.join(process.resourcesPath, CONNECTOR_RESOURCE_DIR_NAME)
+    : REPO_ROOT;
+  assertVerifiedRuntimeInputs({
+    trustedRoot,
+    files: [
+      { path: sourcePath, sha256: connector.sourceHash },
+      ...supportFiles,
+    ],
+  });
+
+  return {
+    dependencyRoots: getTrustedConnectorDependencyRoots(),
+    scriptPath: sourcePath,
   };
+}
 
-  if (app.isPackaged) {
-    return spawnDetached(process.execPath, [scriptPath], {
-      cwd: path.dirname(scriptPath),
-      env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
-    });
-  }
-
-  const nodePaths = readWherePaths("node.exe");
-  if (nodePaths.length > 0) {
-    return spawnDetached(nodePaths[0], [scriptPath], {
-      cwd: path.dirname(scriptPath),
-      env,
-    });
-  }
-
+function spawnNodeScript(scriptPath, envOverrides = null, options = {}) {
+  const env = createSanitizedConnectorEnv({
+    parentEnv: process.env,
+    overrides:
+      envOverrides && typeof envOverrides === "object" ? envOverrides : {},
+    dependencyRoots: options.dependencyRoots,
+    // Electron honors this flag; a regular Node executable safely ignores it.
+    electronRunAsNode: true,
+  });
   return spawnDetached(process.execPath, [scriptPath], {
     cwd: path.dirname(scriptPath),
-    env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+    env,
   });
 }
 
@@ -5995,6 +7646,8 @@ function isChildProcessRunning(child) {
 }
 
 function getObserverFeedStatusView() {
+  const recovery = observerFeedSupervisor.getStatus();
+  const health = observerFeedHealthWatchdog.getStatus();
   return {
     enabled: observerFeedState.enabled === true,
     running: observerFeedState.running === true,
@@ -6020,6 +7673,18 @@ function getObserverFeedStatusView() {
         : null,
     lastStartedAt: observerFeedState.lastStartedAt ?? null,
     lastStoppedAt: observerFeedState.lastStoppedAt ?? null,
+    recoveryState: recovery.state,
+    restartAttempts: recovery.restartAttempts,
+    maxRestartAttempts: recovery.maxRestartAttempts,
+    nextRestartAt: recovery.nextRestartAt,
+    lastUnexpectedExitAt: recovery.lastUnexpectedExitAt,
+    lastRestartAt: recovery.lastRestartAt,
+    restartBlockedReason: recovery.blockedReason,
+    healthState: health.state,
+    consecutiveHealthFailures: health.consecutiveFailures,
+    healthFailureThreshold: health.failureThreshold,
+    lastHealthCheckAt: health.lastCheckedAt,
+    lastHealthyAt: health.lastHealthyAt,
   };
 }
 
@@ -6037,6 +7702,78 @@ function resetObserverFeedState(patch = {}) {
     ...patch,
   };
   return getObserverFeedStatusView();
+}
+
+function synchronizeObserverFeedRecoveryState(recovery = {}) {
+  if (recovery.state === "waiting" || recovery.state === "restarting") {
+    setObserverFeedState({
+      enabled: true,
+      running: false,
+      mode: "direct",
+      ready: false,
+      managed: true,
+      pid: null,
+      lastError: recovery.lastError || "Observer feed recovery is in progress.",
+    });
+    refreshLocalRuntimeLifecyclePoller();
+    return;
+  }
+
+  if (recovery.state === "blocked" || recovery.state === "circuit-open") {
+    observerFeedHealthWatchdog.stop();
+    setObserverFeedState({
+      enabled: false,
+      running: false,
+      mode: "off",
+      ready: false,
+      managed: false,
+      pid: null,
+      lastError:
+        recovery.blockedReason ||
+        recovery.lastError ||
+        "Observer feed recovery stopped.",
+      lastStoppedAt: new Date().toISOString(),
+    });
+    setWidgetDirectObserverPollingAllowed(false);
+    refreshLocalRuntimeLifecyclePoller();
+  }
+}
+
+function synchronizeObserverFeedHealthState(health = {}) {
+  if (
+    health.state === "healthy" &&
+    isChildProcessRunning(telemetryBridgeProcess) &&
+    isDirectTelemetrySourceConfig(telemetrySourceProcessConfig)
+  ) {
+    setObserverFeedState({
+      running: true,
+      ready: true,
+      lastError: null,
+    });
+    return;
+  }
+
+  if (health.state === "degraded" || health.state === "recycling") {
+    setObserverFeedState({
+      ready: false,
+      lastError:
+        health.lastError || "Owned observer connector health check failed.",
+    });
+  }
+}
+
+function isObserverFeedRecoveryActive(status = getObserverFeedStatusView()) {
+  return (
+    status.recoveryState === "waiting" || status.recoveryState === "restarting"
+  );
+}
+
+function isObserverFeedSessionActive(status = getObserverFeedStatusView()) {
+  return (
+    status.enabled === true ||
+    status.running === true ||
+    isObserverFeedRecoveryActive(status)
+  );
 }
 
 function isDirectObserverWidgetPollingPermittedByPolicy() {
@@ -6067,6 +7804,14 @@ function shouldPollDirectObserverForWidgets() {
   });
 }
 
+function shouldPollDirectObserverCircleForWidgets() {
+  return (
+    isDirectObserverWidgetPollingPermittedByPolicy() &&
+    (shouldPollDirectObserverForWidgets() ||
+      telemetryBridge.getStatus().running === true)
+  );
+}
+
 function clearWidgetRuntimeState(reason = "stopped") {
   if (typeof widgetServer?.clearRuntimeState === "function") {
     widgetServer.clearRuntimeState({ reason });
@@ -6074,7 +7819,7 @@ function clearWidgetRuntimeState(reason = "stopped") {
 }
 
 function shouldMonitorLocalRuntimeLifecycle() {
-  return getObserverFeedStatusView().running === true;
+  return isObserverFeedSessionActive();
 }
 
 function clearLocalRuntimeLifecyclePollTimer() {
@@ -6094,13 +7839,50 @@ async function pollLocalRuntimeLifecycleOnce() {
     return;
   }
 
+  const initialObserverStatus = getObserverFeedStatusView();
+  if (
+    initialObserverStatus.enabled !== true &&
+    initialObserverStatus.running === true
+  ) {
+    localRuntimeLifecyclePollInFlight = true;
+    try {
+      await stopObserverFeed("stop-retry");
+    } catch (error) {
+      logError("[Observer Feed] Pending safe stop retry failed", {
+        pid: initialObserverStatus.pid,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error || "Unknown stop error"),
+      });
+    } finally {
+      localRuntimeLifecyclePollInFlight = false;
+    }
+    return;
+  }
+
   let session;
   let matchId;
+  let observerSessionId;
   try {
     session = getStoredSession();
-    matchId = requireMatchId(getObserverFeedStatusView().matchId);
+    const observerStatus = getObserverFeedStatusView();
+    matchId = requireMatchId(observerStatus.matchId);
+    observerSessionId = String(observerStatus.sessionId || "").trim();
   } catch {
     return;
+  }
+
+  if (shouldRefreshAuthoritativeLiveMatchMap()) {
+    void refreshAuthoritativeLiveMatchMap(session).catch((error) => {
+      logWarn("[Observer Feed] Live match map refresh failed", {
+        matchId,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error || "Unknown map refresh error"),
+      });
+    });
   }
 
   localRuntimeLifecyclePollInFlight = true;
@@ -6114,11 +7896,30 @@ async function pollLocalRuntimeLifecycleOnce() {
       lifecycleStatus === "FINISH_PENDING" ||
       lifecycleStatus === "ENDED";
     const isFinished = lifecycleStatus === "FINISHED";
-    if (!isFinalizing && !isFinished) {
+    const boundSessionId = getObserverFeedBoundSessionId(control);
+    const sessionMismatch = Boolean(
+      observerSessionId &&
+      boundSessionId &&
+      boundSessionId !== observerSessionId,
+    );
+    if (!isFinalizing && !isFinished && !sessionMismatch) {
       return;
     }
 
-    const reason = isFinished ? "finished" : "finalizing";
+    const currentObserverStatus = getObserverFeedStatusView();
+    if (
+      !isObserverFeedSessionActive(currentObserverStatus) ||
+      currentObserverStatus.matchId !== matchId ||
+      String(currentObserverStatus.sessionId || "").trim() !== observerSessionId
+    ) {
+      return;
+    }
+
+    const reason = isFinished
+      ? "finished"
+      : sessionMismatch
+        ? "session-replaced"
+        : "finalizing";
     logWarn("[Observer Feed] Backend lifecycle forced local runtime stop", {
       matchId,
       matchStatus: lifecycleStatus,
@@ -6208,10 +8009,15 @@ function normalizeShadowTelemetryBaseUrl(
 
   try {
     const parsed = new URL(raw.includes("://") ? raw : `http://${raw}`);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
+    if (
+      parsed.protocol !== "http:" ||
+      !isConnectorLoopbackHostname(parsed.hostname) ||
+      parsed.username ||
+      parsed.password
+    ) {
       return fallback;
     }
-    if (!parsed.port && ["127.0.0.1", "localhost"].includes(parsed.hostname)) {
+    if (!parsed.port) {
       parsed.port = String(DEFAULT_SHADOW_TELEMETRY_PORT);
     }
     return parsed.toString().replace(/\/$/, "");
@@ -6285,8 +8091,8 @@ function extractPortFromBaseUrl(baseUrl) {
   }
 }
 
-function getShadowTelemetryPort() {
-  return extractPortFromBaseUrl(getShadowTelemetryBaseUrl());
+function getShadowTelemetryPort(baseUrl = getShadowTelemetryBaseUrl()) {
+  return extractPortFromBaseUrl(baseUrl);
 }
 
 function getShadowTelemetryCandidateBaseUrls() {
@@ -6320,7 +8126,7 @@ function getShadowTelemetryCandidateBaseUrls() {
     });
 }
 
-function isShadowTelemetryProbeResponse(pathname, response) {
+function isShadowTelemetryProbeResponse(pathname, response, options = {}) {
   const status = Number(response?.status);
   if (!Number.isFinite(status) || status < 200 || status >= 300) {
     return false;
@@ -6328,13 +8134,21 @@ function isShadowTelemetryProbeResponse(pathname, response) {
 
   const data = response?.data;
   if (pathname === "/health") {
-    return Boolean(
+    const validHealth = Boolean(
       data &&
       typeof data === "object" &&
       (data.status === "ok" ||
         Object.prototype.hasOwnProperty.call(data, "forwardEnabled") ||
         Object.prototype.hasOwnProperty.call(data, "forwardBaseUrl")),
     );
+    return (
+      validHealth &&
+      matchesExpectedObserverRuntime(data?.runtime, options.expectedRuntime)
+    );
+  }
+
+  if (options.expectedRuntime) {
+    return false;
   }
 
   return true;
@@ -6357,17 +8171,41 @@ async function probeShadowTelemetryBaseUrl(baseUrl, checkedAt, options = {}) {
     try {
       const response = await axios.get(`${normalizedBaseUrl}${probePath}`, {
         timeout: SHADOW_TELEMETRY_PROBE_TIMEOUT_MS,
+        ...(String(options.localAccessToken || "").trim()
+          ? {
+              headers: {
+                "X-Arenzyra-Connector-Token": String(
+                  options.localAccessToken,
+                ).trim(),
+              },
+            }
+          : {}),
         validateStatus: () => true,
       });
 
-      if (isShadowTelemetryProbeResponse(probePath, response)) {
+      if (isShadowTelemetryProbeResponse(probePath, response, options)) {
         return {
           reachable: true,
           baseUrl: normalizedBaseUrl,
           lastResponseAt: checkedAt,
           lastCheckedAt: checkedAt,
+          runtime:
+            probePath === "/health" && response?.data?.runtime
+              ? { ...response.data.runtime }
+              : null,
           lastError: null,
         };
+      }
+
+      if (
+        probePath === "/health" &&
+        options.expectedRuntime &&
+        Number(response?.status) >= 200 &&
+        Number(response?.status) < 300
+      ) {
+        lastError =
+          "Observer connector identity did not match the owned runtime.";
+        break;
       }
 
       if (Number(response?.status) >= 500) {
@@ -6449,7 +8287,17 @@ function buildTelemetrySourceProcessEnv(config = null) {
       isPackaged: app.isPackaged,
       env: process.env,
     }),
-    PORT: String(getShadowTelemetryPort()),
+    PORT: String(
+      getShadowTelemetryPort(
+        normalizedConfig.observerBaseUrl || getShadowTelemetryBaseUrl(),
+      ),
+    ),
+    ARENZYRA_OBSERVER_RUNTIME_NONCE: String(
+      normalizedConfig.runtimeNonce || "",
+    ).trim(),
+    ARENZYRA_PCOB_CONNECTOR_TOKEN: String(
+      normalizedConfig.localControlToken || "",
+    ).trim(),
   };
 
   if (mode !== "direct") {
@@ -6466,6 +8314,16 @@ function buildTelemetrySourceProcessEnv(config = null) {
     ARENZYRA_OBSERVER_FEED_TOKEN: String(
       normalizedConfig.feedToken || "",
     ).trim(),
+    OBSERVER_FORWARD_LOG_PATH: path.join(
+      app.getPath("userData"),
+      "logs",
+      "telemetry.log",
+    ),
+    PCOB_EVENT_SPOOL_DIR: path.join(
+      app.getPath("userData"),
+      "telemetry",
+      "pcob-event-spool",
+    ),
     ...(mapKey
       ? {
           ARENZYRA_FORCE_MAP_KEY: mapKey,
@@ -6493,50 +8351,747 @@ function sameTelemetrySourceConfig(currentConfig, nextConfig) {
     return true;
   }
 
-  return (
-    currentConfig.matchId === nextConfig.matchId &&
-    currentConfig.sessionId === nextConfig.sessionId &&
-    currentConfig.apiBase === nextConfig.apiBase &&
-    currentConfig.feedToken === nextConfig.feedToken &&
-    (currentConfig.mapKey || null) === (nextConfig.mapKey || null)
+  return sameObserverFeedConfig(currentConfig, nextConfig);
+}
+
+function getObserverFeedBoundSessionId(control) {
+  return String(
+    control?.binding?.sessionId || control?.pcobSessionId || "",
+  ).trim();
+}
+
+async function validateObserverFeedRecoveryAuthority(config) {
+  let session;
+  try {
+    session = getStoredSession();
+    assertLauncherAccess();
+  } catch (error) {
+    return {
+      allowed: false,
+      terminal: true,
+      reason:
+        error instanceof Error
+          ? error.message
+          : "Launcher authorization is no longer available.",
+    };
+  }
+
+  if (normalizeBaseUrl(session.apiBase) !== normalizeBaseUrl(config.apiBase)) {
+    return {
+      allowed: false,
+      terminal: true,
+      reason: "Observer feed API authority changed.",
+    };
+  }
+
+  let control;
+  let lifecycleStatus;
+  try {
+    const lifecycle = await fetchMatchControlState(session, config.matchId);
+    control = lifecycle.control;
+    lifecycleStatus = lifecycle.lifecycleStatus;
+  } catch (error) {
+    const authorityExpired =
+      isUnauthorizedError(error) || error?.code === ACCESS_DENIED_ERROR_CODE;
+    if (!authorityExpired) {
+      logWarn(
+        "[Observer Feed] Backend authority temporarily unavailable; recovering the same bound session for durable local capture",
+        {
+          matchId: config.matchId,
+          sessionId: config.sessionId,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error || "Unknown authority error"),
+        },
+      );
+      return { allowed: true, authorityDegraded: true };
+    }
+    return {
+      allowed: false,
+      terminal: true,
+      reason: "Observer feed authorization expired.",
+    };
+  }
+
+  if (
+    control?.isFinalizing === true ||
+    lifecycleStatus === "FINISH_PENDING" ||
+    lifecycleStatus === "ENDED" ||
+    lifecycleStatus === "FINISHED"
+  ) {
+    return {
+      allowed: false,
+      terminal: true,
+      reason: "Observer feed recovery stopped because the match is finalizing.",
+    };
+  }
+
+  if (lifecycleStatus !== "LIVE") {
+    return {
+      allowed: false,
+      terminal: true,
+      reason: `Observer feed recovery requires the same LIVE match (current state: ${
+        lifecycleStatus || "unknown"
+      }).`,
+    };
+  }
+
+  const boundSessionId = getObserverFeedBoundSessionId(control);
+  if (
+    !boundSessionId ||
+    boundSessionId !== String(config.sessionId || "").trim()
+  ) {
+    return {
+      allowed: false,
+      terminal: true,
+      reason:
+        "Observer feed recovery stopped because the match session binding changed.",
+    };
+  }
+
+  return { allowed: true };
+}
+
+async function restartObserverFeedFromSupervisor(config, context = {}) {
+  if (context.signal?.aborted || context.isCurrent?.() !== true) {
+    return { ok: false, error: "Observer feed recovery was cancelled." };
+  }
+
+  const source = await ensureTelemetrySourceRunning({
+    mode: "direct",
+    apiBase: config.apiBase,
+    observerBaseUrl: config.observerBaseUrl,
+    matchId: config.matchId,
+    sessionId: config.sessionId,
+    feedToken: config.feedToken,
+    mapKey: getDesiredObserverFallbackMapKey(config.matchId, config.mapKey),
+    signal: context.signal,
+  });
+
+  if (context.signal?.aborted || context.isCurrent?.() !== true) {
+    if (
+      isChildProcessRunning(telemetryBridgeProcess) &&
+      sameTelemetrySourceConfig(telemetrySourceProcessConfig, config)
+    ) {
+      await stopManagedTelemetrySourceProcess("supervisor-cancelled");
+    }
+    return { ok: false, error: "Observer feed recovery was cancelled." };
+  }
+
+  if (source?.error) {
+    return { ok: false, error: source.error };
+  }
+  if (
+    !isChildProcessRunning(telemetryBridgeProcess) ||
+    !sameTelemetrySourceConfig(telemetrySourceProcessConfig, config)
+  ) {
+    return {
+      ok: false,
+      error: "Observer connector did not remain running after recovery.",
+    };
+  }
+
+  setWidgetDirectObserverPollingAllowed(true);
+  observerFeedHealthWatchdog.start(telemetrySourceProcessConfig);
+  refreshLocalRuntimeLifecyclePoller();
+  log("[Observer Feed] Connector recovered", {
+    matchId: config.matchId,
+    sessionId: config.sessionId,
+    pid: telemetryBridgeProcess?.pid ?? null,
+    ready: source.ready === true,
+  });
+  return { ok: true };
+}
+
+function sameOwnedObserverRuntimeConfig(left, right) {
+  return Boolean(
+    sameObserverFeedConfig(left, right) &&
+    String(left?.runtimeNonce || "").trim() &&
+    String(left?.runtimeNonce || "").trim() ===
+      String(right?.runtimeNonce || "").trim(),
   );
 }
 
-function killChildProcessTree(pid) {
+async function probeOwnedObserverRuntimeHealth(config) {
+  const child = telemetryBridgeProcess;
+  const generation = telemetrySourceProcessGeneration;
+  if (
+    !isChildProcessRunning(child) ||
+    !sameOwnedObserverRuntimeConfig(telemetrySourceProcessConfig, config)
+  ) {
+    return {
+      healthy: false,
+      error: "Owned observer connector process is not running.",
+    };
+  }
+
+  const probe = await probeExactObserverRuntime(config);
+  const stillCurrent =
+    telemetryBridgeProcess === child &&
+    telemetrySourceProcessGeneration === generation &&
+    sameOwnedObserverRuntimeConfig(telemetrySourceProcessConfig, config);
+  const healthy = stillCurrent && probe.present === true;
+  return {
+    healthy,
+    error: healthy
+      ? null
+      : probe.error ||
+        "Owned observer connector failed its exact runtime health check.",
+  };
+}
+
+async function recycleUnhealthyObserverRuntime(config, context = {}) {
+  if (
+    context.isCurrent?.() !== true ||
+    !isChildProcessRunning(telemetryBridgeProcess) ||
+    !sameOwnedObserverRuntimeConfig(telemetrySourceProcessConfig, config)
+  ) {
+    return;
+  }
+
+  logWarn("[Observer Feed] Recycling unhealthy owned connector", {
+    matchId: config.matchId,
+    sessionId: config.sessionId,
+    pid: telemetryBridgeProcess?.pid ?? null,
+    consecutiveFailures: OBSERVER_FEED_HEALTH_FAILURE_THRESHOLD,
+    error: context.error || null,
+  });
+  const stopResult = await stopManagedTelemetrySourceProcess(
+    "health-watchdog-recycle",
+  );
+  if (stopResult.ok !== true) {
+    observerFeedHealthWatchdog.stop();
+    observerFeedSupervisor.disarm();
+    setWidgetDirectObserverPollingAllowed(false);
+    clearWidgetRuntimeState("observer-feed-health-stop-failed");
+    setObserverFeedState({
+      enabled: false,
+      ready: false,
+      running: true,
+      lastError: stopResult.error,
+    });
+    refreshLocalRuntimeLifecyclePoller();
+    return;
+  }
+  beginObserverFeedRecovery(
+    config,
+    context.error || "Owned observer connector stopped responding.",
+    "observer-feed-health-watchdog",
+  );
+}
+
+async function probeExactObserverRuntime(
+  config,
+  timeoutMs = SHADOW_TELEMETRY_PROBE_TIMEOUT_MS,
+) {
+  const expectedRuntime = getExpectedObserverRuntime(config);
+  if (!expectedRuntime?.nonce) {
+    return {
+      present: false,
+      absent: true,
+      error: null,
+    };
+  }
+
+  try {
+    const baseUrl = normalizeShadowTelemetryBaseUrl(
+      config?.observerBaseUrl || getShadowTelemetryBaseUrl(),
+    );
+    const response = await axios.get(
+      new URL("/health", `${baseUrl}/`).toString(),
+      {
+        timeout: Math.max(1, Number(timeoutMs) || 1),
+        headers: {
+          "X-Arenzyra-Connector-Token": String(
+            config?.localControlToken || "",
+          ).trim(),
+        },
+        validateStatus: () => true,
+      },
+    );
+    const runtime = response?.data?.runtime;
+    const present = matchesExpectedObserverRuntime(runtime, expectedRuntime);
+    return {
+      present,
+      absent: Boolean(runtime && typeof runtime === "object" && !present),
+      error: present
+        ? null
+        : "The local health endpoint did not identify the expected observer runtime.",
+    };
+  } catch (error) {
+    const errorCode = String(error?.code || "")
+      .trim()
+      .toUpperCase();
+    const absent = errorCode === "ECONNREFUSED";
+    return {
+      present: false,
+      absent,
+      error:
+        error instanceof Error && error.message
+          ? error.message
+          : "Owned observer connector did not respond to its local health check.",
+    };
+  }
+}
+
+async function requestExactObserverRuntimeShutdown(
+  config,
+  timeoutMs = OBSERVER_FEED_GRACEFUL_REQUEST_TIMEOUT_MS,
+) {
+  const expectedRuntime = getExpectedObserverRuntime(config);
+  const localControlToken = String(config?.localControlToken || "").trim();
+  if (!expectedRuntime?.nonce || !localControlToken) {
+    return false;
+  }
+
+  const boundedTimeoutMs = Math.max(1, Number(timeoutMs) || 1);
+  const ownershipProbe = await probeExactObserverRuntime(
+    config,
+    boundedTimeoutMs,
+  );
+  if (ownershipProbe.present !== true) {
+    return false;
+  }
+
+  try {
+    const baseUrl = normalizeShadowTelemetryBaseUrl(
+      config?.observerBaseUrl || getShadowTelemetryBaseUrl(),
+    );
+    const response = await axios.post(
+      new URL("/debug/observer/shutdown", `${baseUrl}/`).toString(),
+      null,
+      {
+        timeout: boundedTimeoutMs,
+        maxRedirects: 0,
+        headers: {
+          "X-Arenzyra-Connector-Token": localControlToken,
+          "X-Arenzyra-Runtime-Nonce": expectedRuntime.nonce,
+        },
+        validateStatus: () => true,
+      },
+    );
+    return response?.status === 202 && response?.data?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+function captureObserverMapFallbackSyncTarget(matchId, mapKey) {
+  const normalizedMatchId = String(matchId || "").trim();
+  const canonicalMapKey = resolveDesiredObserverFallbackMapKey({
+    bootstrapMapKey: mapKey,
+  });
+  const child = telemetryBridgeProcess;
+  const config = telemetrySourceProcessConfig;
+  const expectedRuntime = getExpectedObserverRuntime(config);
+  const localControlToken = String(config?.localControlToken || "").trim();
+  if (
+    !normalizedMatchId ||
+    !canonicalMapKey ||
+    !isChildProcessRunning(child) ||
+    !isDirectTelemetrySourceConfig(config) ||
+    String(config.matchId || "").trim() !== normalizedMatchId ||
+    !expectedRuntime?.nonce ||
+    !localControlToken
+  ) {
+    return null;
+  }
+
+  const generation = telemetrySourceProcessGeneration;
+  return {
+    child,
+    config,
+    epoch: observerMapFallbackSyncEpoch,
+    generation,
+    identity: `${observerMapFallbackSyncEpoch}:${generation}:${expectedRuntime.nonce}:${canonicalMapKey}`,
+    localControlToken,
+    mapKey: canonicalMapKey,
+    matchId: normalizedMatchId,
+    observerBaseUrl: normalizeShadowTelemetryBaseUrl(
+      config.observerBaseUrl || getShadowTelemetryBaseUrl(),
+    ),
+    runtimeNonce: expectedRuntime.nonce,
+  };
+}
+
+function isCurrentObserverMapFallbackSyncTarget(target) {
+  return Boolean(
+    target &&
+    target.epoch === observerMapFallbackSyncEpoch &&
+    telemetryBridgeProcess === target.child &&
+    telemetrySourceProcessConfig === target.config &&
+    telemetrySourceProcessGeneration === target.generation &&
+    isChildProcessRunning(target.child) &&
+    isDirectTelemetrySourceConfig(target.config) &&
+    String(target.config.matchId || "").trim() === target.matchId,
+  );
+}
+
+async function requestExactObserverRuntimeMapFallback(
+  target,
+  timeoutMs = OBSERVER_FEED_GRACEFUL_REQUEST_TIMEOUT_MS,
+) {
+  if (!isCurrentObserverMapFallbackSyncTarget(target)) {
+    return { ok: false, stale: true, error: "Observer runtime changed." };
+  }
+
+  try {
+    const response = await axios.post(
+      new URL(
+        "/debug/observer/map-fallback",
+        `${target.observerBaseUrl}/`,
+      ).toString(),
+      { mapKey: target.mapKey },
+      {
+        timeout: Math.max(1, Number(timeoutMs) || 1),
+        maxRedirects: 0,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Arenzyra-Connector-Token": target.localControlToken,
+          "X-Arenzyra-Runtime-Nonce": target.runtimeNonce,
+        },
+        validateStatus: () => true,
+      },
+    );
+    const ok =
+      response?.status === 200 &&
+      response?.data?.ok === true &&
+      response?.data?.fallbackMapKey === target.mapKey;
+    return {
+      ok,
+      status: Number(response?.status) || null,
+      error: ok
+        ? null
+        : response?.data?.error ||
+          "The observer connector rejected the map fallback update.",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: null,
+      error:
+        error instanceof Error && error.message
+          ? error.message
+          : "The observer connector map fallback update failed.",
+    };
+  }
+}
+
+function clearObserverMapFallbackRetry(options = {}) {
+  if (observerMapFallbackRetryTimer) {
+    clearTimeout(observerMapFallbackRetryTimer);
+    observerMapFallbackRetryTimer = null;
+  }
+  if (options.preserveAttempt !== true) {
+    observerMapFallbackRetryTarget = null;
+    observerMapFallbackRetryAttempt = 0;
+  }
+}
+
+function scheduleObserverMapFallbackRetry(target) {
+  if (
+    observerMapFallbackSyncDesired ||
+    !isCurrentObserverMapFallbackSyncTarget(target) ||
+    observerMapFallbackLastAppliedIdentity === target.identity
+  ) {
+    return;
+  }
+  if (
+    observerMapFallbackRetryTimer &&
+    observerMapFallbackRetryTarget?.identity === target.identity
+  ) {
+    return;
+  }
+
+  clearObserverMapFallbackRetry({
+    preserveAttempt:
+      observerMapFallbackRetryTarget?.identity === target.identity,
+  });
+  observerMapFallbackRetryTarget = target;
+  const delayMs =
+    OBSERVER_MAP_FALLBACK_RETRY_DELAYS_MS[
+      Math.min(
+        observerMapFallbackRetryAttempt,
+        OBSERVER_MAP_FALLBACK_RETRY_DELAYS_MS.length - 1,
+      )
+    ];
+  observerMapFallbackRetryAttempt += 1;
+  observerMapFallbackRetryTimer = setTimeout(() => {
+    observerMapFallbackRetryTimer = null;
+    if (!isCurrentObserverMapFallbackSyncTarget(target)) {
+      clearObserverMapFallbackRetry();
+      return;
+    }
+
+    const latestMapKey = getDesiredObserverFallbackMapKey(
+      target.matchId,
+      target.mapKey,
+    );
+    if (latestMapKey !== target.mapKey) {
+      clearObserverMapFallbackRetry();
+      void scheduleObserverMapFallbackSync(target.matchId, latestMapKey);
+      return;
+    }
+
+    const refreshedTarget = captureObserverMapFallbackSyncTarget(
+      target.matchId,
+      target.mapKey,
+    );
+    if (refreshedTarget) {
+      observerMapFallbackSyncDesired = refreshedTarget;
+      ensureObserverMapFallbackSyncDrain();
+    } else {
+      clearObserverMapFallbackRetry();
+    }
+  }, delayMs);
+  observerMapFallbackRetryTimer.unref?.();
+}
+
+async function drainObserverMapFallbackSyncQueue() {
+  while (observerMapFallbackSyncDesired) {
+    const target = observerMapFallbackSyncDesired;
+    observerMapFallbackSyncDesired = null;
+    if (!isCurrentObserverMapFallbackSyncTarget(target)) {
+      continue;
+    }
+    if (observerMapFallbackLastAppliedIdentity === target.identity) {
+      continue;
+    }
+
+    observerMapFallbackInFlightIdentity = target.identity;
+    const result = await requestExactObserverRuntimeMapFallback(target);
+    if (observerMapFallbackInFlightIdentity === target.identity) {
+      observerMapFallbackInFlightIdentity = null;
+    }
+    if (!isCurrentObserverMapFallbackSyncTarget(target)) {
+      continue;
+    }
+    if (result.ok === true) {
+      observerMapFallbackLastAppliedIdentity = target.identity;
+      observerMapFallbackLastWarningAt = 0;
+      clearObserverMapFallbackRetry();
+      continue;
+    }
+
+    // A timed-out local POST may have applied before its response was lost.
+    // Forget the prior success so any later map (including a revert) is sent
+    // explicitly instead of being incorrectly treated as already applied.
+    observerMapFallbackLastAppliedIdentity = null;
+
+    const now = Date.now();
+    if (now - observerMapFallbackLastWarningAt >= 30_000) {
+      observerMapFallbackLastWarningAt = now;
+      logWarn("[Observer Feed] Live map fallback sync will retry", {
+        matchId: target.matchId,
+        mapKey: target.mapKey,
+        status: result.status,
+        error: result.error,
+      });
+    }
+    scheduleObserverMapFallbackRetry(target);
+  }
+}
+
+function ensureObserverMapFallbackSyncDrain() {
+  if (observerMapFallbackSyncPromise) {
+    return observerMapFallbackSyncPromise;
+  }
+
+  const syncPromise = drainObserverMapFallbackSyncQueue().catch((error) => {
+    logWarn("[Observer Feed] Live map fallback sync queue failed", {
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error || "Unknown map sync queue error"),
+    });
+  });
+  observerMapFallbackSyncPromise = syncPromise;
+  void syncPromise.finally(() => {
+    if (observerMapFallbackSyncPromise === syncPromise) {
+      observerMapFallbackSyncPromise = null;
+    }
+    if (observerMapFallbackSyncDesired) {
+      ensureObserverMapFallbackSyncDrain();
+    }
+  });
+  return syncPromise;
+}
+
+function scheduleObserverMapFallbackSync(matchId, mapKey) {
+  const target = captureObserverMapFallbackSyncTarget(matchId, mapKey);
+  if (!target) {
+    return Promise.resolve({ ok: false, skipped: true });
+  }
+  if (observerMapFallbackInFlightIdentity === target.identity) {
+    // The in-flight update is the newest value again. Drop any different map
+    // that was queued while this request was running; otherwise that stale
+    // value would be posted last after the current request settles.
+    if (
+      observerMapFallbackSyncDesired &&
+      observerMapFallbackSyncDesired.identity !== target.identity
+    ) {
+      observerMapFallbackSyncDesired = null;
+    }
+    if (
+      observerMapFallbackRetryTarget &&
+      observerMapFallbackRetryTarget.identity !== target.identity
+    ) {
+      clearObserverMapFallbackRetry();
+    }
+    return Promise.resolve({ ok: false, pending: true });
+  }
+  if (observerMapFallbackSyncDesired?.identity === target.identity) {
+    return Promise.resolve({ ok: false, pending: true });
+  }
+  const hasPendingDifferentUpdate = Boolean(
+    observerMapFallbackInFlightIdentity ||
+    observerMapFallbackSyncDesired ||
+    observerMapFallbackRetryTarget,
+  );
+  if (
+    observerMapFallbackLastAppliedIdentity === target.identity &&
+    !hasPendingDifferentUpdate
+  ) {
+    clearObserverMapFallbackRetry();
+    return Promise.resolve({ ok: true, skipped: true });
+  }
+
+  const retryingSameTarget =
+    observerMapFallbackRetryTarget?.identity === target.identity;
+  if (
+    retryingSameTarget &&
+    (observerMapFallbackRetryTimer || observerMapFallbackSyncPromise)
+  ) {
+    return Promise.resolve({ ok: false, retryScheduled: true });
+  }
+  if (observerMapFallbackRetryTarget && !retryingSameTarget) {
+    clearObserverMapFallbackRetry();
+  }
+
+  observerMapFallbackSyncDesired = target;
+  return ensureObserverMapFallbackSyncDrain();
+}
+
+function hasChildProcessExited(child) {
+  return Boolean(
+    !child || child.exitCode !== null || child.signalCode !== null,
+  );
+}
+
+function waitForChildProcessExit(child, timeoutMs) {
+  if (hasChildProcessExited(child)) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", handleExit);
+      child.removeListener("close", handleExit);
+      resolve(exited === true || hasChildProcessExited(child));
+    };
+    const handleExit = () => finish(true);
+    const timer = setTimeout(
+      () => finish(hasChildProcessExited(child)),
+      Math.max(1, Number(timeoutMs) || 1),
+    );
+    child.once("exit", handleExit);
+    child.once("close", handleExit);
+  });
+}
+
+async function waitForExactObserverRuntimeToDisappear(config, timeoutMs) {
+  const expectedRuntime = getExpectedObserverRuntime(config);
+  if (!expectedRuntime?.nonce) {
+    return true;
+  }
+
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+  while (Date.now() <= deadline) {
+    const remainingMs = Math.max(1, deadline - Date.now());
+    const probe = await probeExactObserverRuntime(
+      config,
+      Math.min(250, remainingMs),
+    );
+    if (probe.absent === true) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      break;
+    }
+    await sleep(
+      Math.min(OBSERVER_FEED_STOP_IDENTITY_POLL_MS, deadline - Date.now()),
+    );
+  }
+  return false;
+}
+
+function killChildProcessTree(pid, options = {}) {
   const normalizedPid = Number(pid);
   if (!Number.isFinite(normalizedPid) || normalizedPid <= 0) {
     return false;
   }
 
   if (process.platform === "win32") {
-    const result = spawnSync(
-      "taskkill.exe",
-      ["/PID", String(normalizedPid), "/T", "/F"],
-      {
-        windowsHide: true,
-        stdio: "ignore",
-      },
-    );
-    return result.status === 0;
+    if (options?.force !== true) {
+      return false;
+    }
+    try {
+      const taskkill = resolveTrustedWindowsCommand("taskkill");
+      const result = spawnSync(
+        taskkill.executablePath,
+        ["/PID", String(normalizedPid), "/T", "/F"],
+        {
+          windowsHide: true,
+          env: taskkill.env,
+          stdio: "ignore",
+          timeout: 3_000,
+        },
+      );
+      return result.status === 0;
+    } catch {
+      return false;
+    }
   }
 
   try {
-    process.kill(normalizedPid, "SIGTERM");
+    process.kill(
+      normalizedPid,
+      options?.force === true ? "SIGKILL" : "SIGTERM",
+    );
     return true;
   } catch {
     return false;
   }
 }
 
-async function stopManagedTelemetrySourceProcess(reason = "stopped") {
-  const child = telemetryBridgeProcess;
-  const processConfig = telemetrySourceProcessConfig;
+async function performManagedTelemetrySourceStop(
+  child,
+  processConfig,
+  generation,
+  reason,
+) {
   const pid = child?.pid ?? null;
 
-  telemetryBridgeProcess = null;
-  telemetrySourceProcessConfig = null;
+  if (child) {
+    telemetrySourceStoppingProcesses.add(child);
+  }
 
   if (!pid) {
+    if (
+      telemetryBridgeProcess === child &&
+      telemetrySourceProcessConfig === processConfig &&
+      telemetrySourceProcessGeneration === generation
+    ) {
+      telemetryBridgeProcess = null;
+      telemetrySourceProcessConfig = null;
+    }
     return {
       ok: true,
       stopped: false,
@@ -6545,99 +9100,249 @@ async function stopManagedTelemetrySourceProcess(reason = "stopped") {
     };
   }
 
-  telemetrySourceStoppingPids.add(pid);
-  try {
-    killChildProcessTree(pid);
-  } finally {
-    setTimeout(() => {
-      telemetrySourceStoppingPids.delete(pid);
-    }, 1000);
+  const confirmation = await stopObserverProcessWithConfirmation({
+    child,
+    pid,
+    graceTimeoutMs: OBSERVER_FEED_STOP_GRACE_TIMEOUT_MS,
+    forceTimeoutMs: OBSERVER_FEED_STOP_FORCE_TIMEOUT_MS,
+    identityTimeoutMs: OBSERVER_FEED_STOP_IDENTITY_TIMEOUT_MS,
+    kill: async (targetPid, killOptions) => {
+      if (killOptions?.force === true) {
+        return killChildProcessTree(targetPid, { force: true });
+      }
+      if (process.platform === "win32") {
+        return requestExactObserverRuntimeShutdown(processConfig);
+      }
+      return killChildProcessTree(targetPid, { force: false });
+    },
+    waitForExit: waitForChildProcessExit,
+    waitForIdentityGone: (timeoutMs) =>
+      waitForExactObserverRuntimeToDisappear(processConfig, timeoutMs),
+  });
+  const stopped = confirmation.stopped === true;
+
+  if (
+    stopped &&
+    telemetryBridgeProcess === child &&
+    telemetrySourceProcessConfig === processConfig &&
+    telemetrySourceProcessGeneration === generation
+  ) {
+    telemetryBridgeProcess = null;
+    telemetrySourceProcessConfig = null;
   }
 
-  log("[launcher] ob.js stop requested", {
-    pid,
-    reason,
-    mode: processConfig?.mode ?? null,
-    matchId: processConfig?.matchId ?? null,
-  });
+  const logStop = stopped ? log : logError;
+  logStop(
+    stopped
+      ? "[launcher] ob.js stop confirmed"
+      : "[launcher] ob.js stop failed",
+    {
+      pid,
+      reason,
+      mode: processConfig?.mode ?? null,
+      matchId: processConfig?.matchId ?? null,
+      gracefulKillRequested: confirmation.gracefulKillRequested,
+      forceKillRequested: confirmation.forceKillRequested,
+      exited: confirmation.processExited,
+      exactRuntimeGone: confirmation.exactRuntimeGone,
+    },
+  );
+
+  if (!stopped) {
+    return {
+      ok: false,
+      stopped: false,
+      pid,
+      reason,
+      mode: processConfig?.mode ?? null,
+      processExited: confirmation.processExited,
+      exactRuntimeGone: confirmation.exactRuntimeGone,
+      error: confirmation.error,
+    };
+  }
 
   return {
     ok: true,
-    stopped: true,
+    stopped,
     pid,
     reason,
     mode: processConfig?.mode ?? null,
   };
 }
 
-function attachTelemetrySourceProcessHandlers(child, config) {
-  child.once("exit", (code, signal) => {
-    const pid = child.pid ?? null;
-    const intentionalStop = pid ? telemetrySourceStoppingPids.has(pid) : false;
+async function stopManagedTelemetrySourceProcess(reason = "stopped") {
+  const child = telemetryBridgeProcess;
+  const processConfig = telemetrySourceProcessConfig;
+  const generation = telemetrySourceProcessGeneration;
 
-    if (telemetryBridgeProcess === child) {
+  if (!child) {
+    return {
+      ok: true,
+      stopped: false,
+      reason,
+      mode: processConfig?.mode ?? null,
+    };
+  }
+
+  const existingStop = telemetrySourceStopOperations.get(child);
+  if (existingStop) {
+    return existingStop;
+  }
+
+  const stopPromise = performManagedTelemetrySourceStop(
+    child,
+    processConfig,
+    generation,
+    reason,
+  );
+  telemetrySourceStopOperations.set(child, stopPromise);
+  try {
+    return await stopPromise;
+  } finally {
+    if (telemetrySourceStopOperations.get(child) === stopPromise) {
+      telemetrySourceStopOperations.delete(child);
+    }
+  }
+}
+
+function beginObserverFeedRecovery(config, errorMessage, widgetReason) {
+  if (!observerFeedSupervisor.isActiveFor(config)) {
+    return {
+      scheduled: false,
+      status: observerFeedSupervisor.getStatus(),
+    };
+  }
+
+  setWidgetDirectObserverPollingAllowed(false);
+  observerFeedHealthWatchdog.stop();
+  clearWidgetRuntimeState(widgetReason);
+  const recovery = observerFeedSupervisor.handleUnexpectedExit(config, {
+    error: errorMessage,
+  });
+  const recovering =
+    recovery.status.state === "waiting" ||
+    recovery.status.state === "restarting";
+  setObserverFeedState({
+    enabled: recovering,
+    running: false,
+    mode: recovering ? "direct" : "off",
+    managed: recovering,
+    matchId: config.matchId || null,
+    sessionId: config.sessionId || null,
+    pid: null,
+    scriptPath: config.scriptPath || null,
+    ready: false,
+    lastError: recovery.status.lastError || errorMessage,
+    lastStoppedAt: new Date().toISOString(),
+  });
+  refreshLocalRuntimeLifecyclePoller();
+  return recovery;
+}
+
+function attachTelemetrySourceProcessHandlers(child, config, generation) {
+  let terminationHandled = false;
+  let lastProcessError = null;
+
+  const handleTermination = ({ code = null, signal = null, error = null }) => {
+    if (terminationHandled) {
+      return;
+    }
+    terminationHandled = true;
+
+    const pid = child.pid ?? null;
+    const terminationError = error || lastProcessError;
+    const intentionalStop = telemetrySourceStoppingProcesses.has(child);
+    telemetrySourceStoppingProcesses.delete(child);
+    const ownsCurrentRuntime =
+      telemetryBridgeProcess === child &&
+      telemetrySourceProcessConfig === config &&
+      telemetrySourceProcessGeneration === generation;
+
+    if (ownsCurrentRuntime && !intentionalStop) {
       telemetryBridgeProcess = null;
       telemetrySourceProcessConfig = null;
     }
 
-    if (isDirectTelemetrySourceConfig(config)) {
+    if (isDirectTelemetrySourceConfig(config) && ownsCurrentRuntime) {
       if (intentionalStop) {
-        resetObserverFeedState({
-          enabled: false,
-          running: false,
-          mode: "off",
-          managed: false,
-          matchId: null,
-          sessionId: null,
-          pid: null,
-          scriptPath: null,
+        setObserverFeedState({
           ready: false,
-          lastStoppedAt: new Date().toISOString(),
         });
       } else {
-        resetObserverFeedState({
-          enabled: false,
-          running: false,
-          mode: "off",
-          managed: false,
-          matchId: null,
-          sessionId: null,
-          pid: null,
-          scriptPath: null,
-          ready: false,
-          lastError: "ob.js exited unexpectedly.",
-          lastStoppedAt: new Date().toISOString(),
-        });
+        const errorMessage =
+          terminationError instanceof Error && terminationError.message
+            ? terminationError.message
+            : code !== null
+              ? `ob.js exited unexpectedly (code ${code}).`
+              : "ob.js exited unexpectedly.";
+        const recovery = beginObserverFeedRecovery(
+          config,
+          errorMessage,
+          error
+            ? "observer-feed-process-error"
+            : "observer-feed-process-exited",
+        );
+        if (
+          recovery.scheduled !== true &&
+          recovery.status.state === "idle" &&
+          !isChildProcessRunning(telemetryBridgeProcess)
+        ) {
+          resetObserverFeedState({
+            matchId: config.matchId || null,
+            sessionId: config.sessionId || null,
+            scriptPath: config.scriptPath || null,
+            lastError: errorMessage,
+            lastStoppedAt: new Date().toISOString(),
+          });
+        }
       }
     }
 
-    log("[launcher] ob.js exited", {
-      code,
-      signal,
-      intentionalStop,
-      pid,
-      mode: config?.mode ?? null,
-      matchId: config?.matchId ?? null,
-      scriptPath: config?.scriptPath ?? null,
-    });
+    log(
+      terminationError ? "[launcher] ob.js failed" : "[launcher] ob.js exited",
+      {
+        code,
+        signal,
+        intentionalStop,
+        ownsCurrentRuntime,
+        generation,
+        pid,
+        mode: config?.mode ?? null,
+        matchId: config?.matchId ?? null,
+        scriptPath: config?.scriptPath ?? null,
+        error:
+          terminationError instanceof Error ? terminationError.message : null,
+      },
+    );
+  };
+
+  child.once("exit", (code, signal) => {
+    handleTermination({ code, signal });
+  });
+
+  child.once("close", (code, signal) => {
+    handleTermination({ code, signal });
   });
 
   child.once("error", (error) => {
-    if (isDirectTelemetrySourceConfig(config)) {
-      setObserverFeedState({
-        running: false,
-        ready: false,
-        lastError:
-          error instanceof Error
-            ? error.message
-            : String(error || "Failed to start ob.js."),
+    lastProcessError = error;
+    if (telemetryBridgeProcess === child && child.pid) {
+      void performManagedTelemetrySourceStop(
+        child,
+        config,
+        generation,
+        "process-error",
+      ).catch((stopError) => {
+        logError("[launcher] failed to stop errored ob.js runtime", {
+          pid: child.pid,
+          error:
+            stopError instanceof Error ? stopError.message : String(stopError),
+        });
       });
     }
-
-    log(
-      "[launcher] ob.js spawn error",
-      error && error.stack ? error.stack : error,
-    );
+    if (!child.pid) {
+      handleTermination({ error });
+    }
   });
 }
 
@@ -6658,14 +9363,19 @@ async function probeShadowTelemetryHealth(options = {}) {
   }
 
   const checkedAt = new Date().toISOString();
-  const candidates = getShadowTelemetryCandidateBaseUrls();
+  const candidates = options.expectedRuntime
+    ? [getShadowTelemetryBaseUrl()]
+    : getShadowTelemetryCandidateBaseUrls();
   let lastHealth = null;
 
   for (const candidate of candidates) {
     const health = await probeShadowTelemetryBaseUrl(candidate, checkedAt, {
       allowSocketFallback:
-        candidate === getShadowTelemetryBaseUrl() ||
-        candidate === DEFAULT_SHADOW_TELEMETRY_BASE_URL,
+        !options.expectedRuntime &&
+        (candidate === getShadowTelemetryBaseUrl() ||
+          candidate === DEFAULT_SHADOW_TELEMETRY_BASE_URL),
+      expectedRuntime: options.expectedRuntime || null,
+      localAccessToken: options.localAccessToken || null,
     });
     lastHealth = health;
     if (health.reachable === true) {
@@ -6725,11 +9435,26 @@ async function probeShadowTelemetryHealthWithRecovery() {
 
 async function waitForShadowTelemetryReady(
   timeoutMs = SHADOW_TELEMETRY_READY_TIMEOUT_MS,
+  expectedConfig = null,
+  signal = null,
 ) {
   const startedAt = Date.now();
+  const expectedRuntime = getExpectedObserverRuntime(expectedConfig);
   while (Date.now() - startedAt <= timeoutMs) {
-    if (await isShadowTelemetryAvailable({ force: true })) {
+    if (signal?.aborted === true) {
+      return false;
+    }
+    if (
+      await isShadowTelemetryAvailable({
+        force: true,
+        expectedRuntime,
+        localAccessToken: expectedConfig?.localControlToken || null,
+      })
+    ) {
       return true;
+    }
+    if (signal?.aborted === true) {
+      return false;
     }
     await sleep(SHADOW_TELEMETRY_READY_POLL_MS);
   }
@@ -6738,43 +9463,67 @@ async function waitForShadowTelemetryReady(
 
 async function ensureTelemetrySourceRunning(options = {}) {
   const desiredMode = options?.mode === "direct" ? "direct" : "local";
+  if (options?.signal?.aborted === true) {
+    return {
+      pid: null,
+      scriptPath: null,
+      started: false,
+      alreadyRunning: false,
+      ready: false,
+      baseUrl: getShadowTelemetryBaseUrl(),
+      connector: getConnectorSetupStatusView(),
+      error: "Observer feed recovery was cancelled.",
+    };
+  }
   const connector = ensureManagedTelemetryBridgeInstalled({
     shadowTrackerPath: options?.shadowTrackerPath,
   });
   if (!connector.ok) {
-    const fallbackScriptPath = resolveTelemetryBridgeScript(
-      telemetryBridgeScriptPath,
-    );
-    const lastReadyConnector = getConnectorSetupStatusView();
-    const usingVerifiedConnector =
-      lastReadyConnector.ok === true &&
-      fallbackScriptPath &&
-      normalizeComparablePath(fallbackScriptPath) ===
-        normalizeComparablePath(lastReadyConnector.targetPath);
-    if (!fallbackScriptPath || (app.isPackaged && !usingVerifiedConnector)) {
-      return {
-        pid: null,
-        scriptPath: connector.targetPath || fallbackScriptPath || null,
-        started: false,
-        alreadyRunning: false,
-        ready: false,
-        baseUrl: getShadowTelemetryBaseUrl(),
-        connector,
-        error: connector.error || "Arenzyra connector setup failed.",
-      };
-    }
+    return {
+      pid: null,
+      scriptPath: connector.targetPath || null,
+      started: false,
+      alreadyRunning: false,
+      ready: false,
+      baseUrl: getShadowTelemetryBaseUrl(),
+      connector,
+      error: connector.error || "Arenzyra connector setup failed.",
+    };
   }
-  const resolvedScriptPath = resolveTelemetryBridgeScript(
-    telemetryBridgeScriptPath,
-  );
+  let managedRuntimeInputs;
+  try {
+    managedRuntimeInputs = prepareManagedConnectorRuntimeInputs(connector);
+  } catch (error) {
+    return {
+      pid: null,
+      scriptPath: connector.sourcePath || null,
+      started: false,
+      alreadyRunning: false,
+      ready: false,
+      baseUrl: getShadowTelemetryBaseUrl(),
+      connector,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Managed connector runtime inputs failed verification.",
+    };
+  }
+  const resolvedScriptPath = managedRuntimeInputs.scriptPath;
   const desiredConfig =
     desiredMode === "direct"
       ? {
           mode: "direct",
           apiBase: normalizeBaseUrl(options?.apiBase),
+          observerBaseUrl: normalizeShadowTelemetryBaseUrl(
+            options?.observerBaseUrl || getShadowTelemetryBaseUrl(),
+          ),
           matchId: requireMatchId(options?.matchId),
           sessionId: String(options?.sessionId || "").trim(),
           feedToken: String(options?.feedToken || "").trim(),
+          runtimeNonce: String(options?.runtimeNonce || randomUUID()).trim(),
+          localControlToken: String(
+            connectorAccessToken,
+          ).trim(),
           mapKey: String(
             options?.mapKey || productionModeState.selectedMapKey || "",
           )
@@ -6784,6 +9533,13 @@ async function ensureTelemetrySourceRunning(options = {}) {
         }
       : {
           mode: "local",
+          observerBaseUrl: normalizeShadowTelemetryBaseUrl(
+            options?.observerBaseUrl || getShadowTelemetryBaseUrl(),
+          ),
+          runtimeNonce: String(options?.runtimeNonce || randomUUID()).trim(),
+          localControlToken: String(
+            connectorAccessToken,
+          ).trim(),
           scriptPath: resolvedScriptPath || telemetryBridgeScriptPath || null,
         };
 
@@ -6817,11 +9573,16 @@ async function ensureTelemetrySourceRunning(options = {}) {
 
   if (
     desiredMode !== "direct" &&
-    !(
-      isChildProcessRunning(telemetryBridgeProcess) &&
-      isDirectTelemetrySourceConfig(telemetrySourceProcessConfig)
-    ) &&
-    (await isShadowTelemetryAvailable({ force: true }))
+    isChildProcessRunning(telemetryBridgeProcess) &&
+    !isDirectTelemetrySourceConfig(telemetrySourceProcessConfig) &&
+    (await isShadowTelemetryAvailable({
+      force: true,
+      expectedRuntime: getExpectedObserverRuntime(
+        telemetrySourceProcessConfig,
+      ),
+      localAccessToken:
+        telemetrySourceProcessConfig?.localControlToken || null,
+    }))
   ) {
     if (resolvedScriptPath) {
       telemetryBridgeScriptPath = resolvedScriptPath;
@@ -6859,34 +9620,77 @@ async function ensureTelemetrySourceRunning(options = {}) {
     if (
       sameTelemetrySourceConfig(telemetrySourceProcessConfig, desiredConfig)
     ) {
-      const ready = await waitForShadowTelemetryReady();
+      const currentConfig = telemetrySourceProcessConfig;
+      const ready = await waitForShadowTelemetryReady(
+        SHADOW_TELEMETRY_READY_TIMEOUT_MS,
+        currentConfig,
+        options?.signal,
+      );
       if (desiredMode === "direct") {
         setObserverFeedState({
           enabled: true,
-          running: ready,
+          running: isChildProcessRunning(telemetryBridgeProcess),
           mode: "direct",
           managed: true,
-          matchId: desiredConfig.matchId,
-          sessionId: desiredConfig.sessionId,
+          matchId: currentConfig.matchId,
+          sessionId: currentConfig.sessionId,
           pid: telemetryBridgeProcess?.pid ?? null,
           scriptPath: telemetryBridgeScriptPath || resolvedScriptPath || null,
           ready,
-          lastError: null,
+          lastError: ready
+            ? null
+            : "The owned observer connector did not pass its identity health check.",
         });
+        if (!ready) {
+          const stopResult =
+            await stopManagedTelemetrySourceProcess("readiness-timeout");
+          setObserverFeedState({
+            running: stopResult.ok !== true,
+            pid: stopResult.ok === true ? null : telemetryBridgeProcess?.pid,
+            ready: false,
+            lastError:
+              stopResult.ok === true
+                ? "The owned observer connector did not pass its identity health check."
+                : stopResult.error,
+          });
+        } else {
+          void scheduleObserverMapFallbackSync(
+            currentConfig.matchId,
+            getDesiredObserverFallbackMapKey(
+              currentConfig.matchId,
+              currentConfig.mapKey,
+            ),
+          );
+        }
       }
       return {
-        pid: telemetryBridgeProcess?.pid ?? null,
+        pid: ready ? (telemetryBridgeProcess?.pid ?? null) : null,
         scriptPath: telemetryBridgeScriptPath || resolvedScriptPath || null,
         started: false,
         alreadyRunning: true,
         ready,
         baseUrl: getShadowTelemetryBaseUrl(),
         connector,
-        error: null,
+        error:
+          desiredMode === "direct" && !ready
+            ? "The owned observer connector did not pass its identity health check."
+            : null,
       };
     }
 
-    await stopManagedTelemetrySourceProcess("restart");
+    const stopResult = await stopManagedTelemetrySourceProcess("restart");
+    if (stopResult.ok !== true) {
+      return {
+        pid: telemetryBridgeProcess?.pid ?? null,
+        scriptPath: desiredConfig.scriptPath,
+        started: false,
+        alreadyRunning: true,
+        ready: false,
+        baseUrl: getShadowTelemetryBaseUrl(),
+        connector,
+        error: stopResult.error,
+      };
+    }
   }
 
   if (
@@ -6936,20 +9740,94 @@ async function ensureTelemetrySourceRunning(options = {}) {
     baseUrl: getShadowTelemetryBaseUrl(),
   });
 
+  if (options?.signal?.aborted === true) {
+    return {
+      pid: null,
+      scriptPath: resolvedScriptPath,
+      started: false,
+      alreadyRunning: false,
+      ready: false,
+      baseUrl: getShadowTelemetryBaseUrl(),
+      connector,
+      error: "Observer feed recovery was cancelled.",
+    };
+  }
+
+  let spawnedChild = null;
+  let spawnedGeneration = null;
   try {
+    // Re-hash the trusted source and support files at the final launch boundary;
+    // never execute the mutable copy installed inside the PCOB tree.
+    managedRuntimeInputs = prepareManagedConnectorRuntimeInputs(connector);
     const child = spawnNodeScript(
       resolvedScriptPath,
       buildTelemetrySourceProcessEnv(desiredConfig),
+      { dependencyRoots: managedRuntimeInputs.dependencyRoots },
     );
+    spawnedChild = child;
+    spawnedGeneration = telemetrySourceProcessGeneration + 1;
+    telemetrySourceProcessGeneration = spawnedGeneration;
     telemetryBridgeProcess = child;
     telemetrySourceProcessConfig = desiredConfig;
-    attachTelemetrySourceProcessHandlers(child, desiredConfig);
+    attachTelemetrySourceProcessHandlers(
+      child,
+      desiredConfig,
+      spawnedGeneration,
+    );
 
-    const ready = await waitForShadowTelemetryReady();
     if (desiredMode === "direct") {
       setObserverFeedState({
         enabled: true,
-        running: ready,
+        running: true,
+        mode: "direct",
+        managed: true,
+        matchId: desiredConfig.matchId,
+        sessionId: desiredConfig.sessionId,
+        pid: child.pid ?? null,
+        scriptPath: resolvedScriptPath,
+        ready: false,
+        lastError: null,
+        lastStartedAt: new Date().toISOString(),
+      });
+    }
+
+    const ready = await waitForShadowTelemetryReady(
+      SHADOW_TELEMETRY_READY_TIMEOUT_MS,
+      desiredConfig,
+      options?.signal,
+    );
+    if (options?.signal?.aborted === true) {
+      const stopResult =
+        await stopManagedTelemetrySourceProcess("startup-cancelled");
+      if (stopResult.ok !== true) {
+        throw new Error(stopResult.error);
+      }
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error("Observer feed startup was cancelled.");
+    }
+    if (
+      telemetryBridgeProcess !== child ||
+      telemetrySourceProcessConfig !== desiredConfig ||
+      telemetrySourceProcessGeneration !== spawnedGeneration ||
+      !isChildProcessRunning(child)
+    ) {
+      throw new Error("Observer connector exited before it became ready.");
+    }
+    if (desiredMode === "direct" && !ready) {
+      const stopResult =
+        await stopManagedTelemetrySourceProcess("readiness-timeout");
+      if (stopResult.ok !== true) {
+        throw new Error(stopResult.error);
+      }
+      throw new Error(
+        "The owned observer connector did not pass its identity health check.",
+      );
+    }
+    if (desiredMode === "direct") {
+      setObserverFeedState({
+        enabled: true,
+        running: true,
         mode: "direct",
         managed: true,
         matchId: desiredConfig.matchId,
@@ -6960,6 +9838,13 @@ async function ensureTelemetrySourceRunning(options = {}) {
         lastError: null,
         lastStartedAt: new Date().toISOString(),
       });
+      void scheduleObserverMapFallbackSync(
+        desiredConfig.matchId,
+        getDesiredObserverFallbackMapKey(
+          desiredConfig.matchId,
+          desiredConfig.mapKey,
+        ),
+      );
     }
     return {
       pid: child.pid ?? null,
@@ -6972,16 +9857,48 @@ async function ensureTelemetrySourceRunning(options = {}) {
       error: null,
     };
   } catch (error) {
-    telemetryBridgeProcess = null;
-    telemetrySourceProcessConfig = null;
-    if (desiredMode === "direct") {
-      resetObserverFeedState({
-        lastError:
-          error instanceof Error
-            ? error.message
-            : String(error || "Failed to start ob.js."),
-        lastStoppedAt: new Date().toISOString(),
-      });
+    let startupError = error;
+    const ownsFailedRuntime =
+      spawnedChild !== null &&
+      telemetryBridgeProcess === spawnedChild &&
+      telemetrySourceProcessConfig === desiredConfig &&
+      telemetrySourceProcessGeneration === spawnedGeneration;
+    if (ownsFailedRuntime) {
+      const stopResult =
+        await stopManagedTelemetrySourceProcess("startup-failed");
+      if (stopResult.ok !== true && options?.signal?.aborted !== true) {
+        startupError = new Error(stopResult.error);
+      }
+    }
+    if (
+      desiredMode === "direct" &&
+      options?.signal?.aborted !== true &&
+      !isChildProcessRunning(telemetryBridgeProcess)
+    ) {
+      const errorMessage =
+        startupError instanceof Error
+          ? startupError.message
+          : String(startupError || "Failed to start ob.js.");
+      if (observerFeedSupervisor.isActiveFor(desiredConfig)) {
+        setObserverFeedState({
+          enabled: true,
+          running: false,
+          mode: "direct",
+          managed: true,
+          matchId: desiredConfig.matchId,
+          sessionId: desiredConfig.sessionId,
+          pid: null,
+          scriptPath: desiredConfig.scriptPath,
+          ready: false,
+          lastError: errorMessage,
+          lastStoppedAt: new Date().toISOString(),
+        });
+      } else {
+        resetObserverFeedState({
+          lastError: errorMessage,
+          lastStoppedAt: new Date().toISOString(),
+        });
+      }
     }
     return {
       pid: null,
@@ -6992,9 +9909,9 @@ async function ensureTelemetrySourceRunning(options = {}) {
       baseUrl: getShadowTelemetryBaseUrl(),
       connector,
       error:
-        error instanceof Error
-          ? error.message
-          : String(error || "Failed to start ob.js."),
+        startupError instanceof Error
+          ? startupError.message
+          : String(startupError || "Failed to start ob.js."),
     };
   }
 }
@@ -7013,12 +9930,14 @@ async function startObserverFeedForMatch(matchId) {
   }
 
   if (visualModeService.getStatus().running) {
-    throw new Error("Stop Visual Mode before enabling the direct Observer Feed.");
+    throw new Error(
+      "Stop Visual Mode before enabling the direct Observer Feed.",
+    );
   }
 
   const currentFeed = getObserverFeedStatusView();
   if (
-    currentFeed.running &&
+    isObserverFeedSessionActive(currentFeed) &&
     currentFeed.matchId === requestedMatchId &&
     typeof currentFeed.sessionId === "string" &&
     currentFeed.sessionId.trim()
@@ -7033,54 +9952,198 @@ async function startObserverFeedForMatch(matchId) {
       connector: getConnectorSetupStatusView(),
     };
   }
-
-  const sessionId = randomUUID();
-  const pinnedMatchId = await pinSelectedMatchLive(
-    session,
-    requestedMatchId,
-    sessionId,
-  );
-  const tokenBundle = await createObserverFeedToken(session);
-  const source = await ensureTelemetrySourceRunning({
-    mode: "direct",
-    apiBase: session.apiBase,
-    matchId: pinnedMatchId,
-    sessionId,
-    feedToken: tokenBundle.accessToken,
-    mapKey: productionModeState.selectedMapKey,
-  });
-
-  if (source?.error) {
-    setWidgetDirectObserverPollingAllowed(false);
-    refreshLocalRuntimeLifecyclePoller();
-    resetObserverFeedState({
-      lastError: source.error,
-      lastStoppedAt: new Date().toISOString(),
-    });
-    throw new Error(source.error);
+  if (isObserverFeedSessionActive(currentFeed)) {
+    throw new Error(
+      "Stop the current Observer Feed before starting it for another match.",
+    );
   }
 
-  setWidgetDirectObserverPollingAllowed(true);
-  refreshLocalRuntimeLifecyclePoller();
-  const status = getObserverFeedStatusView();
-  logger.child("production").info("[LiveDesk] Observer feed started", {
+  observerFeedHealthWatchdog.stop();
+  observerFeedSupervisor.disarm();
+  const startOperation = observerFeedStartGate.begin();
+  const sessionId = randomUUID();
+  const selectedMapKey = getDesiredObserverFallbackMapKey(
+    requestedMatchId,
+    productionModeState.selectedMapKey,
+  );
+  setObserverFeedState({
+    enabled: true,
+    running: false,
+    mode: "direct",
+    managed: true,
     matchId: requestedMatchId,
-    durationMs: Math.max(0, Date.now() - startedAt),
-    ready: status.ready === true,
-    pid: status.pid ?? null,
+    sessionId,
+    pid: null,
+    ready: false,
+    lastError: null,
   });
-  return {
-    ...status,
-    alreadyRunning: false,
-    connector: source?.connector || getConnectorSetupStatusView(),
-    expiresIn: tokenBundle.expiresIn,
-  };
+  refreshLocalRuntimeLifecyclePoller();
+
+  try {
+    startOperation.assertCurrent();
+    const pinnedMatchId = await pinSelectedMatchLive(
+      session,
+      requestedMatchId,
+      sessionId,
+      { signal: startOperation.signal },
+    );
+    startOperation.assertCurrent();
+
+    const confirmedLifecycle = await assertMatchLifecycleStartable(
+      session,
+      pinnedMatchId,
+      { signal: startOperation.signal },
+    );
+    startOperation.assertCurrent();
+    const confirmedSessionId = getObserverFeedBoundSessionId(
+      confirmedLifecycle.control,
+    );
+    if (
+      confirmedLifecycle.lifecycleStatus === "LIVE" &&
+      confirmedSessionId &&
+      confirmedSessionId !== sessionId
+    ) {
+      throw new Error(
+        "Observer feed start was blocked because the match session binding changed.",
+      );
+    }
+
+    const tokenBundle = await createObserverFeedToken(session, {
+      signal: startOperation.signal,
+    });
+    startOperation.assertCurrent();
+    const source = await ensureTelemetrySourceRunning({
+      mode: "direct",
+      apiBase: session.apiBase,
+      matchId: pinnedMatchId,
+      sessionId,
+      feedToken: tokenBundle.accessToken,
+      mapKey: selectedMapKey,
+      signal: startOperation.signal,
+    });
+    startOperation.assertCurrent();
+
+    if (source?.error) {
+      throw new Error(source.error);
+    }
+
+    if (
+      !isChildProcessRunning(telemetryBridgeProcess) ||
+      !isDirectTelemetrySourceConfig(telemetrySourceProcessConfig) ||
+      String(telemetrySourceProcessConfig.sessionId || "").trim() !== sessionId
+    ) {
+      throw new Error(
+        "Observer connector did not remain running after startup.",
+      );
+    }
+
+    startOperation.assertCurrent();
+    observerFeedSupervisor.arm(telemetrySourceProcessConfig);
+    observerFeedHealthWatchdog.start(telemetrySourceProcessConfig);
+
+    setWidgetDirectObserverPollingAllowed(true);
+    refreshLocalRuntimeLifecyclePoller();
+    const status = getObserverFeedStatusView();
+    logger.child("production").info("[LiveDesk] Observer feed started", {
+      matchId: requestedMatchId,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      ready: status.ready === true,
+      pid: status.pid ?? null,
+    });
+    return {
+      ...status,
+      alreadyRunning: false,
+      connector: source?.connector || getConnectorSetupStatusView(),
+      expiresIn: tokenBundle.expiresIn,
+    };
+  } catch (error) {
+    const cancelled =
+      startOperation.signal.aborted === true ||
+      startOperation.isCurrent() !== true ||
+      isObserverFeedStartCancelledError(error);
+    const ownsStartedRuntime =
+      isDirectTelemetrySourceConfig(telemetrySourceProcessConfig) &&
+      String(telemetrySourceProcessConfig.sessionId || "").trim() === sessionId;
+    let stopFailure = null;
+    if (ownsStartedRuntime) {
+      const stopResult = await stopManagedTelemetrySourceProcess(
+        cancelled ? "startup-cancelled" : "startup-failed",
+      );
+      if (stopResult.ok !== true) {
+        stopFailure = stopResult;
+      }
+    }
+
+    if (!cancelled && startOperation.isCurrent()) {
+      observerFeedHealthWatchdog.stop();
+      observerFeedSupervisor.disarm();
+      setWidgetDirectObserverPollingAllowed(false);
+      if (stopFailure) {
+        setObserverFeedState({
+          enabled: false,
+          running: true,
+          ready: false,
+          lastError: stopFailure.error,
+        });
+      } else {
+        resetObserverFeedState({
+          lastError:
+            error instanceof Error
+              ? error.message
+              : String(error || "Observer feed startup failed."),
+          lastStoppedAt: new Date().toISOString(),
+        });
+      }
+      clearWidgetRuntimeState("observer-feed-start-failed");
+      refreshLocalRuntimeLifecyclePoller();
+    }
+
+    if (stopFailure) {
+      const stopError = new Error(stopFailure.error);
+      stopError.code = "ARENZYRA_OBSERVER_FEED_STOP_FAILED";
+      stopError.stopResult = stopFailure;
+      throw stopError;
+    }
+    if (cancelled && startOperation.signal.reason instanceof Error) {
+      throw startOperation.signal.reason;
+    }
+    throw error;
+  } finally {
+    startOperation.finish();
+  }
 }
 
 async function stopObserverFeed(reason = "stopped") {
+  observerFeedStartGate.cancel(reason);
   const currentFeed = getObserverFeedStatusView();
+  observerFeedHealthWatchdog.stop();
+  observerFeedSupervisor.disarm();
   setWidgetDirectObserverPollingAllowed(false);
-  await stopManagedTelemetrySourceProcess(reason);
+  setObserverFeedState({
+    enabled: false,
+    ready: false,
+  });
+  const stopResult = await stopManagedTelemetrySourceProcess(reason);
+  if (stopResult.ok !== true) {
+    const failedState = setObserverFeedState({
+      enabled: false,
+      running: true,
+      mode: currentFeed.mode,
+      managed: true,
+      matchId: currentFeed.matchId,
+      sessionId: currentFeed.sessionId,
+      pid: stopResult.pid ?? currentFeed.pid,
+      ready: false,
+      lastError: stopResult.error,
+    });
+    clearWidgetRuntimeState(reason);
+    refreshLocalRuntimeLifecyclePoller();
+    const error = new Error(stopResult.error);
+    error.code = "ARENZYRA_OBSERVER_FEED_STOP_FAILED";
+    error.stopResult = stopResult;
+    error.observerFeed = failedState;
+    throw error;
+  }
   const nextState = resetObserverFeedState({
     lastStoppedAt: new Date().toISOString(),
     lastError: null,
@@ -7091,18 +10154,27 @@ async function stopObserverFeed(reason = "stopped") {
   return nextState;
 }
 
-function stopObserverFeedSilently(reason = "stopped") {
-  const currentFeed = getObserverFeedStatusView();
-  setWidgetDirectObserverPollingAllowed(false);
-  void stopManagedTelemetrySourceProcess(reason);
-  const nextState = resetObserverFeedState({
-    lastStoppedAt: new Date().toISOString(),
-    lastError: null,
-    scriptPath: currentFeed.scriptPath,
-  });
-  clearWidgetRuntimeState(reason);
-  refreshLocalRuntimeLifecyclePoller();
-  return nextState;
+async function stopObserverFeedSilently(reason = "stopped") {
+  try {
+    const status = await stopObserverFeed(reason);
+    return { ok: true, status };
+  } catch (error) {
+    logError("[Observer Feed] Safe stop did not complete", {
+      reason,
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error || "Unknown stop error"),
+    });
+    return {
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error || "Unknown stop error"),
+      status: getObserverFeedStatusView(),
+    };
+  }
 }
 
 function getLauncherDefaults(apiBase) {
@@ -7267,71 +10339,95 @@ if (singleInstanceLock) {
     log("[launcher] structured logger ready", {
       logsDir: path.join(app.getPath("userData"), "logs"),
     });
+    visualModeService.cleanupOrphanedCaptures({ force: true });
+    await startWidgetServerForObsRecovery("app-ready");
     await bootstrapService.bootstrap();
-    ipcMain.handle("launcher:getConfig", () => getLauncherConfigView());
+    registerTrustedLauncherHandle("launcher:getConfig", () =>
+      getLauncherConfigView(),
+    );
 
-    ipcMain.handle("launcher:setConfig", (_event, payload) =>
+    registerTrustedLauncherHandle("launcher:setConfig", (_event, payload) =>
       setLauncherConfigValue(payload?.key, payload?.value, "renderer"),
     );
 
-    ipcMain.handle("launcher:getDefaults", () => getLauncherDefaults());
+    registerTrustedLauncherHandle("launcher:getDefaults", () =>
+      getLauncherDefaults(),
+    );
 
-    ipcMain.on("launcher:pathExists", (event, payload) => {
+    registerTrustedLauncherOn("launcher:pathExists", (event, payload) => {
       event.returnValue = pathExistsOnDisk(payload?.targetPath);
     });
 
-    ipcMain.on("launcher:isFile", (event, payload) => {
+    registerTrustedLauncherOn("launcher:isFile", (event, payload) => {
       event.returnValue = isFileOnDisk(payload?.targetPath);
     });
 
-    ipcMain.handle("launcher:bootstrap", async (_event, payload) =>
-      bootstrapLauncher(payload?.apiBase),
+    registerTrustedLauncherHandle(
+      "launcher:bootstrap",
+      async (_event, payload) => bootstrapLauncher(payload?.apiBase),
     );
 
-    ipcMain.handle("launcher:login", async (_event, payload) =>
+    registerTrustedLauncherHandle("launcher:login", async (_event, payload) =>
       loginLauncher(payload),
     );
 
-    ipcMain.handle("launcher:logout", () =>
+    registerTrustedLauncherHandle("launcher:logout", () =>
       endLauncherSession({ clearAuth: true }),
     );
 
-    ipcMain.handle("launcher:chooseFile", async (_event, options) => {
-      const result = await dialog.showOpenDialog({
-        title: options?.title || "Select file",
-        defaultPath: options?.defaultPath || undefined,
-        properties: ["openFile"],
-        filters: Array.isArray(options?.filters) ? options.filters : undefined,
-      });
-      if (result.canceled || result.filePaths.length === 0) {
-        return null;
-      }
-      return result.filePaths[0];
-    });
+    registerTrustedLauncherHandle(
+      "launcher:chooseFile",
+      async (_event, options) => {
+        const result = await dialog.showOpenDialog({
+          title: options?.title || "Select file",
+          defaultPath: options?.defaultPath || undefined,
+          properties: ["openFile"],
+          filters: Array.isArray(options?.filters)
+            ? options.filters
+            : undefined,
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+          return null;
+        }
+        return result.filePaths[0];
+      },
+    );
 
-    ipcMain.handle("launcher:copyText", (_event, payload) => {
+    registerTrustedLauncherHandle("launcher:copyText", (_event, payload) => {
       const text = String(payload?.text || "");
       clipboard.writeText(text);
       return { ok: true };
     });
 
-    ipcMain.handle("launcher:openExternal", async (_event, payload) => {
-      const url = normalizeHttpUrl(payload?.url);
-      await shell.openExternal(url);
-      return { ok: true };
-    });
+    registerTrustedLauncherHandle(
+      "launcher:openExternal",
+      async (_event, payload) => {
+        const url = normalizeHttpUrl(payload?.url);
+        await shell.openExternal(url);
+        return { ok: true };
+      },
+    );
 
-    ipcMain.handle("launcher:getLiveMatch", async (_event, payload) => {
-      let session = null;
-      try {
-        session = getStoredSession();
-      } catch {
-        session = null;
-      }
-      return fetchLiveMatch(payload?.apiBase || session?.apiBase, session);
-    });
+    registerTrustedLauncherHandle(
+      "launcher:getLiveMatch",
+      async (_event, payload) => {
+        let session = null;
+        try {
+          session = getStoredSession();
+        } catch {
+          session = null;
+        }
+        const requestedApiBase = normalizeBaseUrl(
+          payload?.apiBase || session?.apiBase,
+        );
+        if (session && requestedApiBase === normalizeBaseUrl(session.apiBase)) {
+          return refreshAuthoritativeLiveMatchMap(session);
+        }
+        return fetchLiveMatch(requestedApiBase, session);
+      },
+    );
 
-    ipcMain.handle(
+    registerTrustedLauncherHandle(
       "launcher:getNextMatchSuggestion",
       async (_event, payload) => {
         const session = getStoredSession();
@@ -7346,7 +10442,7 @@ if (singleInstanceLock) {
       },
     );
 
-    ipcMain.handle("launcher:listTournaments", async () => {
+    registerTrustedLauncherHandle("launcher:listTournaments", async () => {
       const session = getStoredSession();
       assertLauncherAccess();
       return apiClient.listTournaments({
@@ -7356,277 +10452,358 @@ if (singleInstanceLock) {
       });
     });
 
-    ipcMain.handle("launcher:listStages", async (_event, payload) => {
-      const session = getStoredSession();
-      assertLauncherAccess();
-      return apiClient.listStages({
-        apiBase: session.apiBase,
-        token: session.token,
-        refreshToken: session.refreshToken,
-        tournamentId: payload?.tournamentId,
-      });
-    });
+    registerTrustedLauncherHandle(
+      "launcher:listStages",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        return apiClient.listStages({
+          apiBase: session.apiBase,
+          token: session.token,
+          refreshToken: session.refreshToken,
+          tournamentId: payload?.tournamentId,
+        });
+      },
+    );
 
-    ipcMain.handle("launcher:listMatches", async (_event, payload) => {
-      const session = getStoredSession();
-      assertLauncherAccess();
-      return apiClient.listMatches({
-        apiBase: session.apiBase,
-        token: session.token,
-        refreshToken: session.refreshToken,
-        tournamentId: payload?.tournamentId,
-      });
-    });
+    registerTrustedLauncherHandle(
+      "launcher:listMatches",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        return apiClient.listMatches({
+          apiBase: session.apiBase,
+          token: session.token,
+          refreshToken: session.refreshToken,
+          tournamentId: payload?.tournamentId,
+        });
+      },
+    );
 
-    ipcMain.handle("launcher:getMatchControl", async (_event, payload) => {
-      const session = getStoredSession();
-      assertLauncherAccess();
-      const { control } = await fetchMatchControlState(
-        session,
-        payload?.matchId,
-      );
-      return control;
-    });
+    registerTrustedLauncherHandle(
+      "launcher:getMatchControl",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        const { control } = await fetchMatchControlState(
+          session,
+          payload?.matchId,
+        );
+        return control;
+      },
+    );
 
-    ipcMain.handle("launcher:syncTeams", async (_event, payload) => {
-      const session = getStoredSession();
-      assertLauncherAccess();
-      return syncTeams(session, payload?.matchId, {
-        repairSlots: payload?.repairSlots === true,
-      });
-    });
+    registerTrustedLauncherHandle(
+      "launcher:syncTeams",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        return syncTeams(session, payload?.matchId, {
+          repairSlots: payload?.repairSlots === true,
+        });
+      },
+    );
 
-    ipcMain.handle("launcher:generateBranding", async (_event, payload) => {
-      const session = getStoredSession();
-      assertLauncherAccess();
-      return generateBranding(session, payload?.matchId);
-    });
+    registerTrustedLauncherHandle(
+      "launcher:generateBranding",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        return generateBranding(session, payload?.matchId);
+      },
+    );
 
-    ipcMain.handle("launcher:getTelemetryStatus", () =>
+    registerTrustedLauncherHandle("launcher:getTelemetryStatus", () =>
       telemetryBridge.getStatus(),
     );
 
-    ipcMain.handle("launcher:getObserverFeedStatus", () =>
+    registerTrustedLauncherHandle("launcher:getObserverFeedStatus", () =>
       getObserverFeedStatusView(),
     );
 
-    ipcMain.handle("launcher:listVisualSources", async () => {
+    registerTrustedLauncherHandle("launcher:listVisualSources", async () => {
       assertLauncherAccess();
       return visualModeService.listSources();
     });
 
-    ipcMain.handle("launcher:getVisualModeStatus", () =>
+    registerTrustedLauncherHandle("launcher:getVisualModeStatus", () =>
       visualModeService.getStatus(),
     );
 
-    ipcMain.handle("launcher:getVisualModeConfig", () =>
+    registerTrustedLauncherHandle("launcher:getVisualModeConfig", () =>
       visualModeService.getConfig(),
     );
 
-    ipcMain.handle("launcher:setVisualModeConfig", (_event, payload) => {
-      assertLauncherAccess();
-      return visualModeService.setConfig(payload?.config || payload);
-    });
+    registerTrustedLauncherHandle(
+      "launcher:setVisualModeConfig",
+      (_event, payload) => {
+        assertLauncherAccess();
+        return visualModeService.setConfig(payload?.config || payload);
+      },
+    );
 
-    ipcMain.handle("launcher:getVisualReviewQueue", () =>
+    registerTrustedLauncherHandle("launcher:getVisualReviewQueue", () =>
       visualModeService.getReviewQueue(),
     );
 
-    ipcMain.handle("launcher:clearVisualReviewQueue", () => {
+    registerTrustedLauncherHandle("launcher:clearVisualReviewQueue", () => {
       assertLauncherAccess();
       return visualModeService.clearReviewQueue();
     });
 
-    ipcMain.handle("launcher:captureVisualReviewCandidate", async () => {
-      assertLauncherAccess();
-      return visualModeService.captureReviewCandidate();
-    });
+    registerTrustedLauncherHandle(
+      "launcher:captureVisualReviewCandidate",
+      async () => {
+        assertLauncherAccess();
+        return visualModeService.captureReviewCandidate();
+      },
+    );
 
-    ipcMain.handle("launcher:runVisualReviewOcr", async (_event, payload) => {
-      assertLauncherAccess();
-      const item = visualModeService.getReviewItem(payload?.id);
-      const matchId = requireMatchId(item?.matchId || payload?.matchId);
-      if (!item?.imagePath) {
-        throw new Error("Capture an image before running OCR preview.");
-      }
+    registerTrustedLauncherHandle(
+      "launcher:runVisualReviewOcr",
+      async (_event, payload) => {
+        assertLauncherAccess();
+        return runVisualReviewOcrPreview(payload?.id);
+      },
+    );
 
-      visualModeService.markReviewItemOcrProcessing(item.id);
-      const session = getStoredSession();
-      try {
-        const upload = await apiClient.uploadScreenshot({
-          apiBase: session.apiBase,
-          token: session.token || session.accessToken,
-          refreshToken: session.refreshToken,
-          filePath: item.imagePath,
-        });
-        const imageUrl = String(upload?.imageUrl || upload?.url || "").trim();
-        if (!imageUrl) {
-          throw new Error("Screenshot upload did not return a public image URL.");
-        }
-        const preview = await apiClient.previewScreenshotResults({
-          apiBase: session.apiBase,
-          token: session.token || session.accessToken,
-          refreshToken: session.refreshToken,
-          matchId,
-          imageUrl,
-        });
-        return visualModeService.attachReviewItemOcrPreview(item.id, {
-          imageUrl,
-          preview,
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : String(error || "OCR preview failed.");
-        logWarn("[visual] OCR preview failed", { error: message });
-        return visualModeService.markReviewItemOcrFailed(item.id, message);
-      }
-    });
+    registerTrustedLauncherHandle(
+      "launcher:runVisualSlotMap",
+      async (_event, payload) => {
+        assertLauncherAccess();
+        return runVisualSlotMap(payload?.id);
+      },
+    );
 
-    ipcMain.handle("launcher:ignoreVisualReviewItem", (_event, payload) => {
-      assertLauncherAccess();
-      return visualModeService.ignoreReviewItem(payload?.id);
-    });
+    registerTrustedLauncherHandle(
+      "launcher:ignoreVisualReviewItem",
+      (_event, payload) => {
+        assertLauncherAccess();
+        return visualModeService.ignoreReviewItem(payload?.id);
+      },
+    );
 
-    ipcMain.handle("launcher:markVisualReviewItemReviewed", (_event, payload) => {
-      assertLauncherAccess();
-      return visualModeService.markReviewItemReviewed(payload?.id);
-    });
+    registerTrustedLauncherHandle(
+      "launcher:markVisualReviewItemReviewed",
+      (_event, payload) => {
+        assertLauncherAccess();
+        return visualModeService.markReviewItemReviewed(payload?.id);
+      },
+    );
 
-    ipcMain.handle("launcher:getConnectorStatus", () =>
+    registerTrustedLauncherHandle("launcher:getConnectorStatus", () =>
       getConnectorSetupStatusView(),
     );
 
-    ipcMain.handle("launcher:repairConnector", (_event, payload) =>
-      ensureManagedTelemetryBridgeInstalled({
-        shadowTrackerPath: payload?.shadowTrackerPath,
-      }),
+    registerTrustedLauncherHandle(
+      "launcher:repairConnector",
+      (_event, payload) =>
+        ensureManagedTelemetryBridgeInstalled({
+          shadowTrackerPath: payload?.shadowTrackerPath,
+        }),
     );
 
-    ipcMain.handle("launcher:updateMatchFlowState", (_event, payload) => {
-      const nextMatchFlowState = normalizeMatchFlowState(payload);
-      if (shouldInvalidateProductionModeState(nextMatchFlowState)) {
-        productionModeState = createDefaultProductionModeState();
-      }
-      matchFlowState = nextMatchFlowState;
-      return { ...matchFlowState };
-    });
+    registerTrustedLauncherHandle(
+      "launcher:updateMatchFlowState",
+      (_event, payload) => {
+        const switchingWasEligible =
+          getPcobMapControlLifecycleStatus().eligible;
+        const previousMatchId = matchFlowState.currentMatchId;
+        const nextMatchFlowState = normalizeMatchFlowState(payload);
+        if (shouldInvalidateProductionModeState(nextMatchFlowState)) {
+          productionModeState = createDefaultProductionModeState();
+        }
+        matchFlowState = nextMatchFlowState;
+        if (previousMatchId !== matchFlowState.currentMatchId) {
+          cancelPcobObserverConfirmation();
+          pcobMapControlLastSelection = null;
+        }
+        if (
+          switchingWasEligible &&
+          !getPcobMapControlLifecycleStatus().eligible
+        ) {
+          cancelPcobObserverConfirmation();
+        }
+        return { ...matchFlowState };
+      },
+    );
 
-    ipcMain.handle("launcher:enterProductionMode", async (_event, payload) => {
-      const startedAt = Date.now();
-      assertLauncherAccess();
-      const resolvedShadowTrackerPath = resolveShadowTrackerExecutable(
-        payload?.shadowTrackerPath,
-        { preferRunning: true, forceProcessScan: true },
-      );
-      if (resolvedShadowTrackerPath) {
-        persistDetectedShadowTrackerPath(
-          resolvedShadowTrackerPath,
-          "production-mode",
-        );
-      }
-      const result = await productionModeService.runPreflight({
-        matchId: payload?.matchId,
-        selectedMatch: payload?.selectedMatch ?? null,
-        shadowTrackerPath:
-          resolvedShadowTrackerPath || payload?.shadowTrackerPath || null,
-      });
-      productionModeState = summarizeProductionModeResult(result);
-      logger.child("production").info(
-        "[LiveDesk] Production preflight completed",
-        {
-          matchId: result?.matchId ?? payload?.matchId ?? null,
-          status: result?.status ?? null,
-          durationMs: Math.max(0, Date.now() - startedAt),
-          preflightDurationMs:
-            Number.isFinite(Number(result?.durationMs))
+    registerTrustedLauncherHandle(
+      "launcher:enterProductionMode",
+      async (_event, payload) => {
+        const startedAt = Date.now();
+        assertLauncherAccess();
+        const requestedShadowTrackerPath =
+          String(payload?.shadowTrackerPath || "").trim() ||
+          configManager.getShadowTrackerPath() ||
+          null;
+        const result = await productionModeService.runPreflight({
+          matchId: payload?.matchId,
+          selectedMatch: payload?.selectedMatch ?? null,
+          shadowTrackerPath: requestedShadowTrackerPath,
+        });
+        const preflightMatchId = String(
+          result?.matchId || payload?.matchId || "",
+        ).trim();
+        if (
+          liveMatchMapState.matchId &&
+          (!isObserverFeedSessionActive() ||
+            liveMatchMapState.matchId !== preflightMatchId)
+        ) {
+          resetLiveMatchMapSynchronization();
+        }
+        productionModeState = summarizeProductionModeResult(result);
+        logger
+          .child("production")
+          .info("[LiveDesk] Production preflight completed", {
+            matchId: result?.matchId ?? payload?.matchId ?? null,
+            status: result?.status ?? null,
+            durationMs: Math.max(0, Date.now() - startedAt),
+            preflightDurationMs: Number.isFinite(Number(result?.durationMs))
               ? Number(result.durationMs)
               : null,
-        },
-      );
-      if (isProductionReadyStatus(result?.status)) {
-        schedulePlayerPhotoCacheRefresh(result?.matchId || payload?.matchId, 3000);
-      }
-      return result;
-    });
+          });
+        if (isProductionReadyStatus(result?.status)) {
+          schedulePlayerPhotoCacheRefresh(
+            result?.matchId || payload?.matchId,
+            3000,
+          );
+        }
+        return result;
+      },
+    );
 
-    ipcMain.handle("launcher:getWidgetServerStatus", () =>
+    registerTrustedLauncherHandle("launcher:getWidgetServerStatus", () =>
       getWidgetServerStatusView(),
     );
 
-    ipcMain.handle("launcher:getPinnedCommentatorDeskWindow", () =>
-      getPinnedCommentatorDeskWindowStatus(),
+    registerTrustedLauncherHandle(
+      "launcher:getPinnedCommentatorDeskWindow",
+      () => getPinnedCommentatorDeskWindowStatus(),
     );
 
-    ipcMain.handle(
+    registerTrustedLauncherHandle(
       "launcher:openPinnedCommentatorDeskWindow",
       async (_event, payload) => openPinnedCommentatorDeskWindow(payload),
     );
 
-    ipcMain.handle("launcher:closePinnedCommentatorDeskWindow", () =>
-      closePinnedCommentatorDeskWindow(),
+    registerTrustedLauncherHandle(
+      "launcher:closePinnedCommentatorDeskWindow",
+      () => closePinnedCommentatorDeskWindow(),
     );
 
-    ipcMain.handle(
+    registerTrustedLauncherHandle(
       "launcher:setPinnedCommentatorDeskClickThrough",
       (_event, payload) =>
         applyPinnedCommentatorDeskClickThrough(payload?.clickThrough === true),
     );
 
-    ipcMain.handle("launcher:getAssetStatus", () => getAssetStatusView());
+    registerTrustedLauncherHandle("launcher:getPinnedMapControlWindow", () =>
+      getPinnedMapControlWindowStatus(),
+    );
 
-    ipcMain.handle("launcher:getHealthStatus", () => healthService.getStatus());
+    registerTrustedLauncherHandle(
+      "launcher:getPcobMapControlStatus",
+      async () => {
+        assertLauncherAccess();
+        return getPcobMapControlStatus();
+      },
+    );
 
-    ipcMain.handle("launcher:getBootstrapStatus", () =>
+    registerTrustedLauncherHandle(
+      "launcher:openPinnedMapControlWindow",
+      async (_event, payload) => openPinnedMapControlWindow(payload),
+    );
+
+    registerTrustedLauncherHandle("launcher:closePinnedMapControlWindow", () =>
+      closePinnedMapControlWindow(),
+    );
+
+    registerTrustedLauncherHandle(
+      "launcher:setPinnedMapControlAlwaysOnTop",
+      (_event, payload) =>
+        applyPinnedMapControlAlwaysOnTop(payload?.alwaysOnTop === true),
+    );
+
+    ipcMain.handle("map-control:get-status", async (event) => {
+      assertMapControlSender(event);
+      return getPcobMapControlStatus();
+    });
+
+    ipcMain.handle("map-control:select-player", async (event, payload) => {
+      assertMapControlSender(event);
+      return selectPcobObserverFromMap(payload);
+    });
+
+    registerTrustedLauncherHandle("launcher:getAssetStatus", () =>
+      getAssetStatusView(),
+    );
+
+    registerTrustedLauncherHandle("launcher:getHealthStatus", () =>
+      healthService.getStatus(),
+    );
+
+    registerTrustedLauncherHandle("launcher:getBootstrapStatus", () =>
       bootstrapService.getStatus(),
     );
 
-    ipcMain.handle("launcher:getRecentLogs", (_event, payload) =>
+    registerTrustedLauncherHandle("launcher:getRecentLogs", (_event, payload) =>
       logger.getRecent(payload?.scope, payload?.limit),
     );
 
-    ipcMain.handle("launcher:getWidgetCatalogState", async (_event, payload) =>
-      getWidgetCatalogState(payload),
+    registerTrustedLauncherHandle(
+      "launcher:getWidgetCatalogState",
+      async (_event, payload) => getWidgetCatalogState(payload),
     );
 
-    ipcMain.handle("launcher:getWidgetHotkeyControl", async (_event, payload) =>
-      getWidgetHotkeyControlStatus(payload),
+    registerTrustedLauncherHandle(
+      "launcher:rotateWidgetCapability",
+      async (_event, payload) => rotateWidgetCapability(payload),
     );
 
-    ipcMain.handle(
+    registerTrustedLauncherHandle(
+      "launcher:getWidgetHotkeyControl",
+      async (_event, payload) => getWidgetHotkeyControlStatus(payload),
+    );
+
+    registerTrustedLauncherHandle(
       "launcher:updateWidgetHotkeyControl",
       async (_event, payload) => updateWidgetHotkeyControl(payload),
     );
 
-    ipcMain.handle(
+    registerTrustedLauncherHandle(
       "launcher:triggerWidgetHotkeyControl",
       async (_event, payload) => triggerWidgetHotkeyControl(payload),
     );
 
-    ipcMain.handle("launcher:getAiCasterAccess", async (_event, payload) => {
-      assertLauncherAccess();
-      return refreshAiCasterAccess(getStoredSession(), {
-        throwOnError: true,
-        organizationId: payload?.organizationId ?? null,
-      });
-    });
-
-    ipcMain.handle("launcher:updateAiCasterSettings", async (_event, payload) =>
-      updateAiCasterSettings(payload),
+    registerTrustedLauncherHandle(
+      "launcher:getAiCasterAccess",
+      async (_event, payload) => {
+        assertLauncherAccess();
+        return refreshAiCasterAccess(getStoredSession(), {
+          throwOnError: true,
+          organizationId: payload?.organizationId ?? null,
+        });
+      },
     );
 
-    ipcMain.handle("launcher:previewAiCasterVoice", async (_event, payload) =>
-      previewAiCasterVoice(payload),
+    registerTrustedLauncherHandle(
+      "launcher:updateAiCasterSettings",
+      async (_event, payload) => updateAiCasterSettings(payload),
     );
 
-    ipcMain.handle(
+    registerTrustedLauncherHandle(
+      "launcher:previewAiCasterVoice",
+      async (_event, payload) => previewAiCasterVoice(payload),
+    );
+
+    registerTrustedLauncherHandle(
       "launcher:getObserverCommandCenterSnapshot",
       (_event, payload) =>
         buildObserverCommandCenterSnapshot(payload?.mapKey ?? null),
     );
 
-    ipcMain.handle(
+    registerTrustedLauncherHandle(
       "launcher:runObserverCommandAction",
       async (_event, payload) => {
         if (
@@ -7652,149 +10829,171 @@ if (singleInstanceLock) {
       },
     );
 
-    ipcMain.handle("launcher:launchShadowTracker", async (_event, payload) => {
-      assertLauncherAccess();
-      const executablePath = resolveShadowTrackerExecutable(
-        payload?.shadowTrackerPath,
-        { preferRunning: false },
-      );
-      if (!executablePath) {
-        throw new Error(
-          `ShadowTrackerExtra.exe was not found. Use ${DEFAULT_SHADOWTRACKER_EXECUTABLE} or browse to the Win64 executable.`,
+    registerTrustedLauncherHandle(
+      "launcher:launchShadowTracker",
+      async (_event, payload) => {
+        assertLauncherAccess();
+        const executablePath = resolveShadowTrackerExecutable(
+          payload?.shadowTrackerPath,
+          { preferRunning: false },
         );
-      }
+        if (!executablePath) {
+          throw new Error(
+            `ShadowTrackerExtra.exe was not found. Use ${DEFAULT_SHADOWTRACKER_EXECUTABLE} or browse to the Win64 executable.`,
+          );
+        }
 
-      const child = spawnDetached(executablePath, [], {
-        cwd: path.dirname(executablePath),
-        windowsHide: false,
-      });
-      configManager.setShadowTrackerPath(executablePath);
-      const telemetrySource = await ensureTelemetrySourceRunning({
-        shadowTrackerPath: executablePath,
-      });
-      const telemetry = telemetryBridge.getStatus();
+        const child = spawnDetached(executablePath, [], {
+          cwd: path.dirname(executablePath),
+          windowsHide: false,
+        });
+        configManager.setShadowTrackerPath(executablePath);
+        const telemetrySource = await ensureTelemetrySourceRunning({
+          shadowTrackerPath: executablePath,
+        });
+        const telemetry = telemetryBridge.getStatus();
 
-      return {
-        ok: true,
-        pid: child.pid ?? null,
-        executablePath,
-        telemetry,
-        telemetryError: null,
-        connector: telemetrySource?.connector || getConnectorSetupStatusView(),
-        telemetrySource: telemetrySource
-          ? {
-              pid: telemetrySource.pid,
-              scriptPath: telemetrySource.scriptPath,
-              started: telemetrySource.started,
-              alreadyRunning: telemetrySource.alreadyRunning,
-              ready: telemetrySource.ready,
-              baseUrl: getShadowTelemetryBaseUrl(),
-              connector: telemetrySource.connector || null,
-            }
-          : null,
-        telemetrySourceError: telemetrySource?.error || null,
-      };
-    });
+        return {
+          ok: true,
+          pid: child.pid ?? null,
+          executablePath,
+          telemetry,
+          telemetryError: null,
+          connector:
+            telemetrySource?.connector || getConnectorSetupStatusView(),
+          telemetrySource: telemetrySource
+            ? {
+                pid: telemetrySource.pid,
+                scriptPath: telemetrySource.scriptPath,
+                started: telemetrySource.started,
+                alreadyRunning: telemetrySource.alreadyRunning,
+                ready: telemetrySource.ready,
+                baseUrl: getShadowTelemetryBaseUrl(),
+                connector: telemetrySource.connector || null,
+              }
+            : null,
+          telemetrySourceError: telemetrySource?.error || null,
+        };
+      },
+    );
 
-    ipcMain.handle("launcher:startTelemetryBridge", async (_event, payload) => {
-      const session = getStoredSession();
-      assertLauncherAccess();
-      const requestedMatchId = requireMatchId(payload?.matchId);
-      if (getObserverFeedStatusView().running) {
-        throw new Error(
-          "Stop the direct Observer Feed before starting the Telemetry Bridge.",
+    registerTrustedLauncherHandle(
+      "launcher:startTelemetryBridge",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        const requestedMatchId = requireMatchId(payload?.matchId);
+        if (isObserverFeedSessionActive()) {
+          throw new Error(
+            "Stop the direct Observer Feed before starting the Telemetry Bridge.",
+          );
+        }
+        if (visualModeService.getStatus().running) {
+          throw new Error(
+            "Stop Visual Mode before starting the Telemetry Bridge.",
+          );
+        }
+        assertProductionModeReadyForMatch(requestedMatchId);
+        const currentTelemetryStatus = telemetryBridge.getStatus();
+        const sessionId =
+          currentTelemetryStatus.running &&
+          currentTelemetryStatus.matchId === requestedMatchId &&
+          typeof currentTelemetryStatus.sessionId === "string" &&
+          currentTelemetryStatus.sessionId.trim()
+            ? currentTelemetryStatus.sessionId.trim()
+            : randomUUID();
+        const matchId = await pinSelectedMatchLive(
+          session,
+          requestedMatchId,
+          sessionId,
         );
-      }
-      if (visualModeService.getStatus().running) {
-        throw new Error("Stop Visual Mode before starting the Telemetry Bridge.");
-      }
-      assertProductionModeReadyForMatch(requestedMatchId);
-      const currentTelemetryStatus = telemetryBridge.getStatus();
-      const sessionId =
-        currentTelemetryStatus.running &&
-        currentTelemetryStatus.matchId === requestedMatchId &&
-        typeof currentTelemetryStatus.sessionId === "string" &&
-        currentTelemetryStatus.sessionId.trim()
-          ? currentTelemetryStatus.sessionId.trim()
-          : randomUUID();
-      const matchId = await pinSelectedMatchLive(
-        session,
-        requestedMatchId,
-        sessionId,
-      );
-      const telemetrySource = await ensureTelemetrySourceRunning();
-      const activeSession = getStoredSession();
-      const telemetry = await telemetryBridge.start({
-        apiBase: activeSession.apiBase,
-        token: activeSession.token,
-        refreshToken: activeSession.refreshToken,
-        matchId,
-        sessionId,
-      });
-      setWidgetDirectObserverPollingAllowed(false);
-      refreshLocalRuntimeLifecyclePoller();
-      return {
-        ...telemetry,
-        connector: telemetrySource?.connector || getConnectorSetupStatusView(),
-        telemetrySource: telemetrySource
-          ? {
-              pid: telemetrySource.pid,
-              scriptPath: telemetrySource.scriptPath,
-              started: telemetrySource.started,
-              alreadyRunning: telemetrySource.alreadyRunning,
-              ready: telemetrySource.ready,
-              baseUrl: getShadowTelemetryBaseUrl(),
-              connector: telemetrySource.connector || null,
-            }
-          : null,
-        telemetrySourceError: telemetrySource?.error || null,
-      };
-    });
+        const telemetrySource = await ensureTelemetrySourceRunning();
+        const activeSession = getStoredSession();
+        const telemetry = await telemetryBridge.start({
+          apiBase: activeSession.apiBase,
+          token: activeSession.token,
+          refreshToken: activeSession.refreshToken,
+          matchId,
+          sessionId,
+        });
+        setWidgetDirectObserverPollingAllowed(false);
+        refreshLocalRuntimeLifecyclePoller();
+        return {
+          ...telemetry,
+          connector:
+            telemetrySource?.connector || getConnectorSetupStatusView(),
+          telemetrySource: telemetrySource
+            ? {
+                pid: telemetrySource.pid,
+                scriptPath: telemetrySource.scriptPath,
+                started: telemetrySource.started,
+                alreadyRunning: telemetrySource.alreadyRunning,
+                ready: telemetrySource.ready,
+                baseUrl: getShadowTelemetryBaseUrl(),
+                connector: telemetrySource.connector || null,
+              }
+            : null,
+          telemetrySourceError: telemetrySource?.error || null,
+        };
+      },
+    );
 
-    ipcMain.handle("launcher:stopTelemetryBridge", () =>
+    registerTrustedLauncherHandle("launcher:stopTelemetryBridge", () =>
       telemetryBridge.stop("stopped"),
     );
 
-    ipcMain.handle("launcher:startVisualMode", async (_event, payload) => {
-      const session = getStoredSession();
-      assertLauncherAccess();
-      const requestedMatchId = requireMatchId(payload?.matchId);
-      if (telemetryBridge.getStatus().running) {
-        throw new Error(
-          "Stop the Telemetry Bridge before starting Visual Mode.",
-        );
-      }
-      if (getObserverFeedStatusView().running) {
-        throw new Error("Stop the Observer Feed before starting Visual Mode.");
-      }
-      await assertMatchLifecycleStartable(session, requestedMatchId);
-      return visualModeService.start({
-        matchId: requestedMatchId,
-        config: payload?.config || {},
-      });
-    });
+    registerTrustedLauncherHandle(
+      "launcher:startVisualMode",
+      async (_event, payload) => {
+        const session = getStoredSession();
+        assertLauncherAccess();
+        const requestedMatchId = requireMatchId(payload?.matchId);
+        if (telemetryBridge.getStatus().running) {
+          throw new Error(
+            "Stop the Telemetry Bridge before starting Visual Mode.",
+          );
+        }
+        if (isObserverFeedSessionActive()) {
+          throw new Error(
+            "Stop the Observer Feed before starting Visual Mode.",
+          );
+        }
+        await assertMatchLifecycleStartable(session, requestedMatchId);
+        return visualModeService.start({
+          matchId: requestedMatchId,
+          config: payload?.config || {},
+        });
+      },
+    );
 
-    ipcMain.handle("launcher:stopVisualMode", () =>
+    registerTrustedLauncherHandle("launcher:stopVisualMode", () =>
       visualModeService.stop("stopped"),
     );
 
-    ipcMain.handle("launcher:startObserverFeed", async (_event, payload) => {
-      const result = await startObserverFeedForMatch(payload?.matchId);
-      return result;
-    });
+    registerTrustedLauncherHandle(
+      "launcher:startObserverFeed",
+      async (_event, payload) => {
+        const result = await startObserverFeedForMatch(payload?.matchId);
+        return result;
+      },
+    );
 
-    ipcMain.handle("launcher:stopObserverFeed", () =>
+    registerTrustedLauncherHandle("launcher:stopObserverFeed", () =>
       stopObserverFeed("stopped"),
     );
 
-    ipcMain.handle("launcher:resetTelemetryForMatchSwitch", () => {
-      productionModeState = createDefaultProductionModeState();
-      stopObserverFeedSilently("match-switch");
-      visualModeService.stop("match-switch");
-      return telemetryBridge.resetForMatchSwitch();
-    });
+    registerTrustedLauncherHandle(
+      "launcher:resetTelemetryForMatchSwitch",
+      async () => {
+        await stopObserverFeed("match-switch");
+        visualModeService.stop("match-switch");
+        productionModeState = createDefaultProductionModeState();
+        resetLiveMatchMapSynchronization();
+        return telemetryBridge.resetForMatchSwitch();
+      },
+    );
 
-    ipcMain.handle("launcher:consumePendingSyncCommand", () => {
+    registerTrustedLauncherHandle("launcher:consumePendingSyncCommand", () => {
       const command = pendingSyncCommand;
       pendingSyncCommand = null;
       return command;
@@ -7822,9 +11021,23 @@ app.on("before-quit", (event) => {
 
   void Promise.resolve()
     .then(() => endLauncherSession({ clearAuth: clearAuthOnQuit }))
-    .finally(async () => {
+    .then(async (sessionEndResult) => {
+      let observerStop = sessionEndResult?.observerFeedStop;
+      if (observerStop?.ok !== true) {
+        observerStop = await stopObserverFeedSilently("quit-retry");
+      }
+      if (observerStop?.ok !== true) {
+        throw new Error(
+          observerStop?.error ||
+            "The observer connector could not be stopped safely.",
+        );
+      }
+
       try {
+        closePinnedMapControlWindow();
         closePinnedCommentatorDeskWindow();
+        cancelPcobObserverConfirmation();
+        stopPcobHotkeyInput();
         widgetHotkeyControl.shutdown();
         await widgetServer?.stop();
       } catch (error) {
@@ -7836,6 +11049,18 @@ app.on("before-quit", (event) => {
         widgetServer = null;
         app.quit();
       }
+    })
+    .catch((error) => {
+      quittingAfterCleanup = false;
+      const message =
+        error instanceof Error
+          ? error.message
+          : String(error || "Unknown shutdown error");
+      logError("[launcher] shutdown blocked by observer connector", message);
+      dialog.showErrorBox(
+        "Observer connector is still running",
+        `${message}\n\nArenzyra stayed open so telemetry cannot continue silently. Stop the feed again or end the connector process before quitting.`,
+      );
     });
 });
 

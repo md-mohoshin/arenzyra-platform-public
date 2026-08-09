@@ -10,84 +10,18 @@
     "dev": "concurrently \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite --port 5400 --strictPort",
     "sync:branding": "node ../../scripts/sync-brand-icons.cjs",
-    "sync:maps": "node ../../scripts/sync-desktop-maps.cjs",
-    "dev:electron": "npm run sync:maps && wait-on http://localhost:5400 && cross-env ELECTRON_RUN_AS_NODE=0 DEV_SERVER_PORT=5400 electron .",
+    "sync:maps:development": "node ../../scripts/sync-desktop-maps.cjs --development-only",
+    "dev:electron": "npm run sync:maps:development && wait-on http://localhost:5400 && cross-env ELECTRON_RUN_AS_NODE=0 DEV_SERVER_PORT=5400 electron .",
     "lint": "eslint .",
     "build": "vite build",
+    "verify:release-inputs": "node ../../scripts/verify-desktop-release-inputs.cjs",
+    "verify:map-provenance": "node ../../scripts/verify-desktop-map-provenance.cjs",
     "build:electro": "npm run build:electron",
-    "build:electron": "npm run sync:branding && npm run build && npm run sync:maps && electron-builder",
+    "build:electron": "npm run verify:release-inputs && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:map-provenance && electron-builder --config electron-builder.config.cjs",
+    "build:electron:candidate": "npm run verify:release-inputs && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:map-provenance && electron-builder --config electron-builder.candidate.config.cjs --publish never",
     "run:packaged": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process '.\\dist\\win-unpacked\\Arenzyra Observer Launcher.exe'\"",
     "build:electron:run": "npm run build:electron && npm run run:packaged",
     "typecheck": "tsc --noEmit"
-  },
-  "build": {
-    "appId": "com.arenzyra.observerlauncher",
-    "productName": "Arenzyra Observer Launcher",
-    "asar": false,
-    "asarUnpack": [
-      "**/*.node",
-      "node_modules/sharp/**/*",
-      "node_modules/@img/**/*"
-    ],
-    "protocols": [
-      {
-        "name": "Arenzyra Observer Launcher",
-        "schemes": [
-          "arenzyra-launcher"
-        ]
-      }
-    ],
-    "files": [
-      "dist/index.html",
-      "dist/assets/**/*",
-      "electron/**/*",
-      "!electron/overlayServer.cjs",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "../../ob.js",
-        "to": "connectors/ob.js"
-      },
-      {
-        "from": "electron/direct-observer-transport-payload.cjs",
-        "to": "connectors/direct-observer-transport-payload.cjs"
-      },
-      {
-        "from": "electron/observer-runtime-health.cjs",
-        "to": "connectors/observer-runtime-health.cjs"
-      },
-      {
-        "from": "electron/observer-telemetry-contract.cjs",
-        "to": "connectors/observer-telemetry-contract.cjs"
-      },
-      {
-        "from": "build/icon.ico",
-        "to": "icon.ico"
-      },
-      {
-        "from": "build/default-team.png",
-        "to": "default-team.png"
-      },
-      {
-        "from": "build/default-player.png",
-        "to": "default-player.png"
-      },
-      {
-        "from": "build/shadow-logo-template.svg",
-        "to": "shadow-logo-template.svg"
-      }
-    ],
-    "directories": {
-      "buildResources": "build"
-    },
-    "win": {
-      "icon": "icon.ico",
-      "target": [
-        "nsis",
-        "zip"
-      ]
-    }
   },
   "dependencies": {
     "@img/sharp-win32-x64": "0.35.3",
@@ -110,8 +44,9 @@
     "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
+    "7zip-bin": "5.2.0",
     "electron": "41.2.0",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "26.15.3",
     "eslint": "^9.39.4",
     "globals": "^16.5.0",
     "ts-node": "^10.9.2",

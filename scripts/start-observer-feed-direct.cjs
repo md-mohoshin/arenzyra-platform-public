@@ -6,30 +6,12 @@ const { spawn, spawnSync } = require("node:child_process");
 const { setTimeout: delay } = require("node:timers/promises");
 const net = require("node:net");
 
-const INSTALL_ROOT =
-  process.env.ARENZYRA_LAUNCHER_INSTALL_ROOT ||
-  "C:\\Users\\mohos\\AppData\\Local\\Programs\\arenzyra-observer-launcher";
-const SESSION_PATH = path.join(
-  process.env.APPDATA || "",
-  "arenzyra-observer-launcher",
-  "launcher",
-  "session.json",
-);
-const CONFIG_PATH = path.join(
-  process.env.APPDATA || "",
-  "arenzyra-observer-launcher",
-  "launcher",
-  "config.json",
-);
-const LOCAL_STATE_PATH = path.join(
-  process.env.APPDATA || "",
-  "arenzyra-observer-launcher",
-  "Local State",
-);
+const LAUNCHER_USER_DATA_DIR_NAME = "arenzyra-observer-launcher";
 const REPO_ROOT = path.resolve(__dirname, "..");
 const OB_SCRIPT_PATH = path.join(REPO_ROOT, "ob.js");
 const DEFAULT_API_BASE = "http://localhost:3000";
 const LOCAL_OBSERVER_BASE = "http://127.0.0.1:10086";
+const LOCAL_CONTROL_TOKEN = `${randomUUID()}${randomUUID()}`.replace(/-/g, "");
 
 function fail(message) {
   console.error(message);
@@ -42,6 +24,53 @@ function readJson(filePath, fallback = null) {
   } catch {
     return fallback;
   }
+}
+
+function getPathApi(platform) {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function normalizeAbsolutePath(value, label, platform) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) {
+    return null;
+  }
+
+  const pathApi = getPathApi(platform);
+  if (!pathApi.isAbsolute(normalized)) {
+    throw new Error(`${label} must be an absolute path.`);
+  }
+  return pathApi.normalize(normalized);
+}
+
+function resolveLauncherRuntimePaths(
+  env = process.env,
+  platform = process.platform,
+) {
+  const pathApi = getPathApi(platform);
+  const explicitUserData = normalizeAbsolutePath(
+    env.ARENZYRA_LAUNCHER_USER_DATA,
+    "ARENZYRA_LAUNCHER_USER_DATA",
+    platform,
+  );
+  const appData = normalizeAbsolutePath(env.APPDATA, "APPDATA", platform);
+  const launcherUserData =
+    explicitUserData ||
+    (platform === "win32" && appData
+      ? pathApi.join(appData, LAUNCHER_USER_DATA_DIR_NAME)
+      : null);
+  if (!launcherUserData) {
+    throw new Error(
+      "Launcher user-data path is unavailable. Set ARENZYRA_LAUNCHER_USER_DATA to an absolute path.",
+    );
+  }
+
+  return {
+    configPath: pathApi.join(launcherUserData, "launcher", "config.json"),
+    launcherUserData,
+    localStatePath: pathApi.join(launcherUserData, "Local State"),
+    sessionPath: pathApi.join(launcherUserData, "launcher", "session.json"),
+  };
 }
 
 function decryptDpapiBuffer(buffer) {
@@ -74,13 +103,13 @@ function decryptDpapiBuffer(buffer) {
   return Buffer.from(output, "base64");
 }
 
-function getChromiumMasterKey() {
-  const localState = readJson(LOCAL_STATE_PATH, {});
+function getChromiumMasterKey(localStatePath) {
+  const localState = readJson(localStatePath, {});
   const encryptedKeyBase64 = String(
     localState?.os_crypt?.encrypted_key || "",
   ).trim();
   if (!encryptedKeyBase64) {
-    throw new Error(`Missing Chromium master key in ${LOCAL_STATE_PATH}`);
+    throw new Error(`Missing Chromium master key in ${localStatePath}`);
   }
 
   const encryptedKey = Buffer.from(encryptedKeyBase64, "base64");
@@ -88,7 +117,7 @@ function getChromiumMasterKey() {
   return decryptDpapiBuffer(encryptedKey.subarray(dpapiPrefix.length));
 }
 
-function decodeSecret(raw, encrypted) {
+function decodeSecret(raw, encrypted, localStatePath) {
   const value = String(raw || "").trim();
   if (!value) {
     return "";
@@ -98,7 +127,7 @@ function decodeSecret(raw, encrypted) {
     return value;
   }
 
-  const masterKey = getChromiumMasterKey();
+  const masterKey = getChromiumMasterKey(localStatePath);
   const encryptedBytes = Buffer.from(value, "base64");
   const prefix = encryptedBytes.subarray(0, 3).toString("ascii");
   if (prefix !== "v10") {
@@ -413,9 +442,10 @@ async function isLocalObserverReady() {
   try {
     const response = await fetch(`${LOCAL_OBSERVER_BASE}/health`, {
       method: "GET",
+      headers: { "X-Arenzyra-Connector-Token": LOCAL_CONTROL_TOKEN },
       signal: AbortSignal.timeout(1000),
     });
-    return response.ok;
+    return response.ok || response.status === 401;
   } catch {
     return new Promise((resolve) => {
       const socket = net.createConnection({
@@ -451,8 +481,9 @@ async function waitForLocalObserverReady(timeoutMs = 5000) {
 }
 
 async function main() {
-  if (!fs.existsSync(SESSION_PATH)) {
-    fail(`Launcher session not found at ${SESSION_PATH}`);
+  const runtimePaths = resolveLauncherRuntimePaths();
+  if (!fs.existsSync(runtimePaths.sessionPath)) {
+    fail(`Launcher session not found at ${runtimePaths.sessionPath}`);
   }
 
   if (!fs.existsSync(OB_SCRIPT_PATH)) {
@@ -464,11 +495,12 @@ async function main() {
     return;
   }
 
-  const session = readJson(SESSION_PATH, {});
-  const config = readJson(CONFIG_PATH, {});
+  const session = readJson(runtimePaths.sessionPath, {});
+  const config = readJson(runtimePaths.configPath, {});
   const accessToken = decodeSecret(
     session.accessToken || session.token,
     session.accessTokenEncrypted ?? session.encrypted,
+    runtimePaths.localStatePath,
   );
   if (!accessToken) {
     fail("Could not decrypt launcher access token.");
@@ -533,6 +565,7 @@ async function main() {
       MATCH_ID: matchId,
       OBSERVER_SESSION_ID: sessionId,
       ARENZYRA_OBSERVER_FEED_TOKEN: feedToken,
+      ARENZYRA_PCOB_CONNECTOR_TOKEN: LOCAL_CONTROL_TOKEN,
     },
   });
   child.unref();
@@ -560,6 +593,13 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  fail(error && error.message ? error.message : String(error));
-});
+if (require.main === module) {
+  main().catch((error) => {
+    fail(error && error.message ? error.message : String(error));
+  });
+}
+
+module.exports = {
+  normalizeAbsolutePath,
+  resolveLauncherRuntimePaths,
+};

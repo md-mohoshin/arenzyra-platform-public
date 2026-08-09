@@ -1,0 +1,134 @@
+:root {
+  --obs-brand-primary: #00e5ff;
+  --obs-brand-secondary: #38bdf8;
+  --obs-brand-accent: #f5a524;
+  --obs-brand-panel: #0b1220;
+  --obs-brand-background: #071018;
+  --obs-brand-text: #f8fbff;
+  --obs-brand-muted: #cbd5e1;
+  --obs-brand-border: rgba(0, 229, 255, 0.34);
+  --obs-brand-glow: rgba(0, 229, 255, 0.3);
+  --obs-brand-primary-soft: rgba(0, 229, 255, 0.2);
+  --obs-brand-secondary-soft: rgba(56, 189, 248, 0.18);
+  --obs-brand-accent-soft: rgba(245, 165, 36, 0.18);
+}
+
+/* Local OBS widget frames only. Game-state and team colours remain untouched. */
+.fight-alert-panel {
+  border-color: var(--obs-brand-border) !important;
+  background:
+    radial-gradient(circle at 14% 50%, var(--obs-brand-primary-soft), transparent 34%),
+    radial-gradient(circle at 86% 50%, var(--obs-brand-secondary-soft), transparent 38%),
+    linear-gradient(135deg, var(--obs-brand-panel), var(--obs-brand-background)) !important;
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.34), 0 0 28px var(--obs-brand-glow) !important;
+}
+
+.fight-alert-kicker { color: var(--obs-brand-muted) !important; }
+.fight-alert-matchup { color: var(--obs-brand-text) !important; }
+.fight-alert-divider { color: var(--obs-brand-accent) !important; filter: drop-shadow(0 0 16px var(--obs-brand-accent-soft)) !important; }
+
+.replay-marker-card {
+  border-color: var(--obs-brand-border) !important;
+  background:
+    radial-gradient(circle at top left, var(--obs-brand-accent-soft), transparent 40%),
+    linear-gradient(135deg, var(--obs-brand-panel), var(--obs-brand-background)) !important;
+  color: var(--obs-brand-text) !important;
+  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.42), 0 0 28px var(--obs-brand-glow) !important;
+}
+
+.replay-marker-kicker { color: var(--obs-brand-accent) !important; }
+.replay-marker-detail { color: var(--obs-brand-muted) !important; }
+
+.team-eliminated-banner {
+  border-color: var(--obs-brand-border) !important;
+  background:
+    linear-gradient(135deg, rgba(182, 34, 34, 0.18), var(--obs-brand-panel) 38%),
+    linear-gradient(90deg, var(--obs-brand-primary-soft), transparent) !important;
+}
+
+.team-eliminated-banner__copy { color: var(--obs-brand-text) !important; }
+.team-eliminated-banner__placement { color: var(--obs-brand-muted) !important; }
+
+.team-status-shell {
+  border-color: var(--obs-brand-border) !important;
+  background:
+    radial-gradient(circle at 0% 0%, var(--obs-brand-primary-soft), transparent 36%),
+    linear-gradient(135deg, var(--obs-brand-panel), var(--obs-brand-background)) !important;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.36), 0 0 28px var(--obs-brand-glow) !important;
+}
+
+.team-status-eyebrow { color: var(--obs-brand-muted) !important; }
+.team-status-team { color: var(--obs-brand-text) !important; }
+
+.ai-caster-root {
+  color: var(--obs-brand-text) !important;
+  background: color-mix(in srgb, var(--obs-brand-panel) 84%, transparent) !important;
+  border-color: var(--obs-brand-border) !important;
+}
+
+.ai-caster-root[data-status="live"] { border-color: var(--obs-brand-primary) !important; }
+.ai-caster-meta, .ai-caster-footer { color: var(--obs-brand-muted) !important; }
+.ai-caster-line { color: var(--obs-brand-text) !important; }
+
+/* The map image and game/team markers retain their operational colours. Only
+   surrounding broadcast chrome inherits the organization palette. */
+.obs-map-root .status-pill,
+.obs-map-root .timer-panel,
+.obs-map-root .assist-panel,
+.obs-map-root .operator-panel,
+.obs-map-root .watch-queue-panel,
+.obs-map-root .alerts-panel,
+.obs-map-root .debug-panel,
+.obs-map-root .legend-panel,
+.obs-map-root .commentary-panel,
+.obs-map-root .distance-panel {
+  color: var(--obs-brand-text) !important;
+  border-color: var(--obs-brand-border) !important;
+  background:
+    linear-gradient(135deg, var(--obs-brand-primary-soft), transparent 52%),
+    color-mix(in srgb, var(--obs-brand-panel) 88%, transparent) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24), 0 0 20px var(--obs-brand-glow) !important;
+}
+
+.obs-map-root .timer-label,
+.obs-map-root .legend-title,
+.obs-map-root .commentary-title,
+.obs-map-root .distance-title {
+  color: var(--obs-brand-muted) !important;
+}
+
+.commentator-desk .map-pane,
+.commentator-desk .desk-header,
+.commentator-desk .panel,
+.commentator-desk .metric,
+.commentator-desk .primary-cue:not([data-tone]),
+.commentator-desk .cue-item,
+.commentator-desk .compact-row,
+.commentator-desk .distance-row,
+.commentator-desk .team-row {
+  color: var(--obs-brand-text) !important;
+  border-color: var(--obs-brand-border) !important;
+  background:
+    linear-gradient(135deg, var(--obs-brand-primary-soft), transparent 54%),
+    linear-gradient(160deg, var(--obs-brand-panel), var(--obs-brand-background)) !important;
+}
+
+.commentator-desk .eyebrow,
+.commentator-desk .panel-title,
+.commentator-desk .cue-label,
+.commentator-desk .metric span {
+  color: var(--obs-brand-primary) !important;
+}
+
+.commentator-desk .status-pill {
+  color: var(--obs-brand-text) !important;
+  border-color: var(--obs-brand-border) !important;
+  background: var(--obs-brand-primary-soft) !important;
+}
+
+.commentator-desk .cue-meta,
+.commentator-desk .locked-copy,
+.commentator-desk .distance-sub,
+.commentator-desk .cue-sub {
+  color: var(--obs-brand-muted) !important;
+}

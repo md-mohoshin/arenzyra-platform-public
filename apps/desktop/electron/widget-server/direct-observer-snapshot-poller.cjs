@@ -4,7 +4,11 @@ const axios = require("axios");
 
 const DEFAULT_OBSERVER_BASE_URL = "http://127.0.0.1:10086";
 const DEFAULT_POLL_INTERVAL_MS = 700;
+const DEFAULT_CIRCLE_POLL_INTERVAL_MS = 150;
 const REQUEST_TIMEOUT_MS = 1200;
+const CIRCLE_REQUEST_TIMEOUT_MS = 450;
+const CIRCLE_CACHE_MAX_AGE_MS = 1000;
+const HANDLED_CIRCLE_SIGNATURE_TTL_MS = 3000;
 
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -120,6 +124,129 @@ function normalizeCircleInfo(payload) {
   };
 }
 
+function getCirclePayloadRecords(payload) {
+  const root = asRecord(payload);
+  if (!root) {
+    return [];
+  }
+
+  return [
+    root,
+    asRecord(root.circleInfo),
+    asRecord(root.CircleInfo),
+    asRecord(root.circle),
+    asRecord(root.Circle),
+  ].filter(Boolean);
+}
+
+function pickCircleValue(payload, keys) {
+  for (const record of getCirclePayloadRecords(payload)) {
+    for (const key of keys) {
+      if (record[key] !== undefined && record[key] !== null) {
+        return record[key];
+      }
+    }
+  }
+
+  return null;
+}
+
+function pickCircleZone(payload, keys) {
+  for (const record of getCirclePayloadRecords(payload)) {
+    for (const key of keys) {
+      const zone = buildZone(record[key]);
+      if (zone) {
+        return zone;
+      }
+    }
+  }
+
+  return null;
+}
+
+function createCirclePayloadSignature(payload) {
+  const info = normalizeCircleInfo(payload);
+  const counter = toFiniteNumber(
+    pickCircleValue(payload, ["Counter", "counter", "counterSeconds", "elapsedSeconds"]),
+  );
+  const maxTime = toFiniteNumber(
+    pickCircleValue(payload, ["MaxTime", "maxTime", "maxTimeSeconds", "phaseDuration"]),
+  );
+  const circleArrayValue = pickCircleValue(payload, ["CircleArray", "circleArray"]);
+  const circleArray = Array.isArray(circleArrayValue)
+    ? circleArrayValue.map((entry) => buildZone(entry)).filter(Boolean)
+    : [];
+
+  return JSON.stringify({
+    mapName: normalizeMapKey(
+      pickCircleValue(payload, ["mapName", "MapName", "map", "Map"]),
+    ),
+    gameTime: info.gameTime,
+    phase: info.circleIndex,
+    status: info.circleStatus,
+    counter,
+    maxTime,
+    remaining:
+      counter !== null && maxTime !== null
+        ? null
+        : pickCircleValue(payload, [
+            "remainingMs",
+            "timeRemainingMs",
+            "timeRemaining",
+            "remainingTime",
+            "remainingSeconds",
+          ]),
+    targetEndAt:
+      counter !== null && maxTime !== null
+        ? null
+        : pickCircleValue(payload, [
+            "nextShrinkAt",
+            "nextShrinkTs",
+            "nextShrinkTime",
+            "zoneNextShrinkAt",
+            "nextPhaseAt",
+          ]),
+    safeZone: pickCircleZone(payload, [
+      "safeZone",
+      "safezone",
+      "zone",
+      "currentZone",
+    ]),
+    nextZone: pickCircleZone(payload, [
+      "nextZone",
+      "nextzone",
+      "whiteZone",
+      "WhiteZone",
+    ]),
+    blueZone: pickCircleZone(payload, [
+      "currentBlueZone",
+      "CurrentBlueZone",
+      "blueZone",
+      "BlueZone",
+    ]),
+    circleArray,
+  });
+}
+
+function circlePayloadHasGeometry(payload) {
+  const circleArrayValue = pickCircleValue(payload, [
+    "CircleArray",
+    "circleArray",
+  ]);
+  return Boolean(
+    pickCircleZone(payload, ["safeZone", "safezone", "zone", "currentZone"]) ||
+      pickCircleZone(payload, ["nextZone", "nextzone", "whiteZone", "WhiteZone"]) ||
+      pickCircleZone(payload, [
+        "currentBlueZone",
+        "CurrentBlueZone",
+        "blueZone",
+        "BlueZone",
+      ]) ||
+      (Array.isArray(circleArrayValue) &&
+        circleArrayValue.some((entry) => Boolean(buildZone(entry))))
+  );
+}
+
 function countAliveTeams(teams) {
   if (!Array.isArray(teams) || teams.length === 0) {
     return null;
@@ -188,11 +315,17 @@ function detectMatchPhase({
   return previousPhase ?? "combat";
 }
 
-async function requestOptional(client, path) {
+async function requestOptional(
+  client,
+  path,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  signal = undefined,
+) {
   try {
     const response = await client.get(path, {
-      timeout: REQUEST_TIMEOUT_MS,
+      timeout: timeoutMs,
       validateStatus: () => true,
+      signal,
     });
     if (response?.status >= 200 && response?.status < 300) {
       return response;
@@ -204,12 +337,184 @@ async function requestOptional(client, path) {
   return null;
 }
 
-async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previousPhase = null) {
+function extractCircleResponsePayload(responseData) {
+  const root = asRecord(responseData);
+  if (!root) {
+    return null;
+  }
+
+  return (
+    (hasObjectKeys(root.circleInfo) ? root.circleInfo : null) ||
+    (hasObjectKeys(root.CircleInfo) ? root.CircleInfo : null) ||
+    (hasObjectKeys(root.circle) ? root.circle : null) ||
+    (hasObjectKeys(root.Circle) ? root.Circle : null) ||
+    (hasObjectKeys(root) ? root : null)
+  );
+}
+
+const MAP_NAME_FIELDS = [
+  "mapName",
+  "MapName",
+  "map",
+  "Map",
+  "mapId",
+  "MapId",
+];
+
+function extractMapCandidate(payload) {
+  const root = asRecord(payload);
+  if (!root) {
+    return null;
+  }
+  const field = MAP_NAME_FIELDS.find(
+    (key) => typeof root[key] === "string" && root[key].trim(),
+  );
+  if (!field) {
+    return null;
+  }
+
+  const source =
+    typeof root.mapNameSource === "string"
+      ? root.mapNameSource.trim().toLowerCase()
+      : null;
+  return {
+    mapName: root[field].trim(),
+    source,
+  };
+}
+
+function resolveAuthoritativeMapCandidate(records) {
+  let legacyCandidate = null;
+  for (const record of records) {
+    const candidate = extractMapCandidate(record);
+    if (!candidate || candidate.source === "runtime-fallback") {
+      continue;
+    }
+    if (candidate.source === "pcob") {
+      return candidate;
+    }
+    legacyCandidate ??= candidate;
+  }
+  return legacyCandidate;
+}
+
+function applyAuthoritativeMapCandidate(payload, candidate) {
+  const root = asRecord(payload) ?? {};
+  if (!candidate) {
+    return { ...root };
+  }
+
+  const next = {
+    ...root,
+    mapName: candidate.mapName,
+  };
+  delete next.fallbackMapKey;
+  if (candidate.source) {
+    next.mapNameSource = candidate.source;
+  } else {
+    delete next.mapNameSource;
+  }
+  return next;
+}
+
+function applyForcedMapKey(mapPayload, forcedMapKey) {
+  const root = asRecord(mapPayload);
+  if (!root) {
+    return null;
+  }
+
+  const normalizedForcedMapKey = normalizeMapKey(forcedMapKey);
+  if (!normalizedForcedMapKey) {
+    return { ...root };
+  }
+
+  const existingMap = extractMapCandidate(root);
+  if (existingMap && existingMap.source !== "runtime-fallback") {
+    return { ...root };
+  }
+
+  return {
+    ...root,
+    mapName: normalizedForcedMapKey,
+    mapNameSource: "runtime-fallback",
+    fallbackMapKey: normalizedForcedMapKey,
+  };
+}
+
+async function fetchObserverCircleSnapshot(
+  observerBaseUrl,
+  forcedMapKey = null,
+  previousPhase = null,
+  options = {},
+) {
+  const accessToken = String(options?.accessToken || "").trim();
+  const client = axios.create({
+    baseURL: observerBaseUrl || DEFAULT_OBSERVER_BASE_URL,
+    timeout: CIRCLE_REQUEST_TIMEOUT_MS,
+    validateStatus: () => true,
+    ...(accessToken
+      ? { headers: { "X-Arenzyra-Connector-Token": accessToken } }
+      : {}),
+  });
+  const response = await client.get("/getcircleinfo", {
+    timeout: CIRCLE_REQUEST_TIMEOUT_MS,
+    validateStatus: () => true,
+    signal: options?.signal,
+  });
+  if (!response || response.status < 200 || response.status >= 300) {
+    throw new Error(
+      `Observer getcircleinfo failed with status ${response?.status ?? "unknown"}.`,
+    );
+  }
+
+  const circlePayload = applyForcedMapKey(
+    extractCircleResponsePayload(response.data),
+    forcedMapKey,
+  );
+  if (!hasObjectKeys(circlePayload)) {
+    return null;
+  }
+
+  const circleInfo = normalizeCircleInfo(circlePayload);
+  return {
+    players: [],
+    teams: [],
+    kills: [],
+    backpacks: [],
+    circlePayload,
+    allInfo: null,
+    routePayloads: null,
+    observerSnapshot: null,
+    observer: null,
+    phase: detectMatchPhase({
+      gameTime: circleInfo.gameTime,
+      aliveTeams: null,
+      circleIndex: circleInfo.circleIndex,
+      circleStatus: circleInfo.circleStatus,
+      previousPhase,
+    }),
+    source: "direct-observer",
+    empty: false,
+  };
+}
+
+async function fetchObserverSnapshot(
+  observerBaseUrl,
+  forcedMapKey = null,
+  previousPhase = null,
+  options = {},
+) {
+  const accessToken = String(options?.accessToken || "").trim();
   const client = axios.create({
     baseURL: observerBaseUrl || DEFAULT_OBSERVER_BASE_URL,
     timeout: REQUEST_TIMEOUT_MS,
     validateStatus: () => true,
+    ...(accessToken
+      ? { headers: { "X-Arenzyra-Connector-Token": accessToken } }
+      : {}),
   });
+  const cachedCirclePayload = asRecord(options?.circlePayload);
+  const signal = options?.signal;
 
   const [
     allInfoResponse,
@@ -219,18 +524,24 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     backpackResponse,
     circleResponse,
     gameGlobalInfoResponse,
+    observerResponse,
     routePayloadsResponse,
     observerSnapshotResponse,
   ] = await Promise.all([
-    client.get("/getallinfo"),
-    requestOptional(client, "/gettotalplayerlist"),
-    requestOptional(client, "/getteaminfolist"),
-    requestOptional(client, "/getkillinfo"),
-    requestOptional(client, "/getteambackpackinfo"),
-    requestOptional(client, "/getcircleinfo"),
-    requestOptional(client, "/getgameglobalinfo"),
-    requestOptional(client, "/getroutepayloads"),
-    requestOptional(client, "/getobserversnapshot"),
+    client.get("/getallinfo", { signal }),
+    requestOptional(client, "/gettotalplayerlist", REQUEST_TIMEOUT_MS, signal),
+    requestOptional(client, "/getteaminfolist", REQUEST_TIMEOUT_MS, signal),
+    requestOptional(client, "/getkillinfo", REQUEST_TIMEOUT_MS, signal),
+    requestOptional(client, "/getteambackpackinfo", REQUEST_TIMEOUT_MS, signal),
+    cachedCirclePayload
+      ? Promise.resolve(null)
+      : requestOptional(client, "/getcircleinfo", REQUEST_TIMEOUT_MS, signal),
+    cachedCirclePayload
+      ? Promise.resolve(null)
+      : requestOptional(client, "/getgameglobalinfo", REQUEST_TIMEOUT_MS, signal),
+    requestOptional(client, "/getobservingplayer", REQUEST_TIMEOUT_MS, signal),
+    requestOptional(client, "/getroutepayloads", REQUEST_TIMEOUT_MS, signal),
+    requestOptional(client, "/getobserversnapshot", REQUEST_TIMEOUT_MS, signal),
   ]);
 
   if (!allInfoResponse || allInfoResponse.status < 200 || allInfoResponse.status >= 300) {
@@ -280,9 +591,22 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     observerSnapshotResponse?.data?.snapshot ||
     observerSnapshotResponse?.data ||
     null;
+  const observerResponseData = asRecord(observerResponse?.data);
+  const observer =
+    asRecord(observerResponseData?.observingPlayer) ||
+    asRecord(observerResponseData?.ObservingPlayer) ||
+    asRecord(observerResponseData?.observer) ||
+    (observerResponseData && Object.keys(observerResponseData).length > 0
+      ? observerResponseData
+      : null) ||
+    asRecord(observerSnapshot?.observingPlayer) ||
+    asRecord(allInfo?.observingPlayer) ||
+    asRecord(allInfo?.ObservingPlayer) ||
+    null;
 
   const circleResponseData = asRecord(circleResponse?.data);
   const baseCirclePayload =
+    cachedCirclePayload ||
     (hasObjectKeys(circleResponseData?.circleInfo) ? circleResponseData.circleInfo : null) ||
     (hasObjectKeys(circleResponseData?.CircleInfo) ? circleResponseData.CircleInfo : null) ||
     (hasObjectKeys(circleResponseData?.circle) ? circleResponseData.circle : null) ||
@@ -326,6 +650,7 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
       : circleRoot?.CircleInfo && typeof circleRoot.CircleInfo === "object"
         ? circleRoot.CircleInfo
         : circleRoot;
+  const normalizedObserverCircle = asRecord(observerSnapshot?.normalized?.circle);
   const circleIndexRaw =
     circleInfoRoot?.CircleIndex ??
     circleInfoRoot?.circleIndex ??
@@ -356,6 +681,7 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
 
   const circlePayload = {
     ...(gameGlobalInfo && typeof gameGlobalInfo === "object" ? gameGlobalInfo : {}),
+    ...(normalizedObserverCircle || {}),
     ...(circleRoot && typeof circleRoot === "object" ? circleRoot : {}),
   };
   if (circleArray.length > 0 && circlePayload.CircleArray === undefined) {
@@ -368,17 +694,25 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     circlePayload.nextZone = nextZone;
   }
 
-  const normalizedForcedMapKey = normalizeMapKey(forcedMapKey);
-  if (normalizedForcedMapKey) {
-    if (asRecord(allInfo) && typeof allInfo.mapName !== "string") {
-      allInfo.mapName = normalizedForcedMapKey;
-    }
-    if (asRecord(circlePayload) && typeof circlePayload.mapName !== "string") {
-      circlePayload.mapName = normalizedForcedMapKey;
-    }
-  }
+  const routePayloadRecords = Object.values(asRecord(routePayloads) ?? {});
+  const authoritativeMap = resolveAuthoritativeMapCandidate([
+    allInfo,
+    circlePayload,
+    observerSnapshot,
+    asRecord(observerSnapshot?.allInfo),
+    asRecord(observerSnapshot?.circleInfo),
+    ...routePayloadRecords,
+    Array.isArray(players) ? players[0] : null,
+    observer,
+  ]);
+  const applyEffectiveMap = authoritativeMap
+    ? (payload) => applyAuthoritativeMapCandidate(payload, authoritativeMap)
+    : (payload) => applyForcedMapKey(payload, forcedMapKey);
+  const effectiveAllInfo = applyEffectiveMap(allInfo);
+  const effectiveCirclePayload = applyEffectiveMap(circlePayload);
+  const effectiveObserverSnapshot = applyEffectiveMap(observerSnapshot);
 
-  const circleInfo = normalizeCircleInfo(circlePayload);
+  const circleInfo = normalizeCircleInfo(effectiveCirclePayload);
   const phase = detectMatchPhase({
     gameTime: circleInfo.gameTime,
     aliveTeams: countAliveTeams(teams),
@@ -392,11 +726,11 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
     teams: Array.isArray(teams) ? teams : [],
     kills: Array.isArray(kills) ? kills : [],
     backpacks: Array.isArray(backpacks) ? backpacks : [],
-    circlePayload,
-    allInfo,
+    circlePayload: effectiveCirclePayload,
+    allInfo: effectiveAllInfo,
     routePayloads,
-    observerSnapshot,
-    observer: allInfo?.observingPlayer || allInfo?.ObservingPlayer || null,
+    observerSnapshot: effectiveObserverSnapshot,
+    observer,
     phase,
     source: "direct-observer",
     empty: !hasSourceData,
@@ -406,19 +740,49 @@ async function fetchObserverSnapshot(observerBaseUrl, forcedMapKey = null, previ
 function createDirectObserverSnapshotPoller({
   observerBaseUrl = DEFAULT_OBSERVER_BASE_URL,
   getObserverBaseUrl = null,
+  getAccessToken = null,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+  circlePollIntervalMs = DEFAULT_CIRCLE_POLL_INTERVAL_MS,
   isEnabled = () => false,
+  isCircleEnabled = isEnabled,
   getForcedMapKey = () => null,
   onSnapshot = () => {},
+  onZoneSnapshot = () => {},
   log = () => {},
 } = {}) {
   let timer = null;
+  let circleTimer = null;
   let inFlight = false;
+  let circleInFlight = false;
+  let activePollPromise = null;
+  let activeCirclePollPromise = null;
+  let pollAbortController = null;
+  let circleAbortController = null;
   let stopped = false;
   let lastErrorMessage = "";
   let lastErrorAt = 0;
+  let lastCircleErrorMessage = "";
+  let lastCircleErrorAt = 0;
   let lastStatusAt = 0;
   let lastPhase = null;
+  let latestCircleSnapshot = null;
+  let latestCircleReceivedAt = 0;
+  let lastCircleSignature = "";
+  let latestCirclePayloadSignature = "";
+  const handledCircleSignatures = new Map();
+  let generation = 0;
+
+  function reset() {
+    generation += 1;
+    pollAbortController?.abort();
+    circleAbortController?.abort();
+    lastPhase = null;
+    latestCircleSnapshot = null;
+    latestCircleReceivedAt = 0;
+    lastCircleSignature = "";
+    latestCirclePayloadSignature = "";
+    handledCircleSignatures.clear();
+  }
 
   function resolveObserverBaseUrl() {
     if (typeof getObserverBaseUrl === "function") {
@@ -431,18 +795,65 @@ function createDirectObserverSnapshotPoller({
     return observerBaseUrl || DEFAULT_OBSERVER_BASE_URL;
   }
 
+  function resolveAccessToken() {
+    return typeof getAccessToken === "function"
+      ? String(getAccessToken() || "").trim()
+      : "";
+  }
+
+  function pruneHandledCircleSignatures(now = Date.now()) {
+    for (const [signature, handledAt] of handledCircleSignatures) {
+      if (now - handledAt > HANDLED_CIRCLE_SIGNATURE_TTL_MS) {
+        handledCircleSignatures.delete(signature);
+      }
+    }
+  }
+
+  function wasCirclePayloadHandled(circlePayload, now = Date.now()) {
+    pruneHandledCircleSignatures(now);
+    const signature = createCirclePayloadSignature(circlePayload);
+    const handledAt = handledCircleSignatures.get(signature);
+    return (
+      Number.isFinite(handledAt) &&
+      now - handledAt <= HANDLED_CIRCLE_SIGNATURE_TTL_MS
+    );
+  }
+
   async function pollOnce() {
-    if (stopped || inFlight || isEnabled() !== true) {
+    if (stopped || inFlight) {
+      return;
+    }
+    if (isEnabled() !== true) {
       return;
     }
 
+    const pollGeneration = generation;
+    const abortController = new AbortController();
+    pollAbortController = abortController;
     inFlight = true;
     try {
+      const pollStartedAt = Date.now();
+      const hasFreshCircleSnapshot =
+        latestCircleSnapshot &&
+        pollStartedAt - latestCircleReceivedAt <= CIRCLE_CACHE_MAX_AGE_MS;
       const snapshot = await fetchObserverSnapshot(
         resolveObserverBaseUrl(),
         getForcedMapKey(),
         lastPhase,
+        hasFreshCircleSnapshot
+            ? {
+                circlePayload: latestCircleSnapshot.circlePayload,
+                signal: abortController.signal,
+                accessToken: resolveAccessToken(),
+              }
+          : {
+              signal: abortController.signal,
+              accessToken: resolveAccessToken(),
+            },
       );
+      if (stopped || pollGeneration !== generation) {
+        return;
+      }
       if (snapshot.empty === true) {
         const now = Date.now();
         if (now - lastStatusAt >= 5_000) {
@@ -456,10 +867,17 @@ function createDirectObserverSnapshotPoller({
         return;
       }
       lastPhase = typeof snapshot?.phase === "string" && snapshot.phase.trim() ? snapshot.phase : null;
+      const fastCircleStillFresh =
+        latestCircleSnapshot &&
+        Date.now() - latestCircleReceivedAt <= CIRCLE_CACHE_MAX_AGE_MS;
+      snapshot.zoneHandledByFastLane = Boolean(
+        fastCircleStillFresh &&
+          wasCirclePayloadHandled(snapshot.circlePayload),
+      );
       onSnapshot(snapshot);
 
-      const now = Date.now();
-      if (now - lastStatusAt >= 5_000) {
+      const ingestedAt = Date.now();
+      if (ingestedAt - lastStatusAt >= 5_000) {
         log("observer snapshot ingested", {
           players: snapshot.players.length,
           teams: snapshot.teams.length,
@@ -472,9 +890,12 @@ function createDirectObserverSnapshotPoller({
             null,
           phase: snapshot?.phase || null,
         });
-        lastStatusAt = now;
+        lastStatusAt = ingestedAt;
       }
     } catch (error) {
+      if (stopped || pollGeneration !== generation) {
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error || "Observer poll failed.");
       const now = Date.now();
       if (message !== lastErrorMessage || now - lastErrorAt >= 10_000) {
@@ -485,8 +906,122 @@ function createDirectObserverSnapshotPoller({
         lastErrorAt = now;
       }
     } finally {
+      if (pollAbortController === abortController) {
+        pollAbortController = null;
+      }
       inFlight = false;
     }
+  }
+
+  async function pollCircleOnce() {
+    if (stopped || circleInFlight) {
+      return;
+    }
+    if (isCircleEnabled() !== true) {
+      latestCircleSnapshot = null;
+      latestCircleReceivedAt = 0;
+      lastCircleSignature = "";
+      latestCirclePayloadSignature = "";
+      handledCircleSignatures.clear();
+      return;
+    }
+
+    const pollGeneration = generation;
+    const abortController = new AbortController();
+    circleAbortController = abortController;
+    circleInFlight = true;
+    try {
+      const snapshot = await fetchObserverCircleSnapshot(
+        resolveObserverBaseUrl(),
+        getForcedMapKey(),
+        lastPhase,
+        {
+          signal: abortController.signal,
+          accessToken: resolveAccessToken(),
+        },
+      );
+      if (stopped || pollGeneration !== generation) {
+        return;
+      }
+      if (!snapshot) {
+        return;
+      }
+
+      const receivedAt = Date.now();
+      latestCircleSnapshot = snapshot;
+      latestCircleReceivedAt = receivedAt;
+      latestCirclePayloadSignature = createCirclePayloadSignature(
+        snapshot.circlePayload,
+      );
+      const signature = `${snapshot.phase || ""}|${latestCirclePayloadSignature}`;
+      if (signature === lastCircleSignature) {
+        return;
+      }
+
+      lastCircleSignature = signature;
+      onZoneSnapshot(snapshot);
+      if (circlePayloadHasGeometry(snapshot.circlePayload)) {
+        handledCircleSignatures.set(latestCirclePayloadSignature, receivedAt);
+      }
+      pruneHandledCircleSignatures(receivedAt);
+    } catch (error) {
+      if (stopped || pollGeneration !== generation) {
+        return;
+      }
+      const message =
+        error instanceof Error ? error.message : String(error || "Observer circle poll failed.");
+      const now = Date.now();
+      if (message !== lastCircleErrorMessage || now - lastCircleErrorAt >= 10_000) {
+        log("observer circle poll failed; full snapshot fallback remains active", {
+          error: message,
+        });
+        lastCircleErrorMessage = message;
+        lastCircleErrorAt = now;
+      }
+    } finally {
+      if (circleAbortController === abortController) {
+        circleAbortController = null;
+      }
+      circleInFlight = false;
+    }
+  }
+
+  function launchPollOnce() {
+    if (activePollPromise) {
+      return activePollPromise;
+    }
+    const pending = pollOnce();
+    activePollPromise = pending;
+    void pending.then(
+      () => {
+        if (activePollPromise === pending) activePollPromise = null;
+      },
+      () => {
+        if (activePollPromise === pending) activePollPromise = null;
+      },
+    );
+    return pending;
+  }
+
+  function launchCirclePollOnce() {
+    if (activeCirclePollPromise) {
+      return activeCirclePollPromise;
+    }
+    const pending = pollCircleOnce();
+    activeCirclePollPromise = pending;
+    void pending.then(
+      () => {
+        if (activeCirclePollPromise === pending) {
+          activeCirclePollPromise = null;
+        }
+      },
+      () => {
+        if (activeCirclePollPromise === pending) {
+          activeCirclePollPromise = null;
+        }
+      },
+    );
+    return pending;
   }
 
   function start() {
@@ -495,27 +1030,50 @@ function createDirectObserverSnapshotPoller({
     }
 
     timer = setInterval(() => {
-      void pollOnce();
+      void launchPollOnce();
     }, pollIntervalMs);
     timer.unref?.();
-    void pollOnce();
+    circleTimer = setInterval(() => {
+      void launchCirclePollOnce();
+    }, circlePollIntervalMs);
+    circleTimer.unref?.();
+    void launchCirclePollOnce();
+    void launchPollOnce();
   }
 
   async function stop() {
     stopped = true;
+    reset();
     if (timer) {
       clearInterval(timer);
       timer = null;
     }
+    if (circleTimer) {
+      clearInterval(circleTimer);
+      circleTimer = null;
+    }
+    const pending = [activePollPromise, activeCirclePollPromise].filter(
+      Boolean,
+    );
+    if (pending.length > 0) {
+      await Promise.allSettled(pending);
+    }
   }
 
   return {
+    hasHandledCirclePayload(circlePayload) {
+      return wasCirclePayloadHandled(circlePayload);
+    },
+    reset,
     start,
     stop,
   };
 }
 
 module.exports = {
+  circlePayloadHasGeometry,
+  createCirclePayloadSignature,
   createDirectObserverSnapshotPoller,
+  fetchObserverCircleSnapshot,
   fetchObserverSnapshot,
 };

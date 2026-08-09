@@ -1,0 +1,30 @@
+{
+  "source": "sanitized-pcob-recording",
+  "route": "/setgameglobalinfo",
+  "raw": {
+    "mapName": "rondo",
+    "normalized": {
+      "flightPath": {
+        "start": {
+          "x": -112046.1875,
+          "y": 168940.71875
+        },
+        "end": {
+          "x": 965938.4375,
+          "y": 342524.8125
+        },
+        "coordinateSystem": "WORLD"
+      }
+    },
+    "rawRoutePayloads": {
+      "/setgameglobalinfo": {
+        "payload": {
+          "PlaneStartLocX": -112046.1875,
+          "PlaneStartLocY": 168940.71875,
+          "PlaneStopLocX": 965938.4375,
+          "PlaneStopLocY": 342524.8125
+        }
+      }
+    }
+  }
+}

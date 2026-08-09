@@ -28,7 +28,7 @@
   const RECONNECT_DELAY_MS = 2000;
   const ZONE_STALE_MS = 1500;
   const NEXT_ZONE_REVEAL_MS = 20 * 1000;
-  const NEXT_ZONE_DISPLAY_LATENCY_COMPENSATION_MS = 900;
+  const NEXT_ZONE_DISPLAY_LATENCY_COMPENSATION_MS = 0;
   const BRANDING_REFRESH_MS = 5000;
   const TIMER_RESYNC_DRIFT_MS = 500;
   const INFERRED_MODE_STABILIZE_MS = 140;
@@ -70,6 +70,7 @@
     lastAlertReplayIgnoredSignature: "",
     brandingRefreshTimer: null,
     brandingRefreshInFlight: false,
+    nextZoneExitTimer: null,
   };
 
   function asString(value) {
@@ -112,6 +113,44 @@
 
     node.hidden = !visible;
     node.classList.toggle("is-visible", visible);
+  }
+
+  function setNextZoneVisible(visible) {
+    if (!nextZoneRoot) {
+      return;
+    }
+
+    const foldDown = nextZoneRoot.dataset.style === "fold-down";
+    if (!foldDown) {
+      setVisible(nextZoneRoot, visible);
+      return;
+    }
+
+    if (state.nextZoneExitTimer !== null) {
+      window.clearTimeout(state.nextZoneExitTimer);
+      state.nextZoneExitTimer = null;
+    }
+
+    if (visible) {
+      nextZoneRoot.hidden = false;
+      nextZoneRoot.classList.toggle("is-exiting", false);
+      nextZoneRoot.classList.toggle("is-visible", true);
+      return;
+    }
+
+    if (nextZoneRoot.hidden) {
+      nextZoneRoot.classList.toggle("is-visible", false);
+      nextZoneRoot.classList.toggle("is-exiting", false);
+      return;
+    }
+
+    nextZoneRoot.classList.toggle("is-visible", false);
+    nextZoneRoot.classList.toggle("is-exiting", true);
+    state.nextZoneExitTimer = window.setTimeout(() => {
+      nextZoneRoot.hidden = true;
+      nextZoneRoot.classList.toggle("is-exiting", false);
+      state.nextZoneExitTimer = null;
+    }, 240);
   }
 
   function setElementData(node, key, value) {
@@ -242,7 +281,17 @@
       bootstrap.organization && bootstrap.organization.branding,
     );
     const directBranding = parseMaybeJsonObject(bootstrap.branding);
-    return organizationBranding || directBranding || {};
+    const dataBranding = parseMaybeJsonObject(bootstrap.data);
+
+    // The permanent-widget resolver returns branding under organization, while
+    // the organization branding endpoint returns the palette directly. Merge
+    // the supported shapes instead of letting an incomplete organization
+    // record discard a complete direct palette during a live refresh.
+    return {
+      ...(dataBranding || {}),
+      ...(directBranding || {}),
+      ...(organizationBranding || {}),
+    };
   }
 
   function applyBrandingFromBootstrap() {
@@ -254,17 +303,17 @@
     const primary = pickBrandingColor(
       branding,
       ["primaryColor", "primary", "liveColor", "accent"],
-      "#00e5ff",
+      "#34d399",
     );
     const accent = pickBrandingColor(
       branding,
       ["accent", "secondaryColor", "secondary", "primaryColor"],
-      "#66f5d6",
+      "#a78bfa",
     );
     const panel = pickBrandingColor(
       branding,
       ["panel", "widgetBackground", "backgroundSolid", "effectiveBackground"],
-      "#081521",
+      "#1c2330",
     );
     const text = pickBrandingColor(
       branding,
@@ -274,17 +323,17 @@
     const muted = pickBrandingColor(
       branding,
       ["textMuted", "muted"],
-      "rgba(226, 239, 248, 0.72)",
+      "#cbd5e1",
     );
     const border = pickBrandingColor(
       branding,
       ["border"],
-      alphaColor(primary, 0.34, "rgba(0, 229, 255, 0.34)"),
+      alphaColor(primary, 0.34, "rgba(52, 211, 153, 0.34)"),
     );
     const glow = pickBrandingColor(
       branding,
       ["glowAccent"],
-      alphaColor(primary, 0.32, "rgba(0, 229, 255, 0.32)"),
+      alphaColor(primary, 0.32, "rgba(52, 211, 153, 0.32)"),
     );
     const primaryText = readableTextColorForBackground(
       primary,
@@ -324,11 +373,11 @@
     style.setProperty("--next-zone-accent-text", accentText);
     style.setProperty(
       "--next-zone-primary-soft",
-      alphaColor(primary, 0.18, "rgba(0, 229, 255, 0.18)"),
+      alphaColor(primary, 0.18, "rgba(52, 211, 153, 0.18)"),
     );
     style.setProperty(
       "--next-zone-accent-soft",
-      alphaColor(accent, 0.16, "rgba(102, 245, 214, 0.16)"),
+      alphaColor(accent, 0.16, "rgba(167, 139, 250, 0.16)"),
     );
     state.lastBrandingSignature = signature;
   }
@@ -340,6 +389,12 @@
 
     if (payload.organization !== undefined) {
       bootstrap.organization = payload.organization;
+    }
+    if (payload.branding !== undefined) {
+      bootstrap.branding = payload.branding;
+    }
+    if (payload.data !== undefined) {
+      bootstrap.data = payload.data;
     }
     if (payload.tournament !== undefined) {
       bootstrap.tournament = payload.tournament;
@@ -1122,7 +1177,7 @@
     }
 
     if (!visible) {
-      setVisible(nextZoneRoot, false);
+      setNextZoneVisible(false);
       state.lastNextZoneSignature = signature;
       return;
     }
@@ -1133,7 +1188,7 @@
     setText(nextZoneCountdownEl, countdownText);
     setText(nextZoneStatusEl, statusText);
     setHidden(nextZoneStatusEl, !statusText);
-    setVisible(nextZoneRoot, true);
+    setNextZoneVisible(true);
     state.lastNextZoneSignature = signature;
   }
 

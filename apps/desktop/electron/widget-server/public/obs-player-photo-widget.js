@@ -17,8 +17,12 @@
   const bootstrapMatchId = asString(
     (bootstrap.match && bootstrap.match.id) || bootstrap.matchId || "",
   );
-  const localStateUrl = asString(bootstrap.localStateUrl || bootstrap.observerStateUrl || "");
-  const localFocusUrl = asString(bootstrap.localFocusUrl || bootstrap.observerFocusUrl || "");
+  const localStateUrl = asString(
+    bootstrap.localStateUrl || bootstrap.observerStateUrl || "",
+  );
+  const localFocusUrl = asString(
+    bootstrap.localFocusUrl || bootstrap.observerFocusUrl || "",
+  );
 
   const state = {
     currentMatchId: bootstrapMatchId || null,
@@ -68,7 +72,9 @@
   }
 
   function normalizeKey(value) {
-    return String(value || "").trim().toLowerCase();
+    return String(value || "")
+      .trim()
+      .toLowerCase();
   }
 
   function getFocusedPlayerId(player) {
@@ -120,7 +126,9 @@
   }
 
   function isDefaultPlayerPhotoUrl(value) {
-    const raw = String(value || "").trim().toLowerCase();
+    const raw = String(value || "")
+      .trim()
+      .toLowerCase();
     return (
       !raw ||
       raw.includes("default-player") ||
@@ -129,17 +137,59 @@
     );
   }
 
+  function firstUsefulPlayerPhotoUrl() {
+    for (const value of arguments) {
+      const raw = String(value || "").trim();
+      if (raw && !isDefaultPlayerPhotoUrl(raw)) {
+        return raw;
+      }
+    }
+    return "";
+  }
+
   function getExplicitPlayerPhotoUrl(player) {
-    const raw = String((player && (player.avatarUrl || player.photoUrl)) || "").trim();
-    return raw && !isDefaultPlayerPhotoUrl(raw) ? raw : "";
+    return firstUsefulPlayerPhotoUrl(
+      player && player.avatarUrl,
+      player && player.photoUrl,
+    );
+  }
+
+  function collectPlayerPhotoCacheIds(player) {
+    if (!player || typeof player !== "object") {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        [
+          player.playerId,
+          player.id,
+          player.playerKey,
+          player.externalPlayerId,
+          player.pubgPlayerId,
+          player.pubgAccountId,
+          player.playerOpenId,
+          player.openId,
+          player.inGameId,
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean),
+      ),
+    );
   }
 
   function getPlayerImageVersionToken(player) {
-    return getExplicitPlayerPhotoUrl(player) ? state.playerAssetsVersion : "default";
+    return getExplicitPlayerPhotoUrl(player) ||
+      collectPlayerPhotoCacheIds(player).length > 0
+      ? state.playerAssetsVersion
+      : "default";
   }
 
   function usesVersionedPlayerAsset(player) {
-    return Boolean(getExplicitPlayerPhotoUrl(player));
+    return Boolean(
+      getExplicitPlayerPhotoUrl(player) ||
+      collectPlayerPhotoCacheIds(player).length > 0,
+    );
   }
 
   function setVisible(visible) {
@@ -160,12 +210,12 @@
   function hasZoneSignal(zone) {
     return Boolean(
       zone &&
-        typeof zone === "object" &&
-        (typeof zone.radius === "number" ||
-          typeof zone.centerX === "number" ||
-          typeof zone.centerY === "number" ||
-          typeof zone.x === "number" ||
-          typeof zone.y === "number"),
+      typeof zone === "object" &&
+      (typeof zone.radius === "number" ||
+        typeof zone.centerX === "number" ||
+        typeof zone.centerY === "number" ||
+        typeof zone.x === "number" ||
+        typeof zone.y === "number"),
     );
   }
 
@@ -176,14 +226,16 @@
 
     return Boolean(
       typeof circle.phase === "number" ||
-        toTimestampMs(circle.nextShrinkAt) !== null ||
-        hasZoneSignal(circle.safeZone) ||
-        hasZoneSignal(circle.nextZone),
+      toTimestampMs(circle.nextShrinkAt) !== null ||
+      hasZoneSignal(circle.safeZone) ||
+      hasZoneSignal(circle.nextZone),
     );
   }
 
   function hasFreshTelemetrySignal(observerState) {
-    const leaderboard = Array.isArray(observerState && observerState.leaderboard)
+    const leaderboard = Array.isArray(
+      observerState && observerState.leaderboard,
+    )
       ? observerState.leaderboard
       : [];
 
@@ -243,23 +295,29 @@
     const candidates = [];
     const explicitPhotoUrl = getExplicitPlayerPhotoUrl(player);
     const localPhotoVersion = encodeURIComponent(
-      [state.playerAssetsVersion, explicitPhotoUrl].filter(Boolean).join("|") || "0",
+      [state.playerAssetsVersion, explicitPhotoUrl].filter(Boolean).join("|") ||
+        "0",
     );
 
-    if (player && player.playerId && explicitPhotoUrl) {
-      const localPlayerPhotoPath =
-        `/assets/players/${encodeURIComponent(player.playerId)}.png?v=${localPhotoVersion}`;
-      candidates.push(resolveBrowserUrl(localPlayerPhotoPath));
-      candidates.push(resolveApiUrl(localPlayerPhotoPath));
-    }
     if (explicitPhotoUrl) {
       candidates.push(resolveApiUrl(explicitPhotoUrl));
     }
 
-    candidates.push(resolveBrowserUrl("/assets/default-player.png"));
+    for (const playerId of collectPlayerPhotoCacheIds(player)) {
+      const localPlayerPhotoPath = `/assets/players/${encodeURIComponent(
+        playerId,
+      )}.png?v=${localPhotoVersion}`;
+      candidates.push(resolveBrowserUrl(localPlayerPhotoPath));
+    }
+
+    candidates.push(resolveBrowserUrl("/assets/default-player.svg"));
 
     return Array.from(
-      new Set(candidates.filter((candidate) => typeof candidate === "string" && candidate.trim())),
+      new Set(
+        candidates.filter(
+          (candidate) => typeof candidate === "string" && candidate.trim(),
+        ),
+      ),
     );
   }
 
@@ -306,7 +364,11 @@
   }
 
   function resolveFocusedPlayerCard(observerState) {
-    if (observerState && observerState.playerCard && typeof observerState.playerCard === "object") {
+    if (
+      observerState &&
+      observerState.playerCard &&
+      typeof observerState.playerCard === "object"
+    ) {
       return observerState.playerCard;
     }
 
@@ -333,7 +395,9 @@
   }
 
   function findLeaderboardMatch(observerState, playerCard) {
-    const leaderboard = Array.isArray(observerState && observerState.leaderboard)
+    const leaderboard = Array.isArray(
+      observerState && observerState.leaderboard,
+    )
       ? observerState.leaderboard
       : [];
     const playerId = normalizeKey(
@@ -349,7 +413,8 @@
           playerCard.inGameId),
     );
     const playerName = normalizeKey(
-      playerCard && (playerCard.playerName || playerCard.name || playerCard.player),
+      playerCard &&
+        (playerCard.playerName || playerCard.name || playerCard.player),
     );
 
     for (const row of leaderboard) {
@@ -369,8 +434,9 @@
         const players = Array.isArray(row && row.players) ? row.players : [];
         for (const player of players) {
           if (
-            normalizeKey(player && (player.playerName || player.name || player.player)) ===
-            playerName
+            normalizeKey(
+              player && (player.playerName || player.name || player.player),
+            ) === playerName
           ) {
             return {
               row,
@@ -392,6 +458,12 @@
 
     const matched = findLeaderboardMatch(observerState, playerCard);
     const player = matched ? matched.player : null;
+    const realPhotoUrl = firstUsefulPlayerPhotoUrl(
+      playerCard.avatarUrl,
+      playerCard.photoUrl,
+      player && player.avatarUrl,
+      player && player.photoUrl,
+    );
 
     return {
       playerId:
@@ -413,18 +485,8 @@
             playerCard.name ||
             (player && (player.playerName || player.name)),
         ) || null,
-      avatarUrl:
-        asString(
-          playerCard.avatarUrl ||
-            playerCard.photoUrl ||
-            (player && (player.avatarUrl || player.photoUrl)),
-        ) || null,
-      photoUrl:
-        asString(
-          playerCard.photoUrl ||
-            playerCard.avatarUrl ||
-            (player && (player.photoUrl || player.avatarUrl)),
-        ) || null,
+      avatarUrl: asString(realPhotoUrl) || null,
+      photoUrl: asString(realPhotoUrl) || null,
       alive:
         typeof playerCard.alive === "boolean"
           ? playerCard.alive
@@ -459,7 +521,9 @@
       return null;
     }
 
-    const playerId = normalizeKey(player.playerId || player.id || player.playerKey);
+    const playerId = normalizeKey(
+      player.playerId || player.id || player.playerKey,
+    );
     if (!playerId) {
       return null;
     }
@@ -478,7 +542,11 @@
       return "";
     }
 
-    return [liveState.playerId, String(liveState.alive), String(liveState.knocked)].join("|");
+    return [
+      liveState.playerId,
+      String(liveState.alive),
+      String(liveState.knocked),
+    ].join("|");
   }
 
   function getMergedPlayer() {
@@ -488,7 +556,8 @@
 
     const liveState =
       state.appliedLiveState &&
-      state.appliedLiveState.playerId === getFocusedPlayerId(state.focusedPlayer)
+      state.appliedLiveState.playerId ===
+        getFocusedPlayerId(state.focusedPlayer)
         ? state.appliedLiveState
         : null;
 
@@ -510,7 +579,10 @@
   }
 
   function syncDom() {
-    if (!isLiveWorkflowState(state.workflowState) || state.roundStarted !== true) {
+    if (
+      !isLiveWorkflowState(state.workflowState) ||
+      state.roundStarted !== true
+    ) {
       setVisible(false);
       state.lastRenderSignature = "";
       state.lastImageToken = "";
@@ -590,7 +662,8 @@
   }
 
   function applyRuntimeReset() {
-    const previousPlayerId = state.focusedPlayer && state.focusedPlayer.playerId;
+    const previousPlayerId =
+      state.focusedPlayer && state.focusedPlayer.playerId;
     state.wsConnected = false;
     state.focusedPlayer = null;
     state.focusSignature = "";
@@ -605,7 +678,10 @@
 
     const ageMs = Date.now() - state.lastFocusedWsSeenAt;
     if (ageMs < WS_PLAYER_STALE_MS) {
-      state.staleTimer = window.setTimeout(markFocusedStateStale, WS_PLAYER_STALE_MS - ageMs);
+      state.staleTimer = window.setTimeout(
+        markFocusedStateStale,
+        WS_PLAYER_STALE_MS - ageMs,
+      );
       return;
     }
 
@@ -622,7 +698,10 @@
     if (!state.lastFocusedWsSeenAt) {
       return;
     }
-    state.staleTimer = window.setTimeout(markFocusedStateStale, WS_PLAYER_STALE_MS);
+    state.staleTimer = window.setTimeout(
+      markFocusedStateStale,
+      WS_PLAYER_STALE_MS,
+    );
   }
 
   function applyFocusedLiveState(nextState) {
@@ -636,7 +715,10 @@
     }
 
     const nextSignature = getLiveSignature(nextState);
-    if (nextSignature === state.appliedLiveSignature && state.staleWs !== true) {
+    if (
+      nextSignature === state.appliedLiveSignature &&
+      state.staleWs !== true
+    ) {
       return;
     }
 
@@ -750,13 +832,19 @@
       }
 
       state.workflowState =
-        asString(payload && payload.workflowState) || state.workflowState || null;
+        asString(payload && payload.workflowState) ||
+        state.workflowState ||
+        null;
       state.productionStatus =
-        asString(payload && payload.productionStatus) || state.productionStatus || null;
+        asString(payload && payload.productionStatus) ||
+        state.productionStatus ||
+        null;
 
       const nextPlayerAssetsVersion =
-        asString(payload && payload.playerAssetsVersion) || state.playerAssetsVersion;
-      const playerAssetsChanged = nextPlayerAssetsVersion !== state.playerAssetsVersion;
+        asString(payload && payload.playerAssetsVersion) ||
+        state.playerAssetsVersion;
+      const playerAssetsChanged =
+        nextPlayerAssetsVersion !== state.playerAssetsVersion;
       state.playerAssetsVersion = nextPlayerAssetsVersion;
 
       applyObserverFocusPayload(payload);
@@ -786,9 +874,12 @@
         matchId: asString(payload && payload.matchId) || null,
         workflowState: asString(payload && payload.workflowState) || null,
         productionStatus: asString(payload && payload.productionStatus) || null,
-        playerAssetsVersion: asString(payload && payload.playerAssetsVersion) || "0:0",
+        playerAssetsVersion:
+          asString(payload && payload.playerAssetsVersion) || "0:0",
         observerState:
-          payload && payload.observerState && typeof payload.observerState === "object"
+          payload &&
+          payload.observerState &&
+          typeof payload.observerState === "object"
             ? payload.observerState
             : null,
       };
@@ -802,7 +893,9 @@
     }
 
     const response = await window.fetch(
-      resolveApiUrl(`/api/observer/match/${encodeURIComponent(bootstrapMatchId)}/widget-state`),
+      resolveApiUrl(
+        `/api/observer/match/${encodeURIComponent(bootstrapMatchId)}/widget-state`,
+      ),
       {
         cache: "no-store",
       },
@@ -836,7 +929,8 @@
       }
 
       state.workflowState = asString(payload && payload.workflowState) || null;
-      state.productionStatus = asString(payload && payload.productionStatus) || null;
+      state.productionStatus =
+        asString(payload && payload.productionStatus) || null;
       const nextPlayerAssetsVersion =
         asString(payload && payload.playerAssetsVersion) || "0:0";
       const playerAssetsChanged =
@@ -844,7 +938,9 @@
       state.playerAssetsVersion = nextPlayerAssetsVersion;
 
       const observerState =
-        payload && payload.observerState && typeof payload.observerState === "object"
+        payload &&
+        payload.observerState &&
+        typeof payload.observerState === "object"
           ? payload.observerState
           : null;
       state.roundStarted = hasRoundStartedSignal(observerState);
@@ -868,7 +964,9 @@
 
   function buildSocketUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return new URL(`${protocol}//${window.location.host}${bootstrap.wsPath || "/ws"}`).toString();
+    return new URL(
+      `${protocol}//${window.location.host}${bootstrap.wsPath || "/ws"}`,
+    ).toString();
   }
 
   function scheduleReconnect() {
@@ -898,10 +996,18 @@
     let focusedPacket = null;
 
     for (const player of players) {
-      if (normalizeKey(player && (player.playerId || player.id || player.playerKey)) !== focusedPlayerId) {
+      if (
+        normalizeKey(
+          player && (player.playerId || player.id || player.playerKey),
+        ) !== focusedPlayerId
+      ) {
         continue;
       }
-      focusedPacket = normalizeLivePlayer(player, message.timestamp, receivedAt);
+      focusedPacket = normalizeLivePlayer(
+        player,
+        message.timestamp,
+        receivedAt,
+      );
       break;
     }
 

@@ -125,3 +125,78 @@ test("packaged production launcher rejects saving a localhost override", () => {
     assert.equal(manager.getPublicConfig().apiBaseOverride, null);
   });
 });
+
+test("packaged production launcher requires HTTPS and an allowed API host", () => {
+  withTempUserDataDir((userDataDir) => {
+    const manager = createConfigManager({
+      getUserDataPath: () => userDataDir,
+      isPackaged: true,
+      env: { NODE_ENV: "production" },
+      log: () => {},
+    });
+
+    assert.equal(manager.validateConfig("apiBase", "http://api.arenzyra.com").valid, false);
+    assert.equal(manager.validateConfig("apiBase", "https://evil.example").valid, false);
+    assert.equal(manager.validateConfig("apiBase", "https://api.arenzyra.com").valid, true);
+  });
+});
+
+test("trusted deployments can extend the packaged API host allowlist", () => {
+  withTempUserDataDir((userDataDir) => {
+    const manager = createConfigManager({
+      getUserDataPath: () => userDataDir,
+      isPackaged: true,
+      env: {
+        NODE_ENV: "production",
+        ARENZYRA_ALLOWED_API_HOSTS: "api.partner.example",
+      },
+      log: () => {},
+    });
+
+    const result = manager.setApiBase("https://api.partner.example");
+    assert.equal(result.changed, true);
+    assert.equal(result.apiBase, "https://api.partner.example");
+  });
+});
+
+test("launcher settings normalize the widget LAN toggle", () => {
+  withTempUserDataDir((userDataDir) => {
+    const manager = createConfigManager({
+      getUserDataPath: () => userDataDir,
+      isPackaged: true,
+      env: { NODE_ENV: "production" },
+      log: () => {},
+    });
+
+    manager.setConfigValue("settings", {
+      widgetLanEnabled: "yes",
+    });
+    assert.equal(manager.getSettings().widgetLanEnabled, true);
+
+    manager.setConfigValue("settings", {
+      widgetLanEnabled: 0,
+    });
+    assert.equal(manager.getSettings().widgetLanEnabled, false);
+  });
+});
+
+test("launcher settings normalize the pinned map always-on-top preference", () => {
+  withTempUserDataDir((userDataDir) => {
+    const manager = createConfigManager({
+      getUserDataPath: () => userDataDir,
+      isPackaged: true,
+      env: { NODE_ENV: "production" },
+      log: () => {},
+    });
+
+    manager.setSettings({
+      pinnedMapControlAlwaysOnTop: "yes",
+    });
+    assert.equal(manager.getSettings().pinnedMapControlAlwaysOnTop, true);
+
+    manager.setSettings({
+      pinnedMapControlAlwaysOnTop: 0,
+    });
+    assert.equal(manager.getSettings().pinnedMapControlAlwaysOnTop, false);
+  });
+});

@@ -20,6 +20,8 @@
   const zoneStatus = document.getElementById("zone-status");
 
   const POLL_MS = 750;
+  const isPinnedLayout =
+    root?.dataset?.layout === "pinned" || bootstrap.layout === "pinned";
   let mapFrameStarted = false;
   let pollTimer = null;
   let lastStateSignature = "";
@@ -166,7 +168,39 @@
     }
   }
 
+  function isPinnedCue(cue) {
+    const tone = String(cue?.tone || "").toLowerCase();
+    return tone === "fight" || tone === "distance" || tone === "alert" || tone === "focus";
+  }
+
+  function getPinnedCueRows(cues) {
+    return Array.isArray(cues) ? cues.filter(isPinnedCue) : [];
+  }
+
+  function getPrimaryCues(state) {
+    if (!isPinnedLayout) {
+      return state?.cues;
+    }
+
+    const rows = getPinnedCueRows(state?.cues);
+    if (rows.length > 0) {
+      return rows;
+    }
+
+    return [
+      {
+        tone: "idle",
+        label: "Scanning",
+        line: "No active fights",
+        meta: "Closest teams update live below.",
+      },
+    ];
+  }
+
   function renderPrimaryCue(cues) {
+    if (!primaryCue) {
+      return;
+    }
     const cue = Array.isArray(cues) && cues.length > 0 ? cues[0] : null;
     const label = cue?.label || "Standby";
     const line = cue?.line || "Waiting for local telemetry.";
@@ -182,7 +216,14 @@
   }
 
   function renderCues(cues) {
-    const rows = Array.isArray(cues) ? cues.slice(1, 7) : [];
+    if (!cueList) {
+      return;
+    }
+    const rows = Array.isArray(cues)
+      ? isPinnedLayout
+        ? getPinnedCueRows(cues).slice(1, 5)
+        : cues.slice(1, 7)
+      : [];
     cueList.innerHTML = rows.length
       ? rows
           .map(
@@ -197,10 +238,13 @@
             `,
           )
           .join("")
-      : emptyMarkup("No secondary cues yet.");
+      : emptyMarkup(isPinnedLayout ? "No active fight cues yet." : "No secondary cues yet.");
   }
 
   function renderSplits(splits) {
+    if (!splitList) {
+      return;
+    }
     const rows = Array.isArray(splits) ? splits : [];
     splitList.innerHTML = rows.length
       ? rows
@@ -221,6 +265,9 @@
   }
 
   function renderDistances(distancePairs) {
+    if (!distanceList) {
+      return;
+    }
     const rows = Array.isArray(distancePairs) ? distancePairs : [];
     distanceList.innerHTML = rows.length
       ? rows
@@ -229,7 +276,7 @@
             engagement: inferDistanceEngagement(row),
           }))
           .sort(compareDistanceEntries)
-          .slice(0, 8)
+          .slice(0, isPinnedLayout ? 6 : 8)
           .map(({ row, engagement }) => {
             const players =
               row.leftPlayerName && row.rightPlayerName
@@ -254,10 +301,13 @@
             `;
           })
           .join("")
-      : emptyMarkup("Waiting for team distance data.");
+      : emptyMarkup(isPinnedLayout ? "Waiting for close team data." : "Waiting for team distance data.");
   }
 
   function renderProduction(state) {
+    if (!productionList) {
+      return;
+    }
     const camera = state.camera || {};
     const rows = [
       {
@@ -303,10 +353,18 @@
         meta: state?.reason || "SUPER_ADMIN_APPROVAL_REQUIRED",
       },
     ]);
-    cueList.innerHTML = emptyMarkup("Approve Commentator Desk in Super Admin widget access.");
-    splitList.innerHTML = emptyMarkup("Locked.");
-    distanceList.innerHTML = emptyMarkup("Locked.");
-    productionList.innerHTML = emptyMarkup("Locked.");
+    if (cueList) {
+      cueList.innerHTML = emptyMarkup("Approve Commentator Desk in Super Admin widget access.");
+    }
+    if (splitList) {
+      splitList.innerHTML = emptyMarkup("Locked.");
+    }
+    if (distanceList) {
+      distanceList.innerHTML = emptyMarkup("Locked.");
+    }
+    if (productionList) {
+      productionList.innerHTML = emptyMarkup("Locked.");
+    }
     setText(metricTeams, "0");
     setText(metricPlayers, "0");
     setText(metricKnocked, "0");
@@ -332,9 +390,14 @@
     }
 
     root.dataset.status = "live";
-    ensureMapFrame(state);
+    if (!isPinnedLayout) {
+      ensureMapFrame(state);
+    }
     setText(statusPill, "Live");
-    setText(deskTitle, state.map?.label || state.map?.key || "Live Map Desk");
+    setText(
+      deskTitle,
+      isPinnedLayout ? "Close Teams" : state.map?.label || state.map?.key || "Live Map Desk",
+    );
 
     const telemetry = state.telemetry || {};
     setText(metricTeams, telemetry.activeTeams || 0);
@@ -349,7 +412,7 @@
         .join(" / ") || "Standby",
     );
 
-    renderPrimaryCue(state.cues);
+    renderPrimaryCue(getPrimaryCues(state));
     renderCues(state.cues);
     renderSplits(state.splits);
     renderDistances(state.distancePairs);

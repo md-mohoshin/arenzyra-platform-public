@@ -422,6 +422,114 @@ h1 {
   font-size: 13px;
 }
 
+.commentator-desk-pinned-root,
+.commentator-desk-pinned-body {
+  background: transparent;
+}
+
+.commentator-desk--pinned {
+  display: block;
+  padding: 10px;
+  background: transparent;
+}
+
+.pinned-desk-shell {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(116px, 0.62fr);
+  gap: 9px;
+}
+
+.pinned-desk-header {
+  min-height: 52px;
+  padding: 10px 12px;
+}
+
+.commentator-desk--pinned h1 {
+  font-size: 20px;
+}
+
+.commentator-desk--pinned .status-pill {
+  padding: 7px 9px;
+  font-size: 10px;
+}
+
+.pinned-desk-primary {
+  min-height: 104px;
+  padding: 13px;
+}
+
+.commentator-desk--pinned .cue-line {
+  margin-top: 9px;
+  font-size: 22px;
+  line-height: 1.08;
+}
+
+.commentator-desk--pinned .cue-meta {
+  margin-top: 9px;
+  font-size: 12px;
+}
+
+.pinned-desk-panel {
+  min-height: 0;
+  padding: 10px;
+}
+
+.commentator-desk--pinned .distance-list,
+.commentator-desk--pinned .cue-list {
+  gap: 6px;
+  margin-top: 8px;
+  max-height: none;
+  overflow: hidden;
+}
+
+.commentator-desk--pinned .distance-row {
+  grid-template-columns: minmax(0, 1fr) auto 58px;
+  gap: 8px;
+  padding: 8px;
+}
+
+.commentator-desk--pinned .distance-main,
+.commentator-desk--pinned .cue-text {
+  font-size: 14px;
+}
+
+.commentator-desk--pinned .distance-sub,
+.commentator-desk--pinned .cue-sub {
+  font-size: 11px;
+}
+
+.commentator-desk--pinned .distance-alert {
+  min-width: 46px;
+  padding: 5px 6px;
+  font-size: 9px;
+}
+
+.commentator-desk--pinned .distance-value {
+  font-size: 18px;
+}
+
+.commentator-desk--pinned .cue-item {
+  grid-template-columns: 58px minmax(0, 1fr);
+  padding: 8px;
+}
+
+.commentator-desk--pinned .cue-tag {
+  font-size: 10px;
+}
+
+.commentator-desk--pinned .empty {
+  padding: 10px;
+  font-size: 12px;
+}
+
+.commentator-desk--pinned .locked-cover {
+  border: 1px solid rgba(125, 211, 252, 0.18);
+}
+
 @media (max-width: 1320px) {
   .commentator-desk {
     grid-template-columns: minmax(420px, 1fr) minmax(300px, 360px);

@@ -395,6 +395,8 @@ function createDirectObserverTransportState() {
     circleInfo: {},
     observingPlayer: {},
     updatedAtMs: 0,
+    generation: 1,
+    circleVersion: 0,
   };
 
   function markUpdated() {
@@ -420,6 +422,7 @@ function createDirectObserverTransportState() {
       const circle = extractCurrentCirclePayload({ allInfo });
       if (Object.keys(circle).length > 0) {
         state.circleInfo = circle;
+        state.circleVersion += 1;
       }
       markUpdated();
       return state;
@@ -451,12 +454,13 @@ function createDirectObserverTransportState() {
       return state;
     },
     ingestKillInfo(payload) {
-      state.killInfo = normalizeKillInfoPayload(payload);
+      state.killInfo.push(...normalizeKillInfoPayload(payload));
       markUpdated();
       return state;
     },
     ingestCircleInfo(payload) {
       state.circleInfo = extractCurrentCirclePayload(payload);
+      state.circleVersion += 1;
       markUpdated();
       return state;
     },
@@ -469,13 +473,53 @@ function createDirectObserverTransportState() {
       const circle = extractCurrentCirclePayload(payload);
       if (Object.keys(circle).length > 0) {
         state.circleInfo = circle;
+        state.circleVersion += 1;
         markUpdated();
+      }
+      return state;
+    },
+    captureTransientCursor() {
+      return {
+        generation: state.generation,
+        killCount: state.killInfo.length,
+        circleVersion: state.circleVersion,
+      };
+    },
+    ackTransientEvents(cursor) {
+      if (!cursor || cursor.generation !== state.generation) {
+        return state;
+      }
+      const killCount = Math.max(
+        0,
+        Math.min(state.killInfo.length, Math.trunc(Number(cursor.killCount) || 0)),
+      );
+      if (killCount > 0) {
+        state.killInfo.splice(0, killCount);
+      }
+      if (
+        Number.isFinite(Number(cursor.circleVersion)) &&
+        state.circleVersion <= Math.trunc(Number(cursor.circleVersion))
+      ) {
+        state.circleInfo = {};
       }
       return state;
     },
     clearTransientEvents() {
       state.killInfo = [];
       state.circleInfo = {};
+      return state;
+    },
+    resetState() {
+      state.allInfo = {};
+      state.playerInfoList = [];
+      state.teamInfoList = [];
+      state.teamBackpackInfo = [];
+      state.killInfo = [];
+      state.circleInfo = {};
+      state.observingPlayer = {};
+      state.updatedAtMs = Date.now();
+      state.generation += 1;
+      state.circleVersion += 1;
       return state;
     },
     buildPayload({ matchId, sessionId = null, timestamp = Date.now() } = {}) {

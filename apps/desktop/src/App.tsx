@@ -75,9 +75,8 @@ const CURRENT_SHADOWTRACKER_PREFIX = `${CURRENT_PCOB_ROOT}\\`;
 
 const FALLBACKS: LauncherDefaults = {
   apiBase: DEFAULT_RENDERER_API_BASE,
-  teamAssetsDir: "C:\\ArenzyraObserver\\assets\\teams",
-  brandingConfigPath:
-    "C:\\Users\\%USERNAME%\\AppData\\Local\\ShadowTrackerExtra\\Saved\\TeamLogoAndColor.ini",
+  teamAssetsDir: "",
+  brandingConfigPath: "",
   shadowTrackerPath: "",
 };
 
@@ -131,12 +130,25 @@ const DEFAULT_OBSERVER_FEED_STATUS: ObserverFeedStatus = {
   lastError: null,
   lastStartedAt: null,
   lastStoppedAt: null,
+  recoveryState: "idle",
+  restartAttempts: 0,
+  maxRestartAttempts: 5,
+  nextRestartAt: null,
+  lastUnexpectedExitAt: null,
+  lastRestartAt: null,
+  restartBlockedReason: null,
+  healthState: "idle",
+  consecutiveHealthFailures: 0,
+  healthFailureThreshold: 3,
+  lastHealthCheckAt: null,
+  lastHealthyAt: null,
 };
 
 const VISUAL_REGION_LABELS: Record<VisualModeRegionKey, string> = {
   killFeed: "Kill feed",
   teamPanel: "Team panel",
   scoreboard: "Scoreboard",
+  roster: "Roster screen",
 };
 
 const DEFAULT_VISUAL_GAME_PRESET_KEY: VisualGamePresetKey = "pubgMobile";
@@ -156,21 +168,25 @@ const VISUAL_GAME_REGION_PRESETS: Record<
     killFeed: { x: 66, y: 8, width: 32, height: 30 },
     teamPanel: { x: 0, y: 12, width: 24, height: 76 },
     scoreboard: { x: 18, y: 10, width: 64, height: 76 },
+    roster: { x: 8, y: 15, width: 84, height: 78 },
   },
   freeFire: {
     killFeed: { x: 61, y: 9, width: 37, height: 34 },
     teamPanel: { x: 0, y: 14, width: 26, height: 72 },
     scoreboard: { x: 16, y: 12, width: 68, height: 74 },
+    roster: { x: 8, y: 15, width: 84, height: 78 },
   },
   valorant: {
     killFeed: { x: 71, y: 9, width: 27, height: 32 },
     teamPanel: { x: 0, y: 5, width: 100, height: 13 },
     scoreboard: { x: 20, y: 12, width: 60, height: 70 },
+    roster: { x: 8, y: 15, width: 84, height: 78 },
   },
   codMobile: {
     killFeed: { x: 64, y: 8, width: 34, height: 34 },
     teamPanel: { x: 0, y: 10, width: 26, height: 78 },
     scoreboard: { x: 18, y: 10, width: 64, height: 76 },
+    roster: { x: 8, y: 15, width: 84, height: 78 },
   },
 };
 
@@ -196,6 +212,7 @@ const createVisualPresetRegions = (gamePresetKey: string | null | undefined) => 
     killFeed: { ...preset.killFeed },
     teamPanel: { ...preset.teamPanel },
     scoreboard: { ...preset.scoreboard },
+    roster: { ...preset.roster },
   };
 };
 
@@ -210,6 +227,7 @@ const mergeVisualRegionsWithPreset = (
     killFeed: regions?.killFeed ?? presetRegions.killFeed,
     teamPanel: regions?.teamPanel ?? presetRegions.teamPanel,
     scoreboard: regions?.scoreboard ?? presetRegions.scoreboard,
+    roster: regions?.roster ?? presetRegions.roster,
   };
   if (overrideKey && overrideRegion) {
     nextRegions[overrideKey] = overrideRegion;
@@ -220,7 +238,9 @@ const mergeVisualRegionsWithPreset = (
 const normalizeVisualRegionKey = (
   value: string | null | undefined,
 ): VisualModeRegionKey =>
-  value === "teamPanel" || value === "scoreboard" ? value : "killFeed";
+  value === "teamPanel" || value === "scoreboard" || value === "roster"
+    ? value
+    : "killFeed";
 
 const clampVisualRegionNumber = (
   value: number,
@@ -271,6 +291,7 @@ const createDefaultVisualRegions = () => ({
   killFeed: null,
   teamPanel: null,
   scoreboard: null,
+  roster: null,
 });
 
 const DEFAULT_VISUAL_MODE_STATUS: VisualModeStatus = {
@@ -289,6 +310,9 @@ const DEFAULT_VISUAL_MODE_STATUS: VisualModeStatus = {
   calibrationReady: false,
   reviewBeforePublish: true,
   autoPublish: false,
+  autoOcrEnabled: false,
+  stableFrameSamples: 2,
+  stableFrameCount: 0,
   ocrEnabled: false,
   aiEnabled: false,
   connectionStatus: "stopped",
@@ -321,7 +345,7 @@ const DEFAULT_STATUS: StatusMessage = {
 
 const LIVE_MATCH_REFRESH_MS = 15_000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-type DesktopRoute = "desk" | "widgets";
+type DesktopRoute = "telemetry" | "visual" | "widgets";
 
 const normalizeStateKey = (value: string | null | undefined) =>
   String(value || "")
@@ -514,9 +538,40 @@ const formatObserverFeedDetail = (
   } else if (feed.running) {
     parts.push("warming up");
   }
+  if (feed.recoveryState === "waiting") {
+    parts.push(
+      `recovery ${feed.restartAttempts}/${feed.maxRestartAttempts} scheduled`,
+    );
+  } else if (feed.recoveryState === "restarting") {
+    parts.push(
+      `recovery ${feed.restartAttempts}/${feed.maxRestartAttempts} running`,
+    );
+  } else if (
+    feed.recoveryState === "blocked" ||
+    feed.recoveryState === "circuit-open"
+  ) {
+    parts.push(feed.restartBlockedReason || "automatic recovery stopped");
+  }
+  if (feed.healthState === "degraded") {
+    parts.push(
+      `local health ${feed.consecutiveHealthFailures}/${feed.healthFailureThreshold}`,
+    );
+  } else if (feed.healthState === "recycling") {
+    parts.push("recycling unresponsive connector");
+  }
 
   return parts.join(", ");
 };
+
+const isObserverFeedSessionActive = (
+  feed: ObserverFeedStatus | null | undefined,
+) =>
+  Boolean(
+    feed?.enabled ||
+      feed?.running ||
+      feed?.recoveryState === "waiting" ||
+      feed?.recoveryState === "restarting",
+  );
 
 const getPreferredSelectionId = <T extends { id: string }>(
   items: T[],
@@ -890,7 +945,7 @@ export default function App() {
   const [, setLastSyncTime] = useState<string | null>(null);
   const [liveMatch, setLiveMatch] = useState<LauncherLiveMatch | null>(null);
   const [dashboard, setDashboard] = useState(createEmptyDashboardState());
-  const [currentRoute, setCurrentRoute] = useState<DesktopRoute>("desk");
+  const [currentRoute, setCurrentRoute] = useState<DesktopRoute>("telemetry");
   const [finishedMatchId, setFinishedMatchId] = useState<string | null>(null);
   const [nextMatchSuggestion, setNextMatchSuggestion] =
     useState<NextMatchSuggestion | null>(null);
@@ -931,7 +986,7 @@ export default function App() {
   const resetDashboard = () => {
     const emptyState = createEmptyDashboardState();
     setDashboard(emptyState);
-    setCurrentRoute("desk");
+    setCurrentRoute("telemetry");
     setSelectedMatchControl(null);
     setMatchControlIndex({});
     setSlots([]);
@@ -1153,7 +1208,7 @@ export default function App() {
         }
 
         if (migrated) {
-          console.log("[Migration] Moved localStorage config â†’ configManager");
+          console.log("[Migration] Moved localStorage config → configManager");
         }
 
         if (cancelled) {
@@ -2434,6 +2489,25 @@ export default function App() {
       });
   };
 
+  const handleVisualAutoOcrChange = (autoOcrEnabled: boolean) => {
+    setVisualModeError(null);
+    void launcherApi
+      .setVisualModeConfig({ autoOcrEnabled })
+      .then((config) => {
+        setVisualModeStatus((current) => ({
+          ...current,
+          ...config,
+          calibrationReady: Boolean(config.region),
+          stableFrameCount: current.stableFrameCount,
+          reviewQueueSize: current.reviewQueueSize,
+          lastReviewCandidateAt: current.lastReviewCandidateAt,
+        }));
+      })
+      .catch((error) => {
+        setVisualModeError(getErrorMessage(error));
+      });
+  };
+
   const handleVisualGamePresetChange = (value: string) => {
     const nextGamePresetKey = normalizeVisualGamePresetKey(value);
     const nextRegions = createVisualPresetRegions(nextGamePresetKey);
@@ -2567,6 +2641,23 @@ export default function App() {
       });
     });
 
+  const runVisualSlotMap = async (id: string) =>
+    runAction("run-visual-slot-map", "Mapping visual roster", async () => {
+      const queue = await launcherApi.runVisualSlotMap(id);
+      applyVisualReviewQueue(queue);
+      const item = queue.items.find((entry) => entry.id === id);
+      setStatus({
+        tone: item?.ocrStatus === "failed" ? "error" : "success",
+        title:
+          item?.ocrStatus === "failed"
+            ? "Roster mapping failed"
+            : "Roster mapping saved",
+        detail:
+          item?.ocrError ||
+          "Slot/player mappings were saved for the selected match. Verify Match Control before LIVE.",
+      });
+    });
+
   const clearVisualReviewQueue = async () =>
     runAction("clear-visual-review", "Clearing visual queue", async () => {
       const queue = await launcherApi.clearVisualReviewQueue();
@@ -2612,7 +2703,10 @@ export default function App() {
           return;
         }
 
-        if (telemetryStatus.running || observerFeedStatus.running) {
+        if (
+          telemetryStatus.running ||
+          isObserverFeedSessionActive(observerFeedStatus)
+        ) {
           throw new Error(
             "Stop Telemetry Bridge or Observer Feed before starting Visual Mode.",
           );
@@ -2643,6 +2737,8 @@ export default function App() {
             sourceId: selectedVisualSourceId,
             sourceName: selectedSource?.name ?? null,
             captureFps: visualCaptureFps,
+            autoOcrEnabled: visualModeStatus.autoOcrEnabled,
+            stableFrameSamples: visualModeStatus.stableFrameSamples,
             activeRegionKey: visualActiveRegionKey,
             region: nextRegion,
             regions: nextRegions,
@@ -2697,7 +2793,11 @@ export default function App() {
           ? {
               tone: "success",
               title: "Authenticated",
-              detail: "Organizer login succeeded. Loading production matches.",
+              detail:
+                result.session?.credentialStorage?.mode === "memory-only"
+                  ? result.session.credentialStorage.reason ||
+                    "Organizer login succeeded, but this device cannot store the refresh credential securely. Sign in again after restarting the app."
+                  : "Organizer login succeeded. Loading production matches.",
             }
           : getBlockedStatus(result.access),
       );
@@ -2846,10 +2946,14 @@ export default function App() {
 
   const toggleLiveDesk = async () =>
     runAction(
-      observerFeedStatus.running ? "stop-observer-feed" : "start-live-desk",
-      observerFeedStatus.running ? "Stopping observer feed" : "Starting live desk",
+      isObserverFeedSessionActive(observerFeedStatus)
+        ? "stop-observer-feed"
+        : "start-live-desk",
+      isObserverFeedSessionActive(observerFeedStatus)
+        ? "Stopping observer feed"
+        : "Starting live desk",
       async () => {
-        if (observerFeedStatus.running) {
+        if (isObserverFeedSessionActive(observerFeedStatus)) {
           await stopObserverFeedRuntime();
           return;
         }
@@ -3001,7 +3105,7 @@ export default function App() {
         telemetryStatus.matchId === dashboard.selectedMatchId) ||
       (visualModeStatus.running &&
         visualModeStatus.matchId === dashboard.selectedMatchId) ||
-      (observerFeedStatus.running &&
+      (isObserverFeedSessionActive(observerFeedStatus) &&
         observerFeedStatus.matchId === dashboard.selectedMatchId)
     ) {
       const nextLiveState = productionModeReady
@@ -3075,7 +3179,9 @@ export default function App() {
     busyAction,
     productionModeBlocked,
     productionModeReady,
+    observerFeedStatus.enabled,
     observerFeedStatus.matchId,
+    observerFeedStatus.recoveryState,
     observerFeedStatus.running,
     selectedMatchFinalizing,
     selectedMatchLocked,
@@ -3162,19 +3268,19 @@ export default function App() {
     session.organization?.id ?? session.user.organizationId ?? null;
   const organizationName = session.organization?.name ?? null;
   const observerRunningForSelectedMatch =
-    observerFeedStatus.running &&
+    isObserverFeedSessionActive(observerFeedStatus) &&
     observerFeedStatus.matchId === dashboard.selectedMatchId;
   const canStartObserverFeed =
     telemetryBridgeAvailable &&
     Boolean(dashboard.selectedMatchId) &&
-    !observerFeedStatus.running &&
+    !isObserverFeedSessionActive(observerFeedStatus) &&
     !lifecycleActionError;
   const canStartVisualMode =
     visualModeStatus.available &&
     Boolean(dashboard.selectedMatchId) &&
     !visualModeStatus.running &&
     !telemetryStatus.running &&
-    !observerFeedStatus.running &&
+    !isObserverFeedSessionActive(observerFeedStatus) &&
     !lifecycleActionError;
 
   return (
@@ -3195,6 +3301,7 @@ export default function App() {
         </main>
       ) : (
         <DashboardScreen
+          page={currentRoute === "visual" ? "visual" : "telemetry"}
           organizationName={organizationName}
           liveMatch={liveMatch}
           workflowState={workflowState}
@@ -3251,6 +3358,7 @@ export default function App() {
           onVisualGamePresetChange={handleVisualGamePresetChange}
           onVisualSourceChange={handleVisualSourceChange}
           onVisualFpsChange={handleVisualFpsChange}
+          onVisualAutoOcrChange={handleVisualAutoOcrChange}
           onVisualRegionKeyChange={handleVisualRegionKeyChange}
           onVisualRegionDraftChange={handleVisualRegionDraftChange}
           onSaveVisualCalibration={() => void saveVisualCalibration()}
@@ -3258,6 +3366,7 @@ export default function App() {
             void captureVisualReviewCandidate()
           }
           onRunVisualReviewOcr={(id) => void runVisualReviewOcr(id)}
+          onRunVisualSlotMap={(id) => void runVisualSlotMap(id)}
           onClearVisualReviewQueue={() => void clearVisualReviewQueue()}
           onIgnoreVisualReviewItem={(id) => void ignoreVisualReviewItem(id)}
           onMarkVisualReviewItemReviewed={(id) =>

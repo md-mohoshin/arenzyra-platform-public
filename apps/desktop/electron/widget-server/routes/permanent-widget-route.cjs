@@ -1,6 +1,6 @@
 "use strict";
 
-const axios = require("axios");
+const crypto = require("node:crypto");
 const { getProcessDefaultApiBase } = require("../../apiBaseDefaults.cjs");
 
 const DEFAULT_API_BASE =
@@ -8,8 +8,8 @@ const DEFAULT_API_BASE =
   process.env.ARENZYRA_API_BASE ||
   getProcessDefaultApiBase();
 const DEFAULT_WS_PATH = "/ws";
-const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v4";
-const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v11";
+const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v5";
+const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v14";
 
 const LIVE_WIDGET_KEYS = new Set([
   "teams-alive",
@@ -21,8 +21,11 @@ const LIVE_WIDGET_KEYS = new Set([
   "player-photo",
   "map-overlay",
   "next-zone-update",
+  "next-zone-update-blade",
+  "next-zone-update-fold-down",
   "next-zone-update-kinetic-hud",
   "next-zone-update-pro-sidebar",
+  "next-zone-update-radar-sweep",
   "wwcd",
   "winner",
   "fight-alert",
@@ -62,6 +65,15 @@ function normalizeBaseUrl(value, fallback = DEFAULT_API_BASE) {
 
 function asString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function widgetKeyReference(value) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(String(value || ""), "utf8")
+    .digest("hex")
+    .slice(0, 12);
+  return `sha256:${digest}`;
 }
 
 function readQueryValue(value) {
@@ -148,16 +160,36 @@ function buildRemoteWidgetUrl(apiBase, context, query) {
   return target.toString();
 }
 
-function renderStatePage(title, detail, reason) {
+function renderStatePage(title, detail, reason, options = {}) {
   const safeTitle = escapeHtml(title);
   const safeDetail = escapeHtml(detail);
   const safeReason = escapeHtml(reason);
+  const retryMs = Number(options?.retryMs);
+  const retryDelayMs =
+    options?.retry === true &&
+    Number.isFinite(retryMs) &&
+    retryMs >= 1000 &&
+    retryMs <= 30000
+      ? Math.round(retryMs)
+      : options?.retry === true
+        ? 3000
+        : null;
+  const retrySeconds =
+    retryDelayMs === null ? null : Math.max(1, Math.ceil(retryDelayMs / 1000));
 
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    ${
+      retrySeconds === null
+        ? ""
+        : `<meta http-equiv="refresh" content="${retrySeconds}" />`
+    }
     <title>${safeTitle}</title>
     <style>
       html,
@@ -216,8 +248,30 @@ function renderStatePage(title, detail, reason) {
       <h1>${safeTitle}</h1>
       <p>${safeDetail}</p>
     </main>
+    ${
+      retryDelayMs === null
+        ? ""
+        : `<script>
+      window.setTimeout(function () {
+        window.location.reload();
+      }, ${retryDelayMs});
+    </script>`
+    }
   </body>
 </html>`;
+}
+
+function sendStatePage(
+  res,
+  { status = 200, title, detail, reason, retry = false, retryMs = 3000 },
+) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res
+    .status(status)
+    .type("html")
+    .send(renderStatePage(title, detail, reason, { retry, retryMs }));
 }
 
 function renderWidgetHostPage({
@@ -294,6 +348,7 @@ function buildLocalWidgetBootstrap({
   return {
     apiBase,
     instanceKey,
+    brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
     widgetKey: asString(resolved?.widgetKey),
     wsPath: asString(wsPath) || DEFAULT_WS_PATH,
     organizationId:
@@ -351,10 +406,12 @@ function renderLocalWidgetPage({
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
     <title>${safeTitle}</title>
     <link rel="stylesheet" href="${safeStylePath}" />
+    <link rel="stylesheet" href="/obs/static/widget-branding-bridge.css?v=widget-branding-v1" />
   </head>
   <body>
     ${markup}
     <script>window.__ARENZYRA_LOCAL_WIDGET_BOOTSTRAP__ = ${payload};</script>
+    <script src="/obs/static/widget-branding-client.js?v=widget-branding-v1"></script>
     <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
     ${extraScripts || ""}
     <script src="${safeScriptPath}"></script>
@@ -382,7 +439,7 @@ function renderTeamEliminatedPage({ apiBase, bootstrap, title }) {
           />
         </div>
         <div class="team-eliminated-banner__copy">
-          <div class="team-eliminated-banner__eyebrow">TEAM ELIMINATED</div>
+          <div class="team-eliminated-banner__eyebrow" id="team-eliminated-eyebrow">TEAM ELIMINATED</div>
           <div class="team-eliminated-banner__name" id="team-eliminated-name">
             Waiting for elimination
           </div>
@@ -608,6 +665,153 @@ function buildLocalWidgetPage({
     });
   }
 
+  if (widgetKey === "next-zone-update-blade") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update Blade Countdown",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        styleVariant: "blade",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root obs-next-zone-update-root--blade"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      data-style="blade"
+      hidden
+    >
+      <section class="next-zone-update-card next-zone-update-card--blade" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-phase-block next-zone-update-phase-block--blade">
+          <span id="next-zone-update-phase">P--</span>
+        </div>
+        <div class="next-zone-update-copy next-zone-update-copy--blade">
+          <div class="next-zone-update-topline next-zone-update-topline--blade">Zone Closing</div>
+          <div class="next-zone-update-title next-zone-update-title--blade">Final 20 Seconds</div>
+          <div class="next-zone-update-subtitle next-zone-update-subtitle--blade">Next safe area update</div>
+        </div>
+        <div class="next-zone-update-timer next-zone-update-timer--blade">
+          <div class="next-zone-update-timer-inner next-zone-update-timer-inner--blade">
+            <div class="next-zone-update-countdown next-zone-update-countdown--blade" id="next-zone-update-countdown">00:20</div>
+            <div class="next-zone-update-timer-label next-zone-update-timer-label--blade">Sec Left</div>
+          </div>
+        </div>
+        <div class="next-zone-update-status" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress next-zone-update-progress--blade" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
+  if (widgetKey === "next-zone-update-radar-sweep") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update Radar Sweep",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        styleVariant: "radar-sweep",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root obs-next-zone-update-root--radar-sweep"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      data-style="radar-sweep"
+      hidden
+    >
+      <section class="next-zone-update-card next-zone-update-card--radar-sweep" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-phase-block next-zone-update-phase-block--radar-sweep">
+          <span id="next-zone-update-phase">P--</span>
+        </div>
+        <div class="next-zone-update-copy next-zone-update-copy--radar-sweep">
+          <div class="next-zone-update-topline next-zone-update-topline--radar-sweep">Zone Telemetry</div>
+          <div class="next-zone-update-title next-zone-update-title--radar-sweep">Blue Zone Shift</div>
+          <div class="next-zone-update-subtitle next-zone-update-subtitle--radar-sweep">Final shrink window</div>
+        </div>
+        <div class="next-zone-update-timer next-zone-update-timer--radar-sweep">
+          <div class="next-zone-update-timer-inner next-zone-update-timer-inner--radar-sweep">
+            <div class="next-zone-update-countdown next-zone-update-countdown--radar-sweep" id="next-zone-update-countdown">00:20</div>
+            <div class="next-zone-update-timer-label next-zone-update-timer-label--radar-sweep">Remaining</div>
+          </div>
+        </div>
+        <div class="next-zone-update-status" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress next-zone-update-progress--radar-sweep" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
+  if (widgetKey === "next-zone-update-fold-down") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update Fold Down",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        styleVariant: "fold-down",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root obs-next-zone-update-root--fold-down"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      data-style="fold-down"
+      hidden
+    >
+      <section class="next-zone-update-card next-zone-update-card--fold-down" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-phase-block next-zone-update-phase-block--fold-down">
+          <span id="next-zone-update-phase">P--</span>
+        </div>
+        <div class="next-zone-update-copy next-zone-update-copy--fold-down">
+          <div class="next-zone-update-topline next-zone-update-topline--fold-down">Zone Closing</div>
+          <div class="next-zone-update-title next-zone-update-title--fold-down">Next Zone Update</div>
+          <div class="next-zone-update-subtitle next-zone-update-subtitle--fold-down">Final seconds before rotation</div>
+        </div>
+        <div class="next-zone-update-timer next-zone-update-timer--fold-down">
+          <div class="next-zone-update-timer-inner next-zone-update-timer-inner--fold-down">
+            <div class="next-zone-update-countdown next-zone-update-countdown--fold-down" id="next-zone-update-countdown">00:20</div>
+            <div class="next-zone-update-timer-label next-zone-update-timer-label--fold-down">Remaining</div>
+          </div>
+        </div>
+        <div class="next-zone-update-status" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress next-zone-update-progress--fold-down" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
   if (widgetKey === "zone-closing") {
     return renderLocalWidgetPage({
       widgetTitle: "Arenzyra Zone Closing Alert Banner",
@@ -753,6 +957,7 @@ function buildLocalWidgetPage({
         "Match context unavailable",
         "The resolved widget key does not currently point to a match with live state.",
         "match unavailable",
+        { retry: true },
       );
     }
 
@@ -760,9 +965,10 @@ function buildLocalWidgetPage({
       apiBase,
       bootstrap: {
         ...bootstrap,
-        fadeInMs: 420,
-        holdMs: 4600,
-        fadeOutMs: 640,
+        fadeInMs: 220,
+        holdMs: 2400,
+        fadeOutMs: 320,
+        simultaneousWindowMs: 300,
         teamLogoBasePath: "/assets/teams",
         defaultLogoPath: "/assets/default-team.png",
       },
@@ -781,7 +987,7 @@ function buildLocalWidgetPage({
 }
 
 function resolveWidgetRequestError(error) {
-  const status = Number(error?.response?.status);
+  const status = Number(error?.response?.status ?? error?.status);
   const responseData = error?.response?.data;
   const message =
     (Array.isArray(responseData?.message) && responseData.message.length > 0
@@ -796,7 +1002,7 @@ function resolveWidgetRequestError(error) {
     (error instanceof Error ? error.message : String(error || "")) ||
     "The backend widget resolver returned an unexpected response.";
 
-  if (!error?.response) {
+  if (!error?.response && !Number.isFinite(status)) {
     return {
       httpStatus: 502,
       title: "Backend unavailable",
@@ -826,20 +1032,29 @@ function resolveWidgetRequestError(error) {
   };
 }
 
-async function resolveWidgetContext({ apiBase, instanceKey, log }) {
-  log(`[widget-server] widget key requested key=${instanceKey}`);
+async function resolveWidgetContext({
+  apiBase,
+  instanceKey,
+  log,
+  resolveWidgetContextRequest,
+}) {
+  const keyRef = widgetKeyReference(instanceKey);
+  log(`[widget-server] widget key requested keyRef=${keyRef}`);
 
   try {
-    const response = await axios.get(`${apiBase}/api/widgets/resolve`, {
-      params: { key: instanceKey },
-      timeout: 10000,
-      headers: {
-        Accept: "application/json",
-      },
+    if (typeof resolveWidgetContextRequest !== "function") {
+      const error = new Error(
+        "The authenticated widget resolver is not configured.",
+      );
+      error.status = 503;
+      throw error;
+    }
+    const resolved = await resolveWidgetContextRequest({
+      apiBase,
+      instanceKey,
     });
-    const resolved = response?.data ?? null;
     log(
-      `[widget-server] widgetKey resolved key=${instanceKey} widgetKey=${asString(
+      `[widget-server] widgetKey resolved keyRef=${keyRef} widgetKey=${asString(
         resolved?.widgetKey,
       ) || "unresolved"}`,
     );
@@ -850,7 +1065,7 @@ async function resolveWidgetContext({ apiBase, instanceKey, log }) {
   } catch (error) {
     const failure = resolveWidgetRequestError(error);
     log(
-      `[widget-server] resolve failure reason=${failure.reason} key=${instanceKey} detail=${failure.logReason}`,
+      `[widget-server] resolve failure reason=${failure.reason} keyRef=${keyRef}`,
     );
     return {
       ok: false,
@@ -863,7 +1078,11 @@ function chooseWidgetRenderer(widgetKey) {
   if (
     widgetKey === "zone-timer" ||
     widgetKey === "next-zone-update" ||
+    widgetKey === "next-zone-update-blade" ||
+    widgetKey === "next-zone-update-fold-down" ||
+    widgetKey === "next-zone-update-kinetic-hud" ||
     widgetKey === "next-zone-update-pro-sidebar" ||
+    widgetKey === "next-zone-update-radar-sweep" ||
     widgetKey === "zone-closing" ||
     widgetKey === "team-status" ||
     widgetKey === "player-photo" ||
@@ -902,6 +1121,7 @@ async function handleCanonicalWidgetRequest(
   res,
   {
     resolveApiBase = () => DEFAULT_API_BASE,
+    resolveWidgetContextRequest = null,
     wsPath = DEFAULT_WS_PATH,
     log = () => {},
   } = {},
@@ -909,16 +1129,13 @@ async function handleCanonicalWidgetRequest(
   const instanceKey = asString(req.params?.widgetInstanceKey);
 
   if (!instanceKey) {
-    res
-      .status(400)
-      .type("html")
-      .send(
-        renderStatePage(
-          "Invalid widget URL",
-          "The backend-issued widget instance key is required to render this widget.",
-          "invalid request",
-        ),
-      );
+    sendStatePage(res, {
+      status: 400,
+      title: "Invalid widget URL",
+      detail:
+        "The backend-issued widget instance key is required to render this widget.",
+      reason: "invalid request",
+    });
     return;
   }
 
@@ -927,19 +1144,17 @@ async function handleCanonicalWidgetRequest(
     apiBase,
     instanceKey,
     log,
+    resolveWidgetContextRequest,
   });
 
   if (!resolvedResponse.ok) {
-    res
-      .status(resolvedResponse.failure.httpStatus)
-      .type("html")
-      .send(
-        renderStatePage(
-          resolvedResponse.failure.title,
-          resolvedResponse.failure.detail,
-          resolvedResponse.failure.reason,
-        ),
-      );
+    sendStatePage(res, {
+      status: resolvedResponse.failure.httpStatus,
+      title: resolvedResponse.failure.title,
+      detail: resolvedResponse.failure.detail,
+      reason: resolvedResponse.failure.reason,
+      retry: true,
+    });
     return;
   }
 
@@ -948,36 +1163,34 @@ async function handleCanonicalWidgetRequest(
   const resolvedId = asString(resolved?.id);
 
   if (!resolvedWidgetKey) {
-    res
-      .status(404)
-      .type("html")
-      .send(
-        renderStatePage(
-          "Widget key not found",
-          "The backend did not return a supported widget type for this widget instance key.",
-          "widget key not found",
-        ),
-      );
+    sendStatePage(res, {
+      status: 404,
+      title: "Widget key not found",
+      detail:
+        "The backend did not return a supported widget type for this widget instance key.",
+      reason: "widget key not found",
+      retry: true,
+    });
     return;
   }
 
   if (!resolvedId) {
-    res
-      .status(404)
-      .type("html")
-      .send(
-        renderStatePage(
-          "Widget instance unavailable",
-          "The backend key did not resolve to an active, approved widget instance.",
-          "widget instance unavailable",
-        ),
-      );
+    sendStatePage(res, {
+      status: 404,
+      title: "Widget instance unavailable",
+      detail:
+        "The backend key did not resolve to an active, approved widget instance.",
+      reason: "widget instance unavailable",
+      retry: true,
+    });
     return;
   }
 
   const renderer = chooseWidgetRenderer(resolvedWidgetKey);
   log(
-    `[widget-server] local renderer chosen renderer=${renderer.name} widgetKey=${resolvedWidgetKey} key=${instanceKey}`,
+    `[widget-server] local renderer chosen renderer=${renderer.name} widgetKey=${resolvedWidgetKey} keyRef=${widgetKeyReference(
+      instanceKey,
+    )}`,
   );
 
   if (renderer.kind === "local") {
@@ -995,16 +1208,12 @@ async function handleCanonicalWidgetRequest(
   if (renderer.kind === "remote-live" || renderer.kind === "remote-organizer") {
     const targetUrl = buildRemoteWidgetUrl(apiBase, resolved, req.query);
     if (!targetUrl) {
-      res
-        .status(501)
-        .type("html")
-        .send(
-          renderStatePage(
-            "Unsupported widget type",
-            `The desktop widget server does not have a renderer mapping for "${resolvedWidgetKey}".`,
-            "unsupported widget type",
-          ),
-        );
+      sendStatePage(res, {
+        status: 501,
+        title: "Unsupported widget type",
+        detail: `The desktop widget server does not have a renderer mapping for "${resolvedWidgetKey}".`,
+        reason: "unsupported widget type",
+      });
       return;
     }
 
@@ -1020,22 +1229,19 @@ async function handleCanonicalWidgetRequest(
     return;
   }
 
-  res
-    .status(501)
-    .type("html")
-    .send(
-      renderStatePage(
-        "Unsupported widget type",
-        `The widget "${resolvedWidgetKey}" is resolved by the backend, but a desktop renderer is not implemented yet.`,
-        "unsupported widget type",
-      ),
-    );
+  sendStatePage(res, {
+    status: 501,
+    title: "Unsupported widget type",
+    detail: `The widget "${resolvedWidgetKey}" is resolved by the backend, but a desktop renderer is not implemented yet.`,
+    reason: "unsupported widget type",
+  });
 }
 
 function registerPermanentWidgetRoute(
   app,
   {
     resolveApiBase = () => DEFAULT_API_BASE,
+    resolveWidgetContext: resolveWidgetContextRequest = null,
     wsPath = DEFAULT_WS_PATH,
     log = () => {},
   } = {},
@@ -1043,6 +1249,7 @@ function registerPermanentWidgetRoute(
   app.get("/w/:widgetInstanceKey", async (req, res) => {
     await handleCanonicalWidgetRequest(req, res, {
       resolveApiBase,
+      resolveWidgetContextRequest,
       wsPath,
       log,
     });
@@ -1051,6 +1258,7 @@ function registerPermanentWidgetRoute(
   app.get("/w/replay-marker/:widgetInstanceKey", async (req, res) => {
     await handleCanonicalWidgetRequest(req, res, {
       resolveApiBase,
+      resolveWidgetContextRequest,
       wsPath,
       log,
     });
@@ -1059,6 +1267,7 @@ function registerPermanentWidgetRoute(
   app.get("/obs/widget-context/:widgetInstanceKey", async (req, res) => {
     const instanceKey = asString(req.params?.widgetInstanceKey);
     if (!instanceKey) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.status(400).json({
         ok: false,
         error: "widget instance key is required",
@@ -1071,9 +1280,11 @@ function registerPermanentWidgetRoute(
       apiBase,
       instanceKey,
       log,
+      resolveWidgetContextRequest,
     });
 
     if (!resolvedResponse.ok) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.status(resolvedResponse.failure.httpStatus).json({
         ok: false,
         error: resolvedResponse.failure.detail,
@@ -1085,6 +1296,7 @@ function registerPermanentWidgetRoute(
     const resolvedWidgetKey = asString(resolved?.widgetKey);
     const resolvedId = asString(resolved?.id);
     if (!resolvedWidgetKey || !resolvedId) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.status(404).json({
         ok: false,
         error: "widget instance unavailable",
@@ -1109,21 +1321,20 @@ function registerPermanentWidgetRoute(
     const instanceKey = asString(req.params?.key);
 
     if (!requestedWidgetKey || !instanceKey) {
-      res
-        .status(400)
-        .type("html")
-        .send(
-          renderStatePage(
-            "Invalid widget URL",
-            "The legacy widget route must include both the widget type and the backend-issued key.",
-            "invalid request",
-          ),
-        );
+      sendStatePage(res, {
+        status: 400,
+        title: "Invalid widget URL",
+        detail:
+          "The legacy widget route must include both the widget type and the backend-issued key.",
+        reason: "invalid request",
+      });
       return;
     }
 
     log(
-      `[widget-server] legacy widget route requested widgetKey=${requestedWidgetKey} key=${instanceKey}`,
+      `[widget-server] legacy widget route requested widgetKey=${requestedWidgetKey} keyRef=${widgetKeyReference(
+        instanceKey,
+      )}`,
     );
     res.redirect(302, buildCanonicalLocalPath(instanceKey, req.query));
   });

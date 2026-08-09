@@ -1,20 +1,27 @@
 # Desktop Map Assets
 
-This directory is the desktop launcher's runtime source of truth for PUBG map images.
+This directory is the desktop launcher's map-asset boundary.
 
-Default location:
+Release contents:
 
-- `apps/desktop/electron/assets/maps`
+- `map-not-available.svg` is the only bundled map image in the current release source.
+- No commercial PUBG map raster (`.png`, `.jpg`, `.jpeg`, or `.webp`) is bundled by default.
+- Missing map artwork resolves to the neutral SVG for preview stability, but `assetAvailable` remains false.
+- Production match preflight still blocks when the selected map has no real approved asset. The fallback is not production-ready map artwork.
 
-Runtime rules:
+Development-only import:
 
-- Electron and the local widget server read map assets only from this desktop-owned folder.
-- Missing required maps do not crash widgets. The launcher serves `map-not-available.svg` as a safe fallback and reports missing keys through asset health status.
-- You can override the folder with `ARENZYRA_WIDGET_MAPS_DIR` when launching Electron.
+- `npm run sync:maps:development` from `apps/desktop`
+- The command requires an explicit `--development-only` boundary internally and may copy local raster assets from the web workspace for visual testing.
+- Release and candidate build commands never run this import.
+- Imported rasters are local inputs only. The release-input gate rejects untracked or modified files, the commercial provenance gate requires an exact inventory and reviewed evidence, and the runtime package policy excludes rasters unless it receives an evidence-approved path list.
 
-Optional import workflow:
+The 13 previously tracked rasters with unproven redistribution rights were
+recoverably quarantined outside the repository. Their original paths, sizes,
+and SHA-256 hashes are recorded in
+`apps/desktop/release/quarantined-pubg-map-assets-20260809.txt`.
 
-- `node scripts/sync-desktop-maps.cjs`
-- `npm run sync:maps` from `apps/desktop`
-
-The sync script may still import files from `apps/arenzyra-web/public/...`, but that is only a content-ingest convenience. Runtime does not depend on the web app asset tree.
+Future commercial map artwork must not be added to a distributable package
+until the existing full rights-evidence workflow verifies the exact asset
+bytes and exact reviewed evidence-document bytes. Package-size,
+telemetry-calibration, and label-layer reviews are still required separately.

@@ -65,6 +65,15 @@ function normalizeSource(value) {
   return source || "unknown";
 }
 
+function normalizePlayerNumber(value) {
+  const numeric = toFiniteNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+  const playerNumber = Math.trunc(numeric);
+  return playerNumber >= 1 && playerNumber <= 9 ? playerNumber : null;
+}
+
 function sourcePriority(source) {
   return SOURCE_PRIORITY.get(normalizeSource(source)) ?? 0;
 }
@@ -75,8 +84,11 @@ function clonePlayer(player) {
     playerName: player.playerName,
     teamId: player.teamId,
     teamSlot: player.teamSlot,
+    playerNumber: player.playerNumber,
     x: player.x,
     y: player.y,
+    z: player.z,
+    liveState: player.liveState,
     kills: player.kills,
     alive: player.alive,
     knocked: player.knocked,
@@ -130,8 +142,11 @@ function createPlayerPositionStore() {
                   ? player.teamId.trim()
                   : null,
               teamSlot: toFiniteNumber(player?.teamSlot),
+              playerNumber: normalizePlayerNumber(player?.playerNumber),
               x,
               y,
+              z: toFiniteNumber(player?.z),
+              liveState: toFiniteNumber(player?.liveState),
               kills: Math.max(0, Math.trunc(toFiniteNumber(player?.kills) ?? 0)),
               alive: toNullableBoolean(player?.alive),
               knocked: toNullableBoolean(player?.knocked),
@@ -149,6 +164,14 @@ function createPlayerPositionStore() {
     const timestamp = toFiniteNumber(update?.timestamp) ?? receivedAt;
     const source = normalizeSource(update?.source);
     const current = updatesByMap.get(mapKey);
+    if (
+      current &&
+      timestamp === current.timestamp &&
+      sourcePriority(source) === sourcePriority(current.source) &&
+      JSON.stringify(normalizedPlayers) === JSON.stringify(current.players)
+    ) {
+      return null;
+    }
     if (
       current &&
       (timestamp < current.timestamp ||

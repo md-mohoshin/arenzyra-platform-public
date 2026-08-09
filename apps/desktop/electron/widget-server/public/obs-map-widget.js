@@ -1,8 +1,9 @@
 (function () {
   const PLAYER_TTL_MS = 1800;
   const PLAYER_MIN_INTERPOLATION_MS = 90;
-  const PLAYER_MAX_INTERPOLATION_MS = 420;
-  const PLAYER_STALE_SNAP_MS = 2200;
+  const PLAYER_MAX_INTERPOLATION_MS = 1400;
+  const PLAYER_STALE_SNAP_MS = 3500;
+  const PLAYER_STREAM_FAILSAFE_MS = 120000;
   const PLAYER_SNAP_WORLD_RATIO = 0.035;
   const DEBUG_REFRESH_MS = 160;
   const COMBAT_ROLE_TTL_MS = 2600;
@@ -22,7 +23,7 @@
   const FLIGHT_PLAYER_PLANE_THRESHOLD_RATIO = 0.055;
   const VEHICLE_FALLBACK_POLL_MS = 700;
   const VEHICLE_FALLBACK_TTL_MS = 2500;
-  const VEHICLE_FALLBACK_URL = "http://127.0.0.1:10086/gettotalplayerlist";
+  const VEHICLE_FALLBACK_URL = "/obs/map/vehicle-players";
   const MATCH_FINISHED_PHASES = new Set([
     "finished",
     "ended",
@@ -37,6 +38,9 @@
   const MANUAL_CAMERA_MAX_ZOOM = 6;
   const MANUAL_CAMERA_RESUME_MS = 8000;
   const MANUAL_CAMERA_ZOOM_STEP = 1.18;
+  const MAP_CONTROL_CLICK_RADIUS_PX = 24;
+  const MAP_CONTROL_DRAG_THRESHOLD_PX = 7;
+  const MAP_CONTROL_STATUS_POLL_MS = 5_000;
   const MAP_TILE_MAX_VISIBLE_TILES = 180;
   const MAP_TILE_PADDING_TILES = 1;
   const RENDER_REFERENCE_PX = 1040;
@@ -129,6 +133,13 @@
   const debugPanel = document.getElementById("debug-panel");
   const debugGrid = document.getElementById("debug-grid");
   const context = canvas ? canvas.getContext("2d") : null;
+  const mapControlBridge =
+    bootstrap.controlMode === true &&
+    window.arenzyraMapControl &&
+    typeof window.arenzyraMapControl.getStatus === "function" &&
+    typeof window.arenzyraMapControl.selectPlayer === "function"
+      ? window.arenzyraMapControl
+      : null;
 
   if (
     !widgetShell ||
@@ -389,6 +400,16 @@
     return slot > 0 ? slot : null;
   }
 
+  function normalizePlayerNumber(value) {
+    const numeric = toFiniteNumber(value);
+    if (numeric === null) {
+      return null;
+    }
+
+    const playerNumber = Math.trunc(numeric);
+    return playerNumber >= 1 && playerNumber <= 9 ? playerNumber : null;
+  }
+
   function normalizeText(value) {
     if (typeof value === "string") {
       const trimmed = value.trim();
@@ -480,7 +501,10 @@
     state.vehicleFallbackPollAt = now;
     state.vehicleFallbackPending = true;
     window
-      .fetch(VEHICLE_FALLBACK_URL, { cache: "no-store" })
+      .fetch(VEHICLE_FALLBACK_URL, {
+        cache: "no-store",
+        credentials: "same-origin",
+      })
       .then((response) => (response && response.ok ? response.json() : null))
       .then((payload) => {
         const players =
@@ -774,6 +798,14 @@
     lastTimerLabel: "",
     lastZoneMessageAt: null,
     lastPlayerSnapshotById: new Map(),
+    mapControl: {
+      enabled: false,
+      available: false,
+      busy: false,
+      hitTargets: [],
+      pointer: null,
+      selectedPlayerId: null,
+    },
     mapCamera: {
       active: false,
       dragStartCameraX: 0,
@@ -861,6 +893,7 @@
       zoneLineWidth: 2.4,
     },
     requestedMapKey: bootstrap.requestedMapKey || null,
+    mapLocked: bootstrap.mapLocked === true,
     showLegend: resolveQueryFlag("legend"),
     showTeamLogos: resolveQueryFlag("showteamlogos", true),
     showTeamNumbers: resolveQueryFlag("showteamnumbers", styleConfig.defaultShowTeamNumbers),
@@ -1031,12 +1064,39 @@
 
     return {
       endpoint,
+      includesPoiLabels: tileSource.includesPoiLabels === true,
       prefix,
       minZoom,
       maxZoom,
       sourceSize: Math.max(1, toFiniteNumber(tileSource.sourceSize, 8192) || 8192),
       tileSize: Math.max(1, toFiniteNumber(tileSource.tileSize, 256) || 256),
     };
+  }
+
+  function hasLoadedTileLabels(mapDefinition) {
+    if (mapDefinition?.imageIncludesPoiLabels === true) {
+      return true;
+    }
+
+    const tileSource = resolveMapTileSource(mapDefinition);
+    if (!tileSource || !tileSource.includesPoiLabels || !state.mapTileState.active) {
+      return false;
+    }
+
+    let loaded = 0;
+    for (const tile of state.mapTileState.elements.values()) {
+      const status = tile?.dataset?.tileStatus || "pending";
+      if (status === "error" || status === "pending") {
+        return false;
+      }
+      if (status === "loaded") {
+        loaded += 1;
+      }
+    }
+
+    // Keep the managed canvas labels visible until every requested tile has
+    // loaded. A DNS/CORS/tile outage must never remove all place names.
+    return loaded > 0;
   }
 
   function getCameraViewportRatios(width, height) {
@@ -1151,6 +1211,16 @@
         tile.decoding = "async";
         tile.draggable = false;
         tile.referrerPolicy = "no-referrer";
+        tile.addEventListener("load", () => {
+          if (state.mapTileState.elements.get(key) === tile) {
+            tile.dataset.tileStatus = "loaded";
+          }
+        });
+        tile.addEventListener("error", () => {
+          if (state.mapTileState.elements.get(key) === tile) {
+            tile.dataset.tileStatus = "error";
+          }
+        });
         tile.style.left = `${(x * tileWidthPercent).toFixed(6)}%`;
         tile.style.top = `${(y * tileWidthPercent).toFixed(6)}%`;
         tile.style.width = `${tileWidthPercent.toFixed(6)}%`;
@@ -1960,6 +2030,123 @@
     stage.classList.remove("is-dragging");
   }
 
+  function applyMapControlRuntimeStatus(status) {
+    const control = state.mapControl;
+    control.enabled = status?.enabled === true;
+    control.available = status?.available === true;
+    control.busy = status?.busy === true;
+    stage.dataset.controlEnabled = control.enabled ? "true" : "false";
+    if (!control.enabled) {
+      control.pointer = null;
+      control.selectedPlayerId = null;
+    }
+  }
+
+  async function refreshMapControlStatus() {
+    if (!mapControlBridge) {
+      state.mapControl.enabled = false;
+      state.mapControl.available = false;
+      stage.dataset.controlEnabled = "false";
+      return;
+    }
+
+    try {
+      applyMapControlRuntimeStatus(await mapControlBridge.getStatus());
+    } catch {
+      state.mapControl.enabled = false;
+      state.mapControl.available = false;
+      state.mapControl.pointer = null;
+      stage.dataset.controlEnabled = "false";
+    }
+  }
+
+  function findMapControlTarget(clientX, clientY) {
+    const bounds = stage.getBoundingClientRect();
+    const pointerX = clientX - bounds.left;
+    const pointerY = clientY - bounds.top;
+    let nearest = null;
+    let nearestDistance = MAP_CONTROL_CLICK_RADIUS_PX;
+
+    for (const target of state.mapControl.hitTargets) {
+      const distance = Math.hypot(target.screenX - pointerX, target.screenY - pointerY);
+      if (distance <= nearestDistance) {
+        nearest = target;
+        nearestDistance = distance;
+      }
+    }
+    return nearest;
+  }
+
+  async function selectMapControlTarget(target) {
+    const control = state.mapControl;
+    if (!target || !control.enabled || !control.available || control.busy || !mapControlBridge) {
+      return;
+    }
+
+    control.busy = true;
+    control.selectedPlayerId = target.playerId;
+
+    try {
+      const result = await mapControlBridge.selectPlayer(target);
+      if (result?.ok !== true || result?.inputSent !== true) {
+        throw new Error("PCOB did not accept the player switch.");
+      }
+    } catch (error) {
+      control.selectedPlayerId = null;
+      console.warn(
+        "[map-control] PCOB player switch failed",
+        error instanceof Error ? error.message : error,
+      );
+      await refreshMapControlStatus();
+    } finally {
+      control.busy = false;
+    }
+  }
+
+  function trackMapControlPointerDown(event) {
+    if (
+      !state.mapControl.enabled ||
+      event.button !== 0 ||
+      !isMapCameraControlTarget(event)
+    ) {
+      return;
+    }
+    state.mapControl.pointer = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      moved: false,
+      pointerId: event.pointerId,
+    };
+  }
+
+  function trackMapControlPointerMove(event) {
+    const pointer = state.mapControl.pointer;
+    if (!pointer || pointer.pointerId !== event.pointerId) {
+      return;
+    }
+    if (
+      Math.hypot(event.clientX - pointer.clientX, event.clientY - pointer.clientY) >=
+      MAP_CONTROL_DRAG_THRESHOLD_PX
+    ) {
+      pointer.moved = true;
+    }
+  }
+
+  function finishMapControlPointer(event) {
+    const pointer = state.mapControl.pointer;
+    if (!pointer || pointer.pointerId !== event.pointerId) {
+      return;
+    }
+    state.mapControl.pointer = null;
+    if (event.type !== "pointerup" || pointer.moved) {
+      return;
+    }
+    const target = findMapControlTarget(event.clientX, event.clientY);
+    if (target) {
+      void selectMapControlTarget(target);
+    }
+  }
+
   function isMapCameraControlTarget(event) {
     const target = event && event.target && typeof event.target.closest === "function"
       ? event.target
@@ -1998,6 +2185,7 @@
   }
 
   function handleMapPointerDown(event) {
+    trackMapControlPointerDown(event);
     if (
       !state.mapCamera.enabled ||
       event.button !== 0 ||
@@ -2021,6 +2209,7 @@
   }
 
   function handleMapPointerMove(event) {
+    trackMapControlPointerMove(event);
     const camera = state.mapCamera;
     if (camera.draggingPointerId !== event.pointerId) {
       return;
@@ -2036,6 +2225,7 @@
   }
 
   function handleMapPointerUp(event) {
+    finishMapControlPointer(event);
     const camera = state.mapCamera;
     if (camera.draggingPointerId !== event.pointerId) {
       return;
@@ -2104,7 +2294,7 @@
     metrics.knockPlusSize = Math.max(7, metrics.markerRadius * 1.18);
     metrics.markerGlowBlur = (isMinimal ? 0 : 12) * scale;
     metrics.teamBadgeHeight = Math.max(isMinimal ? 24 : 28, (isMinimal ? 24 : 30) * scale);
-    metrics.teamBadgeLogoSize = Math.max(isMinimal ? 20 : 23, (isMinimal ? 20 : 24) * scale);
+    metrics.teamBadgeLogoSize = Math.max(isMinimal ? 28 : 32, (isMinimal ? 29 : 33) * scale);
     metrics.teamBadgePaddingX = Math.max(isMinimal ? 6 : 7, (isMinimal ? 7 : 8) * scale);
     metrics.clusterStrokeWidth = Math.max(1, 1.2 * scale);
     metrics.clusterPaddingPx = 6 * scale;
@@ -2636,43 +2826,93 @@
     context.fillStyle = "rgba(0, 0, 0, 0.15)";
     context.fill();
 
+    // Top-down passenger aircraft: a smooth fuselage, swept wings, tailplane,
+    // twin engines, and cockpit. The outline stays readable at OBS-map scale.
     context.beginPath();
-    context.moveTo(length * 0.5, 0);
-    context.lineTo(length * 0.12, bodyWidth * 0.82);
-    context.lineTo(-length * 0.02, wingspan * 0.46);
-    context.lineTo(-length * 0.17, wingspan * 0.46);
-    context.lineTo(-length * 0.07, bodyWidth * 0.72);
-    context.lineTo(-length * 0.29, bodyWidth * 0.72);
-    context.lineTo(-length * 0.46, bodyWidth * 0.28);
-    context.lineTo(-length * 0.52, bodyWidth * 0.28);
-    context.lineTo(-length * 0.52, -bodyWidth * 0.28);
-    context.lineTo(-length * 0.46, -bodyWidth * 0.28);
-    context.lineTo(-length * 0.29, -bodyWidth * 0.72);
-    context.lineTo(-length * 0.07, -bodyWidth * 0.72);
-    context.lineTo(-length * 0.17, -wingspan * 0.46);
-    context.lineTo(-length * 0.02, -wingspan * 0.46);
-    context.lineTo(length * 0.12, -bodyWidth * 0.82);
+    context.moveTo(length * 0.55, 0);
+    context.bezierCurveTo(
+      length * 0.37,
+      -bodyWidth * 0.58,
+      length * 0.04,
+      -bodyWidth * 0.74,
+      -length * 0.12,
+      -bodyWidth * 0.54,
+    );
+    context.lineTo(-length * 0.18, -wingspan * 0.5);
+    context.quadraticCurveTo(-length * 0.27, -wingspan * 0.57, -length * 0.33, -wingspan * 0.49);
+    context.lineTo(-length * 0.22, -bodyWidth * 0.24);
+    context.lineTo(-length * 0.4, -bodyWidth * 0.3);
+    context.lineTo(-length * 0.52, -wingspan * 0.28);
+    context.quadraticCurveTo(-length * 0.57, -wingspan * 0.25, -length * 0.5, -bodyWidth * 0.08);
+    context.lineTo(-length * 0.5, bodyWidth * 0.08);
+    context.quadraticCurveTo(-length * 0.57, wingspan * 0.25, -length * 0.52, wingspan * 0.28);
+    context.lineTo(-length * 0.4, bodyWidth * 0.3);
+    context.lineTo(-length * 0.22, bodyWidth * 0.24);
+    context.lineTo(-length * 0.33, wingspan * 0.49);
+    context.quadraticCurveTo(-length * 0.27, wingspan * 0.57, -length * 0.18, wingspan * 0.5);
+    context.lineTo(-length * 0.12, bodyWidth * 0.54);
+    context.bezierCurveTo(
+      length * 0.04,
+      bodyWidth * 0.74,
+      length * 0.37,
+      bodyWidth * 0.58,
+      length * 0.55,
+      0,
+    );
     context.closePath();
-    context.fillStyle = "rgba(255, 255, 255, 0.98)";
-    context.shadowColor = "rgba(255, 255, 255, 0.22)";
+    context.fillStyle = "rgba(248, 251, 255, 0.99)";
+    context.shadowColor = "rgba(255, 255, 255, 0.24)";
     context.shadowBlur = metrics.flightPlaneShadowBlur;
     context.fill();
     context.shadowColor = "transparent";
     context.shadowBlur = 0;
-    context.lineWidth = Math.max(1.1, metrics.scale * 1.2);
-    context.strokeStyle = "rgba(20, 28, 38, 0.4)";
+    context.lineWidth = Math.max(1.05, metrics.scale * 1.15);
+    context.strokeStyle = "rgba(20, 28, 38, 0.48)";
+    context.stroke();
+
+    const engineLength = Math.max(4.5, length * 0.14);
+    const engineRadius = Math.max(2.1, bodyWidth * 0.38);
+    for (const side of [-1, 1]) {
+      context.beginPath();
+      context.ellipse(
+        -length * 0.06,
+        side * wingspan * 0.3,
+        engineLength,
+        engineRadius,
+        0,
+        0,
+        Math.PI * 2,
+      );
+      context.fillStyle = "rgba(222, 230, 239, 0.99)";
+      context.fill();
+      context.lineWidth = Math.max(0.8, metrics.scale);
+      context.strokeStyle = "rgba(20, 28, 38, 0.42)";
+      context.stroke();
+
+      context.beginPath();
+      context.arc(-length * 0.15, side * wingspan * 0.3, Math.max(1.1, engineRadius * 0.52), 0, Math.PI * 2);
+      context.fillStyle = "rgba(31, 45, 61, 0.82)";
+      context.fill();
+    }
+
+    context.beginPath();
+    context.moveTo(-length * 0.43, 0);
+    context.lineTo(length * 0.31, 0);
+    context.lineWidth = Math.max(0.9, metrics.scale * 1.05);
+    context.strokeStyle = "rgba(39, 69, 94, 0.38)";
     context.stroke();
 
     context.beginPath();
-    context.moveTo(-length * 0.33, 0);
-    context.lineTo(length * 0.15, 0);
-    context.lineWidth = Math.max(1.5, metrics.scale * 1.6);
-    context.strokeStyle = `rgba(208, 48, 48, ${0.9 + shimmer * 0.08})`;
-    context.stroke();
-
-    context.beginPath();
-    context.arc(length * 0.22, 0, Math.max(1.8, bodyWidth * 0.38), 0, Math.PI * 2);
-    context.fillStyle = "rgba(76, 214, 255, 0.82)";
+    context.ellipse(
+      length * 0.33,
+      0,
+      Math.max(2, length * 0.075),
+      Math.max(1.5, bodyWidth * 0.33),
+      0,
+      0,
+      Math.PI * 2,
+    );
+    context.fillStyle = "rgba(49, 114, 151, 0.9)";
     context.fill();
 
     if (passengerCount > 0) {
@@ -3253,7 +3493,12 @@
     const labelConfig = mapDefinition && mapDefinition.poiLabels;
     const labels =
       labelConfig && Array.isArray(labelConfig.labels) ? labelConfig.labels : [];
-    if (!showMapLabels || !mapDefinition || labels.length === 0) {
+    if (
+      !showMapLabels ||
+      !mapDefinition ||
+      labels.length === 0 ||
+      hasLoadedTileLabels(mapDefinition)
+    ) {
       return;
     }
 
@@ -3472,10 +3717,38 @@
 
   function applyRuntimeReset() {
     state.zone = null;
+    state.mapContext = null;
     state.lastHeartbeatAt = null;
     state.lastZoneMessageAt = null;
+    state.mapControl.hitTargets.length = 0;
+    state.mapControl.pointer = null;
+    state.mapControl.selectedPlayerId = null;
+    state.vehicleFallbackByKey.clear();
+    state.vehicleFallbackPending = false;
+    state.vehicleFallbackPollAt = 0;
+    state.vehicleFallbackUpdatedAt = 0;
     setConnectionStatus("disconnected");
     resetTransientState();
+    applyTeamBrandingPacket(null);
+    resetMapTileLayer();
+    image.removeAttribute("src");
+    delete image.dataset.currentSrc;
+    applyMapViewport();
+  }
+
+  function expireStalePlayerStream(now) {
+    if (
+      !Number.isFinite(state.lastPlayerMessageAt) ||
+      now - state.lastPlayerMessageAt <= PLAYER_STREAM_FAILSAFE_MS
+    ) {
+      return false;
+    }
+
+    state.mapControl.hitTargets.length = 0;
+    state.mapControl.pointer = null;
+    state.mapControl.selectedPlayerId = null;
+    resetTransientState();
+    return true;
   }
 
   function applyMapContext(mapContext) {
@@ -3484,6 +3757,9 @@
 
     if (previousMapKey && nextMapKey && previousMapKey !== nextMapKey) {
       state.zone = null;
+      state.mapControl.hitTargets.length = 0;
+      state.mapControl.pointer = null;
+      state.mapControl.selectedPlayerId = null;
       resetTransientState();
     }
 
@@ -3592,6 +3868,9 @@
       const playerTeamSlot = normalizeTeamSlot(
         player.teamSlot ?? player.slot ?? (previousSnapshot && previousSnapshot.teamSlot),
       );
+      const playerNumber = normalizePlayerNumber(
+        player.playerNumber ?? (previousSnapshot && previousSnapshot.playerNumber),
+      );
       const playerAvatarUrl =
         normalizeText(player.avatarUrl ?? player.photoUrl ?? player.playerPhoto ?? player.avatar) ||
         (previousSnapshot &&
@@ -3625,6 +3904,8 @@
       snapshot.isFiring = player.isFiring === true;
       snapshot.fireAngle = toFiniteNumber(player.fireAngle, null);
       snapshot.fireDirection = normalizeDirectionVector(player.fireDirection);
+      snapshot.health = toFiniteNumber(player.health, null);
+      snapshot.liveState = toFiniteNumber(player.liveState, null);
       snapshot.knocked = player.knocked;
       snapshot.inVehicle = player.inVehicle === true;
       snapshot.kills = Math.max(0, Math.trunc(toFiniteNumber(player.kills, 0) || 0));
@@ -3632,10 +3913,12 @@
       snapshot.playerAvatarUrl = playerAvatarUrl;
       snapshot.playerName = typeof player.playerName === "string" ? player.playerName : null;
       snapshot.playerPhotoUrl = playerPhotoUrl;
+      snapshot.playerNumber = playerNumber;
       snapshot.teamId = playerTeamId;
       snapshot.teamSlot = playerTeamSlot;
       snapshot.x = player.x;
       snapshot.y = player.y;
+      snapshot.z = toFiniteNumber(player.z, null);
 
       seenIds.add(playerId);
       const existing = state.playerMotionById.get(playerId);
@@ -3656,18 +3939,22 @@
         isFiring: player.isFiring === true,
         fireAngle: toFiniteNumber(player.fireAngle, null),
         fireDirection: normalizeDirectionVector(player.fireDirection),
+        health: toFiniteNumber(player.health, null),
+        liveState: toFiniteNumber(player.liveState, null),
         kills: Math.max(0, Math.trunc(toFiniteNumber(player.kills, 0) || 0)),
         lastSeenAt: receivedAt,
         playerAvatarUrl,
         playerId,
         playerName: typeof player.playerName === "string" ? player.playerName : null,
         playerPhotoUrl,
+        playerNumber,
         receivedAt,
         startAt: receivedAt,
         teamId: playerTeamId,
         teamSlot: playerTeamSlot,
         toX: player.x,
         toY: player.y,
+        z: toFiniteNumber(player.z, null),
       });
     }
 
@@ -3714,11 +4001,9 @@
     let visibleCount = 0;
 
     for (const [playerId, motion] of state.playerMotionById.entries()) {
-      if (now - motion.lastSeenAt > PLAYER_TTL_MS) {
-        state.playerMotionById.delete(playerId);
-        continue;
-      }
-
+      // Do not expire every marker merely because the entire telemetry stream
+      // paused. applyPlayerPacket removes players that stay absent while fresh
+      // packets continue; runtime_reset clears the map between matches.
       const position = getInterpolatedPlayerPosition(motion, now);
       if (!position) {
         continue;
@@ -3750,12 +4035,15 @@
       entry.isFiring = motion.isFiring === true;
       entry.fireAngle = toFiniteNumber(motion.fireAngle, null);
       entry.fireDirection = normalizeDirectionVector(motion.fireDirection);
+      entry.health = toFiniteNumber(motion.health, null);
+      entry.liveState = toFiniteNumber(motion.liveState, null);
       entry.knocked = motion.knocked;
       entry.inVehicle = playerInVehicle;
       entry.playerAvatarUrl = motion.playerAvatarUrl || null;
       entry.playerId = playerId;
       entry.playerName = motion.playerName || null;
       entry.playerPhotoUrl = motion.playerPhotoUrl || null;
+      entry.playerNumber = normalizePlayerNumber(motion.playerNumber);
       entry.state = playerState;
       entry.teamBranding = teamBranding;
       entry.teamColor = teamColor;
@@ -3768,6 +4056,7 @@
       entry.teamTag = (teamBranding && teamBranding.teamTag) || null;
       entry.x = position.x;
       entry.y = position.y;
+      entry.z = toFiniteNumber(motion.z, null);
       entry.combatRole = null;
       entry.combatRoleAt = 0;
       entry.combatRoleStrength = 0;
@@ -4068,6 +4357,17 @@
     context.drawImage(imageElement, drawX, drawY, drawWidth, drawHeight);
   }
 
+  function drawImageContain(imageElement, x, y, width, height) {
+    const imageWidth = imageElement.naturalWidth || imageElement.width || 1;
+    const imageHeight = imageElement.naturalHeight || imageElement.height || 1;
+    const scale = Math.min(width / imageWidth, height / imageHeight);
+    const drawWidth = imageWidth * scale;
+    const drawHeight = imageHeight * scale;
+    const drawX = x + (width - drawWidth) / 2;
+    const drawY = y + (height - drawHeight) / 2;
+    context.drawImage(imageElement, drawX, drawY, drawWidth, drawHeight);
+  }
+
   function drawLogoCircle(logoUrl, centerX, centerY, size, color, fallbackText, alpha) {
     const radius = size / 2;
     const scale = state.renderMetrics.scale || 1;
@@ -4090,7 +4390,18 @@
     context.shadowOffsetY = Math.max(1, 1.1 * scale);
     context.beginPath();
     context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    context.fillStyle = "rgba(148, 163, 184, 0.96)";
+    const logoBackdrop = context.createRadialGradient(
+      centerX - radius * 0.28,
+      centerY - radius * 0.32,
+      Math.max(1, radius * 0.12),
+      centerX,
+      centerY,
+      radius,
+    );
+    logoBackdrop.addColorStop(0, colorWithAlpha(color || "#FFFFFF", 0.34));
+    logoBackdrop.addColorStop(0.5, "rgba(15, 23, 42, 0.98)");
+    logoBackdrop.addColorStop(1, "rgba(2, 6, 12, 0.99)");
+    context.fillStyle = logoBackdrop;
     context.fill();
     context.shadowColor = "transparent";
     context.shadowBlur = 0;
@@ -4100,13 +4411,13 @@
     context.stroke();
     context.beginPath();
     context.arc(centerX, centerY, Math.max(1, radius - 1.35 * scale), 0, Math.PI * 2);
-    context.strokeStyle = "rgba(248, 250, 252, 0.86)";
+    context.strokeStyle = "rgba(248, 250, 252, 0.42)";
     context.lineWidth = Math.max(1, state.renderMetrics.scale);
     context.stroke();
     context.beginPath();
     context.arc(centerX, centerY, Math.max(1, radius - 0.5 * scale), 0, Math.PI * 2);
-    context.strokeStyle = colorWithAlpha(color || "#FFFFFF", 0.72);
-    context.lineWidth = Math.max(1, 0.8 * scale);
+    context.strokeStyle = colorWithAlpha(color || "#FFFFFF", 0.94);
+    context.lineWidth = Math.max(1, scale);
     context.stroke();
 
     if (drawableImageRecord) {
@@ -4117,7 +4428,7 @@
       context.shadowColor = "rgba(2, 6, 12, 0.7)";
       context.shadowBlur = Math.max(1, 1.1 * scale);
       context.shadowOffsetY = Math.max(0.5, 0.6 * scale);
-      drawImageCover(
+      drawImageContain(
         drawableImageRecord.image,
         centerX - logoSize / 2,
         centerY - logoSize / 2,
@@ -4346,41 +4657,20 @@
     const alpha =
       source.state === "eliminated" ? 0.38 : source.state === "knocked" ? 0.78 : 0.98;
     const compact = options.compact === true;
-    const logoSize = compact ? metrics.teamBadgeLogoSize * 0.9 : metrics.teamBadgeLogoSize;
-    const badgeHeight = compact ? logoSize + 5 * metrics.scale : metrics.teamBadgeHeight;
-    const paddingX = metrics.teamBadgePaddingX;
-    context.save();
-    context.font = metrics.teamBadgeFont || metrics.labelFont;
-    const labelWidth =
-      compact || !label
-        ? 0
-        : Math.min(Math.max(96, 130 * metrics.scale), context.measureText(label).width);
-    const badgeWidth =
-      compact || !label
-        ? logoSize + paddingX
-        : logoSize + labelWidth + paddingX * 3;
-    const verticalOffset = badgeHeight * 0.5;
-    const left = clamp(anchorX - badgeWidth / 2, 2, Math.max(2, width - badgeWidth - 2));
-    const top = clamp(anchorY - verticalOffset, 2, Math.max(2, height - badgeHeight - 2));
+    const logoSize = compact
+      ? Math.max(24, metrics.teamBadgeLogoSize * 0.9)
+      : metrics.teamBadgeLogoSize;
+    const labelGap = Math.max(3, 4 * metrics.scale);
+    const labelFontSize = Math.max(11, Math.round(11.75 * metrics.scale));
+    const logoRadius = logoSize / 2;
+    const logoCenterX = clamp(anchorX, logoRadius + 2, Math.max(logoRadius + 2, width - logoRadius - 2));
+    const logoCenterY = clamp(anchorY, logoRadius + 2, Math.max(logoRadius + 2, height - logoRadius - 2));
     const accent = source.teamColor || (branding && branding.color) || "#FFFFFF";
 
+    // A player marker deliberately contains no team tag or card. The logo identifies
+    // the team, and the label remains the exact player name supplied by telemetry.
+    context.save();
     context.globalAlpha = alpha;
-    context.beginPath();
-    drawRoundedRectPath(context, left, top, badgeWidth, badgeHeight, 6 * metrics.scale);
-    context.shadowColor = "rgba(2, 6, 12, 0.5)";
-    context.shadowBlur = Math.max(3, 4 * metrics.scale);
-    context.shadowOffsetY = Math.max(1, 1.2 * metrics.scale);
-    context.fillStyle = source.state === "knocked" ? "rgba(15, 23, 42, 0.9)" : "rgba(2, 6, 12, 0.88)";
-    context.fill();
-    context.shadowColor = "transparent";
-    context.shadowBlur = 0;
-    context.shadowOffsetY = 0;
-    context.lineWidth = Math.max(1, metrics.scale);
-    context.strokeStyle = colorWithAlpha(accent, 0.98);
-    context.stroke();
-
-    const logoCenterX = left + paddingX + logoSize / 2;
-    const logoCenterY = top + badgeHeight / 2;
     drawLogoCircle(
       logoUrl,
       logoCenterX,
@@ -4395,18 +4685,30 @@
 
     if (!compact && label) {
       context.font = metrics.teamBadgeFont || metrics.labelFont;
-      context.textAlign = "left";
-      context.textBaseline = "middle";
+      context.textAlign = "center";
+      context.textBaseline = "top";
       context.lineWidth = Math.max(3, metrics.scale * 2.4);
       context.strokeStyle = "rgba(2, 6, 12, 0.98)";
       context.fillStyle = "rgba(248, 250, 252, 0.98)";
-      const textX = left + paddingX * 2 + logoSize;
-      const textY = top + badgeHeight / 2;
-      context.strokeText(label, textX, textY);
-      context.fillText(label, textX, textY);
+      const textY = clamp(
+        logoCenterY + logoRadius + labelGap,
+        2,
+        Math.max(2, height - labelFontSize - 2),
+      );
+      context.strokeText(label, logoCenterX, textY);
+      context.fillText(label, logoCenterX, textY);
     }
 
-    drawCombatRoleMarker(source, left, top, badgeWidth, badgeHeight, width, height, alpha);
+    drawCombatRoleMarker(
+      source,
+      logoCenterX - logoRadius,
+      logoCenterY - logoRadius,
+      logoSize,
+      logoSize,
+      width,
+      height,
+      alpha,
+    );
     context.restore();
     return true;
   }
@@ -5167,9 +5469,51 @@
     drawFiringIndicator(player, x, y, mapDefinition, width, height);
     drawTeamIdentityBadge(player, x, y, width, height);
     drawPlayerDebugText(player, x, y);
+
+    const controlTeamSlot = normalizeTeamSlot(player.teamSlot);
+    const controlPlayerNumber = normalizePlayerNumber(player.playerNumber);
+    if (
+      mapControlBridge &&
+      player.state !== "eliminated" &&
+      controlTeamSlot !== null &&
+      controlPlayerNumber !== null
+    ) {
+      const worldSize = resolveWorldSize(mapDefinition);
+      state.mapControl.hitTargets.push({
+        mapKey: mapDefinition.key || null,
+        normalizedX: normalizeWorldX(player.x, mapDefinition) / worldSize,
+        normalizedY: normalizeWorldY(player.y, mapDefinition) / worldSize,
+        playerId: player.playerId,
+        playerName: player.playerName,
+        playerNumber: controlPlayerNumber,
+        screenX: x,
+        screenY: y,
+        teamId: player.teamId,
+        teamSlot: controlTeamSlot,
+      });
+
+      if (state.mapControl.selectedPlayerId === player.playerId) {
+        context.save();
+        context.beginPath();
+        context.arc(
+          x,
+          y,
+          state.renderMetrics.markerRadius + Math.max(6, state.renderMetrics.scale * 6),
+          0,
+          Math.PI * 2,
+        );
+        context.lineWidth = Math.max(2, state.renderMetrics.scale * 2);
+        context.strokeStyle = state.mapControl.busy
+          ? "rgba(251, 191, 36, 0.98)"
+          : "rgba(56, 189, 248, 0.98)";
+        context.stroke();
+        context.restore();
+      }
+    }
   }
 
   function drawPlayers(players, mapDefinition, width, height) {
+    state.mapControl.hitTargets.length = 0;
     if (!mapDefinition || players.length === 0) {
       return;
     }
@@ -5589,7 +5933,7 @@
     }
 
     return teamId
-      ? `${playerName} Â· ${formatCompactTeamLabel(teamId)}`
+      ? `${playerName} · ${formatCompactTeamLabel(teamId)}`
       : playerName;
   }
 
@@ -5693,8 +6037,11 @@
     if (normalizedId) {
       params.set(paramName, normalizedId);
     }
-    if (state.requestedMapKey) {
-      params.set("map", state.requestedMapKey);
+    const scopedMapKey = state.mapLocked
+      ? state.requestedMapKey
+      : normalizeText(state.mapContext?.mapKey);
+    if (scopedMapKey) {
+      params.set("map", scopedMapKey);
     }
 
     const queryString = params.toString();
@@ -7092,6 +7439,7 @@
   }
 
   function drawFrame(now) {
+    expireStalePlayerStream(now);
     const mapDefinition = getMapDefinition();
     const assistSnapshot = state.assistSnapshot;
     const productionSupportSnapshot = state.productionSupportSnapshot;
@@ -7236,7 +7584,7 @@
   function buildSocketUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = new URL(`${protocol}//${window.location.host}${bootstrap.wsPath || "/ws"}`);
-    if (state.requestedMapKey) {
+    if (state.mapLocked && state.requestedMapKey) {
       url.searchParams.set("map", state.requestedMapKey);
     }
     return url.toString();
@@ -7269,6 +7617,17 @@
     state.lastMessageAt = receivedAt;
 
     if (!message || typeof message !== "object") {
+      return;
+    }
+
+    const payloadMapKey = normalizeText(
+      message?.payload?.mapKey ?? message?.payload?.mapContext?.mapKey,
+    );
+    if (
+      state.mapLocked &&
+      payloadMapKey &&
+      normalizeLookupText(payloadMapKey) !== normalizeLookupText(state.requestedMapKey)
+    ) {
       return;
     }
 
@@ -7580,6 +7939,13 @@
   stage.addEventListener("dblclick", handleMapDoubleClick);
   window.addEventListener("keydown", handleMapCameraHotkey);
   window.addEventListener("keydown", handleOperatorHotkey);
+
+  if (mapControlBridge) {
+    void refreshMapControlStatus();
+    window.setInterval(() => {
+      void refreshMapControlStatus();
+    }, MAP_CONTROL_STATUS_POLL_MS);
+  }
 
   applyMapContext(bootstrap.snapshot ? bootstrap.snapshot.mapContext : null);
   applyZonePacket(

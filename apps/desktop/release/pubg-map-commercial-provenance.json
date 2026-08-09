@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "scope": "Commercial redistribution in the Arenzyra Windows desktop launcher",
+  "commercialReleaseApproval": {
+    "state": "not-applicable-no-bundled-commercial-assets",
+    "reviewedBy": null,
+    "reviewedAt": null,
+    "reviewReference": null,
+    "notes": "No commercial PUBG map raster is bundled. The neutral project-owned SVG fallback is not a commercial map asset."
+  },
+  "priorAssetQuarantine": {
+    "manifestPath": "apps/desktop/release/quarantined-pubg-map-assets-20260809.txt",
+    "manifestSha256": "681addffc18f2354f1e5b11f19f1321bfe28dc88c6d7219fe7735a962c0ef994",
+    "externalQuarantinePath": "C:\\Arenzyra-safety-snapshots\\quarantined-assets\\20260809-desktop-unproven-tracked-maps",
+    "assetCount": 13,
+    "totalSizeBytes": 27411958
+  },
+  "evidenceRequirements": {
+    "verificationNote": "If commercial map rasters are added later, the verifier must receive the exact reviewed document bytes out of band and match documentSha256; metadata alone cannot approve publication.",
+    "acceptedTypes": [
+      "written-redistribution-permission",
+      "api-license",
+      "tournament-license"
+    ],
+    "requiredFields": [
+      "id",
+      "type",
+      "issuer",
+      "grantedTo",
+      "reference",
+      "documentSha256",
+      "reviewState",
+      "reviewedBy",
+      "reviewedAt",
+      "assetScope"
+    ]
+  },
+  "evidence": [],
+  "assets": []
+}

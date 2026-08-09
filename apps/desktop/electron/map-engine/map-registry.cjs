@@ -9,16 +9,28 @@ const {
 const { MAP_POI_LABELS, MAP_TILE_SOURCES } = require("./map-poi-labels.cjs");
 
 const DEFAULT_COORDINATE_SCALE_HINT = 102;
+const TELEMETRY_CALIBRATION_STATUS = Object.freeze({
+  PROVISIONAL: "provisional",
+  RECORDING_BACKED: "recording-backed",
+});
 
 const MAP_DEFINITIONS = [
   {
     key: "erangel",
     label: "Erangel",
     worldSize: 816000,
+    telemetryCalibrationStatus: TELEMETRY_CALIBRATION_STATUS.RECORDING_BACKED,
     imagePath: "erangel.png",
+    imageIncludesPoiLabels: true,
     tileSource: MAP_TILE_SOURCES.erangel,
     poiLabels: MAP_POI_LABELS.erangel,
-    aliases: ["ERANGEL", "ERANGEL8X8", "ERANGEL_MAIN", "BALTIC_MAIN", "BALTICMAIN"],
+    aliases: [
+      "ERANGEL",
+      "ERANGEL8X8",
+      "ERANGEL_MAIN",
+      "BALTIC_MAIN",
+      "BALTICMAIN",
+    ],
   },
   {
     key: "miramar",
@@ -33,21 +45,24 @@ const MAP_DEFINITIONS = [
     key: "sanhok",
     label: "Sanhok",
     worldSize: 408000,
-    imagePath: "sanhok.png",
+    imagePath: "sanhok.jpg",
     aliases: ["SANHOK", "SANHOK4X4", "SAVAGE_MAIN", "SAVAGEMAIN"],
   },
   {
     key: "vikendi",
     label: "Vikendi",
+    // PCOB/ShadowTracker calibration is not yet recording-backed. Preserve the
+    // legacy 6x6 coordinate frame until a real observer capture proves otherwise.
     worldSize: 612000,
-    imagePath: "vikendi.png",
+    imagePath: "vikendi.jpg",
     aliases: ["VIKENDI", "VIKENDI6X6", "DIHOROTOK_MAIN", "DIHOROTOKMAIN"],
   },
   {
     key: "livik",
     label: "Livik",
     worldSize: 408000,
-    imagePath: "livik.png",
+    imagePath: "livik.jpg",
+    imageIncludesPoiLabels: true,
     poiLabels: MAP_POI_LABELS.livik,
     aliases: ["LIVIK", "LIVIK4X4"],
     notes:
@@ -58,6 +73,8 @@ const MAP_DEFINITIONS = [
     label: "Livik Aftermath",
     worldSize: 408000,
     imagePath: "livik-aftermath.png",
+    // The PNG's nontransparent artwork bounds are not a verified telemetry
+    // calibration. Keep renderBounds unset until live coordinates establish it.
     aliases: ["LIVIKAFTERMATH", "LIVIK_AFTERMATH", "AFTERMATH"],
     notes:
       "TODO: confirm whether ShadowTracker reports this as a distinct map key or as Livik.",
@@ -66,7 +83,7 @@ const MAP_DEFINITIONS = [
     key: "karakin",
     label: "Karakin",
     worldSize: 204000,
-    imagePath: "karakin.png",
+    imagePath: "karakin.jpg",
     aliases: ["KARAKIN", "KARAKIN2X2", "SUMMERLAND_MAIN", "SUMMERLANDMAIN"],
   },
   {
@@ -74,6 +91,8 @@ const MAP_DEFINITIONS = [
     label: "Nusa",
     worldSize: 102000,
     imagePath: "nusa.png",
+    // Alpha bounds describe the irregular island artwork and labels, not a
+    // proven rectangular telemetry extent. Do not infer renderBounds from them.
     aliases: ["NUSA", "NUSA1X1"],
     notes:
       "TODO: verify the exact raw world size from live ShadowTracker packets before final polish.",
@@ -82,11 +101,17 @@ const MAP_DEFINITIONS = [
     key: "rondo",
     label: "Rondo",
     worldSize: 816000,
+    telemetryCalibrationStatus: TELEMETRY_CALIBRATION_STATUS.RECORDING_BACKED,
     imagePath: "rondo.webp",
     poiLabels: MAP_POI_LABELS.rondo,
-    aliases: ["RONDO", "RONDO8X8", "RONDO_MAIN", "RONDOMAIN"],
-    notes:
-      "TODO: confirm the raw world size and alias set once live Rondo telemetry is available.",
+    aliases: [
+      "RONDO",
+      "RONDO8X8",
+      "RONDO_MAIN",
+      "RONDOMAIN",
+      "NEON_MAIN",
+      "NEONMAIN",
+    ],
   },
   {
     key: "taego",
@@ -135,6 +160,23 @@ function normalizeLookup(value) {
     .replace(/^_+|_+$/g, "");
 }
 
+function isMapLookupMatch(value, candidate) {
+  const normalizedValue = normalizeLookup(value);
+  const normalizedCandidate = normalizeLookup(candidate);
+  if (!normalizedValue || !normalizedCandidate) {
+    return false;
+  }
+  if (normalizedValue === normalizedCandidate) {
+    return true;
+  }
+
+  // Observer payloads sometimes wrap an internal map name (for example,
+  // MATCH_NEON_MAIN_VARIANT). Match only complete normalized tokens so an
+  // unrelated future key such as SUPERERANGELCLONE cannot silently select a
+  // known map merely because it contains the same letters.
+  return `_${normalizedValue}_`.includes(`_${normalizedCandidate}_`);
+}
+
 function cloneTileSource(tileSource) {
   if (!tileSource || typeof tileSource !== "object") {
     return null;
@@ -142,6 +184,7 @@ function cloneTileSource(tileSource) {
 
   return {
     endpoint: tileSource.endpoint,
+    includesPoiLabels: tileSource.includesPoiLabels === true,
     prefix: tileSource.prefix,
     sourceSize: tileSource.sourceSize,
     minZoom: tileSource.minZoom,
@@ -157,6 +200,8 @@ function clonePoiLabels(poiLabels) {
 
   return {
     sourceSize: poiLabels.sourceSize,
+    sourceWidth: poiLabels.sourceWidth,
+    sourceHeight: poiLabels.sourceHeight,
     labels: Array.isArray(poiLabels.labels)
       ? poiLabels.labels.map((label) => ({
           label: label.label,
@@ -182,6 +227,7 @@ function cloneClientDefinition(definition) {
     fallbackImageUrl: definition.fallbackImageUrl ?? null,
     imageWidth: definition.imageWidth ?? null,
     imageHeight: definition.imageHeight ?? null,
+    imageIncludesPoiLabels: definition.imageIncludesPoiLabels === true,
     renderBounds: definition.renderBounds
       ? {
           x: definition.renderBounds.x,
@@ -192,6 +238,9 @@ function cloneClientDefinition(definition) {
       : null,
     coordinateScaleHint:
       definition.coordinateScaleHint ?? DEFAULT_COORDINATE_SCALE_HINT,
+    telemetryCalibrationStatus:
+      definition.telemetryCalibrationStatus ??
+      TELEMETRY_CALIBRATION_STATUS.PROVISIONAL,
     tileSource: cloneTileSource(definition.tileSource),
     poiLabels: clonePoiLabels(definition.poiLabels),
     notes: definition.notes ?? null,
@@ -220,7 +269,9 @@ function createMapRegistry({
   log = () => {},
 } = {}) {
   const definitions = MAP_DEFINITIONS.map((entry) => {
-    const key = String(entry.key || "").trim().toLowerCase();
+    const key = String(entry.key || "")
+      .trim()
+      .toLowerCase();
     const preferredImagePath = String(entry.imagePath || "").trim();
 
     return {
@@ -233,6 +284,7 @@ function createMapRegistry({
       fallbackImageUrl: null,
       imageWidth: entry.imageWidth ?? null,
       imageHeight: entry.imageHeight ?? null,
+      imageIncludesPoiLabels: entry.imageIncludesPoiLabels === true,
       renderBounds: entry.renderBounds
         ? {
             x: entry.renderBounds.x,
@@ -243,6 +295,9 @@ function createMapRegistry({
         : null,
       coordinateScaleHint:
         entry.coordinateScaleHint ?? DEFAULT_COORDINATE_SCALE_HINT,
+      telemetryCalibrationStatus:
+        entry.telemetryCalibrationStatus ??
+        TELEMETRY_CALIBRATION_STATUS.PROVISIONAL,
       tileSource: cloneTileSource(entry.tileSource),
       poiLabels: clonePoiLabels(entry.poiLabels),
       notes: entry.notes ?? null,
@@ -270,13 +325,13 @@ function createMapRegistry({
       definition.imagePath =
         assetStatus?.resolvedImagePath ?? definition.preferredImagePath;
       definition.imageUrl =
-        assetStatus?.imageUrl ?? assetResolver.getFallbackAssetUrl(definition.key);
+        assetStatus?.imageUrl ??
+        assetResolver.getFallbackAssetUrl(definition.key);
       definition.fallbackImageUrl =
         assetStatus?.fallbackImageUrl ??
         assetResolver.getFallbackAssetUrl(definition.key);
       definition.imageAbsolutePath =
-        assetStatus?.assetAbsolutePath ??
-        assetResolver.getFallbackAssetPath();
+        assetStatus?.assetAbsolutePath ?? assetResolver.getFallbackAssetPath();
     }
   }
 
@@ -315,16 +370,22 @@ function createMapRegistry({
       return direct;
     }
 
+    let mostSpecificMatch = null;
+    let mostSpecificLookupLength = -1;
+
     for (const definition of definitions) {
-      if (
-        normalized.includes(definition.lookup) ||
-        definition.aliases.some((alias) => normalized.includes(alias))
-      ) {
-        return definition;
+      for (const lookup of [definition.lookup, ...definition.aliases]) {
+        if (
+          isMapLookupMatch(normalized, lookup) &&
+          lookup.length > mostSpecificLookupLength
+        ) {
+          mostSpecificMatch = definition;
+          mostSpecificLookupLength = lookup.length;
+        }
       }
     }
 
-    return null;
+    return mostSpecificMatch;
   }
 
   refreshAvailability();
@@ -333,7 +394,8 @@ function createMapRegistry({
     getAssetResolver: () => assetResolver,
     getAssetsRoot: () => assetResolver.getAssetsRoot(),
     getDefaultDefinition,
-    getDefaultKey: () => (getDefaultDefinition() ? getDefaultDefinition().key : null),
+    getDefaultKey: () =>
+      getDefaultDefinition() ? getDefaultDefinition().key : null,
     getDefinition: (mapKey) => resolve(mapKey),
     getMapAssetStatus: (mapKey) => assetResolver.getMapAssetStatus(mapKey),
     getValidationSummary,
@@ -354,8 +416,10 @@ module.exports = {
   MAP_DEFINITIONS,
   REQUIRED_PUBG_MAP_KEYS,
   SUPPORTED_MAP_ASSET_EXTENSIONS,
+  TELEMETRY_CALIBRATION_STATUS,
   createMapAssetResolver,
   createMapRegistry,
+  isMapLookupMatch,
   normalizeLookup,
   resolveDefaultMapAssetsRoot,
 };

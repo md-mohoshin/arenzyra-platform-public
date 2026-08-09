@@ -133,6 +133,9 @@ const MAP_TILE_SOURCES = Object.freeze({
   erangel: Object.freeze({
     endpoint: PUBG_MAP_TILE_ENDPOINT,
     prefix: "erangel/v19",
+    // The source tiles already render their own POI names. Drawing the
+    // widget's POI canvas over them would create duplicate labels.
+    includesPoiLabels: true,
     sourceSize: 8192,
     minZoom: 0,
     maxZoom: 6,
@@ -141,6 +144,9 @@ const MAP_TILE_SOURCES = Object.freeze({
   miramar: Object.freeze({
     endpoint: PUBG_MAP_TILE_ENDPOINT,
     prefix: "miramar/v13",
+    // The source tiles already render their own POI names. Drawing the
+    // widget's POI canvas over them would create duplicate labels.
+    includesPoiLabels: true,
     sourceSize: 8192,
     minZoom: 0,
     maxZoom: 6,

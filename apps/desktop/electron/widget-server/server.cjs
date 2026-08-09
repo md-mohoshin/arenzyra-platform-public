@@ -4,13 +4,18 @@ const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const cors = require("cors");
 const express = require("express");
 const { getProcessDefaultApiBase } = require("../apiBaseDefaults.cjs");
 const { createMapRegistry } = require("../map-engine/map-registry.cjs");
-const { createMapTelemetryBridge } = require("../map-engine/telemetry-map-bridge.cjs");
-const { createMapWidgetEngine } = require("../map-engine/map-widget-engine.cjs");
-const { createDirectObserverSnapshotPoller } = require("./direct-observer-snapshot-poller.cjs");
+const {
+  createMapTelemetryBridge,
+} = require("../map-engine/telemetry-map-bridge.cjs");
+const {
+  createMapWidgetEngine,
+} = require("../map-engine/map-widget-engine.cjs");
+const {
+  createDirectObserverSnapshotPoller,
+} = require("./direct-observer-snapshot-poller.cjs");
 const { createAiCasterEngine } = require("./ai-caster-engine.cjs");
 const { registerHealthRoute } = require("./routes/health-route.cjs");
 const { registerAiCasterRoute } = require("./routes/ai-caster-route.cjs");
@@ -22,9 +27,19 @@ const {
   normalizeObserverFocus,
   registerObsPlayerPhotoRoute,
 } = require("./routes/obs-player-photo-route.cjs");
-const { registerTeamEliminatedRoute } = require("./routes/team-eliminated-route.cjs");
-const { registerPermanentWidgetRoute } = require("./routes/permanent-widget-route.cjs");
-const { createLocalWidgetBroadcast } = require("./ws/local-widget-broadcast.cjs");
+const {
+  registerTeamEliminatedRoute,
+} = require("./routes/team-eliminated-route.cjs");
+const {
+  registerPermanentWidgetRoute,
+} = require("./routes/permanent-widget-route.cjs");
+const {
+  normalizeBrandingContext,
+} = require("./routes/widget-branding-page.cjs");
+const {
+  createLocalWidgetBroadcast,
+} = require("./ws/local-widget-broadcast.cjs");
+const { createWidgetAccessPolicy } = require("./widget-access-policy.cjs");
 
 const DEFAULT_PORT = 5510;
 const DEFAULT_HOST = "0.0.0.0";
@@ -42,8 +57,8 @@ const MAX_LAUNCHER_LOG_TAIL_BYTES = 2 * 1024 * 1024;
 const FORCED_MAP_LOG_CACHE_MS = 5_000;
 const PLACEHOLDER_TEAM_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axzwoAAAAASUVORK5CYII=";
-const PLACEHOLDER_PLAYER_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axzwoAAAAASUVORK5CYII=";
+const PLACEHOLDER_PLAYER_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#0b1426"/><circle cx="32" cy="23" r="10" fill="#3ca7ff"/><path d="M12 58c1-15 9-24 20-24s19 9 20 24" fill="#3ca7ff"/></svg>';
 const PLAYER_ASSET_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
 const DEFAULT_COMMENTATOR_DESK_ACCESS = Object.freeze({
   featureKey: "commentator-desk",
@@ -68,7 +83,9 @@ let cachedLogForcedMapKey = null;
 let cachedLogForcedMapKeyAt = 0;
 
 function normalizeMapKeyValue(value) {
-  return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : null;
+  return typeof value === "string" && value.trim()
+    ? value.trim().toLowerCase()
+    : null;
 }
 
 function normalizePlayerAssetKey(value) {
@@ -153,7 +170,9 @@ function readFileTail(filePath, maxBytes) {
   }
 }
 
-function parseLatestSelectedMapKeyFromLauncherLog(filePath = DEFAULT_LAUNCHER_LOG_PATH) {
+function parseLatestSelectedMapKeyFromLauncherLog(
+  filePath = DEFAULT_LAUNCHER_LOG_PATH,
+) {
   const now = Date.now();
   if (now - cachedLogForcedMapKeyAt < FORCED_MAP_LOG_CACHE_MS) {
     return cachedLogForcedMapKey;
@@ -176,11 +195,15 @@ function parseLatestSelectedMapKeyFromLauncherLog(filePath = DEFAULT_LAUNCHER_LO
 
     try {
       const entry = JSON.parse(line);
-      if (String(entry?.message || "") !== "[Production] Check passed: assets") {
+      if (
+        String(entry?.message || "") !== "[Production] Check passed: assets"
+      ) {
         continue;
       }
 
-      const selectedMapKey = normalizeMapKeyValue(entry?.meta?.meta?.selectedMapKey);
+      const selectedMapKey = normalizeMapKeyValue(
+        entry?.meta?.meta?.selectedMapKey,
+      );
       if (selectedMapKey) {
         cachedLogForcedMapKey = selectedMapKey;
         return cachedLogForcedMapKey;
@@ -202,24 +225,32 @@ function resolveBundledDefaultTeamPath() {
 
   candidates.push(path.resolve(__dirname, "../../build/default-team.png"));
 
-  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || "";
+  return (
+    candidates.find((candidate) => candidate && fs.existsSync(candidate)) || ""
+  );
 }
 
 function resolveBundledDefaultPlayerPath() {
   const candidates = [];
 
   if (process.resourcesPath) {
-    candidates.push(path.join(process.resourcesPath, "default-player.png"));
+    candidates.push(path.join(process.resourcesPath, "default-player.svg"));
   }
 
-  candidates.push(path.resolve(__dirname, "../../build/default-player.png"));
+  candidates.push(path.resolve(__dirname, "../../build/default-player.svg"));
 
-  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || "";
+  return (
+    candidates.find((candidate) => candidate && fs.existsSync(candidate)) || ""
+  );
 }
 
 function normalizePort(value, fallback = DEFAULT_PORT) {
   const numeric =
-    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : NaN;
   if (!Number.isInteger(numeric) || numeric <= 0 || numeric > 65535) {
     return fallback;
   }
@@ -328,6 +359,11 @@ function startWidgetsServer(options = {}) {
   const networkBaseUrl = canExposeNetworkAddress(host, lanIp)
     ? buildHttpUrl(lanIp, port)
     : null;
+  const accessPolicy = createWidgetAccessPolicy({
+    token: options.capabilityToken,
+    allowedHosts: [host, lanIp].filter(Boolean),
+    log,
+  });
   const teamAssetsRoot = path.resolve(
     options.teamAssetsRoot ||
       process.env.ARENZYRA_TEAM_ASSETS_DIR ||
@@ -355,6 +391,8 @@ function startWidgetsServer(options = {}) {
   });
   const broadcast = createLocalWidgetBroadcast({
     path: options.wsPath || "/ws",
+    authorizeRequest: accessPolicy.authorizeRequest,
+    resolveMapKey: (value) => registry.resolve(value)?.key ?? null,
     log,
   });
   const engine = createMapWidgetEngine({
@@ -364,7 +402,13 @@ function startWidgetsServer(options = {}) {
   });
   const aiCasterEngine = createAiCasterEngine({ log });
   let commentatorDeskAccess = { ...DEFAULT_COMMENTATOR_DESK_ACCESS };
-  let widgetVisibility = { ...DEFAULT_WIDGET_VISIBILITY, updatedAt: Date.now() };
+  let organizationBranding = normalizeBrandingContext(
+    options.organizationBranding,
+  );
+  let widgetVisibility = {
+    ...DEFAULT_WIDGET_VISIBILITY,
+    updatedAt: Date.now(),
+  };
   const telemetryBridge = createMapTelemetryBridge({
     engine,
     registry,
@@ -383,12 +427,26 @@ function startWidgetsServer(options = {}) {
       typeof options.getObserverBaseUrl === "function"
         ? options.getObserverBaseUrl
         : null,
+    getAccessToken:
+      typeof options.getObserverAccessToken === "function"
+        ? options.getObserverAccessToken
+        : null,
     isEnabled:
       typeof options.shouldPollDirectObserver === "function"
         ? options.shouldPollDirectObserver
         : () => true,
+    isCircleEnabled:
+      typeof options.shouldPollDirectObserverCircle === "function"
+        ? options.shouldPollDirectObserverCircle
+        : typeof options.shouldPollDirectObserver === "function"
+          ? options.shouldPollDirectObserver
+          : () => true,
     getForcedMapKey: resolveForcedMapKey,
-    onSnapshot: (snapshot) => telemetryBridge.ingestSnapshot(snapshot),
+    onSnapshot: (snapshot) =>
+      telemetryBridge.ingestSnapshot(snapshot, {
+        skipZoneUpdate: snapshot?.zoneHandledByFastLane === true,
+      }),
+    onZoneSnapshot: (snapshot) => telemetryBridge.ingestSnapshot(snapshot),
     log,
   });
   directObserverPoller.start();
@@ -399,7 +457,7 @@ function startWidgetsServer(options = {}) {
   }));
 
   app.disable("x-powered-by");
-  app.use(cors());
+  app.use(accessPolicy.middleware);
   app.use(
     "/assets/maps",
     express.static(registry.getAssetsRoot(), {
@@ -408,7 +466,9 @@ function startWidgetsServer(options = {}) {
     }),
   );
   app.get(/^\/assets\/maps\/(.+)$/, (req, res, next) => {
-    const resolvedAsset = registry.resolveAssetRequest(req.params?.[0] || req.path);
+    const resolvedAsset = registry.resolveAssetRequest(
+      req.params?.[0] || req.path,
+    );
     if (!resolvedAsset) {
       next();
       return;
@@ -420,7 +480,9 @@ function startWidgetsServer(options = {}) {
     }
 
     if (resolvedAsset.mode === "inline" && resolvedAsset.body) {
-      res.type(resolvedAsset.mimeType || "image/svg+xml").send(resolvedAsset.body);
+      res
+        .type(resolvedAsset.mimeType || "image/svg+xml")
+        .send(resolvedAsset.body);
       return;
     }
 
@@ -446,9 +508,7 @@ function startWidgetsServer(options = {}) {
       return;
     }
 
-    res
-      .type("png")
-      .send(Buffer.from(PLACEHOLDER_TEAM_PNG_BASE64, "base64"));
+    res.type("png").send(Buffer.from(PLACEHOLDER_TEAM_PNG_BASE64, "base64"));
   });
   app.use(
     "/assets/players",
@@ -471,23 +531,18 @@ function startWidgetsServer(options = {}) {
     setNoStoreHeaders(res);
     res.sendFile(playerAssetPath);
   });
-  app.get("/assets/default-player.png", (_req, res) => {
-    const defaultPlayerPath = path.join(playerAssetsRoot, "default-player.png");
-    if (fs.existsSync(defaultPlayerPath)) {
-      res.sendFile(defaultPlayerPath);
-      return;
-    }
+  app.get(
+    ["/assets/default-player.svg", "/assets/default-player.png"],
+    (_req, res) => {
+      const bundledDefaultPlayerPath = resolveBundledDefaultPlayerPath();
+      if (bundledDefaultPlayerPath) {
+        res.sendFile(bundledDefaultPlayerPath);
+        return;
+      }
 
-    const bundledDefaultPlayerPath = resolveBundledDefaultPlayerPath();
-    if (bundledDefaultPlayerPath) {
-      res.sendFile(bundledDefaultPlayerPath);
-      return;
-    }
-
-    res
-      .type("png")
-      .send(Buffer.from(PLACEHOLDER_PLAYER_PNG_BASE64, "base64"));
-  });
+      res.type("image/svg+xml").send(PLACEHOLDER_PLAYER_SVG);
+    },
+  );
   app.use(
     "/obs/static",
     express.static(path.join(__dirname, "public"), {
@@ -498,6 +553,12 @@ function startWidgetsServer(options = {}) {
       },
     }),
   );
+  app.get("/obs/widget-branding", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.json(organizationBranding);
+  });
 
   registerHealthRoute(app, {
     startedAt,
@@ -509,14 +570,25 @@ function startWidgetsServer(options = {}) {
     engine,
     registry,
     wsPath: broadcast.getPath(),
+    getOrganizationBranding: () => organizationBranding,
+    resolveObserverBaseUrl:
+      typeof options.getObserverBaseUrl === "function"
+        ? options.getObserverBaseUrl
+        : () => options.observerBaseUrl || null,
+    getObserverAccessToken:
+      typeof options.getObserverAccessToken === "function"
+        ? options.getObserverAccessToken
+        : () => "",
   });
   registerAiCasterRoute(app, {
     engine,
     aiCasterEngine,
+    getOrganizationBranding: () => organizationBranding,
   });
   registerCommentatorDeskRoute(app, {
     engine,
     getAccess: () => commentatorDeskAccess,
+    getOrganizationBranding: () => organizationBranding,
   });
   registerObsPlayerPhotoRoute(app, {
     resolveApiBase:
@@ -536,11 +608,16 @@ function startWidgetsServer(options = {}) {
       typeof options.getObserverBaseUrl === "function"
         ? options.getObserverBaseUrl
         : () => options.observerBaseUrl || null,
+    getObserverAccessToken:
+      typeof options.getObserverAccessToken === "function"
+        ? options.getObserverAccessToken
+        : () => "",
     getPlayerAssetsVersion: () => getPlayerAssetsVersion(playerAssetsRoot),
     requestPlayerPhotoRefresh:
       typeof options.requestPlayerPhotoRefresh === "function"
         ? options.requestPlayerPhotoRefresh
         : null,
+    getOrganizationBranding: () => organizationBranding,
     log,
   });
   registerTeamEliminatedRoute(app, {
@@ -555,6 +632,10 @@ function startWidgetsServer(options = {}) {
             process.env.ARENZYRA_API_URL ||
             process.env.ARENZYRA_API_BASE ||
             getProcessDefaultApiBase(),
+    resolveWidgetContext:
+      typeof options.resolveWidgetContext === "function"
+        ? options.resolveWidgetContext
+        : null,
     wsPath: broadcast.getPath(),
     log,
   });
@@ -564,7 +645,13 @@ function startWidgetsServer(options = {}) {
     (!options.disableDebugRoutes && process.env.NODE_ENV !== "production");
   const enableOperatorRoutes = options.enableOperatorRoutes !== false;
 
-  function buildOperatorActionPayload(action, id, result, mapKey = null, extra = {}) {
+  function buildOperatorActionPayload(
+    action,
+    id,
+    result,
+    mapKey = null,
+    extra = {},
+  ) {
     const snapshot = engine.getSnapshot(mapKey).productionSupport;
     return {
       ok: Boolean(result?.snapshot),
@@ -579,7 +666,14 @@ function startWidgetsServer(options = {}) {
     };
   }
 
-  function sendOperatorActionResponse(res, action, id, result, mapKey = null, extra = {}) {
+  function sendOperatorActionResponse(
+    res,
+    action,
+    id,
+    result,
+    mapKey = null,
+    extra = {},
+  ) {
     res.json(buildOperatorActionPayload(action, id, result, mapKey, extra));
   }
 
@@ -589,7 +683,8 @@ function startWidgetsServer(options = {}) {
       ok: Boolean(snapshot),
       map: mapKey,
       cameraAssist: snapshot?.cameraAssistPayload ?? null,
-      productionSupport: snapshot ?? engine.getSnapshot(mapKey).productionSupport,
+      productionSupport:
+        snapshot ?? engine.getSnapshot(mapKey).productionSupport,
     };
   }
 
@@ -733,7 +828,9 @@ function startWidgetsServer(options = {}) {
       case "/debug/camera-assist/reset-history":
         return buildCameraAssistResetPayload(mapKey);
       default:
-        throw new Error(`Unsupported observer command path: ${parsed.pathname}`);
+        throw new Error(
+          `Unsupported observer command path: ${parsed.pathname}`,
+        );
     }
   }
 
@@ -776,7 +873,9 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/camera-assist/state", (req, res) => {
-      const snapshot = engine.getSnapshot(req.query?.map ?? null).productionSupport;
+      const snapshot = engine.getSnapshot(
+        req.query?.map ?? null,
+      ).productionSupport;
       res.json({
         ok: Boolean(snapshot?.cameraAssistPayload),
         map: req.query?.map ?? null,
@@ -794,7 +893,9 @@ function startWidgetsServer(options = {}) {
         1,
         Math.min(
           100,
-          Number.isFinite(Number(req.query?.limit)) ? Number(req.query.limit) : 20,
+          Number.isFinite(Number(req.query?.limit))
+            ? Number(req.query.limit)
+            : 20,
         ),
       );
       res.json(engine.getReplayMarkers(req.query?.map ?? null, limit));
@@ -803,7 +904,10 @@ function startWidgetsServer(options = {}) {
 
   if (enableOperatorRoutes) {
     app.get("/debug/observer/pin-team", (req, res) => {
-      const result = engine.pinTeam(req.query?.teamId ?? null, req.query?.map ?? null);
+      const result = engine.pinTeam(
+        req.query?.teamId ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "pin-team",
@@ -817,7 +921,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/observer/unpin-team", (req, res) => {
-      const result = engine.unpinTeam(req.query?.teamId ?? null, req.query?.map ?? null);
+      const result = engine.unpinTeam(
+        req.query?.teamId ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "unpin-team",
@@ -831,7 +938,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/observer/pin-target", (req, res) => {
-      const result = engine.pinTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.pinTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "pin-target",
@@ -842,7 +952,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/observer/unpin-target", (req, res) => {
-      const result = engine.unpinTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.unpinTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "unpin-target",
@@ -853,7 +966,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/watch-now", (req, res) => {
-      const result = engine.watchNowTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.watchNowTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "watch-now",
@@ -864,7 +980,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/select-target", (req, res) => {
-      const result = engine.selectTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.selectTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "select-target",
@@ -875,7 +994,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/select-alert", (req, res) => {
-      const result = engine.selectAlert(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.selectAlert(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "select-alert",
@@ -886,7 +1008,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/pin-target", (req, res) => {
-      const result = engine.pinTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.pinTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "pin-target",
@@ -897,7 +1022,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/unpin-target", (req, res) => {
-      const result = engine.unpinTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.unpinTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "unpin-target",
@@ -908,7 +1036,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/mark-replay", (req, res) => {
-      const result = engine.markReplay(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.markReplay(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "mark-replay",
@@ -919,7 +1050,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/unmark-replay", (req, res) => {
-      const result = engine.unmarkReplay(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.unmarkReplay(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "unmark-replay",
@@ -930,7 +1064,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/suppress-target", (req, res) => {
-      const result = engine.suppressTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.suppressTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "suppress-target",
@@ -941,7 +1078,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/unsuppress-target", (req, res) => {
-      const result = engine.unsuppressTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.unsuppressTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "unsuppress-target",
@@ -952,7 +1092,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/center-target", (req, res) => {
-      const result = engine.centerTarget(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.centerTarget(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "center-target",
@@ -963,7 +1106,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/center-alert", (req, res) => {
-      const result = engine.centerAlert(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.centerAlert(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "center-alert",
@@ -974,7 +1120,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/center-replay", (req, res) => {
-      const result = engine.centerReplayCandidate(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.centerReplayCandidate(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "center-replay",
@@ -996,7 +1145,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/dismiss-alert", (req, res) => {
-      const result = engine.dismissAlert(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.dismissAlert(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "dismiss-alert",
@@ -1007,7 +1159,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/undismiss-alert", (req, res) => {
-      const result = engine.undismissAlert(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.undismissAlert(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "undismiss-alert",
@@ -1018,7 +1173,10 @@ function startWidgetsServer(options = {}) {
     });
 
     app.get("/debug/operator/remove-replay", (req, res) => {
-      const result = engine.removeReplay(req.query?.id ?? null, req.query?.map ?? null);
+      const result = engine.removeReplay(
+        req.query?.id ?? null,
+        req.query?.map ?? null,
+      );
       sendOperatorActionResponse(
         res,
         "remove-replay",
@@ -1078,8 +1236,7 @@ function startWidgetsServer(options = {}) {
       legacyWidget: `${localBaseUrl}/w/:widgetKey/:key`,
       operatorPanel: `${localBaseUrl}/obs/map?operatorpanel=1`,
       cameraAssist: `${localBaseUrl}/obs/map?cameraassist=1`,
-      fullOperatorMode:
-        `${localBaseUrl}/obs/map?operatorpanel=1&assistpanel=1&cameraassist=1&debug=1`,
+      fullOperatorMode: `${localBaseUrl}/obs/map?operatorpanel=1&assistpanel=1&cameraassist=1&debug=1`,
       debugMap: `${localBaseUrl}/obs/map?debug=1`,
     });
   });
@@ -1099,9 +1256,14 @@ function startWidgetsServer(options = {}) {
         ? broadcast.getStatus()
         : {
             clientCount:
-              typeof broadcast.getClientCount === "function" ? broadcast.getClientCount() : 0,
+              typeof broadcast.getClientCount === "function"
+                ? broadcast.getClientCount()
+                : 0,
             lastBroadcastAt: null,
-            path: typeof broadcast.getPath === "function" ? broadcast.getPath() : null,
+            path:
+              typeof broadcast.getPath === "function"
+                ? broadcast.getPath()
+                : null,
           };
     return {
       running: !stopped,
@@ -1113,15 +1275,29 @@ function startWidgetsServer(options = {}) {
       startedAt,
       localBaseUrl,
       networkBaseUrl,
+      authorizedLocalBaseUrl: accessPolicy.authorizeUrl(localBaseUrl),
+      authorizedNetworkBaseUrl: accessPolicy.authorizeUrl(networkBaseUrl),
+      accessControlled: accessPolicy.enabled,
     };
   }
 
   return {
+    refreshDirectObserverSnapshot() {
+      if (typeof directObserverPoller.reset === "function") {
+        directObserverPoller.reset();
+      }
+    },
     clearRuntimeState(options = {}) {
       const reason =
         typeof options?.reason === "string" && options.reason.trim()
           ? options.reason.trim()
           : "stopped";
+      if (typeof directObserverPoller.reset === "function") {
+        directObserverPoller.reset();
+      }
+      if (typeof telemetryBridge.reset === "function") {
+        telemetryBridge.reset();
+      }
       if (typeof engine.clearRuntimeState === "function") {
         engine.clearRuntimeState({ reason });
       }
@@ -1146,7 +1322,12 @@ function startWidgetsServer(options = {}) {
     },
     host: networkBaseUrl ? lanIp : host,
     ingestTelemetrySnapshot(snapshot) {
-      telemetryBridge.ingestSnapshot(snapshot);
+      telemetryBridge.ingestSnapshot(snapshot, {
+        skipZoneUpdate:
+          directObserverPoller.hasHandledCirclePayload(
+            snapshot?.circlePayload,
+          ) === true,
+      });
       const observerFocus = normalizeObserverFocus(snapshot);
       if (observerFocus) {
         broadcast.broadcast("observer_focus", observerFocus, Date.now());
@@ -1159,6 +1340,10 @@ function startWidgetsServer(options = {}) {
     },
     setTeamBranding(update) {
       return engine.applyTeamBrandingUpdate(update);
+    },
+    setOrganizationBranding(update) {
+      organizationBranding = normalizeBrandingContext(update);
+      return organizationBranding;
     },
     setAiCasterAccess(update) {
       return aiCasterEngine.setAccess(update);
@@ -1193,7 +1378,9 @@ function startWidgetsServer(options = {}) {
         ...source,
         active: source.active === true,
         transitionMs:
-          Number.isFinite(transitionMs) && transitionMs >= 80 && transitionMs <= 1000
+          Number.isFinite(transitionMs) &&
+          transitionMs >= 80 &&
+          transitionMs <= 1000
             ? Math.round(transitionMs)
             : DEFAULT_WIDGET_VISIBILITY.transitionMs,
         widgets: Array.isArray(source.widgets) ? source.widgets : [],

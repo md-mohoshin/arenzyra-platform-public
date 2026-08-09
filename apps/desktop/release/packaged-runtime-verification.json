@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "implementationState": "blocked",
+  "approval": {
+    "state": "unapproved",
+    "reviewedAt": null,
+    "reviewedBy": null,
+    "reviewReference": null
+  },
+  "notes": "Publication remains blocked in source code until the application is ASAR-sealed with integrity/loading fuses and the verifier checks the exact complete NSIS and portable inventories, both inner launcher executable signatures, Electron runtime/native dependency hashes, and a signed immutable digest manifest against a representative real package. Approval strings in this file cannot unlock the production builder.",
+  "requiredEvidence": [
+    "representative-real-nsis-fixture",
+    "exact-installer-inventory",
+    "exact-portable-inventory",
+    "inner-executable-authenticode",
+    "electron-runtime-and-native-dependency-hashes",
+    "asar-integrity-and-only-load-from-asar-fuses",
+    "signed-immutable-manifest"
+  ]
+}

@@ -1,15 +1,23 @@
 "use strict";
 
 const { createHash, randomUUID } = require("node:crypto");
-const fs = require("node:fs");
-const path = require("node:path");
+const { createVisualCaptureStore } = require("./visualCaptureStore.cjs");
 
 const DEFAULT_CAPTURE_FPS = 2;
 const MIN_CAPTURE_FPS = 1;
 const MAX_CAPTURE_FPS = 6;
 const SOURCE_LIST_THUMBNAIL_SIZE = Object.freeze({ width: 320, height: 180 });
 const CAPTURE_THUMBNAIL_SIZE = Object.freeze({ width: 1280, height: 720 });
-const VISUAL_REGION_KEYS = Object.freeze(["killFeed", "teamPanel", "scoreboard"]);
+const ROSTER_CAPTURE_THUMBNAIL_SIZE = Object.freeze({
+  width: 1920,
+  height: 1080,
+});
+const VISUAL_REGION_KEYS = Object.freeze([
+  "killFeed",
+  "teamPanel",
+  "scoreboard",
+  "roster",
+]);
 const DEFAULT_VISUAL_REGION_KEY = "killFeed";
 const VISUAL_GAME_PRESET_KEYS = Object.freeze([
   "pubgMobile",
@@ -20,6 +28,9 @@ const VISUAL_GAME_PRESET_KEYS = Object.freeze([
 const DEFAULT_VISUAL_GAME_PRESET_KEY = "pubgMobile";
 const REVIEW_QUEUE_MAX_ITEMS = 20;
 const REVIEW_QUEUE_MIN_INTERVAL_MS = 2500;
+const DEFAULT_STABLE_FRAME_SAMPLES = 2;
+const MIN_STABLE_FRAME_SAMPLES = 2;
+const MAX_STABLE_FRAME_SAMPLES = 4;
 
 function clampNumber(value, min, max, fallback) {
   const numeric = Number(value);
@@ -97,6 +108,7 @@ function createEmptyRegions() {
     killFeed: null,
     teamPanel: null,
     scoreboard: null,
+    roster: null,
   };
 }
 
@@ -164,19 +176,27 @@ function cloneVisualModeConfig(value) {
     coordinateMode: "percent",
     reviewBeforePublish: true,
     autoPublish: false,
+    autoOcrEnabled: value?.autoOcrEnabled === true,
+    stableFrameSamples: clampNumber(
+      value?.stableFrameSamples,
+      MIN_STABLE_FRAME_SAMPLES,
+      MAX_STABLE_FRAME_SAMPLES,
+      DEFAULT_STABLE_FRAME_SAMPLES,
+    ),
     ocrEnabled: false,
     aiEnabled: false,
   };
 }
 
 function normalizeVisualModeConfig(value = {}) {
-  const input = value && typeof value === "object" && !Array.isArray(value)
-    ? value
-    : {};
+  const input =
+    value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const activeRegionKey = normalizeRegionKey(input.activeRegionKey);
   const gamePresetKey = normalizeGamePresetKey(input.gamePresetKey);
   const regions = normalizeRegions(input.regions, input.region);
-  const activeRegion = cloneRegion(regions[activeRegionKey] || normalizeRegion(input.region));
+  const activeRegion = cloneRegion(
+    regions[activeRegionKey] || normalizeRegion(input.region),
+  );
   if (activeRegion && !regions[activeRegionKey]) {
     regions[activeRegionKey] = cloneRegion(activeRegion);
   }
@@ -197,6 +217,13 @@ function normalizeVisualModeConfig(value = {}) {
     coordinateMode: "percent",
     reviewBeforePublish: true,
     autoPublish: false,
+    autoOcrEnabled: input.autoOcrEnabled === true,
+    stableFrameSamples: clampNumber(
+      input.stableFrameSamples,
+      MIN_STABLE_FRAME_SAMPLES,
+      MAX_STABLE_FRAME_SAMPLES,
+      DEFAULT_STABLE_FRAME_SAMPLES,
+    ),
     ocrEnabled: false,
     aiEnabled: false,
   };
@@ -219,6 +246,9 @@ function createDefaultStatus() {
     calibrationReady: false,
     reviewBeforePublish: true,
     autoPublish: false,
+    autoOcrEnabled: false,
+    stableFrameSamples: DEFAULT_STABLE_FRAME_SAMPLES,
+    stableFrameCount: 0,
     ocrEnabled: false,
     aiEnabled: false,
     connectionStatus: "stopped",
@@ -264,7 +294,12 @@ function getThumbnailSize(thumbnail) {
     const size = thumbnail.getSize();
     const width = Number(size?.width);
     const height = Number(size?.height);
-    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    if (
+      Number.isFinite(width) &&
+      Number.isFinite(height) &&
+      width > 0 &&
+      height > 0
+    ) {
       return { width, height };
     }
   } catch {
@@ -284,8 +319,14 @@ function regionToRect(region, size) {
   return {
     x,
     y,
-    width: Math.max(1, Math.min(maxWidth, Math.ceil((region.width / 100) * size.width))),
-    height: Math.max(1, Math.min(maxHeight, Math.ceil((region.height / 100) * size.height))),
+    width: Math.max(
+      1,
+      Math.min(maxWidth, Math.ceil((region.width / 100) * size.width)),
+    ),
+    height: Math.max(
+      1,
+      Math.min(maxHeight, Math.ceil((region.height / 100) * size.height)),
+    ),
   };
 }
 
@@ -317,14 +358,6 @@ function thumbnailToPngBuffer(source, region) {
   return buffer;
 }
 
-function safeFilePart(value) {
-  return String(value || "")
-    .trim()
-    .replace(/[^a-zA-Z0-9_.-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
-}
-
 function cloneReviewItem(item) {
   return {
     ...item,
@@ -342,12 +375,28 @@ function createVisualModeService(options = {}) {
   const desktopCapturer = options.desktopCapturer || null;
   const logger = options.logger || {};
   const getSettings =
-    typeof options.getSettings === "function" ? options.getSettings : () => ({});
+    typeof options.getSettings === "function"
+      ? options.getSettings
+      : () => ({});
   const setSettings =
     typeof options.setSettings === "function" ? options.setSettings : () => {};
   const getCaptureDir =
     typeof options.getCaptureDir === "function" ? options.getCaptureDir : null;
-  const now = typeof options.now === "function" ? options.now : () => new Date();
+  const now =
+    typeof options.now === "function" ? options.now : () => new Date();
+  const onAutoReviewCandidate =
+    typeof options.onAutoReviewCandidate === "function"
+      ? options.onAutoReviewCandidate
+      : null;
+  const captureStore = createVisualCaptureStore({
+    getCaptureDir,
+    logger,
+    now,
+    maxCaptureBytes: options.maxCaptureBytes,
+    orphanRetentionMs: options.orphanRetentionMs,
+    cleanupScanLimit: options.cleanupScanLimit,
+    cleanupIntervalMs: options.cleanupIntervalMs,
+  });
 
   let config = normalizeVisualModeConfig(getSettings()?.visualMode);
   let status = {
@@ -358,6 +407,8 @@ function createVisualModeService(options = {}) {
   };
   let captureTimer = null;
   let lastFrameHash = null;
+  let lastQueuedFrameHash = null;
+  let stableFrameCount = 0;
   let lastReviewCandidateAtMs = 0;
   let reviewQueue = [];
   let tickInFlight = false;
@@ -400,6 +451,8 @@ function createVisualModeService(options = {}) {
       activeRegionKey: config.activeRegionKey,
       coordinateMode: "percent",
       calibrationReady: Boolean(getActiveRegion(config)),
+      autoOcrEnabled: config.autoOcrEnabled,
+      stableFrameSamples: config.stableFrameSamples,
     };
     return readConfig();
   }
@@ -417,7 +470,9 @@ function createVisualModeService(options = {}) {
     return Number.isFinite(parsed.getTime()) ? parsed : new Date();
   }
 
-  function updateReviewStatusMeta(lastReviewCandidateAt = status.lastReviewCandidateAt) {
+  function updateReviewStatusMeta(
+    lastReviewCandidateAt = status.lastReviewCandidateAt,
+  ) {
     status = {
       ...status,
       reviewQueueSize: getPendingReviewCount(),
@@ -443,6 +498,9 @@ function createVisualModeService(options = {}) {
       calibrationReady: Boolean(activeRegion),
       reviewBeforePublish: true,
       autoPublish: false,
+      autoOcrEnabled: latestConfig.autoOcrEnabled,
+      stableFrameSamples: latestConfig.stableFrameSamples,
+      stableFrameCount,
       ocrEnabled: false,
       aiEnabled: false,
       reviewQueueSize: getPendingReviewCount(),
@@ -466,21 +524,48 @@ function createVisualModeService(options = {}) {
   }
 
   function saveCaptureFile(itemId, regionKey, buffer) {
-    if (!getCaptureDir || !Buffer.isBuffer(buffer) || buffer.length === 0) {
-      return null;
-    }
+    cleanupOrphanedCaptures();
+    return captureStore.save(itemId, regionKey, buffer);
+  }
 
-    const captureDir = getCaptureDir();
-    const normalizedDir = String(captureDir || "").trim();
-    if (!normalizedDir) {
-      return null;
+  function removeCaptureFile(filePath) {
+    if (!filePath) {
+      return { removed: false, missing: true, refused: false, code: null };
     }
+    const result = captureStore.remove(filePath);
+    if (result.refused) {
+      logWarn("visual-mode-capture-cleanup-refused", {
+        code: result.code || "ARENZYRA_VISUAL_CAPTURE_PATH_REFUSED",
+      });
+    }
+    return result;
+  }
 
-    fs.mkdirSync(normalizedDir, { recursive: true });
-    const fileName = `${safeFilePart(itemId) || randomUUID()}-${safeFilePart(regionKey) || "region"}.png`;
-    const filePath = path.join(normalizedDir, fileName);
-    fs.writeFileSync(filePath, buffer);
-    return filePath;
+  function removeCaptureFiles(items) {
+    for (const item of Array.isArray(items) ? items : []) {
+      removeCaptureFile(item?.imagePath);
+    }
+  }
+
+  function cleanupOrphanedCaptures(options = {}) {
+    const protectedPaths = reviewQueue
+      .map((item) => item?.imagePath)
+      .filter(Boolean);
+    const summary = captureStore.cleanup({
+      force: options.force === true,
+      protectedPaths,
+    });
+    if (summary.removed > 0 || summary.errors > 0 || summary.refused > 0) {
+      logInfo("visual-mode-orphan-cleanup-complete", {
+        scanned: summary.scanned,
+        removed: summary.removed,
+        preserved: summary.preserved,
+        refused: summary.refused,
+        errors: summary.errors,
+        limitReached: summary.limitReached,
+      });
+    }
+    return summary;
   }
 
   function enqueueReviewCandidate({
@@ -496,7 +581,9 @@ function createVisualModeService(options = {}) {
     const region = getActiveRegion(activeConfig);
     if (!region) {
       if (force) {
-        throw new Error("Set a Visual Mode calibration region before capturing OCR review.");
+        throw new Error(
+          "Set a Visual Mode calibration region before capturing OCR review.",
+        );
       }
       return null;
     }
@@ -511,12 +598,18 @@ function createVisualModeService(options = {}) {
 
     const sourceView = sourceToView(selectedSource);
     const id = randomUUID();
-    const imagePath = saveCaptureFile(id, activeConfig.activeRegionKey, frameBuffer);
+    const imagePath = saveCaptureFile(
+      id,
+      activeConfig.activeRegionKey,
+      frameBuffer,
+    );
     const item = {
       id,
       matchId: status.matchId,
       sessionId: status.sessionId,
       gamePresetKey: activeConfig.gamePresetKey,
+      reviewKind:
+        activeConfig.activeRegionKey === "roster" ? "slot-map" : "results",
       sourceId: activeConfig.sourceId,
       sourceName: activeConfig.sourceName || sourceView.name,
       regionKey: activeConfig.activeRegionKey,
@@ -527,12 +620,17 @@ function createVisualModeService(options = {}) {
       rawText: "",
       rows: [],
       warnings: [
-        "Run OCR preview, then review every row before applying results in Match Control.",
+        activeConfig.activeRegionKey === "roster"
+          ? "Use Map roster during READY or COUNTDOWN. Slot/player mapping is blocked once the match is LIVE."
+          : activeConfig.autoOcrEnabled
+            ? "Automated OCR preview is queued. Review every row before applying results in Match Control."
+            : "Run OCR preview, then review every row before applying results in Match Control.",
       ],
-      reason: reason || "frame-change",
+      reason: reason || "stable-frame",
       frameHash,
       imagePath,
       imageUrl: null,
+      assetId: null,
       ocrStatus: "not_started",
       ocrError: null,
       ocrPreview: null,
@@ -542,24 +640,55 @@ function createVisualModeService(options = {}) {
       applyReady: false,
     };
 
-    reviewQueue = [
+    const nextQueue = [
       item,
       ...reviewQueue.filter((candidate) => candidate.id !== item.id),
     ].slice(0, REVIEW_QUEUE_MAX_ITEMS);
+    const retainedIds = new Set(nextQueue.map((candidate) => candidate.id));
+    removeCaptureFiles(
+      reviewQueue.filter((candidate) => !retainedIds.has(candidate.id)),
+    );
+    reviewQueue = nextQueue;
+    lastQueuedFrameHash = frameHash;
     lastReviewCandidateAtMs = timestampMs;
     updateReviewStatusMeta(timestamp);
-    return cloneReviewItem(item);
+    const candidate = cloneReviewItem(item);
+    if (
+      activeConfig.activeRegionKey !== "roster" &&
+      activeConfig.autoOcrEnabled &&
+      onAutoReviewCandidate
+    ) {
+      try {
+        Promise.resolve(onAutoReviewCandidate(candidate)).catch((error) => {
+          logWarn("visual-mode-auto-ocr-schedule-failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } catch (error) {
+        logWarn("visual-mode-auto-ocr-schedule-failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return candidate;
   }
 
   async function sampleSelectedSource(options = {}) {
     const activeConfig = readConfig();
     if (!activeConfig.sourceId) {
-      throw new Error("Select a screen or window source before starting Visual Mode.");
+      throw new Error(
+        "Select a screen or window source before starting Visual Mode.",
+      );
     }
 
+    const activeRegion = getActiveRegion(activeConfig);
+    const thumbnailSize =
+      activeConfig.activeRegionKey === "roster"
+        ? ROSTER_CAPTURE_THUMBNAIL_SIZE
+        : CAPTURE_THUMBNAIL_SIZE;
     const sources = await desktopCapturer.getSources({
       types: ["screen", "window"],
-      thumbnailSize: CAPTURE_THUMBNAIL_SIZE,
+      thumbnailSize,
       fetchWindowIcons: false,
     });
     const selectedSource = (Array.isArray(sources) ? sources : []).find(
@@ -570,7 +699,6 @@ function createVisualModeService(options = {}) {
       throw new Error("Selected Visual Mode source is no longer available.");
     }
 
-    const activeRegion = getActiveRegion(activeConfig);
     const frameBuffer = thumbnailToPngBuffer(selectedSource, activeRegion);
     const frameHash = hashBuffer(frameBuffer);
     if (!frameHash) {
@@ -581,6 +709,7 @@ function createVisualModeService(options = {}) {
     const timestamp = toIsoTimestamp(currentTime);
     const timestampMs = currentTime.getTime();
     const changed = lastFrameHash !== null && frameHash !== lastFrameHash;
+    stableFrameCount = frameHash === lastFrameHash ? stableFrameCount + 1 : 1;
     lastFrameHash = frameHash;
     status = {
       ...status,
@@ -593,8 +722,12 @@ function createVisualModeService(options = {}) {
       lastFrameAt: timestamp,
       lastChangeAt: changed ? timestamp : status.lastChangeAt,
       lastError: null,
+      stableFrameCount,
     };
-    if (changed || options.forceReviewCandidate === true) {
+    const stableFrameReady =
+      stableFrameCount >= activeConfig.stableFrameSamples &&
+      frameHash !== lastQueuedFrameHash;
+    if (stableFrameReady || options.forceReviewCandidate === true) {
       return enqueueReviewCandidate({
         activeConfig,
         selectedSource,
@@ -602,7 +735,9 @@ function createVisualModeService(options = {}) {
         frameBuffer,
         timestamp,
         timestampMs,
-        reason: options.forceReviewCandidate ? "manual-capture" : "frame-change",
+        reason: options.forceReviewCandidate
+          ? "manual-capture"
+          : "stable-frame",
         force: options.forceReviewCandidate === true,
       });
     }
@@ -621,7 +756,9 @@ function createVisualModeService(options = {}) {
       await sampleSelectedSource();
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : String(error || "Visual Mode failed.");
+        error instanceof Error
+          ? error.message
+          : String(error || "Visual Mode failed.");
       status = {
         ...status,
         connectionStatus: "source-missing",
@@ -640,7 +777,13 @@ function createVisualModeService(options = {}) {
     }
 
     const intervalMs = Math.max(
-      1000 / clampNumber(config.captureFps, MIN_CAPTURE_FPS, MAX_CAPTURE_FPS, DEFAULT_CAPTURE_FPS),
+      1000 /
+        clampNumber(
+          config.captureFps,
+          MIN_CAPTURE_FPS,
+          MAX_CAPTURE_FPS,
+          DEFAULT_CAPTURE_FPS,
+        ),
       1000 / MAX_CAPTURE_FPS,
     );
     captureTimer = setInterval(() => {
@@ -659,7 +802,9 @@ function createVisualModeService(options = {}) {
       throw new Error("matchId is required.");
     }
     if (!nextConfig.sourceId) {
-      throw new Error("Select a screen or window source before starting Visual Mode.");
+      throw new Error(
+        "Select a screen or window source before starting Visual Mode.",
+      );
     }
 
     if (
@@ -673,8 +818,13 @@ function createVisualModeService(options = {}) {
     stop("restart");
     const timestamp = toIsoTimestamp(now());
     lastFrameHash = null;
+    lastQueuedFrameHash = null;
+    stableFrameCount = 0;
     lastReviewCandidateAtMs = 0;
-    reviewQueue = [];
+    // A Visual Mode restart is not an explicit review decision. Keep pending
+    // and failed evidence available; terminal items have already had their
+    // owned files removed and can be dropped from the in-memory queue.
+    reviewQueue = reviewQueue.filter((item) => item.status === "pending");
     status = {
       ...createDefaultStatus(),
       available: true,
@@ -714,13 +864,17 @@ function createVisualModeService(options = {}) {
     }
 
     lastFrameHash = null;
+    lastQueuedFrameHash = null;
+    stableFrameCount = 0;
     status = {
       ...status,
       running: false,
       matchId: null,
       sessionId: null,
-      connectionStatus: reason === "source-missing" ? "source-missing" : "stopped",
+      connectionStatus:
+        reason === "source-missing" ? "source-missing" : "stopped",
       stoppedAt: toIsoTimestamp(now()),
+      stableFrameCount: 0,
     };
 
     return getStatus();
@@ -737,6 +891,7 @@ function createVisualModeService(options = {}) {
   }
 
   function clearReviewQueue() {
+    removeCaptureFiles(reviewQueue);
     reviewQueue = [];
     updateReviewStatusMeta(null);
     return getReviewQueue();
@@ -755,10 +910,13 @@ function createVisualModeService(options = {}) {
         return item;
       }
       matched = true;
+      const cleanup = removeCaptureFile(item.imagePath);
       return {
         ...item,
         status: nextStatus,
         reviewedAt,
+        imagePath: cleanup.removed || cleanup.missing ? null : item.imagePath,
+        imageUrl: null,
       };
     });
 
@@ -780,6 +938,14 @@ function createVisualModeService(options = {}) {
       throw new Error("Review item was not found.");
     }
     return cloneReviewItem(item);
+  }
+
+  function assertReviewItemCaptureReady(id) {
+    const item = getReviewItem(id);
+    if (!item.imagePath) {
+      throw new Error("Capture an image before running OCR preview.");
+    }
+    return captureStore.assertReady(item.imagePath);
   }
 
   function updateReviewItem(id, updater) {
@@ -810,7 +976,21 @@ function createVisualModeService(options = {}) {
       ...item,
       ocrStatus: "processing",
       ocrError: null,
-      warnings: ["OCR preview is processing. Review is still required before apply."],
+      warnings: [
+        "OCR preview is processing. Review is still required before apply.",
+      ],
+    }));
+  }
+
+  function markReviewItemSlotMapProcessing(id) {
+    return updateReviewItem(id, (item) => ({
+      ...item,
+      reviewKind: "slot-map",
+      ocrStatus: "processing",
+      ocrError: null,
+      warnings: [
+        "Slot/player mapping is processing. Do not enter LIVE until unresolved slots are checked.",
+      ],
     }));
   }
 
@@ -848,7 +1028,9 @@ function createVisualModeService(options = {}) {
       warnings.push(`${ambiguousCount} OCR row has multiple possible teams.`);
     }
     if (applyReady) {
-      warnings.push("OCR rows resolved. Open Match Control before applying final results.");
+      warnings.push(
+        "OCR rows resolved. Open Match Control before applying final results.",
+      );
     }
 
     return updateReviewItem(id, (item) => ({
@@ -856,7 +1038,8 @@ function createVisualModeService(options = {}) {
       rows,
       warnings,
       confidence,
-      imageUrl: normalizeString(payload?.imageUrl) || item.imageUrl || null,
+      imageUrl: null,
+      assetId: normalizeString(payload?.assetId) || item.assetId || null,
       ocrStatus: applyReady ? "ready" : "needs_review",
       ocrError: null,
       ocrPreview: {
@@ -873,6 +1056,90 @@ function createVisualModeService(options = {}) {
     }));
   }
 
+  function attachReviewItemSlotMapPreview(id, payload = {}) {
+    const previewPayload =
+      payload?.preview && typeof payload.preview === "object"
+        ? payload.preview
+        : {};
+    const previewRows = Array.isArray(previewPayload.preview)
+      ? previewPayload.preview
+      : [];
+    const fallbackRows = [
+      ...(Array.isArray(previewPayload.mapped) ? previewPayload.mapped : []),
+      ...(Array.isArray(previewPayload.unresolved)
+        ? previewPayload.unresolved
+        : []),
+      ...(Array.isArray(previewPayload.ambiguous)
+        ? previewPayload.ambiguous
+        : []),
+    ];
+    const rows = (previewRows.length ? previewRows : fallbackRows).map(
+      (row) => ({
+        ...row,
+      }),
+    );
+    const unresolvedCount = Array.isArray(previewPayload.unresolved)
+      ? previewPayload.unresolved.length
+      : rows.filter((row) => row.status === "UNRESOLVED").length;
+    const ambiguousCount = Array.isArray(previewPayload.ambiguous)
+      ? previewPayload.ambiguous.length
+      : rows.filter((row) => row.status === "AMBIGUOUS").length;
+    const okCount = rows.filter((row) => row.status === "OK").length;
+    const confidenceValues = rows
+      .map((row) => Number(row.confidence))
+      .filter((value) => Number.isFinite(value));
+    const confidence = confidenceValues.length
+      ? confidenceValues.reduce((sum, value) => sum + value, 0) /
+        confidenceValues.length
+      : 0;
+    const mappingReady =
+      rows.length > 0 && unresolvedCount === 0 && ambiguousCount === 0;
+    const warnings = [];
+    if (!rows.length) {
+      warnings.push(
+        "Slot/player mapping did not return any slot rows for this capture.",
+      );
+    }
+    if (unresolvedCount > 0) {
+      warnings.push(
+        `${unresolvedCount} slot/player row needs staff review before LIVE.`,
+      );
+    }
+    if (ambiguousCount > 0) {
+      warnings.push(
+        `${ambiguousCount} slot/player row has multiple possible teams.`,
+      );
+    }
+    if (mappingReady) {
+      warnings.push(
+        "Slot/player mappings were saved. Verify the roster in Match Control before LIVE.",
+      );
+    }
+
+    return updateReviewItem(id, (item) => ({
+      ...item,
+      reviewKind: "slot-map",
+      rows,
+      warnings,
+      confidence,
+      imageUrl: null,
+      assetId: normalizeString(payload?.assetId) || item.assetId || null,
+      ocrStatus: mappingReady ? "ready" : "needs_review",
+      ocrError: null,
+      ocrPreview: {
+        kind: "slot-map",
+        matchId: previewPayload.matchId || item.matchId,
+        slotsCount: rows.length,
+        ocrMode: normalizeString(previewPayload.ocrMode),
+      },
+      okCount,
+      unresolvedCount,
+      ambiguousCount,
+      // Slot mapping is pre-live setup only; it never makes a result apply-ready.
+      applyReady: false,
+    }));
+  }
+
   function markReviewItemOcrFailed(id, errorMessage) {
     const message = normalizeString(errorMessage) || "OCR preview failed.";
     return updateReviewItem(id, (item) => ({
@@ -886,7 +1153,9 @@ function createVisualModeService(options = {}) {
 
   async function captureReviewCandidate() {
     if (!status.running) {
-      throw new Error("Start Visual Mode before capturing an OCR review candidate.");
+      throw new Error(
+        "Start Visual Mode before capturing an OCR review candidate.",
+      );
     }
     const item = await sampleSelectedSource({ forceReviewCandidate: true });
     return {
@@ -902,11 +1171,15 @@ function createVisualModeService(options = {}) {
     getStatus,
     getReviewQueue,
     getReviewItem,
+    assertReviewItemCaptureReady,
+    cleanupOrphanedCaptures,
     clearReviewQueue,
     ignoreReviewItem: (id) => updateReviewItemStatus(id, "ignored"),
     markReviewItemReviewed: (id) => updateReviewItemStatus(id, "reviewed"),
     markReviewItemOcrProcessing,
+    markReviewItemSlotMapProcessing,
     attachReviewItemOcrPreview,
+    attachReviewItemSlotMapPreview,
     markReviewItemOcrFailed,
     captureReviewCandidate,
     listSources,

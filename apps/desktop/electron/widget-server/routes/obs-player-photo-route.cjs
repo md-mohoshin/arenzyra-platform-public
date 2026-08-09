@@ -9,8 +9,12 @@ const DEFAULT_API_BASE =
   getProcessDefaultApiBase();
 const DEFAULT_OBSERVER_BASE_URL = "http://127.0.0.1:10086";
 const DEFAULT_WS_PATH = "/ws";
-const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v8";
+const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v9";
 const OBSERVER_FOCUS_TIMEOUT_MS = 900;
+const {
+  buildWidgetBrandingBootstrap,
+  renderWidgetBrandingHead,
+} = require("./widget-branding-page.cjs");
 
 function asString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -65,6 +69,26 @@ function firstTextValue(record, keys) {
 
 function normalizeLookup(value) {
   return asString(value).toLowerCase();
+}
+
+function isDefaultPlayerPhotoUrl(value) {
+  const raw = asString(value).toLowerCase();
+  return (
+    !raw ||
+    raw.includes("default-player") ||
+    raw.includes("defaults/default") ||
+    raw.includes("placeholder")
+  );
+}
+
+function firstUsefulPlayerPhotoUrl(...values) {
+  for (const value of values) {
+    const raw = asString(value);
+    if (raw && !isDefaultPlayerPhotoUrl(raw)) {
+      return raw;
+    }
+  }
+  return null;
 }
 
 function collectPlayerLookupIds(player) {
@@ -182,7 +206,7 @@ function normalizeObserverFocus(payload) {
   };
 }
 
-async function fetchLocalObserverFocus(observerBaseUrl) {
+async function fetchLocalObserverFocus(observerBaseUrl, accessToken = "") {
   const baseUrl = normalizeBaseUrl(
     observerBaseUrl || DEFAULT_OBSERVER_BASE_URL,
     DEFAULT_OBSERVER_BASE_URL,
@@ -190,6 +214,13 @@ async function fetchLocalObserverFocus(observerBaseUrl) {
   try {
     const response = await axios.get(`${baseUrl}/getobservingplayer`, {
       timeout: OBSERVER_FOCUS_TIMEOUT_MS,
+      ...(String(accessToken || "").trim()
+        ? {
+            headers: {
+              "X-Arenzyra-Connector-Token": String(accessToken).trim(),
+            },
+          }
+        : {}),
       validateStatus: () => true,
     });
     if (response?.status < 200 || response?.status >= 300) {
@@ -281,6 +312,11 @@ function applyLocalObserverFocus(observerState, focus) {
   const matched = findFocusedLeaderboardMatch(state, focus);
   const row = matched?.row ?? null;
   const player = matched?.player ?? null;
+  const realPhotoUrl = firstUsefulPlayerPhotoUrl(
+    player?.avatarUrl,
+    player?.photoUrl,
+    focus.avatarUrl,
+  );
 
   return {
     ...state,
@@ -299,15 +335,9 @@ function applyLocalObserverFocus(observerState, focus) {
         focus.playerName ??
         null,
       avatarUrl:
-        player?.avatarUrl ??
-        player?.photoUrl ??
-        focus.avatarUrl ??
-        null,
+        realPhotoUrl,
       photoUrl:
-        player?.photoUrl ??
-        player?.avatarUrl ??
-        focus.avatarUrl ??
-        null,
+        realPhotoUrl,
       teamId: row?.teamId ?? focus.teamId ?? null,
       teamName: row?.teamName ?? focus.teamName ?? null,
       teamTag: row?.teamTag ?? focus.teamTag ?? null,
@@ -352,6 +382,7 @@ function renderPlayerPhotoPage({ bootstrap }) {
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
     <title>Arenzyra Player Photo Widget</title>
     <link rel="stylesheet" href="${stylePath}" />
+    ${renderWidgetBrandingHead()}
   </head>
   <body>
     <div
@@ -369,6 +400,7 @@ function renderPlayerPhotoPage({ bootstrap }) {
       </article>
     </div>
     <script>window.__ARENZYRA_LOCAL_WIDGET_BOOTSTRAP__ = ${payload};</script>
+    <script src="/obs/static/widget-branding-client.js?v=widget-branding-v2"></script>
     <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
     <script src="${scriptPath}"></script>
   </body>
@@ -403,7 +435,9 @@ function registerObsPlayerPhotoRoute(
     getCurrentMatchContext = () => null,
     getPlayerAssetsVersion = () => null,
     resolveObserverBaseUrl = () => null,
+    getObserverAccessToken = () => "",
     requestPlayerPhotoRefresh = null,
+    getOrganizationBranding = () => null,
     log = () => {},
   } = {},
 ) {
@@ -434,6 +468,10 @@ function registerObsPlayerPhotoRoute(
       .send(
       renderPlayerPhotoPage({
         bootstrap: {
+          ...buildWidgetBrandingBootstrap(
+            "player-photo",
+            getOrganizationBranding,
+          ),
           apiBase,
           widgetKey: "player-photo",
           wsPath: asString(wsPath) || DEFAULT_WS_PATH,
@@ -452,7 +490,10 @@ function registerObsPlayerPhotoRoute(
     const playerAssetsVersion = asString(getPlayerAssetsVersion()) || null;
 
     try {
-      const focus = await fetchLocalObserverFocus(resolveObserverBaseUrl());
+      const focus = await fetchLocalObserverFocus(
+        resolveObserverBaseUrl(),
+        getObserverAccessToken(),
+      );
       res.json({
         ok: true,
         matchId: currentMatchContext.matchId,
@@ -510,7 +551,10 @@ function registerObsPlayerPhotoRoute(
           },
         },
         ),
-        fetchLocalObserverFocus(resolveObserverBaseUrl()),
+        fetchLocalObserverFocus(
+          resolveObserverBaseUrl(),
+          getObserverAccessToken(),
+        ),
       ]);
       const observerState = applyLocalObserverFocus(
         response?.data ?? null,

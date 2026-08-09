@@ -1,6 +1,11 @@
 const axios = require("axios");
 const { randomUUID } = require("node:crypto");
 const { getProcessDefaultApiBase } = require("./apiBaseDefaults.cjs");
+const {
+  isMapLookupMatch,
+  MAP_DEFINITIONS,
+  normalizeLookup: normalizeMapLookup,
+} = require("./map-engine/map-registry.cjs");
 
 function normalizeHttpBaseUrl(value, fallback, options = {}) {
   const raw = String(value || "").trim();
@@ -67,11 +72,30 @@ const DEFAULT_SHADOW_BASE_URL = normalizeHttpBaseUrl(
   "http://127.0.0.1:10086",
   { defaultLocalPort: 10086 },
 );
-const DEFAULT_POLL_INTERVAL_MS = 1000;
+// PCOB is local to the observer PC. A 500ms cadence keeps live eliminations
+// responsive without overlapping polls or putting meaningful load on PCOB.
+const DEFAULT_POLL_INTERVAL_MS = 500;
 const CONTROL_STATUS_POLL_INTERVAL_MS = 5000;
 const MAX_PENDING_EVENTS = 750;
+const MAX_PENDING_EVENT_AGE_MS = 30_000;
 const QUEUE_FLUSH_BATCH_SIZE = 25;
 const RETRY_BACKOFF_STEPS_MS = [1000, 2000, 5000, 10000];
+const MAX_PCOB_TEAM_PLACEMENT = 100;
+const ACKNOWLEDGED_TELEMETRY_IGNORE_REASONS = new Set([
+  "NO_STATE_CHANGE",
+  "DURABLE_REPLAY_ALREADY_APPLIED",
+]);
+const TERMINAL_TELEMETRY_IGNORE_REASONS = new Set([
+  "MATCH_FINALIZING",
+  "MATCH_ENDED",
+  "MATCH_FINISHED",
+  "RESULT_FINALIZED",
+]);
+
+function isPendingTelemetryEventFresh(event, now = Date.now()) {
+  const createdAt = toNumber(event?.createdAt ?? event?.payload?.timestamp);
+  return createdAt !== null && now - createdAt <= MAX_PENDING_EVENT_AGE_MS;
+}
 
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -391,19 +415,40 @@ function extractTransportPosition(record) {
   return { x, y };
 }
 
+function resolveTransportMapDefinition(map) {
+  const normalized = normalizeMapLookup(map);
+  if (!normalized) {
+    return null;
+  }
+
+  let mostSpecific = null;
+  let mostSpecificLength = -1;
+  for (const definition of MAP_DEFINITIONS) {
+    for (const candidate of [definition.key, ...(definition.aliases || [])]) {
+      const lookup = normalizeMapLookup(candidate);
+      if (
+        isMapLookupMatch(normalized, lookup) &&
+        lookup.length > mostSpecificLength
+      ) {
+        mostSpecific = definition;
+        mostSpecificLength = lookup.length;
+      }
+    }
+  }
+  return mostSpecific;
+}
+
 function normalizePosition(rawX, rawY, map) {
-  const mapSizes = {
-    ERANGEL: 816000,
-    MIRAMAR: 816000,
-    LIVIK: 409600,
-    SANHOK: 409600,
-    RONDO: 816000,
-  };
+  const definition = resolveTransportMapDefinition(map);
+  const size = toNumber(definition?.worldSize);
+  const sourceX = toNumber(rawX);
+  const sourceY = toNumber(rawY);
+  if (size === null || size <= 0 || sourceX === null || sourceY === null) {
+    return null;
+  }
 
-  const size = mapSizes[String(map || "").toUpperCase()] || 816000;
-
-  const x = rawX / size;
-  const y = 1 - (rawY / size);
+  const x = sourceX / size;
+  const y = 1 - sourceY / size;
 
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     console.warn("[LAUNCHER][INVALID_POSITION]", { rawX, rawY, map, size });
@@ -435,24 +480,7 @@ function extractTransportMap(snapshot) {
       continue;
     }
 
-    const normalized = rawMap.toUpperCase();
-    if (["ERANGEL", "ERANGEL8X8", "ERANGEL_MAIN", "BALTIC_MAIN"].includes(normalized)) {
-      return "ERANGEL";
-    }
-    if (["MIRAMAR", "MIRAMAR8X8", "DESERT_MAIN"].includes(normalized)) {
-      return "MIRAMAR";
-    }
-    if (["LIVIK", "LIVIK4X4"].includes(normalized)) {
-      return "LIVIK";
-    }
-    if (["SANHOK", "SANHOK4X4", "SAVAGE_MAIN"].includes(normalized)) {
-      return "SANHOK";
-    }
-    if (["RONDO", "RONDO8X8", "RONDO_MAIN"].includes(normalized)) {
-      return "RONDO";
-    }
-
-    return normalized;
+    return resolveTransportMapDefinition(rawMap)?.key ?? null;
   }
 
   return null;
@@ -484,10 +512,10 @@ function isTransportPlayerAlive(record) {
     record?.Status;
   const numeric = toNumber(stateValue);
   if (numeric !== null) {
-    if (numeric === 1 || numeric === 5) {
+    if (numeric === 5) {
       return false;
     }
-    if (numeric === 0 || numeric === 3 || numeric === 4) {
+    if (numeric === 0 || numeric === 1 || numeric === 2 || numeric === 3 || numeric === 4) {
       return true;
     }
   }
@@ -545,7 +573,91 @@ function isTransportPlayerKnocked(record) {
   return label === "knocked" || label === "down" || label === "dbno";
 }
 
-function normalizeTransportPlayers(players, map, timestamp) {
+function resolvePcobPlayerTeamId(record) {
+  return normalizeTextValue(
+    record?.teamId ??
+      record?.teamID ??
+      record?.TeamId ??
+      record?.TeamID ??
+      record?.team_id ??
+      record?.teamNo ??
+      record?.TeamNo ??
+      record?.teamNO ??
+      record?.teamSlot ??
+      record?.TeamSlot ??
+      record?.slot ??
+      record?.slotNumber ??
+      record?.teamNumber,
+  );
+}
+
+function deriveExactTeamPlacementsFromPlayerRanks(rawPlayers) {
+  if (!Array.isArray(rawPlayers) || rawPlayers.length === 0) {
+    return new Map();
+  }
+
+  const records = rawPlayers.map(asRecord).filter(Boolean);
+  const hasPcobRank = records.some(
+    (record) =>
+      Object.prototype.hasOwnProperty.call(record, "rank") ||
+      Object.prototype.hasOwnProperty.call(record, "Rank"),
+  );
+  if (!hasPcobRank) {
+    return new Map();
+  }
+
+  const candidates = new Map();
+  for (const record of records) {
+    const teamId = resolvePcobPlayerTeamId(record);
+    if (!teamId) {
+      continue;
+    }
+
+    const candidate = candidates.get(teamId) ?? {
+      ranks: new Set(),
+      invalid: false,
+      hasUnplacedMember: false,
+    };
+    const rank = toNumber(record.rank ?? record.Rank);
+    if (rank === 0) {
+      // PCOB uses zero while a team is still alive and has no placement.
+      candidate.hasUnplacedMember = true;
+    } else if (
+      rank === null ||
+      !Number.isInteger(rank) ||
+      rank < 1 ||
+      rank > MAX_PCOB_TEAM_PLACEMENT
+    ) {
+      candidate.invalid = true;
+    } else {
+      candidate.ranks.add(rank);
+    }
+    candidates.set(teamId, candidate);
+  }
+
+  const candidateTeams = Array.from(candidates.entries())
+    .filter(
+      ([, candidate]) =>
+        !candidate.invalid &&
+        !candidate.hasUnplacedMember &&
+        candidate.ranks.size === 1,
+    )
+    .map(([teamId, candidate]) => [teamId, [...candidate.ranks][0]]);
+  const teamsByRank = new Map();
+  for (const [teamId, rank] of candidateTeams) {
+    const teamIds = teamsByRank.get(rank) ?? [];
+    teamIds.push(teamId);
+    teamsByRank.set(rank, teamIds);
+  }
+
+  return new Map(
+    candidateTeams.filter(
+      ([, rank]) => (teamsByRank.get(rank)?.length ?? 0) === 1,
+    ),
+  );
+}
+
+function normalizeTransportPlayers(players, map) {
   if (!Array.isArray(players) || players.length === 0) {
     return [];
   }
@@ -593,7 +705,10 @@ function normalizeTransportPlayers(players, map, timestamp) {
     const teamNo = teamSlot === null ? null : Math.trunc(teamSlot);
     const playerId =
       normalizeTextValue(
-        record.playerId ??
+        record.uId ??
+          record.uid ??
+          record.UID ??
+          record.playerId ??
           record.id ??
           record.playerID ??
           record.PlayerId ??
@@ -655,13 +770,6 @@ function normalizeTransportPlayers(players, map, timestamp) {
 
   return incoming
     .map((p) => {
-      console.log("[TRACE][LAUNCHER][RAW]", {
-        playerId: p.id,
-        rawX: p.position?.x,
-        rawY: p.position?.y,
-        timestamp: Date.now(),
-      });
-
       const normalized = normalizePosition(p.position?.x, p.position?.y, map);
       if (!normalized) {
         return {
@@ -682,13 +790,6 @@ function normalizeTransportPlayers(players, map, timestamp) {
 
       const normalizedX = normalized.x;
       const normalizedY = normalized.y;
-      console.log("[TRACE][LAUNCHER][OUT]", {
-        playerId: p.id,
-        normX: normalizedX,
-        normY: normalizedY,
-        timestamp,
-      });
-
       return {
         id: p.id,
         playerOpenId: p.playerOpenId,
@@ -710,7 +811,7 @@ function normalizeTransportPlayers(players, map, timestamp) {
     .filter(Boolean);
 }
 
-function normalizeTransportTeams(teams, players) {
+function normalizeTransportTeams(teams, players, rawPlayers = []) {
   const normalizedPlayers = Array.isArray(players) ? players : [];
   const playersByTeam = new Map();
   for (const player of normalizedPlayers) {
@@ -726,6 +827,8 @@ function normalizeTransportTeams(teams, players) {
   const normalizedTeams = [];
   const seen = new Set();
   const sourceTeams = Array.isArray(teams) ? teams : [];
+  const exactPlacementByTeamId =
+    deriveExactTeamPlacementsFromPlayerRanks(rawPlayers);
 
   for (const team of sourceTeams) {
     const record = asRecord(team);
@@ -800,7 +903,10 @@ function normalizeTransportTeams(teams, players) {
       teamNo,
       teamName,
       teamTag,
-      placement: placement === null ? null : Math.max(1, Math.trunc(placement)),
+      placement:
+        placement === null
+          ? (exactPlacementByTeamId.get(teamId) ?? null)
+          : Math.max(1, Math.trunc(placement)),
       alivePlayers: Math.max(0, Math.trunc(alivePlayers)),
       totalPlayers: Math.max(0, Math.trunc(totalPlayers)),
       eliminated:
@@ -822,6 +928,7 @@ function normalizeTransportTeams(teams, players) {
       teamNo: syntheticTeamNo === null ? null : Math.trunc(syntheticTeamNo),
       teamName: null,
       teamTag: null,
+      placement: exactPlacementByTeamId.get(teamId) ?? null,
       alivePlayers: teamPlayers.filter((player) => player?.isAlive === true).length,
       totalPlayers: teamPlayers.length,
       eliminated: teamPlayers.every((player) => player?.isAlive !== true),
@@ -1018,6 +1125,7 @@ function createTelemetryBridge({
   refreshAuth = null,
   onUnauthorized = null,
   shadowBaseUrl = null,
+  getShadowAccessToken = null,
 } = {}) {
   const telemetryLogger =
     logger &&
@@ -1097,6 +1205,21 @@ function createTelemetryBridge({
   const shadowClient = axios.create({
     baseURL: currentShadowBaseUrl,
     timeout: 5000,
+  });
+  shadowClient.interceptors.request.use((requestConfig) => {
+    const token =
+      typeof getShadowAccessToken === "function"
+        ? String(getShadowAccessToken() || "").trim()
+        : "";
+    if (token) {
+      requestConfig.headers = requestConfig.headers || {};
+      if (typeof requestConfig.headers.set === "function") {
+        requestConfig.headers.set("X-Arenzyra-Connector-Token", token);
+      } else {
+        requestConfig.headers["X-Arenzyra-Connector-Token"] = token;
+      }
+    }
+    return requestConfig;
   });
   let backendClient = null;
 
@@ -1990,8 +2113,12 @@ function createTelemetryBridge({
     const map = extractTransportMap(snapshot);
     const sequence = nextTransportSequence();
     const timestamp = Date.now();
-    const players = normalizeTransportPlayers(snapshot.players, map, timestamp);
-    const teams = normalizeTransportTeams(snapshot.teams, players);
+    const players = normalizeTransportPlayers(snapshot.players, map);
+    const teams = normalizeTransportTeams(
+      snapshot.teams,
+      players,
+      snapshot.players,
+    );
     const kills = Array.isArray(snapshot.kills) ? snapshot.kills : [];
     const backpacks = Array.isArray(snapshot.backpacks) ? snapshot.backpacks : [];
     const rawSnapshot =
@@ -2057,6 +2184,18 @@ function createTelemetryBridge({
       return;
     }
 
+    const now = Date.now();
+    const previousQueueSize = pendingEvents.length;
+    pendingEvents = pendingEvents.filter((queuedEvent) =>
+      isPendingTelemetryEventFresh(queuedEvent, now),
+    );
+    if (pendingEvents.length < previousQueueSize) {
+      logWarn("Dropped stale queued telemetry", {
+        droppedEvents: previousQueueSize - pendingEvents.length,
+        maxAgeMs: MAX_PENDING_EVENT_AGE_MS,
+      });
+    }
+
     if (pendingEvents.length >= MAX_PENDING_EVENTS) {
       const droppedEvent = pendingEvents.shift();
       logWarn("Queue overflow, dropped oldest event", {
@@ -2079,41 +2218,87 @@ function createTelemetryBridge({
 
   const handleIgnoredResponse = (response, event) => {
     if (!response?.data?.ignored) {
-      return false;
+      return null;
     }
 
     const lifecycle = normalizeLifecyclePayload(response?.data);
-    if (lifecycle.matchStatus) {
-      applyBackendLifecycleState(lifecycle, "telemetry-ignore");
-    }
-
     const ignoreReason =
       typeof response.data.reason === "string" && response.data.reason.trim()
         ? response.data.reason.trim()
         : "IGNORED";
+    const normalizedIgnoreReason = ignoreReason.toUpperCase();
+    let lifecycleResult = null;
+    if (lifecycle.matchStatus) {
+      lifecycleResult = applyBackendLifecycleState(
+        lifecycle,
+        "telemetry-ignore",
+      );
+    }
 
-    logWarn(
-      "transport-post-rejected",
-      buildTransportLogMeta(event, {
-        reason: ignoreReason,
-        status: response?.status ?? null,
-      }),
+    const stoppedByLifecycle =
+      running !== true ||
+      lifecycleResult?.isLocked === true ||
+      lifecycleResult?.isFinalizing === true;
+    const hasTerminalLifecycleWithoutStatus =
+      !lifecycle.matchStatus &&
+      (lifecycle.isLocked === true ||
+        lifecycle.isFinalizing === true ||
+        lifecycle.resultFinalized === true);
+    const hasTerminalReason = TERMINAL_TELEMETRY_IGNORE_REASONS.has(
+      normalizedIgnoreReason,
     );
+    const acknowledgedWithoutChange =
+      !stoppedByLifecycle &&
+      !hasTerminalLifecycleWithoutStatus &&
+      !hasTerminalReason &&
+      ACKNOWLEDGED_TELEMETRY_IGNORE_REASONS.has(normalizedIgnoreReason);
 
-    if (!lifecycle.matchStatus) {
-      telemetryEnabled = false;
-      logInfo("Backend ignored telemetry; stopping forwarding", {
+    const responseMeta = buildTransportLogMeta(event, {
+      reason: ignoreReason,
+      status: response?.status ?? null,
+    });
+    if (acknowledgedWithoutChange) {
+      logInfo("transport-post-acknowledged-without-change", responseMeta);
+      return "accepted";
+    }
+
+    logWarn("transport-post-rejected", responseMeta);
+
+    if (stoppedByLifecycle) {
+      return "stopped";
+    }
+
+    if (hasTerminalLifecycleWithoutStatus || hasTerminalReason) {
+      const isFinalizing =
+        lifecycle.isFinalizing === true ||
+        normalizedIgnoreReason === "MATCH_FINALIZING";
+      logInfo("Backend explicitly ended telemetry forwarding", {
         matchId,
         sessionId: currentSessionId,
         reason: ignoreReason,
       });
-      stop(
-        ignoreReason === "MATCH_ENDED" || ignoreReason === "RESULT_FINALIZED"
-          ? "ended"
-          : "ignored",
-      );
+      stop(isFinalizing ? "finalizing" : "finished", {
+        matchStatus:
+          lifecycle.matchStatus ??
+          (isFinalizing ? "FINISH_PENDING" : "FINISHED"),
+        isFinalizing,
+        isLocked: !isFinalizing,
+        resultFinalized:
+          lifecycle.resultFinalized === true ||
+          normalizedIgnoreReason === "RESULT_FINALIZED",
+      });
+      return "stopped";
     }
-    return true;
+
+    setState({
+      running: true,
+      connectedToBackend: true,
+      connectionStatus: "error",
+      lastError: `Backend ignored telemetry: ${ignoreReason}`,
+      lastIgnoredAt: new Date().toISOString(),
+      lastIgnoredReason: ignoreReason,
+    });
+    return "rejected";
   };
 
   const recordSuccessfulSend = (event) => {
@@ -2175,6 +2360,19 @@ function createTelemetryBridge({
   };
 
   const flushQueue = async (trigger = "retry") => {
+    const now = Date.now();
+    const previousQueueSize = pendingEvents.length;
+    pendingEvents = pendingEvents.filter((event) =>
+      isPendingTelemetryEventFresh(event, now),
+    );
+    if (pendingEvents.length < previousQueueSize) {
+      logWarn("Dropped stale queued telemetry before retry", {
+        droppedEvents: previousQueueSize - pendingEvents.length,
+        maxAgeMs: MAX_PENDING_EVENT_AGE_MS,
+      });
+      setState({});
+    }
+
     if (
       !running ||
       !telemetryEnabled ||
@@ -2208,14 +2406,18 @@ function createTelemetryBridge({
 
         try {
           const response = await sendEvent(event);
-          if (handleIgnoredResponse(response, event)) {
+          const ignoredOutcome = handleIgnoredResponse(response, event);
+          if (ignoredOutcome === "stopped") {
             return;
           }
 
           pendingEvents.shift();
           retryAttempt = 0;
-          recordSuccessfulSend(event);
           processed += 1;
+          if (ignoredOutcome === "rejected") {
+            continue;
+          }
+          recordSuccessfulSend(event);
         } catch (error) {
           const status = getErrorStatus(error);
           const message = getErrorMessage(
@@ -2293,7 +2495,11 @@ function createTelemetryBridge({
 
     try {
       const response = await sendEvent(event);
-      if (handleIgnoredResponse(response, event)) {
+      const ignoredOutcome = handleIgnoredResponse(response, event);
+      if (
+        ignoredOutcome === "stopped" ||
+        ignoredOutcome === "rejected"
+      ) {
         return;
       }
 
@@ -2584,5 +2790,12 @@ function createTelemetryBridge({
 }
 
 module.exports = {
+  _testing: Object.freeze({
+    extractTransportMap,
+    isTransportPlayerAlive,
+    isPendingTelemetryEventFresh,
+    normalizePosition,
+    resolveTransportMapDefinition,
+  }),
   createTelemetryBridge,
 };

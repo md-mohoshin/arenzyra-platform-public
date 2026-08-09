@@ -109,7 +109,7 @@ function registerTeamEliminatedRoute(app, { log = () => {} } = {}) {
       return;
     }
 
-    log(`[widget-server] legacy team-eliminated route requested key=${instanceKey}`);
+    log("[widget-server] legacy team-eliminated route requested");
     res.redirect(302, buildCanonicalPath(instanceKey, req.query));
   });
 }

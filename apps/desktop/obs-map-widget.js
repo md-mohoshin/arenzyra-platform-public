@@ -4413,7 +4413,7 @@
     }
 
     return teamId
-      ? `${playerName} Â· ${formatCompactTeamLabel(teamId)}`
+      ? `${playerName} · ${formatCompactTeamLabel(teamId)}`
       : playerName;
   }
 

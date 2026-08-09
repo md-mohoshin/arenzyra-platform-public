@@ -1,10 +1,18 @@
 "use strict";
 
+const {
+  renderWidgetBrandingHead,
+  renderWidgetBrandingScripts,
+} = require("./widget-branding-page.cjs");
+
 function safeJson(value) {
   return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
-function registerAiCasterRoute(app, { engine, aiCasterEngine }) {
+function registerAiCasterRoute(
+  app,
+  { engine, aiCasterEngine, getOrganizationBranding },
+) {
   function buildState(req) {
     const snapshot = engine.getSnapshot(req.query?.map ?? null);
     return aiCasterEngine.evaluate(snapshot);
@@ -32,6 +40,7 @@ function registerAiCasterRoute(app, { engine, aiCasterEngine }) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Arenzyra AI Caster</title>
     <link rel="stylesheet" href="/obs/static/ai-caster-widget.css?v=ai-caster-v1" />
+    ${renderWidgetBrandingHead()}
   </head>
   <body>
     <main class="ai-caster-root" id="ai-caster-root" data-status="loading">
@@ -47,6 +56,7 @@ function registerAiCasterRoute(app, { engine, aiCasterEngine }) {
     </main>
     <script>window.__ARENZYRA_AI_CASTER_BOOTSTRAP__ = ${safeJson(bootstrap)};</script>
     <script>window.__ARENZYRA_WIDGET_VISIBILITY_BOOTSTRAP__ = ${safeJson(bootstrap)};</script>
+    ${renderWidgetBrandingScripts("ai-caster", getOrganizationBranding)}
     <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
     <script src="/obs/static/ai-caster-widget.js?v=ai-caster-v1"></script>
   </body>

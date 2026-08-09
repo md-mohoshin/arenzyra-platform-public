@@ -2,17 +2,21 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const axios = require("axios");
 const { startWidgetsServer } = require("./widget-server/server.cjs");
 
 const DEFAULT_WIDGET_PORT = 5511;
 const OBSERVER_BASE_URL = "http://127.0.0.1:10086";
-const TEAM_ASSETS_ROOT = "C:\\ArenzyraObserver\\assets\\teams";
-const LAUNCHER_LOG_PATH =
-  "C:\\Users\\mohos\\AppData\\Roaming\\arenzyra-observer-launcher\\logs\\launcher.log";
-const TEAM_BRANDING_INI_PATH =
-  "C:\\Users\\mohos\\AppData\\Local\\ShadowTrackerExtra\\Saved\\TeamLogoAndColor.ini";
+const OBSERVER_ACCESS_TOKEN = crypto.randomBytes(32).toString("hex");
+const observerClient = axios.create({
+  baseURL: OBSERVER_BASE_URL,
+  headers: { "X-Arenzyra-Connector-Token": OBSERVER_ACCESS_TOKEN },
+});
+const LAUNCHER_USER_DATA_DIR_NAME = "arenzyra-observer-launcher";
+const OBSERVER_DATA_DIR_NAME = "ArenzyraObserver";
+const SHADOWTRACKER_DATA_DIR_NAME = "ShadowTrackerExtra";
 const DEFAULT_TEAM_NAME = "Arenzyra";
 const DEFAULT_TEAM_TAG = "AZ";
 const MAX_LOG_TAIL_BYTES = 2 * 1024 * 1024;
@@ -42,6 +46,160 @@ function normalizeSlot(value) {
 
 function normalizePathValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function getPathApi(platform) {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function normalizeAbsolutePath(value, label, platform) {
+  const normalized = normalizePathValue(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const pathApi = getPathApi(platform);
+  if (!pathApi.isAbsolute(normalized)) {
+    throw new Error(`${label} must be an absolute path.`);
+  }
+  return pathApi.normalize(normalized);
+}
+
+function resolveWindowsSystemDriveRoot(env, platform) {
+  if (platform !== "win32") {
+    return null;
+  }
+
+  const pathApi = getPathApi(platform);
+  const systemRoot = normalizeAbsolutePath(
+    env.SystemRoot || env.SYSTEMROOT,
+    "SystemRoot",
+    platform,
+  );
+  if (systemRoot) {
+    return pathApi.parse(systemRoot).root;
+  }
+
+  const systemDrive = normalizePathValue(env.SystemDrive || env.SYSTEMDRIVE);
+  if (!systemDrive) {
+    return null;
+  }
+  const candidate = /^[A-Za-z]:$/.test(systemDrive)
+    ? `${systemDrive}\\`
+    : systemDrive;
+  const normalizedDrive = normalizeAbsolutePath(
+    candidate,
+    "SystemDrive",
+    platform,
+  );
+  if (pathApi.parse(normalizedDrive).root !== normalizedDrive) {
+    throw new Error("SystemDrive must resolve to a drive root.");
+  }
+  return normalizedDrive;
+}
+
+function resolveLiveMapRuntimePaths(
+  env = process.env,
+  platform = process.platform,
+) {
+  const pathApi = getPathApi(platform);
+  const launcherLogOverride = normalizeAbsolutePath(
+    env.ARENZYRA_LAUNCHER_LOG_PATH,
+    "ARENZYRA_LAUNCHER_LOG_PATH",
+    platform,
+  );
+  const brandingIniOverride = normalizeAbsolutePath(
+    env.ARENZYRA_TEAM_BRANDING_INI_PATH,
+    "ARENZYRA_TEAM_BRANDING_INI_PATH",
+    platform,
+  );
+  const teamAssetsOverride = normalizeAbsolutePath(
+    env.ARENZYRA_TEAM_ASSETS_ROOT,
+    "ARENZYRA_TEAM_ASSETS_ROOT",
+    platform,
+  );
+
+  const launcherUserDataOverride = normalizeAbsolutePath(
+    env.ARENZYRA_LAUNCHER_USER_DATA,
+    "ARENZYRA_LAUNCHER_USER_DATA",
+    platform,
+  );
+  const appData = normalizeAbsolutePath(env.APPDATA, "APPDATA", platform);
+  const launcherUserData =
+    launcherUserDataOverride ||
+    (platform === "win32" && appData
+      ? pathApi.join(appData, LAUNCHER_USER_DATA_DIR_NAME)
+      : null);
+
+  const shadowTrackerSavedOverride = normalizeAbsolutePath(
+    env.ARENZYRA_SHADOWTRACKER_SAVED_ROOT,
+    "ARENZYRA_SHADOWTRACKER_SAVED_ROOT",
+    platform,
+  );
+  const localAppData = normalizeAbsolutePath(
+    env.LOCALAPPDATA,
+    "LOCALAPPDATA",
+    platform,
+  );
+  const shadowTrackerSavedRoot =
+    shadowTrackerSavedOverride ||
+    (platform === "win32" && localAppData
+      ? pathApi.join(localAppData, SHADOWTRACKER_DATA_DIR_NAME, "Saved")
+      : null);
+
+  const observerDataOverride = normalizeAbsolutePath(
+    env.ARENZYRA_OBSERVER_DATA_ROOT,
+    "ARENZYRA_OBSERVER_DATA_ROOT",
+    platform,
+  );
+  const systemDriveRoot = resolveWindowsSystemDriveRoot(env, platform);
+  const observerDataRoot =
+    observerDataOverride ||
+    (systemDriveRoot
+      ? pathApi.join(systemDriveRoot, OBSERVER_DATA_DIR_NAME)
+      : null);
+
+  const launcherLogPath =
+    launcherLogOverride ||
+    (launcherUserData
+      ? pathApi.join(launcherUserData, "logs", "launcher.log")
+      : null);
+  const teamBrandingIniPath =
+    brandingIniOverride ||
+    (shadowTrackerSavedRoot
+      ? pathApi.join(shadowTrackerSavedRoot, "TeamLogoAndColor.ini")
+      : null);
+  const teamAssetsRoot =
+    teamAssetsOverride ||
+    (observerDataRoot
+      ? pathApi.join(observerDataRoot, "assets", "teams")
+      : null);
+
+  const missing = [];
+  if (!launcherLogPath) {
+    missing.push("ARENZYRA_LAUNCHER_LOG_PATH or ARENZYRA_LAUNCHER_USER_DATA/APPDATA");
+  }
+  if (!teamBrandingIniPath) {
+    missing.push(
+      "ARENZYRA_TEAM_BRANDING_INI_PATH or ARENZYRA_SHADOWTRACKER_SAVED_ROOT/LOCALAPPDATA",
+    );
+  }
+  if (!teamAssetsRoot) {
+    missing.push(
+      "ARENZYRA_TEAM_ASSETS_ROOT or ARENZYRA_OBSERVER_DATA_ROOT/SystemRoot",
+    );
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Unable to resolve live-map runtime paths. Set ${missing.join(", ")}.`,
+    );
+  }
+
+  return {
+    launcherLogPath,
+    teamAssetsRoot,
+    teamBrandingIniPath,
+  };
 }
 
 function buildTeamAssetUrl(filePath) {
@@ -220,10 +378,10 @@ function parseBrandingIni(filePath) {
   return teams;
 }
 
-function buildBrandingPayload() {
-  const iniTeams = parseBrandingIni(TEAM_BRANDING_INI_PATH);
+function buildBrandingPayload({ launcherLogPath, teamBrandingIniPath }) {
+  const iniTeams = parseBrandingIni(teamBrandingIniPath);
   const iniTeamsBySlot = new Map(iniTeams.map((team) => [team.slot, team]));
-  const fromLog = parseLatestBrandingFromLauncherLog(LAUNCHER_LOG_PATH);
+  const fromLog = parseLatestBrandingFromLauncherLog(launcherLogPath);
   if (fromLog && Array.isArray(fromLog.slots) && fromLog.slots.length > 0) {
     return {
       matchId: fromLog.matchId,
@@ -270,7 +428,7 @@ function buildBrandingPayload() {
 
 async function probeObserverHealth() {
   try {
-    const response = await axios.get(`${OBSERVER_BASE_URL}/health`, {
+    const response = await observerClient.get("/health", {
       timeout: 800,
       validateStatus: () => true,
     });
@@ -304,6 +462,7 @@ function startObserverBridgeIfNeeded() {
       PORT: "10086",
       FORWARD_ENABLE: "false",
       OBSERVER_FORWARD_ENABLE: "false",
+      ARENZYRA_PCOB_CONNECTOR_TOKEN: OBSERVER_ACCESS_TOKEN,
       OBTOOLS_VERBOSE_LOG: process.env.OBTOOLS_VERBOSE_LOG || "false",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -341,39 +500,39 @@ async function fetchObserverSnapshot() {
     routePayloadsResponse,
     observerSnapshotResponse,
   ] = await Promise.all([
-    axios.get(`${OBSERVER_BASE_URL}/getallinfo`, {
+    observerClient.get("/getallinfo", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/gettotalplayerlist`, {
+    observerClient.get("/gettotalplayerlist", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/getteaminfolist`, {
+    observerClient.get("/getteaminfolist", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/getkillinfo`, {
+    observerClient.get("/getkillinfo", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/getteambackpackinfo`, {
+    observerClient.get("/getteambackpackinfo", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/getcircleinfo`, {
+    observerClient.get("/getcircleinfo", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/getgameglobalinfo`, {
+    observerClient.get("/getgameglobalinfo", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/getroutepayloads`, {
+    observerClient.get("/getroutepayloads", {
       timeout: 1200,
       validateStatus: () => true,
     }),
-    axios.get(`${OBSERVER_BASE_URL}/getobserversnapshot`, {
+    observerClient.get("/getobserversnapshot", {
       timeout: 1200,
       validateStatus: () => true,
     }),
@@ -489,9 +648,10 @@ async function fetchObserverSnapshot() {
 }
 
 async function main() {
+  const runtimePaths = resolveLiveMapRuntimePaths();
   const port = normalizeSlot(process.env.ARENZYRA_LIVE_MAP_PORT) || DEFAULT_WIDGET_PORT;
   const forcedMapKey = normalizePathValue(process.env.ARENZYRA_FORCE_MAP_KEY) ||
-    parseLatestSelectedMapKeyFromLauncherLog(LAUNCHER_LOG_PATH);
+    parseLatestSelectedMapKeyFromLauncherLog(runtimePaths.launcherLogPath);
   let observerChild = null;
   let widgetServer = null;
   let pollTimer = null;
@@ -544,7 +704,7 @@ async function main() {
   widgetServer = startWidgetsServer({
     port,
     host: "127.0.0.1",
-    teamAssetsRoot: TEAM_ASSETS_ROOT,
+    teamAssetsRoot: runtimePaths.teamAssetsRoot,
     log(message, meta) {
       if (typeof meta === "undefined") {
         console.log(`[widget] ${message}`);
@@ -555,7 +715,7 @@ async function main() {
   });
   await widgetServer.whenReady();
 
-  const brandingPayload = buildBrandingPayload();
+  const brandingPayload = buildBrandingPayload(runtimePaths);
   if (brandingPayload.teams.length > 0) {
     widgetServer.setTeamBranding(brandingPayload);
     console.log(
@@ -616,8 +776,20 @@ async function main() {
   }, POLL_INTERVAL_MS);
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.stack || error.message : String(error || "unknown");
-  console.error(`[live-map-preview] fatal: ${message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    const message =
+      error instanceof Error
+        ? error.stack || error.message
+        : String(error || "unknown");
+    console.error(`[live-map-preview] fatal: ${message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  buildBrandingPayload,
+  normalizeAbsolutePath,
+  resolveLiveMapRuntimePaths,
+  resolveWindowsSystemDriveRoot,
+};

@@ -17,7 +17,9 @@
   const WS_PLAYER_STALE_MS = 1500;
   const MAX_TRACKED_KILL_IDS = 512;
 
-  const matchId = asString((bootstrap.match && bootstrap.match.id) || bootstrap.matchId);
+  const matchId = asString(
+    (bootstrap.match && bootstrap.match.id) || bootstrap.matchId,
+  );
   const killFeedApiBase = normalizeBaseUrl(bootstrap.apiBase);
 
   const state = {
@@ -63,7 +65,11 @@
 
   function toFiniteNumber(value) {
     const numeric =
-      typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+      typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number(value)
+          : NaN;
     return Number.isFinite(numeric) ? numeric : null;
   }
 
@@ -90,7 +96,9 @@
   }
 
   function normalizeKey(value) {
-    return String(value || "").trim().toLowerCase();
+    return String(value || "")
+      .trim()
+      .toLowerCase();
   }
 
   function normalizeBaseUrl(value) {
@@ -219,7 +227,9 @@
     const elapsed = Math.max(0, frameTime - refs.hpAnimationStartedAt);
     const progress = Math.min(1, elapsed / HP_ANIMATION_MS);
     const eased = 1 - Math.pow(1 - progress, 3);
-    const nextValue = refs.hpAnimationFrom + (refs.hpAnimationTo - refs.hpAnimationFrom) * eased;
+    const nextValue =
+      refs.hpAnimationFrom +
+      (refs.hpAnimationTo - refs.hpAnimationFrom) * eased;
 
     refs.displayedHealth = nextValue;
     renderPlayerHp(refs, nextValue, true);
@@ -231,9 +241,11 @@
       return;
     }
 
-    refs.hpAnimationFrame = window.requestAnimationFrame(function (nextFrameTime) {
-      stepPlayerHpAnimation(refs, nextFrameTime);
-    });
+    refs.hpAnimationFrame = window.requestAnimationFrame(
+      function (nextFrameTime) {
+        stepPlayerHpAnimation(refs, nextFrameTime);
+      },
+    );
   }
 
   function updatePlayerHp(refs, nextHealth, snap) {
@@ -243,7 +255,11 @@
       return;
     }
 
-    if (snap || refs.displayedHealth === null || Math.abs(refs.displayedHealth - health) < 0.1) {
+    if (
+      snap ||
+      refs.displayedHealth === null ||
+      Math.abs(refs.displayedHealth - health) < 0.1
+    ) {
       cancelPlayerHpAnimation(refs);
       refs.displayedHealth = health;
       renderPlayerHp(refs, health, true);
@@ -264,9 +280,7 @@
     if (player && player.playerId) {
       const localPlayerPhotoPath = `/assets/players/${encodeURIComponent(player.playerId)}.png`;
       candidates.push(resolveBrowserUrl(localPlayerPhotoPath));
-      candidates.push(
-        resolveApiUrl(localPlayerPhotoPath),
-      );
+      candidates.push(resolveApiUrl(localPlayerPhotoPath));
     }
     if (player && player.avatarUrl) {
       candidates.push(resolveApiUrl(player.avatarUrl));
@@ -275,12 +289,16 @@
       candidates.push(resolveApiUrl(player.photoUrl));
     }
 
-    candidates.push(resolveBrowserUrl("/assets/default-player.png"));
+    candidates.push(resolveBrowserUrl("/assets/default-player.svg"));
     candidates.push(resolveApiUrl("/assets/default-player.png"));
     candidates.push(resolveApiUrl("/assets/defaults/default-player.png"));
 
     return Array.from(
-      new Set(candidates.filter((candidate) => typeof candidate === "string" && candidate.trim())),
+      new Set(
+        candidates.filter(
+          (candidate) => typeof candidate === "string" && candidate.trim(),
+        ),
+      ),
     );
   }
 
@@ -337,7 +355,11 @@
   }
 
   function resolveFocusedPlayerCard(observerState) {
-    if (observerState && observerState.playerCard && typeof observerState.playerCard === "object") {
+    if (
+      observerState &&
+      observerState.playerCard &&
+      typeof observerState.playerCard === "object"
+    ) {
       return observerState.playerCard;
     }
 
@@ -364,14 +386,18 @@
   }
 
   function findLeaderboardMatch(observerState, playerCard) {
-    const leaderboard = Array.isArray(observerState && observerState.leaderboard)
+    const leaderboard = Array.isArray(
+      observerState && observerState.leaderboard,
+    )
       ? observerState.leaderboard
       : [];
     const playerId = normalizeKey(
-      playerCard && (playerCard.playerId || playerCard.id || playerCard.playerKey),
+      playerCard &&
+        (playerCard.playerId || playerCard.id || playerCard.playerKey),
     );
     const playerName = normalizeKey(
-      playerCard && (playerCard.playerName || playerCard.name || playerCard.player),
+      playerCard &&
+        (playerCard.playerName || playerCard.name || playerCard.player),
     );
 
     for (const row of leaderboard) {
@@ -379,10 +405,14 @@
       for (const player of players) {
         const matchesPlayerId =
           playerId &&
-          normalizeKey(player && (player.playerId || player.id || player.playerKey)) === playerId;
+          normalizeKey(
+            player && (player.playerId || player.id || player.playerKey),
+          ) === playerId;
         const matchesName =
           playerName &&
-          normalizeKey(player && (player.playerName || player.name || player.player)) === playerName;
+          normalizeKey(
+            player && (player.playerName || player.name || player.player),
+          ) === playerName;
 
         if (!matchesPlayerId && !matchesName) {
           continue;
@@ -428,8 +458,10 @@
     }
 
     const playerName =
-      asString(player.playerName || player.name || player.player) || `Player ${index + 1}`;
-    const playerId = asString(player.playerId || player.id || player.playerKey) || null;
+      asString(player.playerName || player.name || player.player) ||
+      `Player ${index + 1}`;
+    const playerId =
+      asString(player.playerId || player.id || player.playerKey) || null;
     const playerKey =
       normalizeKey(playerId) || normalizeKey(playerName) || `slot-${index + 1}`;
     const rawSlotIndex = toFiniteNumber(
@@ -439,7 +471,8 @@
           ? player.slot
           : null,
     );
-    const slotIndex = rawSlotIndex === null ? null : Math.max(0, Math.round(rawSlotIndex));
+    const slotIndex =
+      rawSlotIndex === null ? null : Math.max(0, Math.round(rawSlotIndex));
 
     return {
       playerId,
@@ -448,9 +481,11 @@
       playerName,
       playerNameKey: normalizeKey(playerName),
       avatarUrl:
-        asString(player.avatarUrl || player.photoUrl || player.playerPhoto) || null,
+        asString(player.avatarUrl || player.photoUrl || player.playerPhoto) ||
+        null,
       photoUrl:
-        asString(player.playerPhoto || player.photoUrl || player.avatarUrl) || null,
+        asString(player.playerPhoto || player.photoUrl || player.avatarUrl) ||
+        null,
       kills: Math.max(0, Math.round(toFiniteNumber(player.kills) || 0)),
       alive: typeof player.alive === "boolean" ? player.alive : null,
       knocked: typeof player.knocked === "boolean" ? player.knocked : false,
@@ -460,8 +495,10 @@
   }
 
   function comparePlayersForStableOrder(left, right) {
-    const leftSlot = left && typeof left.slotIndex === "number" ? left.slotIndex : null;
-    const rightSlot = right && typeof right.slotIndex === "number" ? right.slotIndex : null;
+    const leftSlot =
+      left && typeof left.slotIndex === "number" ? left.slotIndex : null;
+    const rightSlot =
+      right && typeof right.slotIndex === "number" ? right.slotIndex : null;
 
     if (leftSlot !== null && rightSlot !== null && leftSlot !== rightSlot) {
       return leftSlot - rightSlot;
@@ -501,11 +538,15 @@
   function resolveFocusedPlayerKey(focusedPlayerCard, lookups, fallbackPlayer) {
     const focusedPlayerId = normalizeKey(
       focusedPlayerCard &&
-        (focusedPlayerCard.playerId || focusedPlayerCard.id || focusedPlayerCard.playerKey),
+        (focusedPlayerCard.playerId ||
+          focusedPlayerCard.id ||
+          focusedPlayerCard.playerKey),
     );
     const focusedPlayerName = normalizeKey(
       focusedPlayerCard &&
-        (focusedPlayerCard.playerName || focusedPlayerCard.name || focusedPlayerCard.player),
+        (focusedPlayerCard.playerName ||
+          focusedPlayerCard.name ||
+          focusedPlayerCard.player),
     );
 
     if (focusedPlayerId && lookups.byId.has(focusedPlayerId)) {
@@ -519,7 +560,9 @@
   }
 
   function normalizeTeamState(observerState) {
-    const leaderboard = Array.isArray(observerState && observerState.leaderboard)
+    const leaderboard = Array.isArray(
+      observerState && observerState.leaderboard,
+    )
       ? observerState.leaderboard
       : [];
     const focusedPlayerCard = resolveFocusedPlayerCard(observerState);
@@ -558,12 +601,21 @@
 
     const lookups = buildPlayerLookups(players);
     return {
-      teamId: asString((row && row.teamId) || (focusedPlayerCard && focusedPlayerCard.teamId)) || null,
+      teamId:
+        asString(
+          (row && row.teamId) ||
+            (focusedPlayerCard && focusedPlayerCard.teamId),
+        ) || null,
       teamName:
-        asString((row && row.teamName) || (focusedPlayerCard && focusedPlayerCard.teamName)) ||
-        null,
+        asString(
+          (row && row.teamName) ||
+            (focusedPlayerCard && focusedPlayerCard.teamName),
+        ) || null,
       teamTag:
-        asString((row && row.teamTag) || (focusedPlayerCard && focusedPlayerCard.teamTag)) || null,
+        asString(
+          (row && row.teamTag) ||
+            (focusedPlayerCard && focusedPlayerCard.teamTag),
+        ) || null,
       focusedPlayerKey: resolveFocusedPlayerKey(
         focusedPlayerCard,
         lookups,
@@ -614,7 +666,9 @@
       return playerKey;
     }
 
-    const player = state.team.players.find((entry) => entry.playerKey === playerKey);
+    const player = state.team.players.find(
+      (entry) => entry.playerKey === playerKey,
+    );
     return (player && player.playerId) || playerKey;
   }
 
@@ -663,11 +717,14 @@
     const previousKillsById = new Map(
       previousTeam.players.map((player) => [player.playerKey, player.kills]),
     );
-    const nextPlayerIds = new Set(nextTeam.players.map((player) => player.playerKey));
+    const nextPlayerIds = new Set(
+      nextTeam.players.map((player) => player.playerKey),
+    );
 
     for (const player of nextTeam.players) {
       const previousKills = previousKillsById.get(player.playerKey);
-      const optimisticKills = state.optimisticKillBoostById.get(player.playerKey) || 0;
+      const optimisticKills =
+        state.optimisticKillBoostById.get(player.playerKey) || 0;
       if (typeof previousKills !== "number" || optimisticKills <= 0) {
         continue;
       }
@@ -805,7 +862,9 @@
       stripEl.appendChild(refs.card);
     }
 
-    for (const [playerKey, refs] of Array.from(state.playerRefsById.entries())) {
+    for (const [playerKey, refs] of Array.from(
+      state.playerRefsById.entries(),
+    )) {
       if (desiredPlayerIds.has(playerKey)) {
         continue;
       }
@@ -854,7 +913,11 @@
             : player.health,
       stale: state.stalePlayerIds.has(player.playerKey),
       focused: state.team && state.team.focusedPlayerKey === player.playerKey,
-      kills: Math.max(0, player.kills + (state.optimisticKillBoostById.get(player.playerKey) || 0)),
+      kills: Math.max(
+        0,
+        player.kills +
+          (state.optimisticKillBoostById.get(player.playerKey) || 0),
+      ),
     };
   }
 
@@ -885,7 +948,10 @@
       return;
     }
 
-    const teamLabel = toDisplayText(state.team.teamTag || state.team.teamName, "TEAM");
+    const teamLabel = toDisplayText(
+      state.team.teamTag || state.team.teamName,
+      "TEAM",
+    );
     const connectionLabel = state.wsConnected ? "" : "WS OFFLINE";
     const headerSignature = [teamLabel, connectionLabel].join("|");
 
@@ -912,7 +978,9 @@
       mergedPlayer.playerName,
       mergedPlayer.kills,
       status.key,
-      mergedPlayer.health === null ? "null" : String(Math.round(mergedPlayer.health)),
+      mergedPlayer.health === null
+        ? "null"
+        : String(Math.round(mergedPlayer.health)),
       String(mergedPlayer.focused),
       String(mergedPlayer.stale),
       mergedPlayer.avatarUrl || mergedPlayer.photoUrl || "",
@@ -923,7 +991,11 @@
     }
 
     setElementData(refs.card, "status", status.key);
-    setElementData(refs.card, "focused", mergedPlayer.focused ? "true" : "false");
+    setElementData(
+      refs.card,
+      "focused",
+      mergedPlayer.focused ? "true" : "false",
+    );
     setElementData(refs.card, "stale", mergedPlayer.stale ? "true" : "false");
     setText(refs.nameEl, toDisplayText(mergedPlayer.playerName, "PLAYER"));
     setText(refs.killsValueEl, String(Math.max(0, mergedPlayer.kills)));
@@ -1019,7 +1091,8 @@
     const nextTeamId = normalizeKey(nextTeam.teamId);
     const teamSwitched = Boolean(previousTeam && previousTeamId !== nextTeamId);
     const nextStructureSignature = getStructureSignature(nextTeam);
-    const structureChanged = nextStructureSignature !== state.structureSignature;
+    const structureChanged =
+      nextStructureSignature !== state.structureSignature;
 
     if (structureChanged) {
       state.structureSignature = nextStructureSignature;
@@ -1070,7 +1143,9 @@
 
     try {
       const response = await window.fetch(
-        resolveApiUrl(`/api/observer/match/${encodeURIComponent(matchId)}/widget-state`),
+        resolveApiUrl(
+          `/api/observer/match/${encodeURIComponent(matchId)}/widget-state`,
+        ),
         {
           cache: "no-store",
         },
@@ -1109,7 +1184,11 @@
       alive: typeof player.alive === "boolean" ? player.alive : null,
       knocked: typeof player.knocked === "boolean" ? player.knocked : null,
       health: clampHealth(
-        player.health !== undefined ? player.health : player.hp !== undefined ? player.hp : null,
+        player.health !== undefined
+          ? player.health
+          : player.hp !== undefined
+            ? player.hp
+            : null,
       ),
       updatedAt: toTimestampMs(timestamp) ?? Date.now(),
       seenAt,
@@ -1118,7 +1197,8 @@
 
   function playerBelongsToActiveTeam(playerKey) {
     return Boolean(
-      state.team && state.team.players.some((player) => player.playerKey === playerKey),
+      state.team &&
+      state.team.players.some((player) => player.playerKey === playerKey),
     );
   }
 
@@ -1157,7 +1237,11 @@
 
   function armPlayerStaleTimer(playerKey) {
     clearPlayerStaleTimer(playerKey);
-    if (!state.team || !state.lastSeenAtById.has(playerKey) || !playerBelongsToActiveTeam(playerKey)) {
+    if (
+      !state.team ||
+      !state.lastSeenAtById.has(playerKey) ||
+      !playerBelongsToActiveTeam(playerKey)
+    ) {
       return;
     }
 
@@ -1212,7 +1296,10 @@
       if (state.pendingLiveTokenById.get(playerKey) !== nextToken) {
         return;
       }
-      applyPlayerLiveState(playerKey, state.pendingLiveById.get(playerKey) || null);
+      applyPlayerLiveState(
+        playerKey,
+        state.pendingLiveById.get(playerKey) || null,
+      );
     }, LIVE_STATE_STABILIZE_MS);
     state.stabilizeTimerById.set(playerKey, timer);
     return true;
@@ -1223,7 +1310,9 @@
       return null;
     }
 
-    const playerIdKey = normalizeKey(player && (player.playerId || player.id || player.playerKey));
+    const playerIdKey = normalizeKey(
+      player && (player.playerId || player.id || player.playerKey),
+    );
     if (playerIdKey && state.team.lookupById.has(playerIdKey)) {
       return state.team.lookupById.get(playerIdKey);
     }
@@ -1255,7 +1344,12 @@
         continue;
       }
 
-      const nextState = normalizeLivePlayer(playerKey, player, message.timestamp, receivedAt);
+      const nextState = normalizeLivePlayer(
+        playerKey,
+        player,
+        message.timestamp,
+        receivedAt,
+      );
       state.lastSeenAtById.set(playerKey, nextState.seenAt);
       armPlayerStaleTimer(playerKey);
       const nextSignature = getPlayerLiveSignature(nextState);
@@ -1300,7 +1394,9 @@
 
   function buildSocketUrl() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return new URL(`${protocol}//${window.location.host}${bootstrap.wsPath || "/ws"}`).toString();
+    return new URL(
+      `${protocol}//${window.location.host}${bootstrap.wsPath || "/ws"}`,
+    ).toString();
   }
 
   function scheduleReconnect() {
@@ -1408,7 +1504,11 @@
   }
 
   function handleKillFeedUpdate(payload) {
-    if (!isObserverKillFeedUpdatePayload(payload) || payload.matchId !== matchId || !state.team) {
+    if (
+      !isObserverKillFeedUpdatePayload(payload) ||
+      payload.matchId !== matchId ||
+      !state.team
+    ) {
       return;
     }
 

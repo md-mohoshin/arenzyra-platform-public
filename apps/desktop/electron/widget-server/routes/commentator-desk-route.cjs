@@ -1,5 +1,10 @@
 "use strict";
 
+const {
+  renderWidgetBrandingHead,
+  renderWidgetBrandingScripts,
+} = require("./widget-branding-page.cjs");
+
 const DEFAULT_ACCESS = Object.freeze({
   approved: false,
   canUse: false,
@@ -689,7 +694,10 @@ function buildMapFrameUrl(requestedMapKey) {
   return query ? `/obs/map?${query}` : "/obs/map";
 }
 
-function registerCommentatorDeskRoute(app, { engine, getAccess }) {
+function registerCommentatorDeskRoute(
+  app,
+  { engine, getAccess, getOrganizationBranding },
+) {
   function readRequestedMapKey(req) {
     return typeof req.query?.map === "string" && req.query.map.trim()
       ? req.query.map.trim()
@@ -709,10 +717,24 @@ function registerCommentatorDeskRoute(app, { engine, getAccess }) {
 
   app.get("/obs/commentator-desk", (req, res) => {
     const requestedMapKey = readRequestedMapKey(req);
+    const pinnedWindow = req.query?.pinned === "1";
     const transparentWindow =
-      req.query?.transparent === "1" || req.query?.pinned === "1";
+      req.query?.transparent === "1" || pinnedWindow;
+    const htmlClass = [
+      transparentWindow ? "commentator-desk-window-root" : "",
+      pinnedWindow ? "commentator-desk-pinned-root" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const bodyClass = [
+      transparentWindow ? "commentator-desk-window-body" : "",
+      pinnedWindow ? "commentator-desk-pinned-body" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     const bootstrap = {
       requestedMapKey,
+      layout: pinnedWindow ? "pinned" : "full",
       mapFrameUrl: buildMapFrameUrl(requestedMapKey),
       state: buildRouteState(req),
     };
@@ -721,17 +743,38 @@ function registerCommentatorDeskRoute(app, { engine, getAccess }) {
       wsPath: "/ws",
       direction: "right",
     };
-
-    res.type("html").send(`<!DOCTYPE html>
-<html lang="en"${transparentWindow ? ' class="commentator-desk-window-root"' : ""}>
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Arenzyra Commentator Desk</title>
-    <link rel="stylesheet" href="/obs/static/commentator-desk-widget.css?v=commentator-desk-v1" />
-  </head>
-  <body${transparentWindow ? ' class="commentator-desk-window-body"' : ""}>
-    <main class="commentator-desk" id="commentator-desk" data-status="loading">
+    const deskMarkup = pinnedWindow
+      ? `<main class="commentator-desk commentator-desk--pinned" id="commentator-desk" data-status="loading" data-layout="pinned">
+      <div class="pinned-desk-shell">
+        <header class="desk-header pinned-desk-header">
+          <div>
+            <div class="eyebrow">Pinned Desk</div>
+            <h1 id="desk-title">Close Teams</h1>
+          </div>
+          <div class="status-pill" id="status-pill">Loading</div>
+        </header>
+        <article class="primary-cue pinned-desk-primary" id="primary-cue">
+          <div class="cue-label">Standby</div>
+          <div class="cue-line">Scanning for fights.</div>
+          <div class="cue-meta">Launcher data only</div>
+        </article>
+        <section class="panel pinned-desk-panel pinned-desk-panel--distances">
+          <div class="panel-title">Close Teams</div>
+          <div id="distance-list" class="distance-list pinned-distance-list"></div>
+        </section>
+        <section class="panel pinned-desk-panel pinned-desk-panel--cues">
+          <div class="panel-title">Fight Cues</div>
+          <div id="cue-list" class="cue-list pinned-cue-list"></div>
+        </section>
+        <div class="locked-cover" id="locked-cover">
+          <div>
+            <div class="locked-title">Commentator Desk locked</div>
+            <div class="locked-copy" id="locked-copy">Waiting for Super Admin approval.</div>
+          </div>
+        </div>
+      </div>
+    </main>`
+      : `<main class="commentator-desk" id="commentator-desk" data-status="loading" data-layout="full">
       <section class="map-pane" aria-label="Live map">
         <iframe id="map-frame" title="Live map" data-src="${escapeHtml(
           bootstrap.mapFrameUrl,
@@ -798,9 +841,22 @@ function registerCommentatorDeskRoute(app, { engine, getAccess }) {
           <div id="production-list" class="compact-list"></div>
         </div>
       </section>
-    </main>
+    </main>`;
+
+    res.type("html").send(`<!DOCTYPE html>
+<html lang="en"${htmlClass ? ` class="${htmlClass}"` : ""}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arenzyra Commentator Desk</title>
+    <link rel="stylesheet" href="/obs/static/commentator-desk-widget.css?v=commentator-desk-v1" />
+    ${renderWidgetBrandingHead()}
+  </head>
+  <body${bodyClass ? ` class="${bodyClass}"` : ""}>
+    ${deskMarkup}
     <script>window.__ARENZYRA_COMMENTATOR_DESK_BOOTSTRAP__ = ${safeJson(bootstrap)};</script>
     <script>window.__ARENZYRA_WIDGET_VISIBILITY_BOOTSTRAP__ = ${safeJson(visibilityBootstrap)};</script>
+    ${renderWidgetBrandingScripts("commentator-desk", getOrganizationBranding)}
     <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
     <script src="/obs/static/commentator-desk-widget.js?v=commentator-desk-v1"></script>
   </body>
