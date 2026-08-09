@@ -411,7 +411,149 @@ WHERE granted.rolname = ANY (ARRAY[
 -- Commit the credential-only phase so an existing installation can perform a
 -- separately reviewed ownership repair after the next phase fails closed.
 COMMIT;
+
+-- The explicit ownership-adoption mode closes the database before any owner
+-- change, then terminates every other client backend. The current psql session
+-- remains connected and performs the complete closed-policy transaction. Any
+-- failure before the final reopen leaves the database closed, which is the
+-- deliberate fail-safe state and requires reviewed administrator recovery.
+\if :object_policy_adopt_ownership
+SELECT format(
+  'ALTER DATABASE %I WITH ALLOW_CONNECTIONS false',
+  :'database_name'
+)
+\gexec
+SELECT pg_terminate_backend(activity.pid)
+FROM pg_stat_activity activity
+WHERE activity.datname = :'database_name'
+  AND activity.pid <> pg_backend_pid()
+  AND activity.backend_type = 'client backend';
+SELECT CASE WHEN
+  NOT EXISTS (
+    SELECT 1
+    FROM pg_stat_activity activity
+    WHERE activity.datname = :'database_name'
+      AND activity.pid <> pg_backend_pid()
+      AND activity.backend_type = 'client backend'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM pg_prepared_xacts prepared
+    WHERE prepared.database = :'database_name'
+  )
+THEN 1 ELSE 1/0 END AS reviewed_database_fence_attested;
+\endif
 BEGIN;
+
+-- Existing installations may opt into one explicit ownership-adoption pass.
+-- The shell boundary requires the reviewed confirmation and a separately
+-- attested writer stop. This transaction then takes ACCESS EXCLUSIVE locks on
+-- every exact policy table before changing any owner. It never enumerates
+-- objects outside the closed policy and accepts only the administrator,
+-- PostgreSQL's stock owner, or the final reviewed owners as predecessors.
+SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
+  :'object_policy_require_complete'::boolean
+  AND (SELECT count(*) FROM arenzyra_object_policy) = (
+    SELECT count(*)
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN arenzyra_object_policy policy
+      ON policy.relation_name = relation.relname
+     AND policy.relation_kind = relation.relkind
+    WHERE namespace.nspname = :'schema_name'
+      AND relation.relkind = 'r'
+      AND pg_get_userbyid(relation.relowner) IN (
+        current_user,
+        'postgres',
+        :'api_migration_role',
+        :'studio_migration_role'
+      )
+  )
+) THEN 1 ELSE 1/0 END AS reviewed_relation_adoption_precondition;
+
+SELECT format(
+  'LOCK TABLE %I.%I IN ACCESS EXCLUSIVE MODE',
+  :'schema_name',
+  policy.relation_name
+)
+FROM arenzyra_object_policy policy
+WHERE :'object_policy_adopt_ownership'::boolean
+ORDER BY policy.relation_name
+\gexec
+
+SELECT format(
+  'ALTER TABLE %I.%I OWNER TO %I',
+  :'schema_name',
+  policy.relation_name,
+  CASE policy.owner_profile
+    WHEN 'api' THEN :'api_migration_role'
+    WHEN 'studio' THEN :'studio_migration_role'
+  END
+)
+FROM arenzyra_object_policy policy
+WHERE :'object_policy_adopt_ownership'::boolean
+ORDER BY policy.relation_name
+\gexec
+
+SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
+  (SELECT count(*) FROM arenzyra_enum_policy) = (
+    SELECT count(*)
+    FROM pg_type type
+    JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+    JOIN arenzyra_enum_policy policy ON policy.type_name = type.typname
+    WHERE namespace.nspname = :'schema_name'
+      AND type.typtype = 'e'
+      AND pg_get_userbyid(type.typowner) IN (
+        current_user,
+        'postgres',
+        :'api_migration_role'
+      )
+  )
+) THEN 1 ELSE 1/0 END AS reviewed_enum_adoption_precondition;
+
+SELECT format(
+  'ALTER TYPE %I.%I OWNER TO %I',
+  :'schema_name',
+  policy.type_name,
+  :'api_migration_role'
+)
+FROM arenzyra_enum_policy policy
+WHERE :'object_policy_adopt_ownership'::boolean
+ORDER BY policy.type_name
+\gexec
+
+SELECT CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
+  (SELECT count(*) FROM arenzyra_function_policy) = (
+    SELECT count(*)
+    FROM pg_proc routine
+    JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+    JOIN arenzyra_function_policy policy
+      ON policy.function_name = routine.proname
+     AND policy.identity_arguments = pg_get_function_identity_arguments(routine.oid)
+    WHERE namespace.nspname = :'schema_name'
+      AND routine.prokind = policy.function_kind
+      AND pg_get_userbyid(routine.proowner) IN (
+        current_user,
+        'postgres',
+        :'api_migration_role'
+      )
+  )
+) THEN 1 ELSE 1/0 END AS reviewed_function_adoption_precondition;
+
+SELECT format(
+  'ALTER FUNCTION %s OWNER TO %I',
+  routine.oid::regprocedure,
+  :'api_migration_role'
+)
+FROM pg_proc routine
+JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+JOIN arenzyra_function_policy policy
+  ON policy.function_name = routine.proname
+ AND policy.identity_arguments = pg_get_function_identity_arguments(routine.oid)
+WHERE :'object_policy_adopt_ownership'::boolean
+  AND namespace.nspname = :'schema_name'
+ORDER BY routine.oid::regprocedure::text
+\gexec
 
 -- Existing objects must already have the reviewed owner. This deliberately
 -- fails instead of silently transferring admin-owned production objects.
@@ -1160,3 +1302,10 @@ WHERE namespace.nspname = :'schema_name'
 \gexec
 
 COMMIT;
+\if :object_policy_adopt_ownership
+SELECT format(
+  'ALTER DATABASE %I WITH ALLOW_CONNECTIONS true',
+  :'database_name'
+)
+\gexec
+\endif

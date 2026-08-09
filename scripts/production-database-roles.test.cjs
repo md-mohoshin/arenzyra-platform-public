@@ -388,7 +388,23 @@ test("bootstrap removes ambient grants and never default-grants runtime DML", ()
   assert.match(sql, /membership\.roleid/);
   assert.match(sql, /ownership_boundary_attested/);
   assert.match(sql, /dependency\.deptype = 'e'/);
-  assert.doesNotMatch(sql, /ALTER\s+TABLE[\s\S]{0,80}OWNER\s+TO/i);
+  const adoptionStart = sql.indexOf(
+    "-- Existing installations may opt into one explicit ownership-adoption pass.",
+  );
+  const adoptionEnd = sql.indexOf(
+    "-- Existing objects must already have the reviewed owner.",
+  );
+  assert.ok(adoptionStart > 0 && adoptionEnd > adoptionStart);
+  const ordinaryReconciliation =
+    sql.slice(0, adoptionStart) + sql.slice(adoptionEnd);
+  assert.doesNotMatch(
+    ordinaryReconciliation,
+    /ALTER\s+TABLE[\s\S]{0,80}OWNER\s+TO/i,
+  );
+  assert.match(
+    sql.slice(adoptionStart, adoptionEnd),
+    /\\if :object_policy_adopt_ownership[\s\S]*LOCK TABLE %I\.%I IN ACCESS EXCLUSIVE MODE[\s\S]*ALTER TABLE %I\.%I OWNER TO %I/,
+  );
   assert.doesNotMatch(
     sql,
     /ALTER DEFAULT PRIVILEGES[\s\S]{0,180}\bGRANT\b[\s\S]{0,100}(?:api_runtime_role|studio_runtime_role)/i,

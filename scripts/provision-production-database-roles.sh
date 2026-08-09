@@ -7,6 +7,9 @@ LOCK_FILE="/run/arenzyra-production-deploy.lock"
 LOCK_TIMEOUT_SECONDS=10
 MODE=""
 FIRST_DEPLOY_CREATE_ONLY=0
+ADOPT_REVIEWED_OWNERSHIP=0
+WRITERS_STOPPED=0
+OWNERSHIP_CONFIRMATION=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --env) ENV_FILE="$2"; shift ;;
@@ -19,8 +22,11 @@ while [ "$#" -gt 0 ]; do
       MODE="dry-run"
       ;;
     --first-deploy-create-only) FIRST_DEPLOY_CREATE_ONLY=1 ;;
+    --adopt-reviewed-ownership) ADOPT_REVIEWED_OWNERSHIP=1 ;;
+    --writers-stopped) WRITERS_STOPPED=1 ;;
+    --confirm=*) OWNERSHIP_CONFIRMATION="${1#--confirm=}" ;;
     -h|--help)
-      printf 'Usage: %s [--env infra/.env.publish] (--dry-run|--apply) [--first-deploy-create-only]\n' "$0"
+      printf 'Usage: %s [--env infra/.env.publish] (--dry-run|--apply) [--first-deploy-create-only | --adopt-reviewed-ownership --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP]\n' "$0"
       exit 0
       ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -33,6 +39,21 @@ if [ -z "$MODE" ]; then
 fi
 if [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 1 ] && [ "$MODE" != "apply" ]; then
   printf '%s\n' '--first-deploy-create-only requires --apply.' >&2
+  exit 2
+fi
+if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
+  [ "$MODE" = "apply" ] && [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 0 ] && \
+    [ "$WRITERS_STOPPED" -eq 1 ] && \
+    [ "$OWNERSHIP_CONFIRMATION" = "ADOPT_REVIEWED_DATABASE_OWNERSHIP" ] || {
+      printf '%s\n' 'Reviewed ownership adoption requires --apply, --writers-stopped, and --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP.' >&2
+      exit 2
+    }
+  [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" = "1" ] || {
+    printf '%s\n' 'Reviewed ownership adoption requires the inherited production deployment lock and its verified backup.' >&2
+    exit 75
+  }
+elif [ "$WRITERS_STOPPED" -eq 1 ] || [ -n "$OWNERSHIP_CONFIRMATION" ]; then
+  printf '%s\n' 'Writer-stop and ownership confirmation flags require --adopt-reviewed-ownership.' >&2
   exit 2
 fi
 
@@ -53,7 +74,7 @@ OBJECT_POLICY_FILE="$REPOSITORY_ROOT/infra/production-database-object-policy.jso
 test -f "$SQL_FILE"
 test -f "$OBJECT_POLICY_FILE"
 cd "$REPOSITORY_ROOT"
-for command in base64 dirname docker flock id node readlink realpath stat tr; do
+for command in base64 dirname docker flock grep id node readlink realpath sort stat tr; do
   command -v "$command" >/dev/null 2>&1 || {
     printf 'Required database-role command is unavailable: %s.\n' "$command" >&2
     exit 2
@@ -427,7 +448,19 @@ if [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" != "1" ]; then
 fi
 
 # Backup work can consume disk. This guard is deliberately adjacent to SQL.
-bash scripts/production-deploy-preflight.sh
+if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
+  unexpected_writers="$({
+    docker ps \
+      --filter "label=com.docker.compose.project=$compose_project" \
+      --format '{{.Label "com.docker.compose.service"}}'
+  } | sort -u | grep -Ev '^(postgres|redis|proxy|media-ai)$' || true)"
+  [ -z "$unexpected_writers" ] || {
+    printf '%s\n' 'Reviewed ownership adoption requires every managed application and maintenance writer to be stopped.' >&2
+    exit 75
+  }
+else
+  bash scripts/production-deploy-preflight.sh
+fi
 role_change_possible=0
 role_change_failed() {
   local status="$?"
@@ -442,8 +475,12 @@ trap role_change_failed ERR
 # in process arguments, command output, or a temporary plaintext file.
 role_change_possible=1
 object_policy_require_complete=true
+object_policy_adopt_ownership=false
 if [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 1 ]; then
   object_policy_require_complete=false
+fi
+if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
+  object_policy_adopt_ownership=true
 fi
 {
   printf '%s\n' "$postgres_admin_role" "$postgres_admin_password" "$postgres_database" "$schema_name" "$postgres_port"
@@ -465,6 +502,7 @@ fi
   printf '\\set youtube_maintenance_password_base64 '\''%s'\''\n' "$youtube_maintenance_password_base64"
   printf '\\set object_policy_base64 '\''%s'\''\n' "$object_policy_base64"
   printf '\\set object_policy_require_complete '\''%s'\''\n' "$object_policy_require_complete"
+  printf '\\set object_policy_adopt_ownership '\''%s'\''\n' "$object_policy_adopt_ownership"
   cat "$SQL_FILE"
 } | docker exec -i "$postgres_container" sh -ceu '
   IFS= read -r PGUSER
