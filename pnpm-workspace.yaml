@@ -1,5 +1,5 @@
 packages:
-  - "apps/*"
+  - "apps/arenzyra-web"
   - "packages/*"
 ignoredBuiltDependencies:
   - sharp

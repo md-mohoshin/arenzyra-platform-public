@@ -7,17 +7,17 @@
     "build": "tsc -p tsconfig.json",
     "dev": "ts-node src/bot.ts",
     "start": "node dist/bot.js",
-    "test": "node --test --require ts-node/register --require ./src/test-env.ts src/services/session.service.spec.ts src/services/message-registration.service.spec.ts src/services/control-panel.service.spec.ts src/services/scrim-discord-setup.service.spec.ts src/services/discord-emojis.spec.ts src/services/official-pricing-promo.service.spec.ts"
+    "test": "node --test --require ts-node/register --require ./src/test-env.ts src/config-auth.spec.ts src/command-authorization.spec.ts src/component-policy-inventory.spec.ts src/gateway-health.spec.ts src/api/api-request-policy.spec.ts src/security/remote-image.spec.ts src/services/session-ownership.store.spec.ts src/services/session.service.spec.ts src/services/message-registration.service.spec.ts src/services/control-panel.service.spec.ts src/services/scrim-discord-setup.service.spec.ts src/services/discord-emojis.spec.ts src/services/idp-schedule.service.spec.ts src/services/official-pricing-promo.service.spec.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "axios": "^1.16.1",
-    "discord.js": "^14.25.1",
+    "axios": "^1.18.0",
+    "discord.js": "^14.27.0",
     "dotenv": "^17.3.1",
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

@@ -7,7 +7,7 @@
     "start": "electron .",
     "sync:branding": "node ../../scripts/sync-brand-icons.cjs",
     "dist": "npm run sync:branding && electron-builder -w",
-    "test": "echo \"No tests configured\" && exit 0"
+    "test": "node --test process-ownership.test.cjs ../../infra/health-artifact-policy.test.cjs"
   },
   "keywords": [],
   "author": "",
@@ -29,6 +29,7 @@
       "main.js",
       "preload.js",
       "renderer.js",
+      "process-ownership.cjs",
       "index.html",
       "package.json"
     ],
@@ -38,8 +39,12 @@
         "to": "icon.ico"
       },
       {
-        "from": "../../infra/health.ps1",
-        "to": "health.ps1"
+        "from": "../../infra/health-readonly.ps1",
+        "to": "health-readonly.ps1"
+      },
+      {
+        "from": "../../infra/health-artifact-policy.cjs",
+        "to": "health-artifact-policy.cjs"
       }
     ],
     "win": {
