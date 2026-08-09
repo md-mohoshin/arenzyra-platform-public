@@ -60,10 +60,13 @@ The first customer is a PUBG Mobile organizer who:
 - can approve a small monthly operations expense.
 
 For new candidate offers only, use **PUBG Production - $29.99/month** as the
-planned primary founding offer. The system starts its seven-day trial only when
-the approved owner successfully completes secure account setup; operations
-should issue that setup only after workspace defaults and the assisted test
-event are ready.
+planned primary founding offer after the release gates close. The intended
+seven-day trial would start only when the approved owner successfully completes
+secure account setup. The canonical API does not implement that contract yet:
+it still requires an application password, lacks account-setup consumption, and
+starts its trial at approval. Do not advertise or sell the intended behavior
+until the canonical onboarding and held schema dependencies are integrated and
+verified.
 
 Treat $29.99 as a founding validation price for the first 5-10 customers, not a
 proven permanent price. Arenzyra setup approval is not PUBG MOBILE publisher or

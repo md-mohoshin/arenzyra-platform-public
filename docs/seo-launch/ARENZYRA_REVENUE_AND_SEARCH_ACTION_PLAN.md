@@ -2,9 +2,27 @@
 
 Prepared for the current Arenzyra product: PUBG Mobile tournament operations, Discord workflows, OCR result review, Observer Launcher, and OBS-ready broadcast widgets.
 
+## Availability Gate
+
+SEO and indexing work, discovery conversations, and clearly labelled demo-data
+walkthroughs may begin before release. Until all end-to-end release blockers are
+closed and canonical onboarding and canonical catalog parity pass, do not
+publish or send pricing, trial, early-access, apply, payment, approval,
+customer-event, or live-customer copy; do not accept payment, approve access, or
+run a customer workflow. Before then, do not use customer credentials, live
+room data, unsupported telemetry, or an unreviewed production write.
+
+All prices in this plan are for new candidate PUBG offers only. They do not
+automatically reprice existing legacy entitlements or separate YouTube
+automation plans. Auto Launcher promotion also remains blocked until its
+supported-telemetry, approved-recording, approved-map, production-packaging,
+and signing gates pass.
+
 ## Current Read
 
-Arenzyra is not a tiny idea anymore. It has enough product surface to sell, but the promotion needs to be narrower.
+Arenzyra is not a tiny idea anymore. It has enough product surface for a focused
+commercial hypothesis, but sales remain subject to the availability gate above
+and the promotion needs to be narrower.
 
 The strongest buyer is not "all esports." The strongest first buyer is:
 
@@ -18,7 +36,8 @@ The public website already has indexed pages for the homepage, PUBG tournament p
 
 ## Money Model
 
-Keep the offer simple for the first 10 paying customers.
+After the availability gate passes, keep the offer simple for the first 10
+paying customers.
 
 ### Primary Offer
 
@@ -42,7 +61,8 @@ Use this promise:
 
 ### Private-pilot request
 
-Do not push this first unless the organizer already understands telemetry:
+Do not push this first. Even after the availability gate passes, promote or sell
+it only after the Auto Launcher gates listed above pass:
 
 **Auto Launcher - $59.99/month when approved (request-only private pilot)**
 
@@ -69,7 +89,7 @@ Use:
 - "PUBG Mobile tournament operations"
 - "Discord slots, OCR results, and OBS widgets"
 - "For scrim hosts and tournament broadcast teams"
-- "7-day trial after approved account setup"
+- "Planned 7-day PUBG Production trial after approved account setup - unavailable until release blockers close and canonical onboarding and catalog parity pass"
 - "No payment before review"
 
 ## Website Fixes That Matter Most
@@ -86,7 +106,7 @@ Add one compact proof strip:
 - "Built for Discord slot workflows"
 - "OBS browser-source widgets"
 - "Manual approval before final results"
-- "7-day trial after approved account setup"
+- "Planned 7-day PUBG Production trial after approved account setup - unavailable until release blockers close and canonical onboarding and catalog parity pass"
 
 Better proof would be:
 
@@ -234,13 +254,15 @@ Hi, I built Arenzyra for PUBG Mobile tournament organizers who run events throug
 
 It helps with registrations, slot lists, OCR/manual result review, no-show bans, standings, Discord result posts, and OBS widgets.
 
-I am looking for a few early organizers to test the workflow with a 7-day trial that starts after setup approval when the owner completes account setup. No payment is needed before review.
+After all end-to-end release blockers close and canonical onboarding and catalog parity pass, I plan to invite a few early organizers to test the workflow with a 7-day PUBG Production trial that starts after setup approval when the owner completes account setup. This copy must not be sent before those gates; no payment is needed before review.
 
 Can I show you a 60-second demo?
 https://arenzyra.com/pubg-tournament-platform
 ```
 
 ### Follow-Up After Interest
+
+Do not send this standalone follow-up before the availability gate passes.
 
 ```text
 The best fit is if your team already handles screenshots, slots, and results manually.
@@ -269,7 +291,7 @@ It helps with:
 - Standings and result posts
 - OBS-ready broadcast widgets
 
-After setup approval, the 7-day trial starts when the owner completes account setup. No payment before review.
+Planned after all end-to-end release blockers close and canonical onboarding and catalog parity pass: after setup approval, the 7-day PUBG Production trial would start when the owner completes account setup. Do not send this offer before those gates. No payment before review.
 
 PUBG page:
 https://arenzyra.com/pubg-tournament-platform
@@ -342,6 +364,8 @@ Before serious promotion, make sure these are ready:
 - One onboarding checklist exists for approved organizers
 
 ## First 10 Customer Plan
+
+Do not begin this customer plan until the availability gate passes.
 
 Goal:
 

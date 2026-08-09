@@ -1,6 +1,21 @@
 # Arenzyra Worldwide Launch Pack
 
-Use this pack after the SEO pages are live on `https://arenzyra.com`.
+## Availability Gate
+
+Use the SEO and indexing steps in this pack after the relevant pages are live on
+`https://arenzyra.com`. Discovery conversations and clearly labelled demo-data
+walkthroughs may begin before release. Until all end-to-end release blockers are
+closed and canonical onboarding and canonical catalog parity pass, do not
+publish or send sales, pricing, trial, early-access, apply, payment, approval,
+customer-event, or live-customer copy; do not accept payment, approve access, or
+run a customer workflow. Before then, do not use customer credentials, live
+room data, unsupported telemetry, or an unreviewed production write.
+
+All prices in this pack are for new candidate PUBG offers only. They do not
+automatically reprice existing legacy entitlements or separate YouTube
+automation plans. Auto Launcher promotion also remains blocked until its
+supported-telemetry, approved-recording, approved-map, production-packaging,
+and signing gates pass.
 
 ## Priority Pages
 
@@ -24,7 +39,7 @@ Use this pack after the SEO pages are live on `https://arenzyra.com`.
 
 Arenzyra is an esports tournament operations platform for organizers who need Discord workflows, OCR-assisted result review, match control, and OBS-ready broadcast widgets.
 
-It helps tournament crews coordinate organizer-controlled workflows without depending fully on official game APIs. The pilot ladder is Discord Bot Pro at $18.99/month, PUBG Production at $29.99/month (recommended), and a request-only Auto Launcher private pilot at $59.99/month when the telemetry source is supported and approved. After setup approval, the 7-day trial starts only when the owner completes account setup for the prepared workspace.
+It helps tournament crews coordinate organizer-controlled workflows without depending fully on official game APIs. The planned pilot ladder is Discord Bot Pro at $18.99/month, PUBG Production at $29.99/month (recommended), and a request-only Auto Launcher private pilot at $59.99/month when the telemetry source is supported and approved. Do not publish this offer until the availability gate above passes, and do not promote Auto Launcher until its additional gates pass; the intended 7-day PUBG Production trial would start after setup approval only when the owner completes account setup for the prepared workspace.
 
 Arenzyra is independent software and is not operated by, affiliated with, or endorsed by PUBG MOBILE, KRAFTON, or their affiliates. Arenzyra does not grant publisher approval, tournament licensing, room-card access, or official API access; organizers remain responsible for current publisher rules and licensing.
 
@@ -54,7 +69,7 @@ What it does:
 - Result posts for Discord
 - OBS-ready ranking and post-match widgets
 
-The pilot ladder is Discord Bot Pro ($18.99/month), PUBG Production ($29.99/month and recommended), and a request-only Auto Launcher private pilot ($59.99/month when approved for a supported telemetry source). After setup approval, the 7-day trial starts only when the owner completes account setup for the prepared workspace.
+The planned pilot ladder is Discord Bot Pro ($18.99/month), PUBG Production ($29.99/month and recommended), and a request-only Auto Launcher private pilot ($59.99/month when approved for a supported telemetry source). Do not publish this offer until the availability gate above passes, and do not promote Auto Launcher until its additional gates pass; the intended 7-day PUBG Production trial would start after setup approval only when the owner completes account setup for the prepared workspace.
 
 Apply here:
 https://arenzyra.com/apply
