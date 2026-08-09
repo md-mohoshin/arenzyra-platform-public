@@ -1,33 +1,108 @@
+"use strict";
+
 const fs = require("node:fs");
 const path = require("node:path");
 
-const repoRoot = path.resolve(__dirname, "..");
-const sourceIcon = path.join(repoRoot, "apps", "arenzyra-web", "app", "favicon.ico");
-const sourceMark = path.join(repoRoot, "apps", "arenzyra-web", "app", "icon.png");
-const targetIcons = [
-  path.join(repoRoot, "apps", "desktop", "build", "icon.ico"),
-  path.join(repoRoot, "apps", "launcher", "build", "icon.ico"),
-];
-const targetMarks = [
-  path.join(repoRoot, "apps", "desktop", "build", "default-team.png"),
-];
+const defaultRepoRoot = path.resolve(__dirname, "..");
 
-if (!fs.existsSync(sourceIcon)) {
-  throw new Error(`Source icon not found: ${sourceIcon}`);
+function isExistingFile(filePath) {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
-if (!fs.existsSync(sourceMark)) {
-  throw new Error(`Source brand mark not found: ${sourceMark}`);
+function syncAssetGroup({ sourcePath, targetPaths, label, log, warn }) {
+  if (isExistingFile(sourcePath)) {
+    for (const targetPath of targetPaths) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+      log(`Synced ${sourcePath} -> ${targetPath}`);
+    }
+    return { copied: [...targetPaths], retained: [] };
+  }
+
+  const missingTargets = targetPaths.filter(
+    (targetPath) => !isExistingFile(targetPath),
+  );
+  if (missingTargets.length > 0) {
+    throw new Error(
+      `${label} source was not found (${sourcePath}) and bundled target file(s) are missing: ${missingTargets.join(", ")}`,
+    );
+  }
+
+  warn(
+    `${label} source was not found (${sourcePath}); retaining the bundled package input(s).`,
+  );
+  return { copied: [], retained: [...targetPaths] };
 }
 
-for (const targetIcon of targetIcons) {
-  fs.mkdirSync(path.dirname(targetIcon), { recursive: true });
-  fs.copyFileSync(sourceIcon, targetIcon);
-  console.log(`Synced ${sourceIcon} -> ${targetIcon}`);
+function syncBrandIcons({
+  repoRoot = defaultRepoRoot,
+  sourceIcon = path.join(
+    repoRoot,
+    "apps",
+    "arenzyra-web",
+    "app",
+    "favicon.ico",
+  ),
+  sourceMark = path.join(repoRoot, "apps", "arenzyra-web", "app", "icon.png"),
+  sourceDesktopMark = path.join(
+    repoRoot,
+    "assets",
+    "brand",
+    "arenzyra-mark.png",
+  ),
+  targetIcons = [
+    path.join(repoRoot, "apps", "desktop", "build", "icon.ico"),
+    path.join(repoRoot, "apps", "launcher", "build", "icon.ico"),
+  ],
+  targetMarks = [
+    path.join(repoRoot, "apps", "desktop", "build", "default-team.png"),
+  ],
+  targetDesktopMarks = [
+    path.join(
+      repoRoot,
+      "apps",
+      "desktop",
+      "src",
+      "assets",
+      "arenzyra-mark.png",
+    ),
+  ],
+  log = console.log,
+  warn = console.warn,
+} = {}) {
+  return {
+    icons: syncAssetGroup({
+      sourcePath: sourceIcon,
+      targetPaths: targetIcons,
+      label: "Brand icon",
+      log,
+      warn,
+    }),
+    marks: syncAssetGroup({
+      sourcePath: sourceMark,
+      targetPaths: targetMarks,
+      label: "Brand mark",
+      log,
+      warn,
+    }),
+    desktopMarks: syncAssetGroup({
+      sourcePath: sourceDesktopMark,
+      targetPaths: targetDesktopMarks,
+      label: "Desktop brand mark",
+      log,
+      warn,
+    }),
+  };
 }
 
-for (const targetMark of targetMarks) {
-  fs.mkdirSync(path.dirname(targetMark), { recursive: true });
-  fs.copyFileSync(sourceMark, targetMark);
-  console.log(`Synced ${sourceMark} -> ${targetMark}`);
+if (require.main === module) {
+  syncBrandIcons();
 }
+
+module.exports = {
+  syncBrandIcons,
+};

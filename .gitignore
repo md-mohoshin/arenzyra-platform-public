@@ -101,7 +101,7 @@ recordings/
 apps/desktop/build/*
 !apps/desktop/build/icon.ico
 !apps/desktop/build/default-team.png
-!apps/desktop/build/default-player.png
+!apps/desktop/build/default-player.svg
 !apps/desktop/build/shadow-logo-template.svg
 !apps/launcher/build/
 apps/launcher/build/*
