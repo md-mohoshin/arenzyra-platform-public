@@ -15,8 +15,15 @@ container_created=0
 network_created=0
 volume_created=0
 extraction_root=""
+extraction_volumes=()
+USE_DOCKER_VOLUME_EXTRACTION="${ARENZYRA_RESTORE_USE_DOCKER_VOLUMES:-0}"
 if ! [[ "$POSTGRES_IMAGE" =~ ^[^@[:space:]]+:[^@[:space:]]+@sha256:[a-fA-F0-9]{64}$ ]]; then
   printf 'ARENZYRA_RESTORE_POSTGRES_IMAGE must be version-and-digest pinned.\n' >&2
+  exit 2
+fi
+if [ "$USE_DOCKER_VOLUME_EXTRACTION" != "0" ] && \
+  [ "$USE_DOCKER_VOLUME_EXTRACTION" != "1" ]; then
+  printf 'ARENZYRA_RESTORE_USE_DOCKER_VOLUMES must be 0 or 1.\n' >&2
   exit 2
 fi
 
@@ -69,6 +76,13 @@ cleanup() {
   if [ "$volume_created" -eq 1 ] && [ -n "$volume" ]; then
     docker volume rm "$volume" >/dev/null 2>&1 || true
   fi
+  for extraction_volume in "${extraction_volumes[@]}"; do
+    case "$extraction_volume" in
+      arenzyra-restore-drill-extract-*)
+        docker volume rm "$extraction_volume" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
   if [ -n "$extraction_root" ]; then
     case "$extraction_root" in
       /tmp/arenzyra-restore-drill-volumes.*)
@@ -86,17 +100,20 @@ age --decrypt --identity "$AGE_IDENTITY" manifest.sha256.age | sha256sum --check
 age --decrypt --identity "$AGE_IDENTITY" metadata.txt.age | grep -q '^format=arenzyra-encrypted-backup-v1$'
 
 docker image inspect "$POSTGRES_IMAGE" >/dev/null
-extraction_root="$(mktemp -d /tmp/arenzyra-restore-drill-volumes.XXXXXX)"
-chmod 700 "$extraction_root"
-extraction_root="$(realpath -e -- "$extraction_root")"
-case "$extraction_root" in
-  /tmp/arenzyra-restore-drill-volumes.*) ;;
-  *)
-    printf 'Restore extraction root escaped the dedicated temporary namespace: %s\n' \
-      "$extraction_root" >&2
-    exit 1
-    ;;
-esac
+suffix="$(date -u '+%Y%m%d%H%M%S')-$(random_hex 8)"
+if [ "$USE_DOCKER_VOLUME_EXTRACTION" = "0" ]; then
+  extraction_root="$(mktemp -d /tmp/arenzyra-restore-drill-volumes.XXXXXX)"
+  chmod 700 "$extraction_root"
+  extraction_root="$(realpath -e -- "$extraction_root")"
+  case "$extraction_root" in
+    /tmp/arenzyra-restore-drill-volumes.*) ;;
+    *)
+      printf 'Restore extraction root escaped the dedicated temporary namespace: %s\n' \
+        "$extraction_root" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 verify_extracted_tree() {
   local target="$1"
@@ -146,31 +163,62 @@ for archive in volume-*.tar.gz.age; do
     exit 1
   fi
 
-  volume_target="$extraction_root/$logical_name"
-  mkdir -m 700 -- "$volume_target"
-  resolved_volume_target="$(realpath -e -- "$volume_target")"
-  if [ "$(dirname -- "$resolved_volume_target")" != "$extraction_root" ]; then
-    printf 'Refusing unsafe volume extraction target: %s\n' "$resolved_volume_target" >&2
-    exit 1
+  if [ "$USE_DOCKER_VOLUME_EXTRACTION" = "1" ]; then
+    extraction_volume="arenzyra-restore-drill-extract-$suffix-$logical_name"
+    docker volume create "$extraction_volume" >/dev/null
+    extraction_volumes+=("$extraction_volume")
+    if ! age --decrypt --identity "$AGE_IDENTITY" "$archive" \
+      | docker run --rm --network none --read-only \
+          --cap-drop ALL --security-opt no-new-privileges:true \
+          --pids-limit 64 --memory 256m \
+          --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+          --mount "type=volume,src=${extraction_volume},dst=/restore" \
+          --entrypoint /bin/sh "$POSTGRES_IMAGE" -ceu \
+            'cd /restore; umask 077; exec tar -xozf -'; then
+      printf 'Isolated volume extraction failed for archive: %s\n' "$archive" >&2
+      exit 1
+    fi
+    if ! docker run --rm --network none --read-only \
+      --cap-drop ALL --security-opt no-new-privileges:true \
+      --pids-limit 64 --memory 256m \
+      --mount "type=volume,src=${extraction_volume},dst=/restore,readonly" \
+      --entrypoint /bin/sh "$POSTGRES_IMAGE" -ceu '
+        unsafe="$(find /restore -xdev \
+          \( -type l -o -type b -o -type c -o -type p -o -type s \) \
+          -print -quit)"
+        [ -z "$unsafe" ]
+        unsafe="$(find /restore -xdev -type f -perm /6000 -print -quit)"
+        [ -z "$unsafe" ]
+      '; then
+      printf 'Unsafe file type or mode extracted from archive: %s\n' "$archive" >&2
+      exit 1
+    fi
+  else
+    volume_target="$extraction_root/$logical_name"
+    mkdir -m 700 -- "$volume_target"
+    resolved_volume_target="$(realpath -e -- "$volume_target")"
+    if [ "$(dirname -- "$resolved_volume_target")" != "$extraction_root" ]; then
+      printf 'Refusing unsafe volume extraction target: %s\n' "$resolved_volume_target" >&2
+      exit 1
+    fi
+    # -o prevents an archive from restoring numeric ownership; the drill
+    # validates content and containment without requiring CAP_CHOWN.
+    if ! age --decrypt --identity "$AGE_IDENTITY" "$archive" \
+      | docker run --rm --network none --read-only \
+          --cap-drop ALL --security-opt no-new-privileges:true \
+          --pids-limit 64 --memory 256m \
+          --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+          --mount "type=bind,src=${resolved_volume_target},dst=/restore,rw" \
+          --entrypoint /bin/sh "$POSTGRES_IMAGE" -ceu \
+            'cd /restore; umask 077; exec tar -xozf -'; then
+      printf 'Isolated extraction failed for volume archive: %s\n' "$archive" >&2
+      exit 1
+    fi
+    verify_extracted_tree "$resolved_volume_target" "$archive"
   fi
-  # -o prevents an archive from restoring numeric ownership; the drill
-  # validates content and containment without requiring CAP_CHOWN.
-  if ! age --decrypt --identity "$AGE_IDENTITY" "$archive" \
-    | docker run --rm --network none --read-only \
-        --cap-drop ALL --security-opt no-new-privileges:true \
-        --pids-limit 64 --memory 256m \
-        --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-        --mount "type=bind,src=${resolved_volume_target},dst=/restore,rw" \
-        --entrypoint /bin/sh "$POSTGRES_IMAGE" -ceu \
-          'cd /restore; umask 077; exec tar -xozf -'; then
-    printf 'Isolated extraction failed for volume archive: %s\n' "$archive" >&2
-    exit 1
-  fi
-  verify_extracted_tree "$resolved_volume_target" "$archive"
   extracted_volumes=$((extracted_volumes + 1))
 done
 
-suffix="$(date -u '+%Y%m%d%H%M%S')-$(random_hex 8)"
 container="arenzyra-restore-drill-$suffix"
 network="arenzyra-restore-drill-$suffix"
 volume="arenzyra-restore-drill-$suffix"

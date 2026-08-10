@@ -1017,6 +1017,12 @@ test("restore drill extracts archives into isolated contained temporary targets"
   assert.match(restore, /container_created=1/);
   assert.match(restore, /od -An -N "\$bytes" -tx1 \/dev\/urandom/);
   assert.doesNotMatch(restore, /openssl rand/);
+  assert.match(restore, /ARENZYRA_RESTORE_USE_DOCKER_VOLUMES/);
+  assert.match(restore, /arenzyra-restore-drill-extract-/);
+  assert.match(
+    restore,
+    /type=volume,src=\$\{extraction_volume\},dst=\/restore,readonly/,
+  );
   assert.match(restore, /-e POSTGRES_PASSWORD[\s\\]*\n/);
   assert.doesNotMatch(restore, /-e POSTGRES_PASSWORD=/);
 });
