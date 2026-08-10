@@ -14,6 +14,12 @@ in `/etc/arenzyra-backup-rclone.env` as root `0600`, pulls only the digest-pinne
 backup helper image, and proves an encrypted upload/download/SHA-256 round trip.
 It cannot restart, rebuild, recreate, migrate, run Compose, or change a data
 volume. Credential rotation is deliberately a separate review.
+An existing different age recipient may be replaced during this initial setup
+only when it is valid but unverified, the reviewed rclone destination is empty,
+the local backup root contains no entry, and the bounded off-host prefix
+contains only the exact encrypted probe-name forms. Any completed/local backup
+or non-probe remote object blocks replacement so recovery material cannot be
+orphaned.
 
 ## Configure
 

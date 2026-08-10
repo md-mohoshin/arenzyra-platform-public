@@ -15,7 +15,7 @@ function fail(message) {
   throw new Error(`PRODUCTION BACKUP ENV BLOCKED: ${message}`);
 }
 
-function updateEnvText(text, ageRecipient) {
+function updateEnvText(text, ageRecipient, options = {}) {
   if (typeof text !== "string" || Buffer.byteLength(text) > 1024 * 1024) {
     fail("environment input is invalid or oversized.");
   }
@@ -27,6 +27,28 @@ function updateEnvText(text, ageRecipient) {
   const hadFinalNewline = /\r?\n$/.test(text);
   const body = hadFinalNewline ? text.replace(/\r?\n$/, "") : text;
   const lines = body === "" ? [] : body.split(/\r?\n/);
+  const existingValues = new Map();
+  for (const key of [
+    "ARENZYRA_BACKUP_AGE_RECIPIENT",
+    "ARENZYRA_BACKUP_RCLONE_REMOTE",
+    "ARENZYRA_BACKUP_ROOT",
+    "ARENZYRA_BACKUP_HELPER_IMAGE",
+  ]) {
+    const matching = lines.filter((line) => new RegExp(`^${key}=`).test(line));
+    if (matching.length > 1) fail(`${key} is duplicated.`);
+    existingValues.set(
+      key,
+      matching.length === 0 ? "" : matching[0].slice(key.length + 1),
+    );
+  }
+  const existingRecipient = existingValues.get("ARENZYRA_BACKUP_AGE_RECIPIENT");
+  const existingRemote = existingValues.get("ARENZYRA_BACKUP_RCLONE_REMOTE");
+  const mayReplaceUnverifiedRecipient =
+    options.allowReplaceUnverifiedRecipient === true &&
+    existingRecipient !== "" &&
+    existingRecipient !== ageRecipient &&
+    /^age1[0-9a-z]{58}$/.test(existingRecipient) &&
+    existingRemote === "";
   const values = new Map([
     ["ARENZYRA_BACKUP_AGE_RECIPIENT", ageRecipient],
     ["ARENZYRA_BACKUP_RCLONE_REMOTE", REMOTE],
@@ -39,11 +61,14 @@ function updateEnvText(text, ageRecipient) {
     for (let index = 0; index < lines.length; index += 1) {
       if (new RegExp(`^${key}=`).test(lines[index])) indexes.push(index);
     }
-    if (indexes.length > 1) fail(`${key} is duplicated.`);
     if (indexes.length === 1) {
       const index = indexes[0];
       const current = lines[index].slice(key.length + 1);
-      if (current !== "" && current !== value) {
+      if (
+        current !== "" &&
+        current !== value &&
+        !(key === "ARENZYRA_BACKUP_AGE_RECIPIENT" && mayReplaceUnverifiedRecipient)
+      ) {
         fail(`${key} already has a different non-empty value.`);
       }
       lines[index] = `${key}=${value}`;
@@ -54,7 +79,7 @@ function updateEnvText(text, ageRecipient) {
   return `${lines.join(newline)}${newline}`;
 }
 
-function configureProductionEnv(ageRecipient) {
+function configureProductionEnv(ageRecipient, options) {
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
     fail("Linux UID 0 is required.");
   }
@@ -84,7 +109,7 @@ function configureProductionEnv(ageRecipient) {
     fs.closeSync(input);
   }
 
-  const output = updateEnvText(text, ageRecipient);
+  const output = updateEnvText(text, ageRecipient, options);
   const temporary = `${PRODUCTION_ENV}.backup-config.${process.pid}.tmp`;
   let outputFd;
   try {
@@ -130,14 +155,15 @@ function configureProductionEnv(ageRecipient) {
 
 function main(argv) {
   if (
-    argv.length !== 4 ||
+    argv.length !== 5 ||
     argv[0] !== "--age-recipient" ||
     argv[2] !== "--confirm" ||
-    argv[3] !== CONFIRMATION
+    argv[3] !== CONFIRMATION ||
+    argv[4] !== "--replace-unverified-age-recipient"
   ) {
     fail("exact age-recipient and confirmation arguments are required.");
   }
-  configureProductionEnv(argv[1]);
+  configureProductionEnv(argv[1], { allowReplaceUnverifiedRecipient: true });
   process.stdout.write("PRODUCTION BACKUP ENV CONFIGURED\n");
 }
 

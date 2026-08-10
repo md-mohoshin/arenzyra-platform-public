@@ -47,6 +47,29 @@ test("backup env update rejects replacement, duplicate, and invalid recipient", 
   assert.throws(() => updateEnvText("A=B\n", "age1invalid"), /recipient is invalid/);
 });
 
+test("unverified recipient replacement requires an empty remote setting", () => {
+  const oldRecipient = `age1${"b".repeat(58)}`;
+  const unconfigured =
+    `ARENZYRA_BACKUP_AGE_RECIPIENT=${oldRecipient}\n` +
+    "ARENZYRA_BACKUP_RCLONE_REMOTE=\n";
+  const replaced = updateEnvText(unconfigured, recipient, {
+    allowReplaceUnverifiedRecipient: true,
+  });
+  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${recipient}`));
+  assert.throws(
+    () =>
+      updateEnvText(
+        unconfigured.replace(
+          "ARENZYRA_BACKUP_RCLONE_REMOTE=",
+          "ARENZYRA_BACKUP_RCLONE_REMOTE=existing:backup",
+        ),
+        recipient,
+        { allowReplaceUnverifiedRecipient: true },
+      ),
+    /different non-empty value/,
+  );
+});
+
 test("backup bootstrap is preflighted, hash pinned, descriptor-only, and non-service-mutating", () => {
   const configure = read("scripts/configure-production-backup.sh");
   const sharedLock = configure.indexOf("source scripts/acquire-production-deploy-lock.sh");
@@ -72,6 +95,9 @@ test("backup bootstrap is preflighted, hash pinned, descriptor-only, and non-ser
   assert.match(configure, /credential rotation requires a separately reviewed action/);
   assert.match(configure, /--immutable --no-traverse --s3-no-check-bucket/);
   assert.match(configure, /sha256sum "\$RUN_ROOT\/downloaded\.bin\.age"/);
+  assert.match(configure, /existing local backup prevents age recipient replacement/);
+  assert.match(configure, /non-probe off-host object prevents age recipient replacement/);
+  assert.match(configure, /--replace-unverified-age-recipient/);
   assert.doesNotMatch(configure, /docker\s+(?:compose|restart|start|stop|rm)\b/);
 });
 

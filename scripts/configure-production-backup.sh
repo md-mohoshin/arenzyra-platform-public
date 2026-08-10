@@ -34,7 +34,8 @@ cleanup() {
   esac
   case "${RUN_ROOT:-}" in
     /run/arenzyra-backup-bootstrap.*)
-      rm -f -- "$RUN_ROOT/probe.bin.age" "$RUN_ROOT/downloaded.bin.age"
+      rm -f -- "$RUN_ROOT/probe.bin.age" "$RUN_ROOT/downloaded.bin.age" \
+        "$RUN_ROOT/remote-inventory"
       rmdir -- "$RUN_ROOT" 2>/dev/null || true
       ;;
   esac
@@ -50,7 +51,7 @@ source scripts/acquire-production-deploy-lock.sh
 bash scripts/production-deploy-preflight.sh --allow-read-only-legacy-backup
 
 [ "$(uname -m)" = "x86_64" ] || block "the reviewed tools require x86_64 Linux."
-for command in docker install mktemp openssl sha256sum stat; do
+for command in docker find grep install mktemp openssl sha256sum stat; do
   command -v "$command" >/dev/null 2>&1 || block "required system command is unavailable: $command"
 done
 [ -r /proc/self/fd/3 ] || block "credential input descriptor 3 is required."
@@ -143,6 +144,37 @@ rclone copyto "$probe_remote" "$RUN_ROOT/downloaded.bin.age" \
   "$(sha256sum "$RUN_ROOT/downloaded.bin.age" | awk '{print $1}')" ] || \
   block "off-host probe checksum differs."
 
+if [ -e /opt/arenzyra-backups ] || [ -L /opt/arenzyra-backups ]; then
+  [ -d /opt/arenzyra-backups ] && [ ! -L /opt/arenzyra-backups ] || \
+    block "local backup root is not a regular directory."
+  backup_root_identity="$(stat -Lc '%u:%g:%a' -- /opt/arenzyra-backups)"
+  IFS=':' read -r backup_root_uid backup_root_gid backup_root_mode \
+    <<<"$backup_root_identity"
+  if [ "$backup_root_uid" != "0" ] || [ "$backup_root_gid" != "0" ] || \
+    ! [[ "$backup_root_mode" =~ ^[0-7]{3,4}$ ]] || \
+    (( 8#$backup_root_mode & 8#022 )); then
+    block "local backup root identity is unsafe."
+  fi
+  if find /opt/arenzyra-backups -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    block "an existing local backup prevents age recipient replacement."
+  fi
+fi
+rclone lsf "$REMOTE_ROOT" --recursive --files-only --log-level ERROR \
+  >"$RUN_ROOT/remote-inventory"
+[ "$(stat -c %s -- "$RUN_ROOT/remote-inventory")" -le 65536 ] || \
+  block "off-host inventory is oversized."
+remote_inventory_count=0
+while IFS= read -r remote_inventory_entry; do
+  [ -n "$remote_inventory_entry" ] || continue
+  remote_inventory_count=$((remote_inventory_count + 1))
+  [ "$remote_inventory_count" -le 64 ] || block "off-host inventory has too many entries."
+  case "$remote_inventory_entry" in
+    probes/desktop-key-validation-*.bin.age|probes/server-backup-bootstrap-*.bin.age) ;;
+    *) block "a non-probe off-host object prevents age recipient replacement." ;;
+  esac
+done <"$RUN_ROOT/remote-inventory"
+[ "$remote_inventory_count" -ge 1 ] || block "off-host probe inventory is unexpectedly empty."
+
 bash scripts/production-deploy-preflight.sh --allow-read-only-legacy-backup
 if ! docker image inspect "$HELPER_IMAGE" >/dev/null 2>&1; then
   docker pull "$HELPER_IMAGE"
@@ -152,6 +184,7 @@ docker image inspect "$HELPER_IMAGE" >/dev/null 2>&1 || \
 
 node scripts/configure-production-backup-env.cjs \
   --age-recipient "$age_recipient" \
-  --confirm CONFIGURE_REVIEWED_PRODUCTION_BACKUP
+  --confirm CONFIGURE_REVIEWED_PRODUCTION_BACKUP \
+  --replace-unverified-age-recipient
 printf 'PRODUCTION BACKUP CONFIGURATION COMPLETE remote_probe=%s\n' \
   "arenzyra/production/probes/$probe_name"
