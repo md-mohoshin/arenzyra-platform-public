@@ -8,6 +8,7 @@ const PRODUCTION_ENV = "/opt/arenzyra/infra/.env.publish";
 const CONFIRMATION = "CONFIGURE_REVIEWED_PRODUCTION_BACKUP";
 const REMOTE =
   "arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production";
+const BACKUP_ROOT = "/opt/arenzyra-backups/encrypted-v1";
 const HELPER_IMAGE =
   "postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777";
 
@@ -43,16 +44,22 @@ function updateEnvText(text, ageRecipient, options = {}) {
   }
   const existingRecipient = existingValues.get("ARENZYRA_BACKUP_AGE_RECIPIENT");
   const existingRemote = existingValues.get("ARENZYRA_BACKUP_RCLONE_REMOTE");
+  const existingRoot = existingValues.get("ARENZYRA_BACKUP_ROOT");
   const mayReplaceUnverifiedRecipient =
     options.allowReplaceUnverifiedRecipient === true &&
     existingRecipient !== "" &&
     existingRecipient !== ageRecipient &&
     /^age1[0-9a-z]{58}$/.test(existingRecipient) &&
     existingRemote === "";
+  const mayIsolateLegacyBackupRoot =
+    options.allowReplaceUnverifiedRecipient === true &&
+    existingRoot === "/opt/arenzyra-backups" &&
+    existingRemote === "" &&
+    (existingRecipient === ageRecipient || mayReplaceUnverifiedRecipient);
   const values = new Map([
     ["ARENZYRA_BACKUP_AGE_RECIPIENT", ageRecipient],
     ["ARENZYRA_BACKUP_RCLONE_REMOTE", REMOTE],
-    ["ARENZYRA_BACKUP_ROOT", "/opt/arenzyra-backups"],
+    ["ARENZYRA_BACKUP_ROOT", BACKUP_ROOT],
     ["ARENZYRA_BACKUP_HELPER_IMAGE", HELPER_IMAGE],
   ]);
 
@@ -67,7 +74,8 @@ function updateEnvText(text, ageRecipient, options = {}) {
       if (
         current !== "" &&
         current !== value &&
-        !(key === "ARENZYRA_BACKUP_AGE_RECIPIENT" && mayReplaceUnverifiedRecipient)
+        !(key === "ARENZYRA_BACKUP_AGE_RECIPIENT" && mayReplaceUnverifiedRecipient) &&
+        !(key === "ARENZYRA_BACKUP_ROOT" && mayIsolateLegacyBackupRoot)
       ) {
         fail(`${key} already has a different non-empty value.`);
       }
@@ -167,7 +175,7 @@ function main(argv) {
   process.stdout.write("PRODUCTION BACKUP ENV CONFIGURED\n");
 }
 
-module.exports = { HELPER_IMAGE, REMOTE, updateEnvText };
+module.exports = { BACKUP_ROOT, HELPER_IMAGE, REMOTE, updateEnvText };
 
 if (require.main === module) {
   try {

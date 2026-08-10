@@ -16,8 +16,10 @@ It cannot restart, rebuild, recreate, migrate, run Compose, or change a data
 volume. Credential rotation is deliberately a separate review.
 An existing different age recipient may be replaced during this initial setup
 only when it is valid but unverified, the reviewed rclone destination is empty,
-the local backup root contains no entry, and the bounded off-host prefix
-contains only the exact encrypted probe-name forms. Any completed/local backup
+the new managed backup subtree contains no entry other than its exact harmless
+lock file, and the bounded off-host prefix contains only the exact encrypted
+probe-name forms. Pre-existing artifacts in the legacy parent directory are
+never moved, changed, or deleted. Any completed backup in the managed subtree
 or non-probe remote object blocks replacement so recovery material cannot be
 orphaned.
 
@@ -49,7 +51,7 @@ and atomically sets these only in the reviewed `/opt/arenzyra/infra/.env.publish
 ```text
 ARENZYRA_BACKUP_AGE_RECIPIENT=age1...
 ARENZYRA_BACKUP_RCLONE_REMOTE=arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production
-ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups
+ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups/encrypted-v1
 ARENZYRA_DEPLOY_COMPOSE_PROJECT=infra
 ARENZYRA_BACKUP_HELPER_IMAGE=postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
 ```

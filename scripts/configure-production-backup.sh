@@ -13,6 +13,8 @@ RCLONE_SHA256="f3f9aff817f9766029e50adf9a7963c169e475b8f10c7927823568a0d9443db7"
 HELPER_IMAGE="postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 REMOTE_ROOT="arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production"
 CONFIG_FILE="/etc/arenzyra-backup-rclone.env"
+LEGACY_BACKUP_ROOT="/opt/arenzyra-backups"
+MANAGED_BACKUP_ROOT="/opt/arenzyra-backups/encrypted-v1"
 RUN_ROOT=""
 config_temporary=""
 age_recipient=""
@@ -54,6 +56,45 @@ bash scripts/production-deploy-preflight.sh --allow-read-only-legacy-backup
 for command in docker install mktemp openssl sha256sum stat; do
   command -v "$command" >/dev/null 2>&1 || block "required system command is unavailable: $command"
 done
+
+# Existing legacy artifacts remain untouched in the parent directory. Only the
+# new managed subtree may be empty or contain its exact harmless lock file.
+if [ -e "$LEGACY_BACKUP_ROOT" ] || [ -L "$LEGACY_BACKUP_ROOT" ]; then
+  [ -d "$LEGACY_BACKUP_ROOT" ] && [ ! -L "$LEGACY_BACKUP_ROOT" ] || \
+    block "legacy backup root is not a regular directory."
+  backup_root_identity="$(stat -Lc '%u:%g:%a' -- "$LEGACY_BACKUP_ROOT" 2>/dev/null || true)"
+  IFS=':' read -r backup_root_uid backup_root_gid backup_root_mode \
+    <<<"$backup_root_identity"
+  if [ "$backup_root_uid" != "0" ] || [ "$backup_root_gid" != "0" ] || \
+    ! [[ "$backup_root_mode" =~ ^[0-7]{3,4}$ ]] || \
+    (( 8#$backup_root_mode & 8#022 )); then
+    block "legacy backup root identity is unsafe."
+  fi
+fi
+if [ -e "$MANAGED_BACKUP_ROOT" ] || [ -L "$MANAGED_BACKUP_ROOT" ]; then
+  [ -d "$MANAGED_BACKUP_ROOT" ] && [ ! -L "$MANAGED_BACKUP_ROOT" ] || \
+    block "managed backup root is not a regular directory."
+  managed_root_identity="$(stat -Lc '%u:%g:%a' -- "$MANAGED_BACKUP_ROOT" 2>/dev/null || true)"
+  IFS=':' read -r managed_root_uid managed_root_gid managed_root_mode \
+    <<<"$managed_root_identity"
+  if [ "$managed_root_uid" != "0" ] || [ "$managed_root_gid" != "0" ] || \
+    ! [[ "$managed_root_mode" =~ ^[0-7]{3,4}$ ]] || \
+    (( 8#$managed_root_mode & 8#022 )); then
+    block "managed backup root identity is unsafe."
+  fi
+  shopt -s nullglob dotglob
+  managed_root_entries=("$MANAGED_BACKUP_ROOT"/*)
+  shopt -u dotglob nullglob
+  for managed_root_entry in "${managed_root_entries[@]}"; do
+    [ "${managed_root_entry##*/}" = ".backup.lock" ] || \
+      block "an existing managed backup prevents age recipient replacement."
+    [ -f "$managed_root_entry" ] && [ ! -L "$managed_root_entry" ] || \
+      block "the managed backup lock identity is unsafe."
+    backup_lock_identity="$(stat -Lc '%u:%g:%a:%h:%s' -- "$managed_root_entry" 2>/dev/null || true)"
+    [ "$backup_lock_identity" = "0:0:600:1:0" ] || \
+      block "the managed backup lock identity is unsafe."
+  done
+fi
 [ -r /proc/self/fd/3 ] || block "credential input descriptor 3 is required."
 IFS= read -r age_recipient <&3 || block "age recipient input is missing."
 IFS= read -r access_key_id <&3 || block "application key ID input is missing."
@@ -144,30 +185,6 @@ rclone copyto "$probe_remote" "$RUN_ROOT/downloaded.bin.age" \
   "$(sha256sum "$RUN_ROOT/downloaded.bin.age" | awk '{print $1}')" ] || \
   block "off-host probe checksum differs."
 
-if [ -e /opt/arenzyra-backups ] || [ -L /opt/arenzyra-backups ]; then
-  [ -d /opt/arenzyra-backups ] && [ ! -L /opt/arenzyra-backups ] || \
-    block "local backup root is not a regular directory."
-  backup_root_identity="$(stat -Lc '%u:%g:%a' -- /opt/arenzyra-backups)"
-  IFS=':' read -r backup_root_uid backup_root_gid backup_root_mode \
-    <<<"$backup_root_identity"
-  if [ "$backup_root_uid" != "0" ] || [ "$backup_root_gid" != "0" ] || \
-    ! [[ "$backup_root_mode" =~ ^[0-7]{3,4}$ ]] || \
-    (( 8#$backup_root_mode & 8#022 )); then
-    block "local backup root identity is unsafe."
-  fi
-  shopt -s nullglob dotglob
-  backup_root_entries=(/opt/arenzyra-backups/*)
-  shopt -u dotglob nullglob
-  for backup_root_entry in "${backup_root_entries[@]}"; do
-    [ "${backup_root_entry##*/}" = ".backup.lock" ] || \
-      block "an existing local backup prevents age recipient replacement."
-    [ -f "$backup_root_entry" ] && [ ! -L "$backup_root_entry" ] || \
-      block "the local backup lock identity is unsafe."
-    backup_lock_identity="$(stat -Lc '%u:%g:%a:%h:%s' -- "$backup_root_entry" 2>/dev/null || true)"
-    [ "$backup_lock_identity" = "0:0:600:1:0" ] || \
-      block "the local backup lock identity is unsafe."
-  done
-fi
 rclone lsf "$REMOTE_ROOT" --recursive --files-only --log-level ERROR \
   >"$RUN_ROOT/remote-inventory"
 [ "$(stat -c %s -- "$RUN_ROOT/remote-inventory")" -le 65536 ] || \

@@ -6,6 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 const {
   HELPER_IMAGE,
+  BACKUP_ROOT,
   REMOTE,
   updateEnvText,
 } = require("./configure-production-backup-env.cjs");
@@ -22,7 +23,7 @@ test("backup env update is additive, exact, and idempotent", () => {
   assert.equal(once, twice);
   assert.match(once, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${recipient}`));
   assert.match(once, new RegExp(`ARENZYRA_BACKUP_RCLONE_REMOTE=${REMOTE}`));
-  assert.match(once, /ARENZYRA_BACKUP_ROOT=\/opt\/arenzyra-backups/);
+  assert.match(once, new RegExp(`ARENZYRA_BACKUP_ROOT=${BACKUP_ROOT}`));
   assert.equal(once.includes(`ARENZYRA_BACKUP_HELPER_IMAGE=${HELPER_IMAGE}`), true);
   assert.equal(once.includes("PUBLIC_WEB_HOST=arenzyra.com"), true);
 });
@@ -51,17 +52,31 @@ test("unverified recipient replacement requires an empty remote setting", () => 
   const oldRecipient = `age1${"b".repeat(58)}`;
   const unconfigured =
     `ARENZYRA_BACKUP_AGE_RECIPIENT=${oldRecipient}\n` +
-    "ARENZYRA_BACKUP_RCLONE_REMOTE=\n";
+    "ARENZYRA_BACKUP_RCLONE_REMOTE=\n" +
+    "ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups\n";
   const replaced = updateEnvText(unconfigured, recipient, {
     allowReplaceUnverifiedRecipient: true,
   });
   assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${recipient}`));
+  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_ROOT=${BACKUP_ROOT}`));
   assert.throws(
     () =>
       updateEnvText(
         unconfigured.replace(
           "ARENZYRA_BACKUP_RCLONE_REMOTE=",
           "ARENZYRA_BACKUP_RCLONE_REMOTE=existing:backup",
+        ),
+        recipient,
+        { allowReplaceUnverifiedRecipient: true },
+      ),
+    /different non-empty value/,
+  );
+  assert.throws(
+    () =>
+      updateEnvText(
+        unconfigured.replace(
+          "ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups",
+          "ARENZYRA_BACKUP_ROOT=/srv/unreviewed-backups",
         ),
         recipient,
         { allowReplaceUnverifiedRecipient: true },
@@ -95,7 +110,8 @@ test("backup bootstrap is preflighted, hash pinned, descriptor-only, and non-ser
   assert.match(configure, /credential rotation requires a separately reviewed action/);
   assert.match(configure, /--immutable --no-traverse --s3-no-check-bucket/);
   assert.match(configure, /sha256sum "\$RUN_ROOT\/downloaded\.bin\.age"/);
-  assert.match(configure, /existing local backup prevents age recipient replacement/);
+  assert.match(configure, /MANAGED_BACKUP_ROOT="\/opt\/arenzyra-backups\/encrypted-v1"/);
+  assert.match(configure, /existing managed backup prevents age recipient replacement/);
   assert.match(configure, /backup_lock_identity" = "0:0:600:1:0"/);
   assert.match(configure, /non-probe off-host object prevents age recipient replacement/);
   assert.match(configure, /--replace-unverified-age-recipient/);
