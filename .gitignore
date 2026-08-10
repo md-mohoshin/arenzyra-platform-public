@@ -139,3 +139,4 @@ apps/arenzyra-web/dev-server.log
 apps/arenzyra-web/dev-server.err.log
 apps/arenzyra-web/tmp-dev.err.log
 apps/arenzyra-web/tmp-dev.out.log
+.launcher-releases/

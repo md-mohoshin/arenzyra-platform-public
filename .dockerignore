@@ -76,3 +76,4 @@ apps/arenzyra-web/public/downloads
 apps/arenzyra-web/.tmp
 apps/arenzyra-web/test-results
 apps/shadow_api/venv
+.launcher-releases/

@@ -1371,6 +1371,7 @@ test("launcher release downloads remain server-only and fail closed", () => {
   );
   const publishGuide = read("infra/PUBLISH.md");
   const dockerIgnore = read(".dockerignore");
+  const rootGitIgnore = read(".gitignore");
   const runtimeSources = [
     "apps/arenzyra-web/app/launcher/page.tsx",
     "apps/arenzyra-web/app/(protected)/organizer/launcher/page.tsx",
@@ -1382,6 +1383,9 @@ test("launcher release downloads remain server-only and fail closed", () => {
     .join("\n");
   const binding =
     'ARENZYRA_LAUNCHER_RELEASE_JSON: "${ARENZYRA_LAUNCHER_RELEASE_JSON:-}"';
+
+  assert.match(dockerIgnore, /^\.launcher-releases\/$/m);
+  assert.match(rootGitIgnore, /^\.launcher-releases\/$/m);
 
   for (const [name, compose] of [
     ["publish", publishCompose],
