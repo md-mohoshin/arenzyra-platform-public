@@ -119,6 +119,17 @@ case "$command_id" in
     exec /usr/bin/env ARENZYRA_BACKUP_REQUIRE_OFFSITE=1 \
       /bin/bash scripts/production-backup.sh --allow-running-legacy-backup
     ;;
+  backup-resume)
+    [ "$#" -eq 1 ] || block "backup-resume requires one backup ID."
+    require_nested_assembly
+    exec /bin/bash scripts/resume-production-backup-offsite.sh "$1"
+    ;;
+  backup-resume-legacy)
+    [ "$#" -eq 1 ] || block "backup-resume-legacy requires one backup ID."
+    require_nested_assembly
+    exec /bin/bash scripts/resume-production-backup-offsite.sh \
+      --allow-running-legacy-backup "$1"
+    ;;
   restore-drill)
     [ "$#" -eq 1 ] || block "restore-drill requires one backup directory."
     case "$1" in /opt/arenzyra-backups/*) ;; *) block "restore-drill backup path is outside the reviewed root." ;; esac

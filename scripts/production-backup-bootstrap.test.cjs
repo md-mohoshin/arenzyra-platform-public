@@ -145,6 +145,7 @@ test("credential loader accepts only the root-only fixed private B2 policy", () 
 
 test("legacy backup is a narrow read-only profile and normal backup remains strict", () => {
   const backup = read("scripts/production-backup.sh");
+  const resume = read("scripts/resume-production-backup-offsite.sh");
   const deploy = read("scripts/deploy-production.sh");
   const launcher = read("scripts/production-reviewed-entrypoint.sh");
   const lock = read("scripts/acquire-production-deploy-lock.sh");
@@ -182,6 +183,22 @@ test("legacy backup is a narrow read-only profile and normal backup remains stri
     launcher,
     /backup-legacy\)[\s\S]*ARENZYRA_BACKUP_REQUIRE_OFFSITE=1[\s\S]*--allow-running-legacy-backup/,
   );
+  assert.match(
+    launcher,
+    /backup-resume-legacy\)[\s\S]*--allow-running-legacy-backup "\$1"/,
+  );
+  const resumeLock = resume.indexOf("source scripts/acquire-production-deploy-lock.sh");
+  const resumePreflight = resume.indexOf(
+    "production-deploy-preflight.sh --allow-read-only-legacy-backup",
+  );
+  const resumeCopy = resume.indexOf('rclone copy "$resolved_backup"');
+  assert.ok(resumeLock >= 0 && resumeLock < resumePreflight);
+  assert.ok(resumePreflight >= 0 && resumePreflight < resumeCopy);
+  assert.match(resume, /EXPECTED_BACKUP_ROOT="\/opt\/arenzyra-backups\/encrypted-v1"/);
+  assert.match(resume, /--exclude OFFSITE_VERIFIED --checksum --immutable/);
+  assert.match(resume, /rclone check[\s\S]*--exclude OFFSITE_VERIFIED --checksum --one-way/);
+  assert.match(resume, /copyto[\s\S]*OFFSITE_VERIFIED[\s\S]*--immutable/);
+  assert.doesNotMatch(resume, /rm\s+-rf|docker\s+(?:compose|run|pull|restart|start|stop|rm)\b/);
   assert.match(verifier, /expected_runtime_image="postgres:16-alpine"/);
   assert.match(verifier, /expected_runtime_version_num="160013"/);
   assert.match(verifier, /expected_runtime_subnet="172\.18\.0\.0\/16"/);

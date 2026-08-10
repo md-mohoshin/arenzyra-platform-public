@@ -66,6 +66,19 @@ it only reads database/volume state into the normal encrypted immutable backup.
 After PostgreSQL and API volume ownership are remediated, use only
 `production_entry backup`.
 
+If the client connection is interrupted after local backup creation but before
+`OFFSITE_VERIFIED` is written, resume the immutable upload without repeating the
+dump or volume reads:
+
+```bash
+production_entry backup-resume-legacy 20260810T205616Z-a1e31ee3
+```
+
+Use `backup-resume` after the runtime has been remediated. Both forms validate
+the existing encrypted local set, upload only missing immutable objects, check
+every non-marker object first, and publish `OFFSITE_VERIFIED` only after that
+comparison succeeds. A final full comparison includes the marker.
+
 Scheduled jobs must use the exact clean-parent, reviewed-Root
 `production_entry backup` launcher defined in [`PUBLISH.md`](PUBLISH.md); do not
 execute a checkout script or npm alias directly. A systemd unit must pin the

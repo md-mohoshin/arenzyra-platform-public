@@ -226,6 +226,10 @@ closed command IDs:
 production_entry backup-configure
 production_entry backup-inventory
 production_entry backup-legacy
+# Resume an interrupted immutable upload from one already-complete encrypted
+# local set; use the legacy form only before database/runtime remediation.
+production_entry backup-resume 20260810T205616Z-a1e31ee3
+production_entry backup-resume-legacy 20260810T205616Z-a1e31ee3
 ```
 
 `backup-configure` accepts only the fixed hash-pinned incoming `age`/`rclone`
@@ -240,6 +244,15 @@ pre-existing artifacts under `/opt/arenzyra-backups` remain untouched; new revie
 state and accepts only the exact observed PostgreSQL 16.13 and legacy API-volume
 profile. Neither command authorizes a deployment bypass; normal releases and
 scheduled backups continue to require the strict current profile.
+
+`backup-resume` and `backup-resume-legacy` accept only a syntactically valid
+backup ID already present in the isolated managed subtree. They reject unsafe,
+missing, or unexpected local artifacts, upload with immutable semantics, and
+exclude `OFFSITE_VERIFIED` until every encrypted artifact has passed an
+off-site checksum comparison. They then upload that marker and repeat the full
+checksum comparison. This is the supported recovery path after an SSH or
+network interruption; it never repeats `pg_dump`, archives a volume, or mutates
+application data.
 
 `backup-inventory` is a read-only, lock-coordinated inspection of the fixed
 local backup root. It reports only aggregate counts, marker presence, and
