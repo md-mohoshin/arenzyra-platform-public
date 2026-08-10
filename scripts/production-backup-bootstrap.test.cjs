@@ -189,7 +189,7 @@ test("legacy backup is a narrow read-only profile and normal backup remains stri
   assert.match(verifier, /expected_runtime_subnet="\$reviewed_subnet"/);
   assert.match(
     verifier,
-    /DATABASE IDENTITY INVENTORY database_match=%s schema_match=%s port_match=%s actual_version=%s expected_version=%s/,
+    /DATABASE IDENTITY INVENTORY database_match=%s schema_match=%s port_match=%s actual_port=%s actual_version=%s expected_version=%s/,
   );
   assert.match(verifier, /-At -F "\|"/);
   assert.match(preflight, /--allow-read-only-legacy-backup/);

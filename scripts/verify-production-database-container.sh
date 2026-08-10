@@ -233,15 +233,20 @@ if [ "$actual_identity" != "$database|$schema|$port|$expected_runtime_version_nu
   database_match=0
   schema_match=0
   port_match=0
+  actual_port_state="invalid"
   actual_version_state="invalid"
   if [ "$actual_database" = "$database" ]; then database_match=1; fi
   if [ "$actual_schema" = "$schema" ]; then schema_match=1; fi
   if [ "$actual_port" = "$port" ]; then port_match=1; fi
+  if [[ "$actual_port" =~ ^[0-9]{1,5}$ ]] &&
+    [ "$actual_port" -ge 1 ] && [ "$actual_port" -le 65535 ]; then
+    actual_port_state="$actual_port"
+  fi
   if [[ "$actual_version_num" =~ ^[0-9]{6}$ ]]; then
     actual_version_state="$actual_version_num"
   fi
-  printf 'DATABASE IDENTITY INVENTORY database_match=%s schema_match=%s port_match=%s actual_version=%s expected_version=%s\n' \
-    "$database_match" "$schema_match" "$port_match" \
+  printf 'DATABASE IDENTITY INVENTORY database_match=%s schema_match=%s port_match=%s actual_port=%s actual_version=%s expected_version=%s\n' \
+    "$database_match" "$schema_match" "$port_match" "$actual_port_state" \
     "$actual_version_state" "$expected_runtime_version_num" >&2
   printf 'DATABASE IDENTITY GATE BLOCKED: actual target does not match the reviewed target.\n' >&2
   exit 75
