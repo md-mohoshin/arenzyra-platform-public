@@ -113,6 +113,11 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/production-backup-inventory.sh
     ;;
+  backup-export)
+    [ "$#" -eq 1 ] || block "backup-export requires one backup ID."
+    require_nested_assembly
+    exec /bin/bash scripts/export-production-backup.sh "$1"
+    ;;
   backup-legacy)
     [ "$#" -eq 0 ] || block "backup-legacy accepts no arguments."
     require_nested_assembly

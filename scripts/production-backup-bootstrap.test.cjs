@@ -145,6 +145,7 @@ test("credential loader accepts only the root-only fixed private B2 policy", () 
 
 test("legacy backup is a narrow read-only profile and normal backup remains strict", () => {
   const backup = read("scripts/production-backup.sh");
+  const backupExport = read("scripts/export-production-backup.sh");
   const resume = read("scripts/resume-production-backup-offsite.sh");
   const deploy = read("scripts/deploy-production.sh");
   const launcher = read("scripts/production-reviewed-entrypoint.sh");
@@ -183,6 +184,20 @@ test("legacy backup is a narrow read-only profile and normal backup remains stri
     launcher,
     /backup-legacy\)[\s\S]*ARENZYRA_BACKUP_REQUIRE_OFFSITE=1[\s\S]*--allow-running-legacy-backup/,
   );
+  assert.match(
+    launcher,
+    /backup-export\)[\s\S]*backup-export requires one backup ID[\s\S]*export-production-backup\.sh "\$1"/,
+  );
+  const exportLock = backupExport.indexOf("source scripts/acquire-production-deploy-lock.sh");
+  const exportPreflight = backupExport.indexOf(
+    "production-deploy-preflight.sh --allow-read-only-legacy-backup >&2",
+  );
+  const exportStream = backupExport.indexOf('tar -C "$resolved_backup" -cf -');
+  assert.ok(exportLock >= 0 && exportLock < exportPreflight);
+  assert.ok(exportPreflight >= 0 && exportPreflight < exportStream);
+  assert.match(backupExport, /OFFSITE_VERIFIED/);
+  assert.match(backupExport, /stdout binary-clean/);
+  assert.doesNotMatch(backupExport, /rm\s+-rf|docker\s+(?:compose|run|pull|restart|start|stop|rm)\b/);
   assert.match(
     launcher,
     /backup-resume-legacy\)[\s\S]*--allow-running-legacy-backup "\$1"/,

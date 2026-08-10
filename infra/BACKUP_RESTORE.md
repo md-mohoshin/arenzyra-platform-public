@@ -79,6 +79,18 @@ the existing encrypted local set, upload only missing immutable objects, check
 every non-marker object first, and publish `OFFSITE_VERIFIED` only after that
 comparison succeeds. A final full comparison includes the marker.
 
+If Backblaze download caps block an offline drill while the verified encrypted
+local set is still available, export that set through the clean reviewed
+launcher rather than copying an unchecked path directly:
+
+```bash
+production_entry backup-export 20260810T205616Z-a1e31ee3 > encrypted-backup.tar
+```
+
+The export requires both completion markers, validates the fixed managed path
+and every encrypted artifact, and keeps stdout exclusively for the tar stream.
+The private age identity remains on the isolated restore host.
+
 Scheduled jobs must use the exact clean-parent, reviewed-Root
 `production_entry backup` launcher defined in [`PUBLISH.md`](PUBLISH.md); do not
 execute a checkout script or npm alias directly. A systemd unit must pin the

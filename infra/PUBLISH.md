@@ -225,6 +225,7 @@ closed command IDs:
 # inherited descriptor 3; the secret must not be an argument or environment value.
 production_entry backup-configure
 production_entry backup-inventory
+production_entry backup-export 20260810T205616Z-a1e31ee3 > encrypted-backup.tar
 production_entry backup-legacy
 # Resume an interrupted immutable upload from one already-complete encrypted
 # local set; use the legacy form only before database/runtime remediation.
@@ -253,6 +254,13 @@ off-site checksum comparison. They then upload that marker and repeat the full
 checksum comparison. This is the supported recovery path after an SSH or
 network interruption; it never repeats `pg_dump`, archives a volume, or mutates
 application data.
+
+`backup-export` is the reviewed fallback when an off-site provider download cap
+blocks an isolated restore rehearsal. It accepts only one verified managed
+backup ID, validates every local encrypted artifact, keeps stdout binary-clean,
+and streams a tar archive while holding the shared production and backup locks.
+It does not decrypt data or invoke a database, volume, Compose, or service
+mutation.
 
 `backup-inventory` is a read-only, lock-coordinated inspection of the fixed
 local backup root. It reports only aggregate counts, marker presence, and
