@@ -85,9 +85,11 @@ fi
 if [ "$ALLOW_RUNNING_LEGACY_BACKUP" -eq 1 ]; then
   expected_runtime_image="postgres:16-alpine"
   expected_runtime_version_num="160013"
+  expected_runtime_subnet="172.18.0.0/16"
 else
   expected_runtime_image="$EXPECTED_POSTGRES_IMAGE"
   expected_runtime_version_num="$EXPECTED_POSTGRES_VERSION_NUM"
+  expected_runtime_subnet="$reviewed_subnet"
 fi
 if ! container_image_reference="$(docker inspect --format '{{.Config.Image}}' "$container_id")" ||
   [ "$container_image_reference" != "$expected_runtime_image" ]; then
@@ -161,8 +163,8 @@ if ! network_properties="$(
 fi
 if ! network_subnets="$(
   docker network inspect --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' "$expected_network"
-)" || [ "$network_subnets" != "$reviewed_subnet" ]; then
-  printf 'DATABASE IDENTITY GATE BLOCKED: PostgreSQL network subnet differs from the reviewed environment.\n' >&2
+)" || [ "$network_subnets" != "$expected_runtime_subnet" ]; then
+  printf 'DATABASE IDENTITY GATE BLOCKED: PostgreSQL network subnet differs from the selected reviewed profile.\n' >&2
   exit 75
 fi
 if ! container_aliases="$(

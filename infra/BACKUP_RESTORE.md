@@ -59,7 +59,8 @@ ARENZYRA_RECOVERY_V1_HELPER_IMAGE=postgres:16.14-alpine@sha256:57c72fd2a128e416c
 For the one observed pre-remediation production profile only, create the first
 recovery point with `production_entry backup-legacy`. That exception still
 requires all services healthy, PostgreSQL exactly 16.13 in the existing
-`postgres:16-alpine` container, the exact reviewed database volume/network, and
+`postgres:16-alpine` container, the exact observed `172.18.0.0/16` legacy
+database network, the exact reviewed database volume/network identities, and
 the exact root-owned API-volume tree. It performs no service or data mutation;
 it only reads database/volume state into the normal encrypted immutable backup.
 After PostgreSQL and API volume ownership are remediated, use only
