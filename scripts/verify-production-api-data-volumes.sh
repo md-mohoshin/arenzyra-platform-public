@@ -7,9 +7,12 @@ REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 EXPECTED_ROOT="/opt/arenzyra"
 ENV_FILE="$REPOSITORY_ROOT/infra/.env.publish"
 ALLOW_ABSENT=0
+ALLOW_RUNNING_LEGACY_ROOT_API=0
 
 if [ "${1:-}" = "--allow-absent" ] && [ "$#" -eq 1 ]; then
   ALLOW_ABSENT=1
+elif [ "${1:-}" = "--allow-running-legacy-root-api" ] && [ "$#" -eq 1 ]; then
+  ALLOW_RUNNING_LEGACY_ROOT_API=1
 elif [ "$#" -ne 0 ]; then
   printf 'API DATA VOLUME GATE BLOCKED: unsupported argument.\n' >&2
   exit 75
@@ -55,6 +58,31 @@ fi
 if [ "${#api_containers[@]}" -eq 0 ] && [ "$ALLOW_ABSENT" -ne 1 ]; then
   printf 'API DATA VOLUME GATE BLOCKED: reviewed API container is missing.\n' >&2
   exit 75
+fi
+
+if [ "$ALLOW_RUNNING_LEGACY_ROOT_API" -eq 1 ]; then
+  [ "${#api_containers[@]}" -eq 1 ] || {
+    printf 'API DATA VOLUME GATE BLOCKED: legacy web recovery requires exactly one existing API container.\n' >&2
+    exit 75
+  }
+  legacy_api_runtime="$(
+    docker inspect --format \
+      '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}not-configured{{end}}|{{.Config.User}}' \
+      "${api_containers[0]}" 2>/dev/null || true
+  )"
+  IFS='|' read -r legacy_api_status legacy_api_health legacy_api_user \
+    <<<"$legacy_api_runtime"
+  case "$legacy_api_user" in
+    ''|0|0:0) ;;
+    *)
+      printf 'API DATA VOLUME GATE BLOCKED: legacy web recovery API is not the exact root runtime.\n' >&2
+      exit 75
+      ;;
+  esac
+  if [ "$legacy_api_status" != "running" ] || [ "$legacy_api_health" != "healthy" ]; then
+    printf 'API DATA VOLUME GATE BLOCKED: legacy web recovery API is not running and healthy.\n' >&2
+    exit 75
+  fi
 fi
 
 expected_uid=1000
@@ -104,14 +132,26 @@ for logical_name in api-uploads api-storage; do
     exit 75
   fi
   root_identity="$(stat -Lc '%u:%g:%a' -- "$mountpoint" 2>/dev/null || true)"
-  if [ "$root_identity" != "${expected_uid}:${expected_gid}:${expected_root_mode}" ]; then
-    printf 'API DATA VOLUME GATE BLOCKED: API volume root owner or mode is incompatible with the nonroot image.\n' >&2
-    exit 75
-  fi
-  if ! node scripts/verify-api-data-volume-tree.cjs \
-    --root "$mountpoint" --uid "$expected_uid" --gid "$expected_gid" >/dev/null; then
-    printf 'API DATA VOLUME GATE BLOCKED: API volume contains an unexpected owner, link, special node, multi-link file, or world-writable entry.\n' >&2
-    exit 75
+  if [ "$ALLOW_RUNNING_LEGACY_ROOT_API" -eq 1 ]; then
+    if [ "$root_identity" != "0:0:777" ]; then
+      printf 'API DATA VOLUME GATE BLOCKED: legacy web recovery volume root identity changed.\n' >&2
+      exit 75
+    fi
+    if ! node scripts/verify-api-data-volume-tree.cjs \
+      --root "$mountpoint" --uid 0 --gid 0 --legacy-root-profile >/dev/null; then
+      printf 'API DATA VOLUME GATE BLOCKED: legacy web recovery volume tree is outside the exact observed root-owned profile.\n' >&2
+      exit 75
+    fi
+  else
+    if [ "$root_identity" != "${expected_uid}:${expected_gid}:${expected_root_mode}" ]; then
+      printf 'API DATA VOLUME GATE BLOCKED: API volume root owner or mode is incompatible with the nonroot image.\n' >&2
+      exit 75
+    fi
+    if ! node scripts/verify-api-data-volume-tree.cjs \
+      --root "$mountpoint" --uid "$expected_uid" --gid "$expected_gid" >/dev/null; then
+      printf 'API DATA VOLUME GATE BLOCKED: API volume contains an unexpected owner, link, special node, multi-link file, or world-writable entry.\n' >&2
+      exit 75
+    fi
   fi
 
   if [ "${#api_containers[@]}" -eq 1 ]; then
@@ -127,5 +167,9 @@ for logical_name in api-uploads api-storage; do
   fi
 done
 
-printf 'API DATA VOLUME GATE PASSED owner=%s:%s root_mode=%s world_writable=0\n' \
-  "$expected_uid" "$expected_gid" "$expected_root_mode"
+if [ "$ALLOW_RUNNING_LEGACY_ROOT_API" -eq 1 ]; then
+  printf 'API DATA VOLUME GATE PASSED recovery_profile=legacy-root-read-only owner=0:0 root_mode=777 api=running/healthy\n'
+else
+  printf 'API DATA VOLUME GATE PASSED owner=%s:%s root_mode=%s world_writable=0\n' \
+    "$expected_uid" "$expected_gid" "$expected_root_mode"
+fi

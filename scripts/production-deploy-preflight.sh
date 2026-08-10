@@ -171,6 +171,8 @@ done <<<"$container_output"
 volume_gate_args=()
 if [ "$SKIP_HEALTH" -eq 1 ]; then
   volume_gate_args+=(--allow-absent)
+elif [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
+  volume_gate_args+=(--allow-running-legacy-root-api)
 fi
 if ! volume_gate_output="$(
   ARENZYRA_DEPLOY_COMPOSE_PROJECT="$COMPOSE_PROJECT" \

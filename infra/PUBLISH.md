@@ -791,6 +791,16 @@ the existing web healthcheck, reruns preflight, and verifies the public Arenzyra
 HTTPS origin. A missing, duplicate, running-unhealthy, or identity-changing web
 container fails closed; use the full reviewed release workflow for those cases.
 
+The web-only recovery preflight may recognize the already-running legacy root
+API volume profile solely to prove that this unrelated service remains exactly
+running/healthy and unchanged while the existing web container starts. It
+requires both reviewed volume bindings, roots `0:0/0777`, only root-owned
+regular files/directories, single-link files, and the exact observed
+`0755/0777` directory and `0644/0666` file modes. This is read-only and does not
+authorize an API recreate, restart, deployment, ownership change, or non-root
+cutover. Every other production action continues to require the strict
+`1000:1000`, root-mode `0750`, non-world-writable volume policy.
+
 ## Production host cleanup
 
 Production builds can leave Docker build cache behind. Keep these safeguards

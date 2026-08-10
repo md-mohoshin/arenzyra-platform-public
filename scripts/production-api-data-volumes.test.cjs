@@ -22,6 +22,12 @@ test("API data-volume gate is read-only and exact for the nonroot image", () => 
   assert.match(gate, /expected_uid=1000/);
   assert.match(gate, /expected_gid=1000/);
   assert.match(gate, /expected_root_mode=750/);
+  assert.match(gate, /--allow-running-legacy-root-api/);
+  assert.match(gate, /legacy_api_status.*running/);
+  assert.match(gate, /legacy_api_health.*healthy/);
+  assert.match(gate, /legacy_api_user/);
+  assert.match(gate, /--legacy-root-profile/);
+  assert.match(gate, /recovery_profile=legacy-root-read-only/);
   assert.match(gate, /com\.docker\.compose\.project/);
   assert.match(gate, /com\.docker\.compose\.volume/);
   assert.match(gate, /\[ "\$driver" != "local" \]/);
@@ -92,6 +98,38 @@ test("volume tree rejects FIFO/special nodes when the host can create them", (t)
   );
 });
 
+test("legacy recovery profile accepts only the observed root-owned modes", (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows does not expose exact POSIX ownership/modes");
+    return;
+  }
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "arenzyra-legacy-volume-"));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  fs.chmodSync(fixture, 0o777);
+  const nested = path.join(fixture, "nested");
+  fs.mkdirSync(nested, { mode: 0o755 });
+  const asset = path.join(nested, "asset.bin");
+  fs.writeFileSync(asset, "legacy\n", { mode: 0o666 });
+  fs.chmodSync(asset, 0o666);
+  const identity = fs.lstatSync(fixture);
+  assert.doesNotThrow(() =>
+    inspectVolumeTree(fixture, {
+      uid: identity.uid,
+      gid: identity.gid,
+      legacyRootProfile: true,
+    }),
+  );
+  fs.chmodSync(asset, 0o600);
+  assert.throws(
+    () => inspectVolumeTree(fixture, {
+      uid: identity.uid,
+      gid: identity.gid,
+      legacyRootProfile: true,
+    }),
+    /legacy regular-file mode/,
+  );
+});
+
 test("every production preflight enforces the API data-volume gate", () => {
   const preflight = read("scripts/production-deploy-preflight.sh");
   const inventory = preflight.indexOf("docker ps -a");
@@ -102,6 +140,10 @@ test("every production preflight enforces the API data-volume gate", () => {
   assert.ok(inventory >= 0 && inventory < volumeGate);
   assert.ok(volumeGate < healthInspection);
   assert.match(preflight, /volume_gate_args\+=\(--allow-absent\)/);
+  assert.match(
+    preflight,
+    /volume_gate_args\+=\(--allow-running-legacy-root-api\)/,
+  );
   assert.match(preflight, /API DATA VOLUME POLICY FAILED/);
   assert.match(preflight, /IDP MUTATION PREFLIGHT MODE IS UNAVAILABLE/);
   assert.doesNotMatch(preflight, /maintenance_api=exited maintenance_web=exited/);
