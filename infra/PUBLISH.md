@@ -243,7 +243,9 @@ scheduled backups continue to require the strict current profile.
 `backup-inventory` is a read-only, lock-coordinated inspection of the fixed
 local backup root. It reports only aggregate counts, marker presence, and
 whether the root contains exactly the verified zero-byte backup lock; it does
-not print backup identifiers, file names, contents, recipients, or credentials.
+not print backup identifiers, file names, contents, recipients, remotes, roots,
+or credentials. Backup configuration values are reported only as bounded state
+labels such as `empty`, `legacy-placeholder`, `reviewed`, or `other`.
 
 Use `production_entry deploy-discord` for the supported bot-only mode and append
 `--first-deploy` only for its documented bot health exception. Do not use the

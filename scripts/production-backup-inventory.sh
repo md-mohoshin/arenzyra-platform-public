@@ -6,6 +6,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPOSITORY_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 EXPECTED_ROOT="/opt/arenzyra"
 BACKUP_ROOT="/opt/arenzyra-backups"
+ENV_FILE="/opt/arenzyra/infra/.env.publish"
+REVIEWED_REMOTE="arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production"
+LEGACY_REMOTE_PLACEHOLDER="encrypted-offsite:arenzyra/production"
+MANAGED_BACKUP_ROOT="/opt/arenzyra-backups/encrypted-v1"
 
 block() {
   printf 'PRODUCTION BACKUP INVENTORY BLOCKED: %s\n' "$1" >&2
@@ -24,6 +28,36 @@ for required_command in stat; do
   command -v "$required_command" >/dev/null 2>&1 || \
     block "required inventory command is unavailable: $required_command"
 done
+
+classify_environment() {
+  local recipient remote root recipient_state remote_state root_state
+  recipient="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_BACKUP_AGE_RECIPIENT)"
+  remote="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_BACKUP_RCLONE_REMOTE)"
+  root="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_BACKUP_ROOT)"
+  if [ -z "$recipient" ]; then
+    recipient_state="empty"
+  elif [[ "$recipient" =~ ^age1[0-9a-z]{58}$ ]]; then
+    recipient_state="valid-age"
+  else
+    recipient_state="placeholder-or-other"
+  fi
+  case "$remote" in
+    "") remote_state="empty" ;;
+    "$LEGACY_REMOTE_PLACEHOLDER") remote_state="legacy-placeholder" ;;
+    "$REVIEWED_REMOTE") remote_state="reviewed" ;;
+    *) remote_state="other" ;;
+  esac
+  case "$root" in
+    "") root_state="empty" ;;
+    "$BACKUP_ROOT") root_state="legacy-parent" ;;
+    "$MANAGED_BACKUP_ROOT") root_state="managed-v1" ;;
+    *) root_state="other" ;;
+  esac
+  printf 'BACKUP_CONFIG_INVENTORY recipient=%s remote=%s root=%s\n' \
+    "$recipient_state" "$remote_state" "$root_state"
+}
+
+classify_environment
 
 if [ ! -e "$BACKUP_ROOT" ] && [ ! -L "$BACKUP_ROOT" ]; then
   printf '%s\n' \

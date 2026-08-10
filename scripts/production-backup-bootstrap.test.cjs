@@ -143,6 +143,10 @@ test("backup inventory is bounded, sanitized, read-only, and lock aware", () => 
   );
   assert.ok(lock >= 0 && lock < preflight);
   assert.match(inventory, /BACKUP_ROOT="\/opt\/arenzyra-backups"/);
+  assert.match(inventory, /BACKUP_CONFIG_INVENTORY recipient=%s remote=%s root=%s/);
+  assert.match(inventory, /recipient_state="placeholder-or-other"/);
+  assert.match(inventory, /remote_state="other"/);
+  assert.match(inventory, /root_state="other"/);
   assert.match(inventory, /safe_regular_file "\$entry" 0/);
   assert.match(inventory, /completed_sets=/);
   assert.match(inventory, /incomplete_sets=/);
