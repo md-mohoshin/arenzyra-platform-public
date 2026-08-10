@@ -195,6 +195,7 @@ test("legacy backup is a narrow read-only profile and normal backup remains stri
   assert.ok(resumeLock >= 0 && resumeLock < resumePreflight);
   assert.ok(resumePreflight >= 0 && resumePreflight < resumeCopy);
   assert.match(resume, /EXPECTED_BACKUP_ROOT="\/opt\/arenzyra-backups\/encrypted-v1"/);
+  assert.match(resume, /backup_id="\$1"\nshift\n/);
   assert.match(resume, /--exclude OFFSITE_VERIFIED --checksum --immutable/);
   assert.match(resume, /rclone check[\s\S]*--exclude OFFSITE_VERIFIED --checksum --one-way/);
   assert.match(resume, /copyto[\s\S]*OFFSITE_VERIFIED[\s\S]*--immutable/);

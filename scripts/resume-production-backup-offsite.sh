@@ -22,6 +22,7 @@ elif [ "$#" -ne 1 ]; then
   block "expected one backup ID."
 fi
 backup_id="$1"
+shift
 [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]] || \
   block "backup ID is invalid."
 [ "$REPOSITORY_ROOT" = "$EXPECTED_ROOT" ] || block "repository root is not exact."
