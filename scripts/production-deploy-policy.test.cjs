@@ -1004,6 +1004,7 @@ test("restore drill extracts archives into isolated contained temporary targets"
     /mktemp -d \/tmp\/arenzyra-restore-drill-volumes\.XXXXXX/,
   );
   assert.match(restore, /--network none --read-only/);
+  assert.equal((restore.match(/docker run -i --rm --network none --read-only/g) ?? []).length, 2);
   assert.match(restore, /--cap-drop ALL --security-opt no-new-privileges:true/);
   assert.match(
     restore,

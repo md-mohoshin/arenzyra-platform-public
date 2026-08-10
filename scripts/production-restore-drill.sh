@@ -168,7 +168,7 @@ for archive in volume-*.tar.gz.age; do
     docker volume create "$extraction_volume" >/dev/null
     extraction_volumes+=("$extraction_volume")
     if ! age --decrypt --identity "$AGE_IDENTITY" "$archive" \
-      | docker run --rm --network none --read-only \
+      | docker run -i --rm --network none --read-only \
           --cap-drop ALL --security-opt no-new-privileges:true \
           --pids-limit 64 --memory 256m \
           --tmpfs /tmp:rw,noexec,nosuid,size=16m \
@@ -204,7 +204,7 @@ for archive in volume-*.tar.gz.age; do
     # -o prevents an archive from restoring numeric ownership; the drill
     # validates content and containment without requiring CAP_CHOWN.
     if ! age --decrypt --identity "$AGE_IDENTITY" "$archive" \
-      | docker run --rm --network none --read-only \
+      | docker run -i --rm --network none --read-only \
           --cap-drop ALL --security-opt no-new-privileges:true \
           --pids-limit 64 --memory 256m \
           --tmpfs /tmp:rw,noexec,nosuid,size=16m \
