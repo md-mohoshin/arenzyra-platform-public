@@ -14,15 +14,14 @@ in `/etc/arenzyra-backup-rclone.env` as root `0600`, pulls only the digest-pinne
 backup helper image, and proves an encrypted upload/download/SHA-256 round trip.
 It cannot restart, rebuild, recreate, migrate, run Compose, or change a data
 volume. Credential rotation is deliberately a separate review.
-An existing different age recipient or placeholder may be replaced during this
-initial setup only when it is unverified, the rclone destination is either
-empty or still equals the exact committed template placeholder, the new
-managed backup subtree contains no entry other than its exact harmless lock
-file, and the bounded off-host prefix contains only the exact encrypted
-probe-name forms. Pre-existing artifacts in the legacy parent directory are
-never moved, changed, or deleted. Any completed backup in the managed subtree
-or non-probe remote object blocks replacement so recovery material cannot be
-orphaned.
+The initial setup never replaces the legacy backup recipient, remote, root, or
+helper settings. It adds a separate managed recovery-v1 configuration only
+when the new managed subtree contains no entry other than its exact harmless
+lock file and the bounded off-host prefix contains only the exact encrypted
+probe-name forms. Pre-existing configuration and artifacts in the legacy
+parent directory are never moved, changed, or deleted. Any completed backup in
+the managed subtree or non-probe remote object blocks setup so recovery
+material cannot be orphaned.
 
 ## Configure
 
@@ -50,11 +49,11 @@ and atomically sets these only in the reviewed `/opt/arenzyra/infra/.env.publish
 (mode `0600`):
 
 ```text
-ARENZYRA_BACKUP_AGE_RECIPIENT=age1...
-ARENZYRA_BACKUP_RCLONE_REMOTE=arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production
-ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups/encrypted-v1
+ARENZYRA_RECOVERY_V1_AGE_RECIPIENT=age1...
+ARENZYRA_RECOVERY_V1_RCLONE_REMOTE=arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production
+ARENZYRA_RECOVERY_V1_ROOT=/opt/arenzyra-backups/encrypted-v1
 ARENZYRA_DEPLOY_COMPOSE_PROJECT=infra
-ARENZYRA_BACKUP_HELPER_IMAGE=postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+ARENZYRA_RECOVERY_V1_HELPER_IMAGE=postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
 ```
 
 For the one observed pre-remediation production profile only, create the first
@@ -72,8 +71,8 @@ execute a checkout script or npm alias directly. A systemd unit must pin the
 reviewed 40-hex Root commit and clear ambient shell/Node/Git variables as that
 launcher does. The dispatcher uses the fixed reviewed production environment
 path. The backup rejects process overrides of the reviewed project, root, age recipient, rclone
-destination, or helper image; do not maintain a divergent second copy of those
-values.
+destination, or helper image. Recovery-v1 values take precedence while legacy
+backup values remain preserved for later inventory and recovery work.
 
 Run `production_entry backup` from the reviewed systemd launcher. The backup
 command itself reruns the production preflight before creating any backup file.

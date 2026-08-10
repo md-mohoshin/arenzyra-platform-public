@@ -9,15 +9,19 @@ const CONFIRMATION = "CONFIGURE_REVIEWED_PRODUCTION_BACKUP";
 const REMOTE =
   "arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production";
 const BACKUP_ROOT = "/opt/arenzyra-backups/encrypted-v1";
-const LEGACY_REMOTE_PLACEHOLDER = "encrypted-offsite:arenzyra/production";
 const HELPER_IMAGE =
   "postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777";
+const MANAGED_VALUES = new Map([
+  ["ARENZYRA_RECOVERY_V1_RCLONE_REMOTE", REMOTE],
+  ["ARENZYRA_RECOVERY_V1_ROOT", BACKUP_ROOT],
+  ["ARENZYRA_RECOVERY_V1_HELPER_IMAGE", HELPER_IMAGE],
+]);
 
 function fail(message) {
   throw new Error(`PRODUCTION BACKUP ENV BLOCKED: ${message}`);
 }
 
-function updateEnvText(text, ageRecipient, options = {}) {
+function updateEnvText(text, ageRecipient) {
   if (typeof text !== "string" || Buffer.byteLength(text) > 1024 * 1024) {
     fail("environment input is invalid or oversized.");
   }
@@ -29,48 +33,14 @@ function updateEnvText(text, ageRecipient, options = {}) {
   const hadFinalNewline = /\r?\n$/.test(text);
   const body = hadFinalNewline ? text.replace(/\r?\n$/, "") : text;
   const lines = body === "" ? [] : body.split(/\r?\n/);
-  const existingValues = new Map();
-  for (const key of [
-    "ARENZYRA_BACKUP_AGE_RECIPIENT",
-    "ARENZYRA_BACKUP_RCLONE_REMOTE",
-    "ARENZYRA_BACKUP_ROOT",
-    "ARENZYRA_BACKUP_HELPER_IMAGE",
-  ]) {
+  const values = new Map([
+    ["ARENZYRA_RECOVERY_V1_AGE_RECIPIENT", ageRecipient],
+    ...MANAGED_VALUES,
+  ]);
+  for (const key of values.keys()) {
     const matching = lines.filter((line) => new RegExp(`^${key}=`).test(line));
     if (matching.length > 1) fail(`${key} is duplicated.`);
-    existingValues.set(
-      key,
-      matching.length === 0 ? "" : matching[0].slice(key.length + 1),
-    );
   }
-  const existingRecipient = existingValues.get("ARENZYRA_BACKUP_AGE_RECIPIENT");
-  const existingRemote = existingValues.get("ARENZYRA_BACKUP_RCLONE_REMOTE");
-  const existingRoot = existingValues.get("ARENZYRA_BACKUP_ROOT");
-  const existingRootIsUnconfiguredOrLegacy =
-    existingRoot === "" || existingRoot === "/opt/arenzyra-backups";
-  const existingRemoteIsUnconfiguredOrPlaceholder =
-    existingRemote === "" || existingRemote === LEGACY_REMOTE_PLACEHOLDER;
-  const mayReplaceUnverifiedRecipient =
-    options.allowReplaceUnverifiedRecipient === true &&
-    existingRecipient !== "" &&
-    existingRecipient !== ageRecipient &&
-    existingRemoteIsUnconfiguredOrPlaceholder &&
-    existingRootIsUnconfiguredOrLegacy;
-  const mayReplaceLegacyRemote =
-    options.allowReplaceUnverifiedRecipient === true &&
-    existingRemote === LEGACY_REMOTE_PLACEHOLDER &&
-    existingRootIsUnconfiguredOrLegacy;
-  const mayIsolateLegacyBackupRoot =
-    options.allowReplaceUnverifiedRecipient === true &&
-    existingRoot === "/opt/arenzyra-backups" &&
-    existingRemoteIsUnconfiguredOrPlaceholder &&
-    (existingRecipient === ageRecipient || mayReplaceUnverifiedRecipient);
-  const values = new Map([
-    ["ARENZYRA_BACKUP_AGE_RECIPIENT", ageRecipient],
-    ["ARENZYRA_BACKUP_RCLONE_REMOTE", REMOTE],
-    ["ARENZYRA_BACKUP_ROOT", BACKUP_ROOT],
-    ["ARENZYRA_BACKUP_HELPER_IMAGE", HELPER_IMAGE],
-  ]);
 
   for (const [key, value] of values) {
     const indexes = [];
@@ -80,13 +50,7 @@ function updateEnvText(text, ageRecipient, options = {}) {
     if (indexes.length === 1) {
       const index = indexes[0];
       const current = lines[index].slice(key.length + 1);
-      if (
-        current !== "" &&
-        current !== value &&
-        !(key === "ARENZYRA_BACKUP_AGE_RECIPIENT" && mayReplaceUnverifiedRecipient) &&
-        !(key === "ARENZYRA_BACKUP_RCLONE_REMOTE" && mayReplaceLegacyRemote) &&
-        !(key === "ARENZYRA_BACKUP_ROOT" && mayIsolateLegacyBackupRoot)
-      ) {
+      if (current !== "" && current !== value) {
         fail(`${key} already has a different non-empty value.`);
       }
       lines[index] = `${key}=${value}`;
@@ -97,7 +61,7 @@ function updateEnvText(text, ageRecipient, options = {}) {
   return `${lines.join(newline)}${newline}`;
 }
 
-function configureProductionEnv(ageRecipient, options) {
+function configureProductionEnv(ageRecipient) {
   if (process.platform !== "linux" || process.getuid?.() !== 0) {
     fail("Linux UID 0 is required.");
   }
@@ -127,7 +91,7 @@ function configureProductionEnv(ageRecipient, options) {
     fs.closeSync(input);
   }
 
-  const output = updateEnvText(text, ageRecipient, options);
+  const output = updateEnvText(text, ageRecipient);
   const temporary = `${PRODUCTION_ENV}.backup-config.${process.pid}.tmp`;
   let outputFd;
   try {
@@ -177,18 +141,17 @@ function main(argv) {
     argv[0] !== "--age-recipient" ||
     argv[2] !== "--confirm" ||
     argv[3] !== CONFIRMATION ||
-    argv[4] !== "--replace-unverified-age-recipient"
+    argv[4] !== "--preserve-legacy-backup-config"
   ) {
     fail("exact age-recipient and confirmation arguments are required.");
   }
-  configureProductionEnv(argv[1], { allowReplaceUnverifiedRecipient: true });
+  configureProductionEnv(argv[1]);
   process.stdout.write("PRODUCTION BACKUP ENV CONFIGURED\n");
 }
 
 module.exports = {
   BACKUP_ROOT,
   HELPER_IMAGE,
-  LEGACY_REMOTE_PLACEHOLDER,
   REMOTE,
   updateEnvText,
 };

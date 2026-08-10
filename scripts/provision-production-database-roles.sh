@@ -125,7 +125,10 @@ compose_project="$(read_env ARENZYRA_DEPLOY_COMPOSE_PROJECT)"
 postgres_database="$(read_env POSTGRES_DB)"
 postgres_admin_role="$(read_env POSTGRES_USER)"
 postgres_admin_password="$(read_env POSTGRES_PASSWORD)"
-configured_backup_root="$(read_env ARENZYRA_BACKUP_ROOT)"
+configured_backup_root="$(read_env ARENZYRA_RECOVERY_V1_ROOT)"
+if [ -z "$configured_backup_root" ]; then
+  configured_backup_root="$(read_env ARENZYRA_BACKUP_ROOT)"
+fi
 configured_backup_root="${configured_backup_root:-/opt/arenzyra-backups}"
 
 api_runtime_role="$(read_url DATABASE_URL username)"

@@ -31,9 +31,14 @@ done
 
 classify_environment() {
   local recipient remote root recipient_state remote_state root_state
+  local managed_recipient managed_remote managed_root managed_recipient_state
+  local managed_remote_state managed_root_state
   recipient="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_BACKUP_AGE_RECIPIENT)"
   remote="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_BACKUP_RCLONE_REMOTE)"
   root="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_BACKUP_ROOT)"
+  managed_recipient="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_RECOVERY_V1_AGE_RECIPIENT)"
+  managed_remote="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_RECOVERY_V1_RCLONE_REMOTE)"
+  managed_root="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_RECOVERY_V1_ROOT)"
   if [ -z "$recipient" ]; then
     recipient_state="empty"
   elif [[ "$recipient" =~ ^age1[0-9a-z]{58}$ ]]; then
@@ -53,8 +58,27 @@ classify_environment() {
     "$MANAGED_BACKUP_ROOT") root_state="managed-v1" ;;
     *) root_state="other" ;;
   esac
+  if [ -z "$managed_recipient" ]; then
+    managed_recipient_state="empty"
+  elif [[ "$managed_recipient" =~ ^age1[0-9a-z]{58}$ ]]; then
+    managed_recipient_state="valid-age"
+  else
+    managed_recipient_state="other"
+  fi
+  case "$managed_remote" in
+    "") managed_remote_state="empty" ;;
+    "$REVIEWED_REMOTE") managed_remote_state="reviewed" ;;
+    *) managed_remote_state="other" ;;
+  esac
+  case "$managed_root" in
+    "") managed_root_state="empty" ;;
+    "$MANAGED_BACKUP_ROOT") managed_root_state="managed-v1" ;;
+    *) managed_root_state="other" ;;
+  esac
   printf 'BACKUP_CONFIG_INVENTORY recipient=%s remote=%s root=%s\n' \
     "$recipient_state" "$remote_state" "$root_state"
+  printf 'MANAGED_RECOVERY_INVENTORY recipient=%s remote=%s root=%s\n' \
+    "$managed_recipient_state" "$managed_remote_state" "$managed_root_state"
 }
 
 classify_environment

@@ -388,6 +388,10 @@ test("physical Compose project and recovery destination cannot be overridden", (
     "ARENZYRA_BACKUP_AGE_RECIPIENT",
     "ARENZYRA_BACKUP_RCLONE_REMOTE",
     "ARENZYRA_BACKUP_HELPER_IMAGE",
+    "ARENZYRA_RECOVERY_V1_ROOT",
+    "ARENZYRA_RECOVERY_V1_AGE_RECIPIENT",
+    "ARENZYRA_RECOVERY_V1_RCLONE_REMOTE",
+    "ARENZYRA_RECOVERY_V1_HELPER_IMAGE",
   ]) {
     assert.match(
       backup,

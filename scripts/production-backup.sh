@@ -40,15 +40,19 @@ for reviewed_backup_key in \
   ARENZYRA_BACKUP_ROOT \
   ARENZYRA_BACKUP_AGE_RECIPIENT \
   ARENZYRA_BACKUP_RCLONE_REMOTE \
-  ARENZYRA_BACKUP_HELPER_IMAGE; do
+  ARENZYRA_BACKUP_HELPER_IMAGE \
+  ARENZYRA_RECOVERY_V1_ROOT \
+  ARENZYRA_RECOVERY_V1_AGE_RECIPIENT \
+  ARENZYRA_RECOVERY_V1_RCLONE_REMOTE \
+  ARENZYRA_RECOVERY_V1_HELPER_IMAGE; do
   bind_reviewed_backup_value "$reviewed_backup_key"
 done
-BACKUP_ROOT="${ARENZYRA_BACKUP_ROOT:-/opt/arenzyra-backups}"
+BACKUP_ROOT="${ARENZYRA_RECOVERY_V1_ROOT:-${ARENZYRA_BACKUP_ROOT:-/opt/arenzyra-backups}}"
 COMPOSE_PROJECT="$ARENZYRA_DEPLOY_COMPOSE_PROJECT"
-AGE_RECIPIENT="${ARENZYRA_BACKUP_AGE_RECIPIENT:-}"
-RCLONE_REMOTE="${ARENZYRA_BACKUP_RCLONE_REMOTE:-}"
+AGE_RECIPIENT="${ARENZYRA_RECOVERY_V1_AGE_RECIPIENT:-${ARENZYRA_BACKUP_AGE_RECIPIENT:-}}"
+RCLONE_REMOTE="${ARENZYRA_RECOVERY_V1_RCLONE_REMOTE:-${ARENZYRA_BACKUP_RCLONE_REMOTE:-}}"
 REQUIRE_OFFSITE="${ARENZYRA_BACKUP_REQUIRE_OFFSITE:-0}"
-HELPER_IMAGE="${ARENZYRA_BACKUP_HELPER_IMAGE:-postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777}"
+HELPER_IMAGE="${ARENZYRA_RECOVERY_V1_HELPER_IMAGE:-${ARENZYRA_BACKUP_HELPER_IMAGE:-postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777}}"
 BACKUP_REASON="${ARENZYRA_BACKUP_REASON:-scheduled}"
 RESULT_FILE="${ARENZYRA_BACKUP_RESULT_FILE:-}"
 ALLOW_MISSING_APP_VOLUMES="${ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES:-0}"
@@ -85,11 +89,11 @@ if [ "${#database_binding[@]}" -ne 5 ]; then
   exit 75
 fi
 if [ -z "$AGE_RECIPIENT" ]; then
-  printf 'ARENZYRA_BACKUP_AGE_RECIPIENT is required; plaintext backups are forbidden.\n' >&2
+  printf 'A reviewed backup age recipient is required; plaintext backups are forbidden.\n' >&2
   exit 2
 fi
 if ! [[ "$HELPER_IMAGE" =~ ^[^@[:space:]]+:[^@[:space:]]+@sha256:[a-fA-F0-9]{64}$ ]]; then
-  printf 'ARENZYRA_BACKUP_HELPER_IMAGE must be version-and-digest pinned.\n' >&2
+  printf 'The reviewed backup helper image must be version-and-digest pinned.\n' >&2
   exit 2
 fi
 if [[ "$BACKUP_REASON" == *$'\n'* ]] || [ "${#BACKUP_REASON}" -gt 200 ]; then
@@ -109,7 +113,7 @@ if [ "$REQUIRE_OFFSITE" = "1" ] && [ -z "$RCLONE_REMOTE" ]; then
   exit 2
 fi
 if [ -n "$RCLONE_REMOTE" ] && ! command -v rclone >/dev/null 2>&1; then
-  printf 'rclone is required when ARENZYRA_BACKUP_RCLONE_REMOTE is configured.\n' >&2
+  printf 'rclone is required when the reviewed backup remote is configured.\n' >&2
   exit 2
 fi
 if [ -n "$RCLONE_REMOTE" ]; then
@@ -254,7 +258,7 @@ if [ -n "$RCLONE_REMOTE" ]; then
   rclone check "$final_dir" "$remote_target" --checksum --one-way
   printf 'Encrypted backup uploaded and checked: %s\n' "$remote_target"
 else
-  printf 'WARNING: off-host copy is not configured (ARENZYRA_BACKUP_RCLONE_REMOTE).\n' >&2
+  printf 'WARNING: the reviewed off-host backup destination is not configured.\n' >&2
 fi
 
 if [ -n "$RESULT_FILE" ]; then

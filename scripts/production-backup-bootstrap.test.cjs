@@ -8,7 +8,6 @@ const {
   HELPER_IMAGE,
   BACKUP_ROOT,
   REMOTE,
-  LEGACY_REMOTE_PLACEHOLDER,
   updateEnvText,
 } = require("./configure-production-backup-env.cjs");
 
@@ -18,14 +17,22 @@ const read = (relativePath) =>
 const recipient = `age1${"a".repeat(58)}`;
 
 test("backup env update is additive, exact, and idempotent", () => {
-  const initial = "PUBLIC_WEB_HOST=arenzyra.com\nARENZYRA_BACKUP_ROOT=\n";
+  const legacyRecipient = `age1${"b".repeat(58)}`;
+  const initial =
+    "PUBLIC_WEB_HOST=arenzyra.com\n" +
+    `ARENZYRA_BACKUP_AGE_RECIPIENT=${legacyRecipient}\n` +
+    "ARENZYRA_BACKUP_RCLONE_REMOTE=legacy-remote:preserved\n" +
+    "ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups\n";
   const once = updateEnvText(initial, recipient);
   const twice = updateEnvText(once, recipient);
   assert.equal(once, twice);
-  assert.match(once, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${recipient}`));
-  assert.match(once, new RegExp(`ARENZYRA_BACKUP_RCLONE_REMOTE=${REMOTE}`));
-  assert.match(once, new RegExp(`ARENZYRA_BACKUP_ROOT=${BACKUP_ROOT}`));
-  assert.equal(once.includes(`ARENZYRA_BACKUP_HELPER_IMAGE=${HELPER_IMAGE}`), true);
+  assert.match(once, new RegExp(`ARENZYRA_RECOVERY_V1_AGE_RECIPIENT=${recipient}`));
+  assert.match(once, new RegExp(`ARENZYRA_RECOVERY_V1_RCLONE_REMOTE=${REMOTE}`));
+  assert.match(once, new RegExp(`ARENZYRA_RECOVERY_V1_ROOT=${BACKUP_ROOT}`));
+  assert.equal(once.includes(`ARENZYRA_RECOVERY_V1_HELPER_IMAGE=${HELPER_IMAGE}`), true);
+  assert.match(once, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${legacyRecipient}`));
+  assert.match(once, /ARENZYRA_BACKUP_RCLONE_REMOTE=legacy-remote:preserved/);
+  assert.match(once, /ARENZYRA_BACKUP_ROOT=\/opt\/arenzyra-backups/);
   assert.equal(once.includes("PUBLIC_WEB_HOST=arenzyra.com"), true);
 });
 
@@ -33,7 +40,7 @@ test("backup env update rejects replacement, duplicate, and invalid recipient", 
   assert.throws(
     () =>
       updateEnvText(
-        "ARENZYRA_BACKUP_RCLONE_REMOTE=somewhere-else:path\n",
+        "ARENZYRA_RECOVERY_V1_RCLONE_REMOTE=somewhere-else:path\n",
         recipient,
       ),
     /different non-empty value/,
@@ -41,7 +48,7 @@ test("backup env update rejects replacement, duplicate, and invalid recipient", 
   assert.throws(
     () =>
       updateEnvText(
-        "ARENZYRA_BACKUP_ROOT=\nARENZYRA_BACKUP_ROOT=\n",
+        "ARENZYRA_RECOVERY_V1_ROOT=\nARENZYRA_RECOVERY_V1_ROOT=\n",
         recipient,
       ),
     /duplicated/,
@@ -49,56 +56,15 @@ test("backup env update rejects replacement, duplicate, and invalid recipient", 
   assert.throws(() => updateEnvText("A=B\n", "age1invalid"), /recipient is invalid/);
 });
 
-test("unverified recipient replacement requires an empty remote setting", () => {
+test("legacy backup settings are preserved byte-for-byte", () => {
   const oldRecipient = `age1${"b".repeat(58)}`;
-  const unconfigured =
-    `ARENZYRA_BACKUP_AGE_RECIPIENT=${oldRecipient}\n` +
-    "ARENZYRA_BACKUP_RCLONE_REMOTE=\n" +
-    "ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups\n";
-  const replaced = updateEnvText(unconfigured, recipient, {
-    allowReplaceUnverifiedRecipient: true,
-  });
-  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${recipient}`));
-  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_ROOT=${BACKUP_ROOT}`));
-  assert.throws(
-    () =>
-      updateEnvText(
-        unconfigured.replace(
-          "ARENZYRA_BACKUP_RCLONE_REMOTE=",
-          "ARENZYRA_BACKUP_RCLONE_REMOTE=existing:backup",
-        ),
-        recipient,
-        { allowReplaceUnverifiedRecipient: true },
-      ),
-    /different non-empty value/,
-  );
-  assert.throws(
-    () =>
-      updateEnvText(
-        unconfigured.replace(
-          "ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups",
-          "ARENZYRA_BACKUP_ROOT=/srv/unreviewed-backups",
-        ),
-        recipient,
-        { allowReplaceUnverifiedRecipient: true },
-      ),
-    /different non-empty value/,
-  );
-});
-
-test("one-time isolated transition replaces a legacy placeholder recipient", () => {
   const legacy =
-    "ARENZYRA_BACKUP_AGE_RECIPIENT=replace-with-real-age-recipient\n" +
-    `ARENZYRA_BACKUP_RCLONE_REMOTE=${LEGACY_REMOTE_PLACEHOLDER}\n` +
-    "ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups\n";
-  const replaced = updateEnvText(legacy, recipient, {
-    allowReplaceUnverifiedRecipient: true,
-  });
-  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${recipient}`));
-  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_ROOT=${BACKUP_ROOT}`));
-  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_RCLONE_REMOTE=${REMOTE}`));
-  assert.doesNotMatch(replaced, /replace-with-real-age-recipient/);
-  assert.doesNotMatch(replaced, new RegExp(LEGACY_REMOTE_PLACEHOLDER));
+    `ARENZYRA_BACKUP_AGE_RECIPIENT=${oldRecipient}\n` +
+    "ARENZYRA_BACKUP_RCLONE_REMOTE=unknown-existing:backup\n" +
+    "ARENZYRA_BACKUP_ROOT=/srv/legacy-backups\n";
+  const updated = updateEnvText(legacy, recipient);
+  assert.equal(updated.startsWith(legacy), true);
+  assert.match(updated, new RegExp(`ARENZYRA_RECOVERY_V1_AGE_RECIPIENT=${recipient}`));
 });
 
 test("backup bootstrap is preflighted, hash pinned, descriptor-only, and non-service-mutating", () => {
@@ -127,10 +93,10 @@ test("backup bootstrap is preflighted, hash pinned, descriptor-only, and non-ser
   assert.match(configure, /--immutable --no-traverse --s3-no-check-bucket/);
   assert.match(configure, /sha256sum "\$RUN_ROOT\/downloaded\.bin\.age"/);
   assert.match(configure, /MANAGED_BACKUP_ROOT="\/opt\/arenzyra-backups\/encrypted-v1"/);
-  assert.match(configure, /existing managed backup prevents age recipient replacement/);
+  assert.match(configure, /existing managed backup prevents initial recovery configuration/);
   assert.match(configure, /backup_lock_identity" = "0:0:600:1:0"/);
-  assert.match(configure, /non-probe off-host object prevents age recipient replacement/);
-  assert.match(configure, /--replace-unverified-age-recipient/);
+  assert.match(configure, /non-probe off-host object prevents initial recovery configuration/);
+  assert.match(configure, /--preserve-legacy-backup-config/);
   assert.doesNotMatch(configure, /docker\s+(?:compose|restart|start|stop|rm)\b/);
 });
 
@@ -144,6 +110,7 @@ test("backup inventory is bounded, sanitized, read-only, and lock aware", () => 
   assert.ok(lock >= 0 && lock < preflight);
   assert.match(inventory, /BACKUP_ROOT="\/opt\/arenzyra-backups"/);
   assert.match(inventory, /BACKUP_CONFIG_INVENTORY recipient=%s remote=%s root=%s/);
+  assert.match(inventory, /MANAGED_RECOVERY_INVENTORY recipient=%s remote=%s root=%s/);
   assert.match(inventory, /recipient_state="placeholder-or-other"/);
   assert.match(inventory, /remote_state="other"/);
   assert.match(inventory, /root_state="other"/);
@@ -193,6 +160,18 @@ test("legacy backup is a narrow read-only profile and normal backup remains stri
   assert.match(backup, /else\n  bash "\$SCRIPT_DIR\/production-deploy-preflight\.sh"\n/);
   assert.match(backup, /--allow-running-legacy-backup/);
   assert.match(backup, /load-production-backup-rclone-env\.sh/);
+  assert.match(
+    backup,
+    /BACKUP_ROOT="\$\{ARENZYRA_RECOVERY_V1_ROOT:-\$\{ARENZYRA_BACKUP_ROOT/,
+  );
+  assert.match(
+    backup,
+    /AGE_RECIPIENT="\$\{ARENZYRA_RECOVERY_V1_AGE_RECIPIENT:-\$\{ARENZYRA_BACKUP_AGE_RECIPIENT/,
+  );
+  assert.match(
+    backup,
+    /RCLONE_REMOTE="\$\{ARENZYRA_RECOVERY_V1_RCLONE_REMOTE:-\$\{ARENZYRA_BACKUP_RCLONE_REMOTE/,
+  );
   assert.match(
     launcher,
     /backup\)[\s\S]*ARENZYRA_BACKUP_REQUIRE_OFFSITE=1[\s\S]*production-backup\.sh/,

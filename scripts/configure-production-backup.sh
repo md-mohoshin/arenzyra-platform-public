@@ -87,7 +87,7 @@ if [ -e "$MANAGED_BACKUP_ROOT" ] || [ -L "$MANAGED_BACKUP_ROOT" ]; then
   shopt -u dotglob nullglob
   for managed_root_entry in "${managed_root_entries[@]}"; do
     [ "${managed_root_entry##*/}" = ".backup.lock" ] || \
-      block "an existing managed backup prevents age recipient replacement."
+      block "an existing managed backup prevents initial recovery configuration."
     [ -f "$managed_root_entry" ] && [ ! -L "$managed_root_entry" ] || \
       block "the managed backup lock identity is unsafe."
     backup_lock_identity="$(stat -Lc '%u:%g:%a:%h:%s' -- "$managed_root_entry" 2>/dev/null || true)"
@@ -196,7 +196,7 @@ while IFS= read -r remote_inventory_entry; do
   [ "$remote_inventory_count" -le 64 ] || block "off-host inventory has too many entries."
   case "$remote_inventory_entry" in
     probes/desktop-key-validation-*.bin.age|probes/server-backup-bootstrap-*.bin.age) ;;
-    *) block "a non-probe off-host object prevents age recipient replacement." ;;
+    *) block "a non-probe off-host object prevents initial recovery configuration." ;;
   esac
 done <"$RUN_ROOT/remote-inventory"
 [ "$remote_inventory_count" -ge 1 ] || block "off-host probe inventory is unexpectedly empty."
@@ -211,6 +211,6 @@ docker image inspect "$HELPER_IMAGE" >/dev/null 2>&1 || \
 node scripts/configure-production-backup-env.cjs \
   --age-recipient "$age_recipient" \
   --confirm CONFIGURE_REVIEWED_PRODUCTION_BACKUP \
-  --replace-unverified-age-recipient
+  --preserve-legacy-backup-config
 printf 'PRODUCTION BACKUP CONFIGURATION COMPLETE remote_probe=%s\n' \
   "arenzyra/production/probes/$probe_name"

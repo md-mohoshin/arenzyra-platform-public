@@ -233,8 +233,9 @@ binaries, the private EU Central B2 endpoint, bucket
 `arenzyra-prod-backup-84f2c9`, and prefix `arenzyra/production`. It leaves the
 age private identity off the server and proves an immutable encrypted
 upload/download checksum round trip before atomically adding backup settings to
-the live environment. Any pre-existing artifacts under `/opt/arenzyra-backups`
-remain untouched; new reviewed sets use the isolated
+the live environment. It adds separate `ARENZYRA_RECOVERY_V1_*` settings and
+does not replace any existing `ARENZYRA_BACKUP_*` configuration. Any
+pre-existing artifacts under `/opt/arenzyra-backups` remain untouched; new reviewed sets use the isolated
 `/opt/arenzyra-backups/encrypted-v1` subtree. `backup-legacy` is read-only with respect to application
 state and accepts only the exact observed PostgreSQL 16.13 and legacy API-volume
 profile. Neither command authorizes a deployment bypass; normal releases and

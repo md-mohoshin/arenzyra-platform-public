@@ -211,6 +211,13 @@ function main() {
       "ARENZYRA_BACKUP_HELPER_IMAGE",
       "postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
     ),
+    line("ARENZYRA_RECOVERY_V1_AGE_RECIPIENT", ""),
+    line("ARENZYRA_RECOVERY_V1_ROOT", "/opt/arenzyra-backups/encrypted-v1"),
+    line("ARENZYRA_RECOVERY_V1_RCLONE_REMOTE", ""),
+    line(
+      "ARENZYRA_RECOVERY_V1_HELPER_IMAGE",
+      "postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+    ),
     line("ARENZYRA_DEPLOY_COMPOSE_PROJECT", "infra"),
     line("OPENAI_API_KEY", ""),
     line("OPENAI_VISION_MODEL", "gpt-4.1-mini"),

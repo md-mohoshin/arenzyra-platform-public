@@ -1008,7 +1008,10 @@ create_pre_migration_backup() {
     return 1
   fi
 
-  backup_root="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYRA_BACKUP_ROOT)"
+  backup_root="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYRA_RECOVERY_V1_ROOT)"
+  if [ -z "$backup_root" ]; then
+    backup_root="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYRA_BACKUP_ROOT)"
+  fi
   backup_root="${backup_root:-/opt/arenzyra-backups}"
   backup_root="$(realpath -e -- "$backup_root")"
   resolved_backup_dir="$(realpath -e -- "$backup_dir")"
