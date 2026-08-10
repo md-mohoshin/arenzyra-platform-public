@@ -1330,6 +1330,7 @@ test("reviewed web recovery starts only one existing container after the dedicat
   assert.match(recovery, /public_https=pass/);
   assert.match(recovery, /SOURCE_ARCHIVE_ROOT="\/opt\/arenzyra-source-archives"/);
   assert.match(recovery, /LAUNCHER_MOUNT_DESTINATION="\/app\/public\/downloads\/launcher"/);
+  assert.match(recovery, /\[ -n "\$launcher_mount_record" \]/);
   assert.match(recovery, /exactly one preserved launcher release is required/);
   assert.match(recovery, /cp -a --reflink=auto/);
   assert.match(recovery, /launcher_tree_digest/);

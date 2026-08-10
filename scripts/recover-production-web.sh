@@ -264,9 +264,10 @@ esac
 docker image inspect "$web_image_id" >/dev/null 2>&1 || block "web image is unavailable."
 
 launcher_mount_template="{{range .Mounts}}{{if eq .Destination \"$LAUNCHER_MOUNT_DESTINATION\"}}{{.Type}}|{{.Source}}|{{.RW}}{{println}}{{end}}{{end}}"
-mapfile -t launcher_mount_records < <(
-  docker inspect --format "$launcher_mount_template" "$web_container_id"
-)
+launcher_mount_records=()
+while IFS= read -r launcher_mount_record; do
+  [ -n "$launcher_mount_record" ] && launcher_mount_records+=("$launcher_mount_record")
+done < <(docker inspect --format "$launcher_mount_template" "$web_container_id")
 [ "${#launcher_mount_records[@]}" -le 1 ] || \
   block "web container has duplicate launcher download mounts."
 if [ "${#launcher_mount_records[@]}" -eq 1 ]; then
