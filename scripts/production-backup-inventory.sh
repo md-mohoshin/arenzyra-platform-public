@@ -83,6 +83,24 @@ classify_environment() {
 
 classify_environment
 
+compose_project="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_DEPLOY_COMPOSE_PROJECT)"
+reviewed_subnet="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_DOCKER_SUBNET)"
+reviewed_subnet="${reviewed_subnet:-172.30.50.0/24}"
+[[ "$compose_project" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || \
+  block "reviewed Compose project is invalid."
+actual_subnet="$(
+  docker network inspect --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' \
+    "${compose_project}_default" 2>/dev/null || true
+)"
+for subnet_value in "$reviewed_subnet" "$actual_subnet"; do
+  [[ "$subnet_value" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || \
+    block "database network subnet inventory is invalid or ambiguous."
+done
+subnet_match=0
+[ "$actual_subnet" = "$reviewed_subnet" ] && subnet_match=1
+printf 'DATABASE_NETWORK_INVENTORY actual=%s reviewed=%s match=%s\n' \
+  "$actual_subnet" "$reviewed_subnet" "$subnet_match"
+
 if [ ! -e "$BACKUP_ROOT" ] && [ ! -L "$BACKUP_ROOT" ]; then
   printf '%s\n' \
     'BACKUP_INVENTORY root_exists=0 root_safe=1 top_level_entries=0' \

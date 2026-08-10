@@ -247,6 +247,9 @@ whether the root contains exactly the verified zero-byte backup lock; it does
 not print backup identifiers, file names, contents, recipients, remotes, roots,
 or credentials. Backup configuration values are reported only as bounded state
 labels such as `empty`, `legacy-placeholder`, `reviewed`, or `other`.
+It also reports the private Docker subnet used by the database network so an
+exact legacy read-only backup profile can be reviewed without changing that
+network.
 
 Use `production_entry deploy-discord` for the supported bot-only mode and append
 `--first-deploy` only for its documented bot health exception. Do not use the

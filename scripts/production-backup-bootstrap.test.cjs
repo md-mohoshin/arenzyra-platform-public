@@ -111,6 +111,8 @@ test("backup inventory is bounded, sanitized, read-only, and lock aware", () => 
   assert.match(inventory, /BACKUP_ROOT="\/opt\/arenzyra-backups"/);
   assert.match(inventory, /BACKUP_CONFIG_INVENTORY recipient=%s remote=%s root=%s/);
   assert.match(inventory, /MANAGED_RECOVERY_INVENTORY recipient=%s remote=%s root=%s/);
+  assert.match(inventory, /DATABASE_NETWORK_INVENTORY actual=%s reviewed=%s match=%s/);
+  assert.match(inventory, /docker network inspect --format/);
   assert.match(inventory, /recipient_state="placeholder-or-other"/);
   assert.match(inventory, /remote_state="other"/);
   assert.match(inventory, /root_state="other"/);
