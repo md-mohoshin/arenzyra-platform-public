@@ -8,6 +8,7 @@ const {
   HELPER_IMAGE,
   BACKUP_ROOT,
   REMOTE,
+  LEGACY_REMOTE_PLACEHOLDER,
   updateEnvText,
 } = require("./configure-production-backup-env.cjs");
 
@@ -88,14 +89,16 @@ test("unverified recipient replacement requires an empty remote setting", () => 
 test("one-time isolated transition replaces a legacy placeholder recipient", () => {
   const legacy =
     "ARENZYRA_BACKUP_AGE_RECIPIENT=replace-with-real-age-recipient\n" +
-    "ARENZYRA_BACKUP_RCLONE_REMOTE=\n" +
+    `ARENZYRA_BACKUP_RCLONE_REMOTE=${LEGACY_REMOTE_PLACEHOLDER}\n` +
     "ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups\n";
   const replaced = updateEnvText(legacy, recipient, {
     allowReplaceUnverifiedRecipient: true,
   });
   assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_AGE_RECIPIENT=${recipient}`));
   assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_ROOT=${BACKUP_ROOT}`));
+  assert.match(replaced, new RegExp(`ARENZYRA_BACKUP_RCLONE_REMOTE=${REMOTE}`));
   assert.doesNotMatch(replaced, /replace-with-real-age-recipient/);
+  assert.doesNotMatch(replaced, new RegExp(LEGACY_REMOTE_PLACEHOLDER));
 });
 
 test("backup bootstrap is preflighted, hash pinned, descriptor-only, and non-service-mutating", () => {

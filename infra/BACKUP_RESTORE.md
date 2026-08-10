@@ -15,9 +15,10 @@ backup helper image, and proves an encrypted upload/download/SHA-256 round trip.
 It cannot restart, rebuild, recreate, migrate, run Compose, or change a data
 volume. Credential rotation is deliberately a separate review.
 An existing different age recipient or placeholder may be replaced during this
-initial setup only when it is unverified, the reviewed rclone destination is empty,
-the new managed backup subtree contains no entry other than its exact harmless
-lock file, and the bounded off-host prefix contains only the exact encrypted
+initial setup only when it is unverified, the rclone destination is either
+empty or still equals the exact committed template placeholder, the new
+managed backup subtree contains no entry other than its exact harmless lock
+file, and the bounded off-host prefix contains only the exact encrypted
 probe-name forms. Pre-existing artifacts in the legacy parent directory are
 never moved, changed, or deleted. Any completed backup in the managed subtree
 or non-probe remote object blocks replacement so recovery material cannot be

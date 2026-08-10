@@ -9,6 +9,7 @@ const CONFIRMATION = "CONFIGURE_REVIEWED_PRODUCTION_BACKUP";
 const REMOTE =
   "arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production";
 const BACKUP_ROOT = "/opt/arenzyra-backups/encrypted-v1";
+const LEGACY_REMOTE_PLACEHOLDER = "encrypted-offsite:arenzyra/production";
 const HELPER_IMAGE =
   "postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777";
 
@@ -47,16 +48,22 @@ function updateEnvText(text, ageRecipient, options = {}) {
   const existingRoot = existingValues.get("ARENZYRA_BACKUP_ROOT");
   const existingRootIsUnconfiguredOrLegacy =
     existingRoot === "" || existingRoot === "/opt/arenzyra-backups";
+  const existingRemoteIsUnconfiguredOrPlaceholder =
+    existingRemote === "" || existingRemote === LEGACY_REMOTE_PLACEHOLDER;
   const mayReplaceUnverifiedRecipient =
     options.allowReplaceUnverifiedRecipient === true &&
     existingRecipient !== "" &&
     existingRecipient !== ageRecipient &&
-    existingRemote === "" &&
+    existingRemoteIsUnconfiguredOrPlaceholder &&
+    existingRootIsUnconfiguredOrLegacy;
+  const mayReplaceLegacyRemote =
+    options.allowReplaceUnverifiedRecipient === true &&
+    existingRemote === LEGACY_REMOTE_PLACEHOLDER &&
     existingRootIsUnconfiguredOrLegacy;
   const mayIsolateLegacyBackupRoot =
     options.allowReplaceUnverifiedRecipient === true &&
     existingRoot === "/opt/arenzyra-backups" &&
-    existingRemote === "" &&
+    existingRemoteIsUnconfiguredOrPlaceholder &&
     (existingRecipient === ageRecipient || mayReplaceUnverifiedRecipient);
   const values = new Map([
     ["ARENZYRA_BACKUP_AGE_RECIPIENT", ageRecipient],
@@ -77,6 +84,7 @@ function updateEnvText(text, ageRecipient, options = {}) {
         current !== "" &&
         current !== value &&
         !(key === "ARENZYRA_BACKUP_AGE_RECIPIENT" && mayReplaceUnverifiedRecipient) &&
+        !(key === "ARENZYRA_BACKUP_RCLONE_REMOTE" && mayReplaceLegacyRemote) &&
         !(key === "ARENZYRA_BACKUP_ROOT" && mayIsolateLegacyBackupRoot)
       ) {
         fail(`${key} already has a different non-empty value.`);
@@ -177,7 +185,13 @@ function main(argv) {
   process.stdout.write("PRODUCTION BACKUP ENV CONFIGURED\n");
 }
 
-module.exports = { BACKUP_ROOT, HELPER_IMAGE, REMOTE, updateEnvText };
+module.exports = {
+  BACKUP_ROOT,
+  HELPER_IMAGE,
+  LEGACY_REMOTE_PLACEHOLDER,
+  REMOTE,
+  updateEnvText,
+};
 
 if (require.main === module) {
   try {
