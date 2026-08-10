@@ -217,7 +217,7 @@ if ! actual_identity="$(
     export PGCONNECT_TIMEOUT=10
     export PGOPTIONS="-c default_transaction_read_only=on -c search_path=$expected_schema -c statement_timeout=30000 -c lock_timeout=5000"
     exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$expected_database" -At -F "|" -c \
-      "SELECT current_database(), COALESCE(current_schema(), '"'"''"'"'), inet_server_port(), current_setting('"'"'server_version_num'"'"');"
+      "SELECT current_database(), COALESCE(current_schema(), '"'"''"'"'), current_setting('"'"'port'"'"'), current_setting('"'"'server_version_num'"'"');"
   ' sh "$database" "$schema" "$port"
 )"; then
   printf 'DATABASE IDENTITY GATE BLOCKED: read-only target attestation failed.\n' >&2
