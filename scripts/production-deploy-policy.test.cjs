@@ -1015,6 +1015,8 @@ test("restore drill extracts archives into isolated contained temporary targets"
   assert.match(restore, /network_created=1/);
   assert.match(restore, /volume_created=1/);
   assert.match(restore, /container_created=1/);
+  assert.match(restore, /od -An -N "\$bytes" -tx1 \/dev\/urandom/);
+  assert.doesNotMatch(restore, /openssl rand/);
   assert.match(restore, /-e POSTGRES_PASSWORD[\s\\]*\n/);
   assert.doesNotMatch(restore, /-e POSTGRES_PASSWORD=/);
 });

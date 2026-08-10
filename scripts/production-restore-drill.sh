@@ -33,9 +33,17 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-for command in age docker find mktemp openssl realpath sha256sum tar; do
+for command in age docker find mktemp od realpath sha256sum tar tr; do
   command -v "$command" >/dev/null 2>&1 || { printf 'Missing command: %s\n' "$command" >&2; exit 2; }
 done
+
+random_hex() {
+  local bytes="$1" output
+  [[ "$bytes" =~ ^[1-9][0-9]*$ ]] || return 1
+  output="$(od -An -N "$bytes" -tx1 /dev/urandom | tr -d '[:space:]')"
+  [ "${#output}" -eq $((bytes * 2)) ] && [[ "$output" =~ ^[0-9a-f]+$ ]] || return 1
+  printf '%s\n' "$output"
+}
 if [ -z "$BACKUP_DIR" ] || [ -z "$AGE_IDENTITY" ] || [ ! -f "$AGE_IDENTITY" ]; then
   printf 'An existing --backup directory and age --identity file are required.\n' >&2
   exit 2
@@ -162,7 +170,7 @@ for archive in volume-*.tar.gz.age; do
   extracted_volumes=$((extracted_volumes + 1))
 done
 
-suffix="$(date -u '+%Y%m%d%H%M%S')-$(openssl rand -hex 8)"
+suffix="$(date -u '+%Y%m%d%H%M%S')-$(random_hex 8)"
 container="arenzyra-restore-drill-$suffix"
 network="arenzyra-restore-drill-$suffix"
 volume="arenzyra-restore-drill-$suffix"
@@ -171,7 +179,7 @@ docker network create "$network" >/dev/null
 network_created=1
 docker volume create "$volume" >/dev/null
 volume_created=1
-restore_postgres_password="$(openssl rand -hex 24)"
+restore_postgres_password="$(random_hex 24)"
 POSTGRES_PASSWORD="$restore_postgres_password" docker run -d \
   --name "$container" --network "$network" \
   -e POSTGRES_PASSWORD \
