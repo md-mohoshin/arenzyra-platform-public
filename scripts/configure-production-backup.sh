@@ -51,7 +51,7 @@ source scripts/acquire-production-deploy-lock.sh
 bash scripts/production-deploy-preflight.sh --allow-read-only-legacy-backup
 
 [ "$(uname -m)" = "x86_64" ] || block "the reviewed tools require x86_64 Linux."
-for command in docker find grep install mktemp openssl sha256sum stat; do
+for command in docker install mktemp openssl sha256sum stat; do
   command -v "$command" >/dev/null 2>&1 || block "required system command is unavailable: $command"
 done
 [ -r /proc/self/fd/3 ] || block "credential input descriptor 3 is required."
@@ -155,9 +155,18 @@ if [ -e /opt/arenzyra-backups ] || [ -L /opt/arenzyra-backups ]; then
     (( 8#$backup_root_mode & 8#022 )); then
     block "local backup root identity is unsafe."
   fi
-  if find /opt/arenzyra-backups -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-    block "an existing local backup prevents age recipient replacement."
-  fi
+  shopt -s nullglob dotglob
+  backup_root_entries=(/opt/arenzyra-backups/*)
+  shopt -u dotglob nullglob
+  for backup_root_entry in "${backup_root_entries[@]}"; do
+    [ "${backup_root_entry##*/}" = ".backup.lock" ] || \
+      block "an existing local backup prevents age recipient replacement."
+    [ -f "$backup_root_entry" ] && [ ! -L "$backup_root_entry" ] || \
+      block "the local backup lock identity is unsafe."
+    backup_lock_identity="$(stat -Lc '%u:%g:%a:%h:%s' -- "$backup_root_entry" 2>/dev/null || true)"
+    [ "$backup_lock_identity" = "0:0:600:1:0" ] || \
+      block "the local backup lock identity is unsafe."
+  done
 fi
 rclone lsf "$REMOTE_ROOT" --recursive --files-only --log-level ERROR \
   >"$RUN_ROOT/remote-inventory"

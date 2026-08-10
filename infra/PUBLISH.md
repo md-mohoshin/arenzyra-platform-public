@@ -224,6 +224,7 @@ closed command IDs:
 # backup-configure reads exactly recipient, key ID, and application key from
 # inherited descriptor 3; the secret must not be an argument or environment value.
 production_entry backup-configure
+production_entry backup-inventory
 production_entry backup-legacy
 ```
 
@@ -236,6 +237,11 @@ the live environment. `backup-legacy` is read-only with respect to application
 state and accepts only the exact observed PostgreSQL 16.13 and legacy API-volume
 profile. Neither command authorizes a deployment bypass; normal releases and
 scheduled backups continue to require the strict current profile.
+
+`backup-inventory` is a read-only, lock-coordinated inspection of the fixed
+local backup root. It reports only aggregate counts, marker presence, and
+whether the root contains exactly the verified zero-byte backup lock; it does
+not print backup identifiers, file names, contents, recipients, or credentials.
 
 Use `production_entry deploy-discord` for the supported bot-only mode and append
 `--first-deploy` only for its documented bot health exception. Do not use the

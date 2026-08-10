@@ -96,9 +96,32 @@ test("backup bootstrap is preflighted, hash pinned, descriptor-only, and non-ser
   assert.match(configure, /--immutable --no-traverse --s3-no-check-bucket/);
   assert.match(configure, /sha256sum "\$RUN_ROOT\/downloaded\.bin\.age"/);
   assert.match(configure, /existing local backup prevents age recipient replacement/);
+  assert.match(configure, /backup_lock_identity" = "0:0:600:1:0"/);
   assert.match(configure, /non-probe off-host object prevents age recipient replacement/);
   assert.match(configure, /--replace-unverified-age-recipient/);
   assert.doesNotMatch(configure, /docker\s+(?:compose|restart|start|stop|rm)\b/);
+});
+
+test("backup inventory is bounded, sanitized, read-only, and lock aware", () => {
+  const inventory = read("scripts/production-backup-inventory.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const lock = inventory.indexOf("source scripts/acquire-production-deploy-lock.sh");
+  const preflight = inventory.indexOf(
+    "production-deploy-preflight.sh --allow-read-only-legacy-backup",
+  );
+  assert.ok(lock >= 0 && lock < preflight);
+  assert.match(inventory, /BACKUP_ROOT="\/opt\/arenzyra-backups"/);
+  assert.match(inventory, /safe_regular_file "\$entry" 0/);
+  assert.match(inventory, /completed_sets=/);
+  assert.match(inventory, /incomplete_sets=/);
+  assert.match(inventory, /unexpected_entries=/);
+  assert.match(inventory, /unexpected_children=/);
+  assert.match(inventory, /lock_only=/);
+  assert.doesNotMatch(inventory, /cat\s|head\s|tail\s|docker\s+(?:compose|run|exec|pull|restart|start|stop|rm)\b/);
+  assert.match(
+    launcher,
+    /backup-inventory\)[\s\S]*backup-inventory accepts no arguments[\s\S]*production-backup-inventory\.sh/,
+  );
 });
 
 test("credential loader accepts only the root-only fixed private B2 policy", () => {

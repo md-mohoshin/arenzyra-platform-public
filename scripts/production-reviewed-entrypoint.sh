@@ -108,6 +108,11 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/configure-production-backup.sh
     ;;
+  backup-inventory)
+    [ "$#" -eq 0 ] || block "backup-inventory accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/production-backup-inventory.sh
+    ;;
   backup-legacy)
     [ "$#" -eq 0 ] || block "backup-legacy accepts no arguments."
     require_nested_assembly
