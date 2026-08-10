@@ -1328,6 +1328,14 @@ test("reviewed web recovery starts only one existing container after the dedicat
   assert.match(recovery, /project_fingerprint/);
   assert.match(recovery, /web image identity changed/);
   assert.match(recovery, /public_https=pass/);
+  assert.match(recovery, /SOURCE_ARCHIVE_ROOT="\/opt\/arenzyra-source-archives"/);
+  assert.match(recovery, /LAUNCHER_MOUNT_DESTINATION="\/app\/public\/downloads\/launcher"/);
+  assert.match(recovery, /exactly one preserved launcher release is required/);
+  assert.match(recovery, /cp -a --reflink=auto/);
+  assert.match(recovery, /launcher_tree_digest/);
+  assert.match(recovery, /failed byte-for-byte verification/);
+  assert.match(recovery, /mv -- "\$temporary" "\$mount_source"/);
+  assert.ok(recovery.lastIndexOf("restore_missing_launcher_mount", guard) >= 0);
   assert.doesNotMatch(
     recovery,
     /docker\s+(?:compose|build|pull|create|restart|stop|rm)|\b(?:up|down)\s+--/,

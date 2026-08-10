@@ -775,14 +775,21 @@ production_entry recover-web
 This command is intentionally narrower than a deployment. It acquires the
 shared production deployment lock, runs the standard environment, disk,
 volume, and dependency-health preflight in the dedicated web-recovery mode,
-and requires exactly one stopped Compose `web` container. It starts that exact
+and requires exactly one stopped Compose `web` container. If that immutable
+container has one legacy read-only launcher-download bind whose active source
+was omitted by an atomic source-checkout replacement, recovery may restore only
+that exact missing release from exactly one preserved
+`/opt/arenzyra-source-archives` candidate. The candidate must be a bounded,
+root-owned, non-writable regular file/directory tree; the copy is verified
+byte-for-byte and activated by an exact atomic move. Ambiguous, linked, special,
+oversized, writable, or identity-changing data fails closed and is not removed.
+The action then reruns preflight immediately before starting the exact existing
 container by immutable container ID, without Compose dependency traversal and
 without building, pulling, creating, recreating, or migrating anything. It
-then proves that every project container and image identity is unchanged,
-waits for the existing web healthcheck, reruns preflight, and verifies the
-public Arenzyra HTTPS origin. A missing, duplicate, running-unhealthy, or
-identity-changing web container fails closed; use the full reviewed release
-workflow for those cases.
+proves that every project container and image identity is unchanged, waits for
+the existing web healthcheck, reruns preflight, and verifies the public Arenzyra
+HTTPS origin. A missing, duplicate, running-unhealthy, or identity-changing web
+container fails closed; use the full reviewed release workflow for those cases.
 
 ## Production host cleanup
 
