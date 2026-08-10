@@ -89,6 +89,10 @@ case "$command_id" in
       block "rollback-discord requires one immutable release ID."
     exec /bin/bash scripts/rollback-production-images.sh --release "$1" --discord-bot
     ;;
+  recover-web)
+    [ "$#" -eq 0 ] || block "recover-web accepts no arguments."
+    exec /bin/bash scripts/recover-production-web.sh
+    ;;
   idp-dry-run)
     [ "$#" -eq 0 ] || block "idp-dry-run accepts no arguments."
     require_nested_assembly

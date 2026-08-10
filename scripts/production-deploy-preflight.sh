@@ -7,14 +7,21 @@ MIN_FREE_GIB="${ARENZYRA_DEPLOY_MIN_FREE_GIB:-30}"
 COMPOSE_PROJECT="${ARENZYRA_DEPLOY_COMPOSE_PROJECT:-}"
 PUBLISH_ENV_FILE="${ARENZYRA_DEPLOY_ENV_FILE:-infra/.env.publish}"
 SKIP_HEALTH=0
+ALLOW_WEB_RECOVERY=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health]
+Usage: production-deploy-preflight.sh [--skip-health] [--allow-web-recovery]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
 It never deletes or modifies production data.
+
+--allow-web-recovery permits exactly one existing web container to be either
+stopped or healthy while requiring the API, database, cache, proxy, and media
+service containers to remain present and healthy. It is reserved for the
+reviewed existing-container web recovery wrapper and cannot be combined with
+--skip-health.
 
 Environment:
   ARENZYRA_DEPLOY_DISK_PATH=/        Must remain the production root filesystem.
@@ -31,6 +38,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --skip-health)
       SKIP_HEALTH=1
+      ;;
+    --allow-web-recovery)
+      ALLOW_WEB_RECOVERY=1
       ;;
     --allow-stopped-idp-maintenance)
       printf '%s\n' \
@@ -69,6 +79,11 @@ block() {
   printf 'No cleanup or deployment action was performed.\n\n' >&2
   exit 75
 }
+
+if [ "$SKIP_HEALTH" -eq 1 ] && [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
+  block "INCOMPATIBLE PREFLIGHT MODES" \
+    "--skip-health and --allow-web-recovery cannot be combined."
+fi
 
 if [ ! -f "$PUBLISH_ENV_FILE" ]; then
   block "PRODUCTION ENVIRONMENT MISSING" \
@@ -182,6 +197,12 @@ else
   fi
 
   unhealthy=()
+  proxy_count=0
+  postgres_count=0
+  redis_count=0
+  api_count=0
+  media_ai_count=0
+  web_count=0
   for container_id in "${containers[@]}"; do
     [ -n "$container_id" ] || continue
     if ! state="$(
@@ -194,12 +215,35 @@ else
     fi
     IFS='|' read -r name service status health <<<"$state"
 
+    case "$service" in
+      proxy) proxy_count=$((proxy_count + 1)) ;;
+      postgres) postgres_count=$((postgres_count + 1)) ;;
+      redis) redis_count=$((redis_count + 1)) ;;
+      api) api_count=$((api_count + 1)) ;;
+      media-ai) media_ai_count=$((media_ai_count + 1)) ;;
+      web) web_count=$((web_count + 1)) ;;
+    esac
+
+    if [ "$ALLOW_WEB_RECOVERY" -eq 1 ] && [ "$service" = "web" ]; then
+      if [ "$status" = "exited" ]; then
+        continue
+      fi
+      if [ "$status" != "running" ] || [ "$health" != "healthy" ]; then
+        unhealthy+=("${name#/}: web recovery requires status=exited or running/healthy, observed=${status}/${health}")
+      fi
+      continue
+    fi
+
     if [ "$status" != "running" ]; then
       unhealthy+=("${name#/}: status=${status}")
       continue
     fi
 
     if [ "$health" = "healthy" ]; then
+      continue
+    fi
+    if [ "$ALLOW_WEB_RECOVERY" -eq 1 ] && \
+      [ "$service" = "proxy" ] && [ "$health" = "not-configured" ]; then
       continue
     fi
     case "$service" in
@@ -212,10 +256,32 @@ else
     esac
   done
 
+  if [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
+    required_services=(proxy postgres redis api media-ai web)
+    required_counts=(
+      "$proxy_count"
+      "$postgres_count"
+      "$redis_count"
+      "$api_count"
+      "$media_ai_count"
+      "$web_count"
+    )
+    for required_index in "${!required_services[@]}"; do
+      required_service="${required_services[$required_index]}"
+      required_count="${required_counts[$required_index]}"
+      if [ "$required_count" -ne 1 ]; then
+        unhealthy+=("service=${required_service}: required_container_count=1 observed=${required_count}")
+      fi
+    done
+  fi
+
   if [ "${#unhealthy[@]}" -gt 0 ]; then
     block "EXISTING PRODUCTION SERVICE UNHEALTHY" "${unhealthy[@]}"
   fi
 
+  if [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
+    printf '[deploy-preflight] web_recovery=pass web_container=1 dependencies=healthy\n'
+  fi
   printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi
 

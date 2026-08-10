@@ -763,6 +763,27 @@ These read-only helpers resolve the reviewed Compose project from
 `infra/.env.publish`. Do not use an unguarded `docker compose down`, restart,
 recreate, or `up` on production; use the guarded deployment/recovery workflow.
 
+### Existing web-container recovery
+
+If an otherwise healthy host restart leaves the single existing web container
+stopped, use the reviewed recovery action:
+
+```bash
+production_entry recover-web
+```
+
+This command is intentionally narrower than a deployment. It acquires the
+shared production deployment lock, runs the standard environment, disk,
+volume, and dependency-health preflight in the dedicated web-recovery mode,
+and requires exactly one stopped Compose `web` container. It starts that exact
+container by immutable container ID, without Compose dependency traversal and
+without building, pulling, creating, recreating, or migrating anything. It
+then proves that every project container and image identity is unchanged,
+waits for the existing web healthcheck, reruns preflight, and verifies the
+public Arenzyra HTTPS origin. A missing, duplicate, running-unhealthy, or
+identity-changing web container fails closed; use the full reviewed release
+workflow for those cases.
+
 ## Production host cleanup
 
 Production builds can leave Docker build cache behind. Keep these safeguards

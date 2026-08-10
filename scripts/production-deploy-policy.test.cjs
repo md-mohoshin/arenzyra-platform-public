@@ -1271,6 +1271,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "deploy",
       "deploy-discord",
       "rollback-discord",
+      "recover-web",
       "idp-dry-run",
       "backup",
       "restore-drill",
@@ -1291,6 +1292,61 @@ test("one reviewed production entrypoint exposes only the closed command allowli
   assert.match(launcher, /require_nested_assembly/);
   assert.doesNotMatch(launcher, /\beval\b|bash\s+-c/);
   assert.doesNotMatch(launcher, /idp-credentials (?:apply|validate)/);
+});
+
+test("reviewed web recovery starts only one existing container after the dedicated preflight", () => {
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const recovery = read("scripts/recover-production-web.sh");
+  const preflight = read("scripts/production-deploy-preflight.sh");
+
+  assert.match(
+    launcher,
+    /recover-web\)[\s\S]*recover-web accepts no arguments[\s\S]*exec \/bin\/bash scripts\/recover-production-web\.sh/,
+  );
+  const guard = recovery.indexOf(
+    "production-deploy-preflight.sh --allow-web-recovery",
+  );
+  const start = recovery.indexOf('docker start "$web_container_id"');
+  const postGuard = recovery.indexOf(
+    "production-deploy-preflight.sh --allow-web-recovery",
+    guard + 1,
+  );
+  const publicHealth = recovery.indexOf(
+    'node - "$public_web_origin"',
+    postGuard,
+  );
+  assert.ok(guard >= 0 && guard < start);
+  assert.ok(postGuard > start && publicHealth > postGuard);
+  assert.match(recovery, /LOCK_FILE="\/run\/arenzyra-production-deploy\.lock"/);
+  assert.match(recovery, /require-local-production-docker\.sh/);
+  assert.match(
+    recovery,
+    /read-dotenv-value\.cjs infra\/\.env\.publish ARENZYRA_DEPLOY_COMPOSE_PROJECT/,
+  );
+  assert.match(recovery, /com\.docker\.compose\.service=web/);
+  assert.match(recovery, /com\.docker\.compose\.oneoff/);
+  assert.match(recovery, /project_fingerprint/);
+  assert.match(recovery, /web image identity changed/);
+  assert.match(recovery, /public_https=pass/);
+  assert.doesNotMatch(
+    recovery,
+    /docker\s+(?:compose|build|pull|create|restart|stop|rm)|\b(?:up|down)\s+--/,
+  );
+
+  assert.match(preflight, /--allow-web-recovery/);
+  assert.match(
+    preflight,
+    /--skip-health and --allow-web-recovery cannot be combined/,
+  );
+  assert.match(
+    preflight,
+    /required_services=\(proxy postgres redis api media-ai web\)/,
+  );
+  assert.match(preflight, /required_container_count=1/);
+  assert.match(
+    preflight,
+    /status=exited or running\/healthy/,
+  );
 });
 
 test("launcher release downloads remain server-only and fail closed", () => {
