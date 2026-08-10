@@ -191,6 +191,7 @@ test("legacy backup is a narrow read-only profile and normal backup remains stri
     verifier,
     /DATABASE IDENTITY INVENTORY database_match=%s schema_match=%s port_match=%s actual_version=%s expected_version=%s/,
   );
+  assert.match(verifier, /-At -F "\|"/);
   assert.match(preflight, /--allow-read-only-legacy-backup/);
   assert.match(preflight, /does not authorize a build, pull, recreate, restart/);
   assert.match(

@@ -216,22 +216,22 @@ if ! actual_identity="$(
     [ "${POSTGRES_DB:-}" = "$expected_database" ]
     export PGCONNECT_TIMEOUT=10
     export PGOPTIONS="-c default_transaction_read_only=on -c search_path=$expected_schema -c statement_timeout=30000 -c lock_timeout=5000"
-    exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$expected_database" -At -F " " -c \
+    exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$expected_database" -At -F "|" -c \
       "SELECT current_database(), COALESCE(current_schema(), '"'"''"'"'), inet_server_port(), current_setting('"'"'server_version_num'"'"');"
   ' sh "$database" "$schema" "$port"
 )"; then
   printf 'DATABASE IDENTITY GATE BLOCKED: read-only target attestation failed.\n' >&2
   exit 75
 fi
-if [ "$actual_identity" != "$database $schema $port $expected_runtime_version_num" ]; then
+if [ "$actual_identity" != "$database|$schema|$port|$expected_runtime_version_num" ]; then
   actual_database=""
   actual_schema=""
   actual_port=""
   actual_version_num=""
-  read -r actual_database actual_schema actual_port actual_version_num \
+  IFS='|' read -r actual_database actual_schema actual_port actual_version_num \
     <<<"$actual_identity"
   if [[ "$actual_database" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,62}$ ]] && \
-    [[ "$actual_schema" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,62}$ ]] && \
+    [[ "$actual_schema" =~ ^$|^[A-Za-z_][A-Za-z0-9_-]{0,62}$ ]] && \
     [[ "$actual_port" =~ ^[0-9]{1,5}$ ]] && \
     [[ "$actual_version_num" =~ ^[0-9]{6}$ ]]; then
     database_match=0
