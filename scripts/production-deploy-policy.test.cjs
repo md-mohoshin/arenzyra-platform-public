@@ -1274,6 +1274,8 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "recover-web",
       "idp-dry-run",
       "backup",
+      "backup-configure",
+      "backup-legacy",
       "restore-drill",
       "roles-dry-run",
       "host-maintenance",

@@ -100,7 +100,19 @@ case "$command_id" in
     ;;
   backup)
     [ "$#" -eq 0 ] || block "backup accepts no arguments."
-    exec /bin/bash scripts/production-backup.sh
+    exec /usr/bin/env ARENZYRA_BACKUP_REQUIRE_OFFSITE=1 \
+      /bin/bash scripts/production-backup.sh
+    ;;
+  backup-configure)
+    [ "$#" -eq 0 ] || block "backup-configure accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/configure-production-backup.sh
+    ;;
+  backup-legacy)
+    [ "$#" -eq 0 ] || block "backup-legacy accepts no arguments."
+    require_nested_assembly
+    exec /usr/bin/env ARENZYRA_BACKUP_REQUIRE_OFFSITE=1 \
+      /bin/bash scripts/production-backup.sh --allow-running-legacy-backup
     ;;
   restore-drill)
     [ "$#" -eq 1 ] || block "restore-drill requires one backup directory."

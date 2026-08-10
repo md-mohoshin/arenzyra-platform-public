@@ -19,6 +19,13 @@ if ! ENV_FILE="$(realpath -e -- "$ENV_FILE" 2>/dev/null)" || \
 fi
 EXPECTED_POSTGRES_IMAGE="postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 EXPECTED_POSTGRES_VERSION_NUM="160014"
+ALLOW_RUNNING_LEGACY_BACKUP=0
+if [ "${1:-}" = "--allow-running-legacy-backup" ] && [ "$#" -eq 1 ]; then
+  ALLOW_RUNNING_LEGACY_BACKUP=1
+elif [ "$#" -ne 0 ]; then
+  printf 'DATABASE IDENTITY GATE BLOCKED: unsupported argument.\n' >&2
+  exit 75
+fi
 test -f "$ENV_FILE"
 
 for command in docker node; do
@@ -75,13 +82,20 @@ if ! selected_container_full_id="$(docker inspect --format '{{.Id}}' "$container
   exit 75
 fi
 
+if [ "$ALLOW_RUNNING_LEGACY_BACKUP" -eq 1 ]; then
+  expected_runtime_image="postgres:16-alpine"
+  expected_runtime_version_num="160013"
+else
+  expected_runtime_image="$EXPECTED_POSTGRES_IMAGE"
+  expected_runtime_version_num="$EXPECTED_POSTGRES_VERSION_NUM"
+fi
 if ! container_image_reference="$(docker inspect --format '{{.Config.Image}}' "$container_id")" ||
-  [ "$container_image_reference" != "$EXPECTED_POSTGRES_IMAGE" ]; then
-  printf 'DATABASE IDENTITY GATE BLOCKED: PostgreSQL container image reference is not the reviewed digest.\n' >&2
+  [ "$container_image_reference" != "$expected_runtime_image" ]; then
+  printf 'DATABASE IDENTITY GATE BLOCKED: PostgreSQL container image reference is outside the selected reviewed profile.\n' >&2
   exit 75
 fi
 if ! container_image_id="$(docker inspect --format '{{.Image}}' "$container_id")" ||
-  ! reviewed_image_id="$(docker image inspect --format '{{.Id}}' "$EXPECTED_POSTGRES_IMAGE")" ||
+  ! reviewed_image_id="$(docker image inspect --format '{{.Id}}' "$expected_runtime_image")" ||
   [ -z "$container_image_id" ] || [ "$container_image_id" != "$reviewed_image_id" ]; then
   printf 'DATABASE IDENTITY GATE BLOCKED: running PostgreSQL image does not match the reviewed local image.\n' >&2
   exit 75
@@ -207,7 +221,7 @@ if ! actual_identity="$(
   printf 'DATABASE IDENTITY GATE BLOCKED: read-only target attestation failed.\n' >&2
   exit 75
 fi
-if [ "$actual_identity" != "$database $schema $port $EXPECTED_POSTGRES_VERSION_NUM" ]; then
+if [ "$actual_identity" != "$database $schema $port $expected_runtime_version_num" ]; then
   printf 'DATABASE IDENTITY GATE BLOCKED: actual target does not match the reviewed target.\n' >&2
   exit 75
 fi

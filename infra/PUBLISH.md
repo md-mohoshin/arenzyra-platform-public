@@ -217,6 +217,26 @@ production_entry() {
 production_entry deploy
 ```
 
+The reviewed backup bootstrap and one-time pre-remediation backup are also
+closed command IDs:
+
+```bash
+# backup-configure reads exactly recipient, key ID, and application key from
+# inherited descriptor 3; the secret must not be an argument or environment value.
+production_entry backup-configure
+production_entry backup-legacy
+```
+
+`backup-configure` accepts only the fixed hash-pinned incoming `age`/`rclone`
+binaries, the private EU Central B2 endpoint, bucket
+`arenzyra-prod-backup-84f2c9`, and prefix `arenzyra/production`. It leaves the
+age private identity off the server and proves an immutable encrypted
+upload/download checksum round trip before atomically adding backup settings to
+the live environment. `backup-legacy` is read-only with respect to application
+state and accepts only the exact observed PostgreSQL 16.13 and legacy API-volume
+profile. Neither command authorizes a deployment bypass; normal releases and
+scheduled backups continue to require the strict current profile.
+
 Use `production_entry deploy-discord` for the supported bot-only mode and append
 `--first-deploy` only for its documented bot health exception. Do not use the
 full first-deploy form. The outer `git show` makes the dispatcher bytes come from

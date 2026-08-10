@@ -8,10 +8,11 @@ COMPOSE_PROJECT="${ARENZYRA_DEPLOY_COMPOSE_PROJECT:-}"
 PUBLISH_ENV_FILE="${ARENZYRA_DEPLOY_ENV_FILE:-infra/.env.publish}"
 SKIP_HEALTH=0
 ALLOW_WEB_RECOVERY=0
+ALLOW_READ_ONLY_LEGACY_BACKUP=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health] [--allow-web-recovery]
+Usage: production-deploy-preflight.sh [--skip-health] [--allow-web-recovery] [--allow-read-only-legacy-backup]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -22,6 +23,12 @@ stopped or healthy while requiring the API, database, cache, proxy, and media
 service containers to remain present and healthy. It is reserved for the
 reviewed existing-container web recovery wrapper and cannot be combined with
 --skip-health.
+
+--allow-read-only-legacy-backup requires every existing service to remain
+healthy while recognizing only the exact observed root-owned API volume profile.
+It is reserved for the reviewed encrypted pre-remediation backup commands and
+does not authorize a build, pull, recreate, restart, migration, ownership
+change, or Compose operation.
 
 Environment:
   ARENZYRA_DEPLOY_DISK_PATH=/        Must remain the production root filesystem.
@@ -41,6 +48,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-web-recovery)
       ALLOW_WEB_RECOVERY=1
+      ;;
+    --allow-read-only-legacy-backup)
+      ALLOW_READ_ONLY_LEGACY_BACKUP=1
       ;;
     --allow-stopped-idp-maintenance)
       printf '%s\n' \
@@ -83,6 +93,11 @@ block() {
 if [ "$SKIP_HEALTH" -eq 1 ] && [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
   block "INCOMPATIBLE PREFLIGHT MODES" \
     "--skip-health and --allow-web-recovery cannot be combined."
+fi
+if { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; } && \
+  [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
+  block "INCOMPATIBLE PREFLIGHT MODES" \
+    "--allow-read-only-legacy-backup cannot be combined with another exception mode."
 fi
 
 if [ ! -f "$PUBLISH_ENV_FILE" ]; then
@@ -171,7 +186,7 @@ done <<<"$container_output"
 volume_gate_args=()
 if [ "$SKIP_HEALTH" -eq 1 ]; then
   volume_gate_args+=(--allow-absent)
-elif [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
+elif [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
   volume_gate_args+=(--allow-running-legacy-root-api)
 fi
 if ! volume_gate_output="$(
@@ -244,7 +259,7 @@ else
     if [ "$health" = "healthy" ]; then
       continue
     fi
-    if [ "$ALLOW_WEB_RECOVERY" -eq 1 ] && \
+    if { [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; } && \
       [ "$service" = "proxy" ] && [ "$health" = "not-configured" ]; then
       continue
     fi
@@ -258,7 +273,7 @@ else
     esac
   done
 
-  if [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
+  if [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
     required_services=(proxy postgres redis api media-ai web)
     required_counts=(
       "$proxy_count"
@@ -283,6 +298,9 @@ else
 
   if [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; then
     printf '[deploy-preflight] web_recovery=pass web_container=1 dependencies=healthy\n'
+  fi
+  if [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
+    printf '[deploy-preflight] legacy_backup=pass services=healthy data_volumes=read_only\n'
   fi
   printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi

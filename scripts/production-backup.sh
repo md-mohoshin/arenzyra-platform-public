@@ -4,6 +4,16 @@ umask 077
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/require-local-production-docker.sh"
+ALLOW_RUNNING_LEGACY_BACKUP=0
+if [ "${1:-}" = "--allow-running-legacy-backup" ] && [ "$#" -eq 1 ]; then
+  ALLOW_RUNNING_LEGACY_BACKUP=1
+  shift
+elif [ "$#" -ne 0 ]; then
+  printf 'Backup arguments are unsupported.\n' >&2
+  exit 75
+fi
+# shellcheck source=scripts/acquire-production-deploy-lock.sh
+source "$SCRIPT_DIR/acquire-production-deploy-lock.sh"
 BACKUP_ENV_FILE="${ARENZYRA_BACKUP_ENV_FILE:-$SCRIPT_DIR/../infra/.env.publish}"
 test -f "$BACKUP_ENV_FILE" || { printf 'Backup environment file is missing: %s\n' "$BACKUP_ENV_FILE" >&2; exit 2; }
 BACKUP_ENV_FILE="$(realpath -e -- "$BACKUP_ENV_FILE")"
@@ -43,6 +53,13 @@ BACKUP_REASON="${ARENZYRA_BACKUP_REASON:-scheduled}"
 RESULT_FILE="${ARENZYRA_BACKUP_RESULT_FILE:-}"
 ALLOW_MISSING_APP_VOLUMES="${ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES:-0}"
 backup_id="$(date -u '+%Y%m%dT%H%M%SZ')-$(openssl rand -hex 4)"
+if [ "$ALLOW_RUNNING_LEGACY_BACKUP" -eq 1 ]; then
+  bash "$SCRIPT_DIR/production-deploy-preflight.sh" --allow-read-only-legacy-backup
+  database_identity_args=(--allow-running-legacy-backup)
+else
+  bash "$SCRIPT_DIR/production-deploy-preflight.sh"
+  database_identity_args=()
+fi
 
 for command in age docker flock openssl sha256sum; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -58,7 +75,7 @@ if [ -n "$BACKUP_ENV_FILE" ]; then
 fi
 if ! mapfile -t database_binding < <(
   env "${database_identity_environment[@]}" \
-    bash "$SCRIPT_DIR/verify-production-database-container.sh"
+    bash "$SCRIPT_DIR/verify-production-database-container.sh" "${database_identity_args[@]}"
 ); then
   printf 'Backup database identity verification failed.\n' >&2
   exit 75
@@ -94,6 +111,17 @@ fi
 if [ -n "$RCLONE_REMOTE" ] && ! command -v rclone >/dev/null 2>&1; then
   printf 'rclone is required when ARENZYRA_BACKUP_RCLONE_REMOTE is configured.\n' >&2
   exit 2
+fi
+if [ -n "$RCLONE_REMOTE" ]; then
+  case "$RCLONE_REMOTE" in
+    arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production) ;;
+    *)
+      printf 'Reviewed off-host backup destination differs.\n' >&2
+      exit 75
+      ;;
+  esac
+  # shellcheck source=scripts/load-production-backup-rclone-env.sh
+  source "$SCRIPT_DIR/load-production-backup-rclone-env.sh"
 fi
 
 mkdir -p -- "$BACKUP_ROOT"

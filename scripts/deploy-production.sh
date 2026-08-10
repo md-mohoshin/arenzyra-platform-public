@@ -991,6 +991,7 @@ create_pre_migration_backup() {
     "ARENZYRA_BACKUP_RESULT_FILE=$result_file"
     "ARENZYRA_BACKUP_REQUIRE_OFFSITE=1"
     "ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES=0"
+    "ARENZYRA_DEPLOY_LOCK_INHERITED=1"
   )
 
   env "${backup_environment[@]}" bash scripts/production-backup.sh

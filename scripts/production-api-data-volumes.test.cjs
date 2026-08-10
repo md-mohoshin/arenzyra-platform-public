@@ -144,6 +144,8 @@ test("every production preflight enforces the API data-volume gate", () => {
     preflight,
     /volume_gate_args\+=\(--allow-running-legacy-root-api\)/,
   );
+  assert.match(preflight, /--allow-read-only-legacy-backup/);
+  assert.match(preflight, /legacy_backup=pass services=healthy data_volumes=read_only/);
   assert.match(preflight, /API DATA VOLUME POLICY FAILED/);
   assert.match(preflight, /IDP MUTATION PREFLIGHT MODE IS UNAVAILABLE/);
   assert.doesNotMatch(preflight, /maintenance_api=exited maintenance_web=exited/);

@@ -5,26 +5,57 @@ private identity off the production host; production needs only the public age
 recipient. Configure an off-host rclone destination so loss of the host or its
 disk does not also destroy recovery data.
 
-The 2026-08-10 production inventory found no `/usr/bin/rclone` executable and
-no configured remote. Do not substitute a same-host directory or a placeholder
-remote. Install the reviewed rclone package, configure a genuinely off-host
-encrypted destination, and prove a bounded upload/download/checksum round trip
-before migrating the production env or attempting a deployment.
+The 2026-08-10 production inventory found no `rclone` executable and no
+configured remote. Do not substitute a same-host directory or a placeholder
+remote. The reviewed `production_entry backup-configure` action installs only
+the SHA-256-pinned `age` 1.3.1 and `rclone` 1.75.0 Linux executables from the
+fixed root-owned incoming directory, stores the bucket-restricted B2 credential
+in `/etc/arenzyra-backup-rclone.env` as root `0600`, pulls only the digest-pinned
+backup helper image, and proves an encrypted upload/download/SHA-256 round trip.
+It cannot restart, rebuild, recreate, migrate, run Compose, or change a data
+volume. Credential rotation is deliberately a separate review.
 
 ## Configure
 
-Install `age` and `rclone`, keep the reviewed helper image
+Stage these two official Linux AMD64 executables as root-owned, single-link,
+non-group/world-writable files. Their executable hashes are pinned in the
+reviewed configuration script:
+
+```text
+/opt/arenzyra-backup-bootstrap-incoming/age
+/opt/arenzyra-backup-bootstrap-incoming/rclone
+```
+
+Provide exactly three newline-terminated values on inherited file descriptor
+3: the public age recipient, B2 application key ID, and B2 application key.
+The clean-parent launcher must carry descriptor 3 without placing any value in
+an argument, environment variable, log, Git file, or shell history. Then run:
+
+```bash
+production_entry backup-configure
+```
+
+The action configures the reviewed helper image
 `postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777`
-locally available, then set these only in the reviewed
-`/opt/arenzyra/infra/.env.publish` (mode `0600`):
+and atomically sets these only in the reviewed `/opt/arenzyra/infra/.env.publish`
+(mode `0600`):
 
 ```text
 ARENZYRA_BACKUP_AGE_RECIPIENT=age1...
-ARENZYRA_BACKUP_RCLONE_REMOTE=encrypted-offsite:arenzyra/production
+ARENZYRA_BACKUP_RCLONE_REMOTE=arenzyrab2:arenzyra-prod-backup-84f2c9/arenzyra/production
 ARENZYRA_BACKUP_ROOT=/opt/arenzyra-backups
 ARENZYRA_DEPLOY_COMPOSE_PROJECT=infra
 ARENZYRA_BACKUP_HELPER_IMAGE=postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
 ```
+
+For the one observed pre-remediation production profile only, create the first
+recovery point with `production_entry backup-legacy`. That exception still
+requires all services healthy, PostgreSQL exactly 16.13 in the existing
+`postgres:16-alpine` container, the exact reviewed database volume/network, and
+the exact root-owned API-volume tree. It performs no service or data mutation;
+it only reads database/volume state into the normal encrypted immutable backup.
+After PostgreSQL and API volume ownership are remediated, use only
+`production_entry backup`.
 
 Scheduled jobs must use the exact clean-parent, reviewed-Root
 `production_entry backup` launcher defined in [`PUBLISH.md`](PUBLISH.md); do not
@@ -35,7 +66,9 @@ path. The backup rejects process overrides of the reviewed project, root, age re
 destination, or helper image; do not maintain a divergent second copy of those
 values.
 
-Run `production_entry backup` from the reviewed systemd launcher. It creates a
+Run `production_entry backup` from the reviewed systemd launcher. The backup
+command itself reruns the production preflight before creating any backup file.
+It creates a
 consistent PostgreSQL custom dump, role metadata without password hashes, and
 read-only archives of existing uploads/storage/Redis/Caddy/Discord state
 volumes. Every artifact and its checksum manifest are age-encrypted. The
