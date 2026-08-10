@@ -778,11 +778,12 @@ volume, and dependency-health preflight in the dedicated web-recovery mode,
 and requires exactly one stopped Compose `web` container. If that immutable
 container has one legacy read-only launcher-download bind whose active source
 was omitted by an atomic source-checkout replacement, recovery may restore only
-that exact missing release from exactly one preserved
-`/opt/arenzyra-source-archives` candidate. The candidate must be a bounded,
-root-owned, non-writable regular file/directory tree; the copy is verified
-byte-for-byte and activated by an exact atomic move. Ambiguous, linked, special,
-oversized, writable, or identity-changing data fails closed and is not removed.
+that exact missing release from preserved `/opt/arenzyra-source-archives`
+candidates. Every candidate must be a bounded, root-owned `0755` directory tree
+containing only single-link `0644` regular files, and every candidate must have
+the same byte-for-byte digest. The copy is verified byte-for-byte and activated
+by an exact atomic move. Missing, disagreeing, linked, special, oversized,
+writable, or identity-changing data fails closed and is not removed.
 The action then reruns preflight immediately before starting the exact existing
 container by immutable container ID, without Compose dependency traversal and
 without building, pulling, creating, recreating, or migrating anything. It

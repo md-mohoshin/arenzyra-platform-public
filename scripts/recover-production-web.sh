@@ -136,7 +136,8 @@ verify_launcher_tree() {
   verify_root_owned_directory "$directory" || return 75
   if ! unsafe="$({
     find "$directory" -xdev \
-      \( ! -user root -o ! -group root -o -perm /022 -o ! \( -type d -o -type f \) \) \
+      \( ! -user root -o ! -group root -o \
+        ! \( \( -type d -perm 0755 \) -o \( -type f -perm 0644 \) \) \) \
       -print -quit
     find "$directory" -xdev -type f \( -links +1 -o -size +1G \) -print -quit
   } 2>/dev/null)"; then
@@ -163,8 +164,8 @@ launcher_tree_digest() {
 
 restore_missing_launcher_mount() {
   local mount_record="$1" mount_type="" mount_source="" mount_writable=""
-  local release_name="" launcher_root="" candidate="" temporary=""
-  local source_digest="" restored_digest=""
+  local release_name="" launcher_root="" candidate="" selected_candidate="" temporary=""
+  local candidate_digest="" source_digest="" restored_digest=""
   local -a candidates=()
 
   IFS='|' read -r mount_type mount_source mount_writable <<<"$mount_record"
@@ -193,13 +194,24 @@ restore_missing_launcher_mount() {
     candidates+=("$candidate")
   done < <(
     find "$SOURCE_ARCHIVE_ROOT" -xdev -mindepth 3 -maxdepth 3 \
-      -type d -path "*/.launcher-releases/$release_name" -print0
+      -type d -path "*/.launcher-releases/$release_name" -print0 | LC_ALL=C sort -z
   )
-  [ "${#candidates[@]}" -eq 1 ] || \
-    block "exactly one preserved launcher release is required for restoration."
-  candidate="${candidates[0]}"
-  verify_launcher_tree "$candidate" || \
-    block "preserved launcher release is unsafe."
+  [ "${#candidates[@]}" -ge 1 ] || \
+    block "at least one preserved launcher release is required for restoration."
+  for candidate in "${candidates[@]}"; do
+    verify_launcher_tree "$candidate" || \
+      block "a preserved launcher release is unsafe."
+    candidate_digest="$(launcher_tree_digest "$candidate")"
+    [[ "$candidate_digest" =~ ^[0-9a-f]{64}$ ]] || \
+      block "a preserved launcher release digest is invalid."
+    if [ -z "$source_digest" ]; then
+      selected_candidate="$candidate"
+      source_digest="$candidate_digest"
+    elif [ "$candidate_digest" != "$source_digest" ]; then
+      block "preserved launcher releases disagree byte-for-byte."
+    fi
+  done
+  candidate="$selected_candidate"
 
   if [ -e "$launcher_root" ] || [ -L "$launcher_root" ]; then
     verify_root_owned_directory "$launcher_root" || \
@@ -220,7 +232,6 @@ restore_missing_launcher_mount() {
     block "restored launcher directory mode could not be preserved."
   verify_launcher_tree "$temporary" || \
     block "temporary restored launcher release failed safety validation."
-  source_digest="$(launcher_tree_digest "$candidate")"
   restored_digest="$(launcher_tree_digest "$temporary")"
   [[ "$source_digest" =~ ^[0-9a-f]{64}$ ]] && [ "$restored_digest" = "$source_digest" ] || \
     block "restored launcher release failed byte-for-byte verification."
