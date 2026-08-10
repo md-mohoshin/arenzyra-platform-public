@@ -45,12 +45,14 @@ function updateEnvText(text, ageRecipient, options = {}) {
   const existingRecipient = existingValues.get("ARENZYRA_BACKUP_AGE_RECIPIENT");
   const existingRemote = existingValues.get("ARENZYRA_BACKUP_RCLONE_REMOTE");
   const existingRoot = existingValues.get("ARENZYRA_BACKUP_ROOT");
+  const existingRootIsUnconfiguredOrLegacy =
+    existingRoot === "" || existingRoot === "/opt/arenzyra-backups";
   const mayReplaceUnverifiedRecipient =
     options.allowReplaceUnverifiedRecipient === true &&
     existingRecipient !== "" &&
     existingRecipient !== ageRecipient &&
-    /^age1[0-9a-z]{58}$/.test(existingRecipient) &&
-    existingRemote === "";
+    existingRemote === "" &&
+    existingRootIsUnconfiguredOrLegacy;
   const mayIsolateLegacyBackupRoot =
     options.allowReplaceUnverifiedRecipient === true &&
     existingRoot === "/opt/arenzyra-backups" &&
