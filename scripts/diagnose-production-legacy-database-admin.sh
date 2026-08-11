@@ -4,7 +4,14 @@ umask 077
 
 EXPECTED_ROOT="/opt/arenzyra"
 LOCK_FILE="/run/arenzyra-production-deploy.lock"
-[ "$#" -eq 0 ] && [ "$(id -u)" -eq 0 ] && \
+PREFLIGHT_MODE="legacy-interrupted"
+if [ "$#" -eq 1 ] && [ "$1" = "--cutover-transition" ]; then
+  PREFLIGHT_MODE="cutover-transition"
+elif [ "$#" -ne 0 ]; then
+  printf 'LEGACY ADMIN DIAGNOSTIC BLOCKED: arguments are invalid.\n' >&2
+  exit 75
+fi
+[ "$(id -u)" -eq 0 ] && \
   [ "$(pwd -P)" = "$EXPECTED_ROOT" ] || {
   printf 'LEGACY ADMIN DIAGNOSTIC BLOCKED: exact production invocation is required.\n' >&2
   exit 75
@@ -21,7 +28,11 @@ compose_project="$(
 export ARENZYRA_DEPLOY_COMPOSE_PROJECT="$compose_project"
 export ARENZYRA_DEPLOY_ENV_FILE="$ENV_FILE"
 
-bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-interrupted
+if [ "$PREFLIGHT_MODE" = "cutover-transition" ]; then
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+else
+  bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-interrupted
+fi
 mapfile -t database_binding < <(
   bash scripts/verify-production-database-container.sh --allow-running-legacy-backup
 )

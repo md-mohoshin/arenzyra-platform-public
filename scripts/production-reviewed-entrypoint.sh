@@ -215,6 +215,12 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/diagnose-production-legacy-database-admin.sh
     ;;
+  legacy-transition-admin-diagnose)
+    [ "$#" -eq 0 ] || block "legacy-transition-admin-diagnose accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/diagnose-production-legacy-database-admin.sh \
+      --cutover-transition
+    ;;
   legacy-auxiliary-acl-close)
     [ "$#" -eq 1 ] || block "legacy-auxiliary-acl-close requires one backup ID."
     [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || block "legacy-auxiliary-acl-close backup ID is invalid."

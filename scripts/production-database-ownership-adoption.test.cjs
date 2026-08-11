@@ -209,8 +209,16 @@ test("legacy administrator diagnostic is allowlisted, bounded, and read-only", (
     /legacy-admin-diagnose\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*diagnose-production-legacy-database-admin\.sh/,
   );
   assert.match(
+    launcher,
+    /legacy-transition-admin-diagnose\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*diagnose-production-legacy-database-admin\.sh[\s\S]*--cutover-transition/,
+  );
+  assert.match(
     diagnostic,
     /production-deploy-preflight\.sh --allow-legacy-cutover-interrupted/,
+  );
+  assert.match(
+    diagnostic,
+    /production-deploy-preflight\.sh --allow-cutover-transition/,
   );
   assert.match(diagnostic, /default_transaction_read_only=on/);
   assert.match(diagnostic, /PGHOST=\/var\/run\/postgresql/);

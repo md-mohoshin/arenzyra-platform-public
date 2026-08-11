@@ -822,6 +822,15 @@ passwords, database contents, or customer identifiers:
 production_entry legacy-admin-diagnose
 ```
 
+If the same bounded administrator diagnostic is required after forward schema
+work while only PostgreSQL and Redis remain healthy, use the transition-specific
+entrypoint. It accepts only the reviewed cutover-transition preflight and remains
+read-only:
+
+```bash
+production_entry legacy-transition-admin-diagnose
+```
+
 The preview shares or verifies the deployment lock, reruns the production
 preflight, binds to the reviewed database/schema/container, and reports the
 closed role/ownership plan without applying it. Role creation or grant changes
