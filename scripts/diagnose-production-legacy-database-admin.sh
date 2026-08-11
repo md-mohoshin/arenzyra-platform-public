@@ -31,11 +31,13 @@ export ARENZYRA_DEPLOY_ENV_FILE="$ENV_FILE"
 
 if [ "$PREFLIGHT_MODE" = "cutover-transition" ]; then
   bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  database_verify_args=()
 else
   bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-interrupted
+  database_verify_args=(--allow-running-legacy-backup)
 fi
 mapfile -t database_binding < <(
-  bash scripts/verify-production-database-container.sh --allow-running-legacy-backup
+  bash scripts/verify-production-database-container.sh "${database_verify_args[@]}"
 )
 [ "${#database_binding[@]}" -eq 5 ] || {
   printf 'LEGACY ADMIN DIAGNOSTIC BLOCKED: database target was not verified.\n' >&2

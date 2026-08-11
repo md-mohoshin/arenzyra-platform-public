@@ -224,6 +224,10 @@ test("legacy administrator diagnostic is allowlisted, bounded, and read-only", (
     diagnostic,
     /\[ "\$1" = "--cutover-transition" \][\s\S]*PREFLIGHT_MODE="cutover-transition"[\s\S]*shift[\s\S]*source scripts\/acquire-production-deploy-lock\.sh/,
   );
+  assert.match(
+    diagnostic,
+    /PREFLIGHT_MODE" = "cutover-transition"[\s\S]*database_verify_args=\(\)[\s\S]*database_verify_args=\(--allow-running-legacy-backup\)[\s\S]*verify-production-database-container\.sh "\$\{database_verify_args\[@\]\}"/,
+  );
   assert.match(diagnostic, /default_transaction_read_only=on/);
   assert.match(diagnostic, /PGHOST=\/var\/run\/postgresql/);
   assert.match(diagnostic, /export PGUSER PGDATABASE PGPORT/);
