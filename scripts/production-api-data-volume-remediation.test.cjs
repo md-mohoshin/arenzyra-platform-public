@@ -19,6 +19,10 @@ test("production remediation is locked, preflighted, exact, and content preservi
     wrapper,
     /production-deploy-preflight\.sh --allow-legacy-cutover-stopped/,
   );
+  assert.match(
+    wrapper,
+    /--legacy-cutover-interrupted[\s\S]*production-deploy-preflight\.sh --allow-legacy-cutover-interrupted/,
+  );
   assert.match(wrapper, /api-uploads api-storage/);
   assert.match(wrapper, /remediate-api-data-volume-tree\.cjs/);
   assert.match(wrapper, /verify-production-api-data-volumes\.sh/);

@@ -4,6 +4,11 @@ umask 077
 
 EXPECTED_ROOT="/opt/arenzyra"
 LOCK_FILE="/run/arenzyra-production-deploy.lock"
+INTERRUPTED_CUTOVER=0
+if [ "${1:-}" = "--legacy-cutover-interrupted" ] && [ "$#" -eq 1 ]; then
+  INTERRUPTED_CUTOVER=1
+  shift
+fi
 [ "$#" -eq 0 ] && [ "$(id -u)" -eq 0 ] && \
   [ "$(pwd -P)" = "$EXPECTED_ROOT" ] || {
   printf 'API DATA VOLUME REMEDIATION BLOCKED: exact production invocation is required.\n' >&2
@@ -23,7 +28,11 @@ reviewed_project="$(
 [[ "$reviewed_project" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || exit 75
 export ARENZYRA_DEPLOY_COMPOSE_PROJECT="$reviewed_project"
 export ARENZYRA_DEPLOY_ENV_FILE="$EXPECTED_ROOT/infra/.env.publish"
-bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
+if [ "$INTERRUPTED_CUTOVER" -eq 1 ]; then
+  bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-interrupted
+else
+  bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
+fi
 
 for logical_name in api-uploads api-storage; do
   volume_name="${reviewed_project}_${logical_name}"

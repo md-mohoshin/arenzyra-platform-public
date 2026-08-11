@@ -163,7 +163,7 @@ test("every legacy Compose mutation has a same-session preflight and pinned-imag
     /production-deploy-preflight\.sh[^\n]*\n\s*"\$\{compose\[@\]\}" --profile discord-bot build discord-bot/,
     /production-deploy-preflight\.sh[^\n]*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" pull postgres redis proxy/,
     /production-deploy-preflight\.sh[^\n]*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile discord-bot stop/,
-    /production-deploy-preflight\.sh --allow-cutover-stopped\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile discord-bot down/,
+    /production-deploy-preflight\.sh \\\s*\n\s*"\$\{post_remediation_preflight\[@\]\}"\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile discord-bot down/,
     /production-deploy-preflight\.sh --allow-cutover-transition\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" up --no-build -d --pull never postgres redis/,
     /production-deploy-preflight\.sh --allow-cutover-transition\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile migration run[^\n]*api-migrate/,
     /production-deploy-preflight\.sh --allow-cutover-transition\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile migration run[^\n]*studio-migrate/,
@@ -183,10 +183,13 @@ test("cutover failure refuses to restart incompatible old writers", () => {
   assert.ok(partial < schemaBoundary && schemaBoundary < engage);
 });
 
-test("reviewed resume accepts only a stopped legacy topology and makes a new off-site backup", () => {
+test("reviewed resumes accept only exact stopped states and make a new off-site backup", () => {
   const deploy = read("scripts/deploy-production.sh");
   const launcher = read("scripts/production-reviewed-entrypoint.sh");
   const backup = read("scripts/production-backup.sh");
+  const preflight = read("scripts/production-deploy-preflight.sh");
+  const roles = read("scripts/provision-production-database-roles.sh");
+  const remediation = read("scripts/production-api-data-volume-remediation.sh");
   assert.match(
     launcher,
     /legacy-cutover-resume\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume/,
@@ -202,6 +205,46 @@ test("reviewed resume accepts only a stopped legacy topology and makes a new off
   assert.match(
     backup,
     /--allow-stopped-legacy-cutover[\s\S]*production-deploy-preflight\.sh" --allow-legacy-cutover-stopped[\s\S]*database_identity_args=\(--allow-running-legacy-backup\)/,
+  );
+  assert.match(
+    launcher,
+    /legacy-cutover-resume-interrupted\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume-interrupted/,
+  );
+  assert.match(
+    deploy,
+    /\[ "\$MODE" = "legacy-cutover-resume-interrupted" \][\s\S]*guard_args\+=\(--allow-legacy-cutover-interrupted\)/,
+  );
+  assert.match(
+    deploy,
+    /\[ "\$MODE" = "legacy-cutover-resume-interrupted" \][\s\S]*backup_arguments\+=\(--allow-interrupted-legacy-cutover\)/,
+  );
+  assert.match(
+    backup,
+    /--allow-interrupted-legacy-cutover[\s\S]*production-deploy-preflight\.sh" --allow-legacy-cutover-interrupted[\s\S]*database_identity_args=\(--allow-running-legacy-backup\)/,
+  );
+  assert.match(
+    deploy,
+    /pre_remediation_preflight=\(--allow-legacy-cutover-interrupted\)[\s\S]*partial_adoption_args\+=\(--legacy-cutover-interrupted\)[\s\S]*volume_remediation_args\+=\(--legacy-cutover-interrupted\)[\s\S]*post_remediation_preflight=\(--allow-cutover-interrupted\)/,
+  );
+  assert.match(
+    roles,
+    /--legacy-cutover-interrupted[\s\S]*--allow-legacy-cutover-interrupted/,
+  );
+  assert.match(
+    remediation,
+    /--legacy-cutover-interrupted[\s\S]*--allow-legacy-cutover-interrupted/,
+  );
+  assert.match(
+    preflight,
+    /ALLOW_LEGACY_CUTOVER_INTERRUPTED[\s\S]*missing_application_count[\s\S]*requires at least one absent stopped application container/,
+  );
+  assert.match(
+    preflight,
+    /\[ "\$postgres_count" -eq 1 \][\s\S]*\[ "\$redis_count" -eq 1 \]/,
+  );
+  assert.match(
+    preflight,
+    /elif \[ "\$application_count" -ne 1 \]; then[\s\S]*application container count exceeds one/,
   );
   assert.match(deploy, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
 });

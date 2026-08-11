@@ -306,6 +306,21 @@ continues the same ownership, volume, database, migration, IDP, writer-fence,
 health, and public verification chain. It never reuses a stale backup or starts
 the previous application writers.
 
+If a transport interruption removes part of the already-stopped application
+container inventory, use only the separate argument-free recovery path:
+
+```bash
+production_entry legacy-cutover-resume-interrupted
+```
+
+It requires exactly one healthy legacy PostgreSQL and Redis container, no
+running application or maintenance writer, no duplicate application container,
+and at least one absent stopped application container. It also requires the
+legacy API volume boundary, then rebuilds immutable images and creates a new
+verified off-site backup before continuing. After volume remediation, the same
+missing-container boundary is re-attested before Compose removes the remaining
+stopped containers without volumes.
+
 Use it only with the exact reviewed Root/API/Web commits in the clean-parent
 launcher above. It builds and archives immutable API, web, media, and Discord
 images; pins every runtime, migrator, and IDP maintenance service by image ID;

@@ -72,7 +72,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -92,6 +92,7 @@ while [ "$#" -gt 0 ]; do
     --discord-bot) MODE="discord-bot" ;;
     --legacy-cutover) MODE="legacy-cutover" ;;
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
+    --legacy-cutover-resume-interrupted) MODE="legacy-cutover-resume-interrupted" ;;
     --first-deploy) FIRST_DEPLOY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -100,7 +101,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
-  [ "$MODE" = "legacy-cutover-resume" ]; } && \
+  [ "$MODE" = "legacy-cutover-resume" ] || \
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ]; } && \
   [ "$FIRST_DEPLOY" -eq 1 ]; then
   printf '%s\n' \
     'DEPLOYMENT BLOCKED: FULL FIRST DEPLOY REQUIRES REVIEWED EMPTY-TARGET BOOTSTRAP' \
@@ -957,6 +959,8 @@ if [ "$MODE" = "legacy-cutover" ]; then
   guard_args+=(--allow-read-only-legacy-backup)
 elif [ "$MODE" = "legacy-cutover-resume" ]; then
   guard_args+=(--allow-legacy-cutover-stopped)
+elif [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
+  guard_args+=(--allow-legacy-cutover-interrupted)
 fi
 # Before release metadata, image builds, backups, migrations, or service
 # changes, prove that the current database has no pending contract migration
@@ -978,7 +982,8 @@ if [ "$MODE" = "full" ]; then
   # before any subsequent release mutation and again after health convergence.
   bash scripts/verify-production-idp-encryption.sh
 elif [ "$MODE" = "legacy-cutover" ] || \
-  [ "$MODE" = "legacy-cutover-resume" ]; then
+  [ "$MODE" = "legacy-cutover-resume" ] || \
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
   bash scripts/production-release-safety-gate.sh --legacy-cutover
   bash scripts/verify-production-entitlement-invariants.sh \
     --allow-running-legacy-cutover
@@ -1072,6 +1077,8 @@ create_pre_migration_backup() {
     backup_arguments+=(--allow-running-legacy-backup)
   elif [ "$MODE" = "legacy-cutover-resume" ]; then
     backup_arguments+=(--allow-stopped-legacy-cutover)
+  elif [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
+    backup_arguments+=(--allow-interrupted-legacy-cutover)
   fi
   env "${backup_environment[@]}" \
     bash scripts/production-backup.sh "${backup_arguments[@]}"
@@ -1216,17 +1223,29 @@ else
     "${compose[@]}" --profile discord-bot stop -t 60 \
       proxy web api media-ai discord-bot
   fi
-  bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
-
+  pre_remediation_preflight=(--allow-legacy-cutover-stopped)
+  partial_adoption_args=(--legacy-cutover-partial)
+  volume_remediation_args=()
+  post_remediation_preflight=(--allow-cutover-stopped)
+  if [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
+    pre_remediation_preflight=(--allow-legacy-cutover-interrupted)
+    partial_adoption_args+=(--legacy-cutover-interrupted)
+    volume_remediation_args+=(--legacy-cutover-interrupted)
+    post_remediation_preflight=(--allow-cutover-interrupted)
+  fi
+  bash scripts/production-deploy-preflight.sh \
+    "${pre_remediation_preflight[@]}"
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/provision-production-database-roles.sh \
       --env infra/.env.publish --apply --adopt-reviewed-ownership \
       --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP \
-      --legacy-cutover-partial
+      "${partial_adoption_args[@]}"
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
-    bash scripts/production-api-data-volume-remediation.sh
+    bash scripts/production-api-data-volume-remediation.sh \
+      "${volume_remediation_args[@]}"
 
-  bash scripts/production-deploy-preflight.sh --allow-cutover-stopped
+  bash scripts/production-deploy-preflight.sh \
+    "${post_remediation_preflight[@]}"
   attest_pinned_compose_override
   "${compose[@]}" --profile discord-bot down --remove-orphans
   bash scripts/production-deploy-preflight.sh --allow-cutover-transition
@@ -1291,7 +1310,8 @@ wait_for_health "${services[@]}"
 
 "${compose[@]}" --profile discord-bot ps
 if [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
-  [ "$MODE" = "legacy-cutover-resume" ]; then
+  [ "$MODE" = "legacy-cutover-resume" ] || \
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/verify-production-database-roles.sh
   bash scripts/verify-production-entitlement-invariants.sh

@@ -11,6 +11,7 @@ ADOPT_REVIEWED_OWNERSHIP=0
 WRITERS_STOPPED=0
 OWNERSHIP_CONFIRMATION=""
 LEGACY_CUTOVER_PARTIAL=0
+LEGACY_CUTOVER_INTERRUPTED=0
 RUNTIME_ROLES_FENCED=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -28,6 +29,7 @@ while [ "$#" -gt 0 ]; do
     --writers-stopped) WRITERS_STOPPED=1 ;;
     --confirm=*) OWNERSHIP_CONFIRMATION="${1#--confirm=}" ;;
     --legacy-cutover-partial) LEGACY_CUTOVER_PARTIAL=1 ;;
+    --legacy-cutover-interrupted) LEGACY_CUTOVER_INTERRUPTED=1 ;;
     --runtime-roles-fenced) RUNTIME_ROLES_FENCED=1 ;;
     -h|--help)
       printf 'Usage: %s [--env infra/.env.publish] (--dry-run|--apply) [--first-deploy-create-only | --adopt-reviewed-ownership --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP [--legacy-cutover-partial] | --runtime-roles-fenced]\n' "$0"
@@ -63,6 +65,11 @@ fi
 if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ] && \
   [ "$ADOPT_REVIEWED_OWNERSHIP" -ne 1 ]; then
   printf '%s\n' '--legacy-cutover-partial requires reviewed ownership adoption.' >&2
+  exit 2
+fi
+if [ "$LEGACY_CUTOVER_INTERRUPTED" -eq 1 ] && \
+  [ "$LEGACY_CUTOVER_PARTIAL" -ne 1 ]; then
+  printf '%s\n' '--legacy-cutover-interrupted requires --legacy-cutover-partial.' >&2
   exit 2
 fi
 if [ "$RUNTIME_ROLES_FENCED" -eq 1 ] && \
@@ -276,7 +283,11 @@ fi
 export ARENZYRA_DEPLOY_COMPOSE_PROJECT="$compose_project"
 export ARENZYRA_DEPLOY_ENV_FILE="$ENV_FILE"
 if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
-  bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
+  if [ "$LEGACY_CUTOVER_INTERRUPTED" -eq 1 ]; then
+    bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-interrupted
+  else
+    bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
+  fi
   mapfile -t database_binding < <(
     bash scripts/verify-production-database-container.sh --allow-running-legacy-backup
   )

@@ -10,12 +10,14 @@ SKIP_HEALTH=0
 ALLOW_WEB_RECOVERY=0
 ALLOW_READ_ONLY_LEGACY_BACKUP=0
 ALLOW_LEGACY_CUTOVER_STOPPED=0
+ALLOW_LEGACY_CUTOVER_INTERRUPTED=0
 ALLOW_CUTOVER_STOPPED=0
+ALLOW_CUTOVER_INTERRUPTED=0
 ALLOW_CUTOVER_TRANSITION=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-cutover-stopped | --allow-cutover-transition]
+Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -33,11 +35,12 @@ It is reserved for the reviewed encrypted pre-remediation backup commands and
 does not authorize a build, pull, recreate, restart, migration, ownership
 change, or Compose operation.
 
-The three cutover modes are internal to the reviewed one-time legacy cutover.
-They respectively attest the stopped legacy application set, the stopped set
-after API-volume remediation, or the transition state containing zero managed
-containers or exactly healthy PostgreSQL and Redis. They cannot be combined
-with another exception.
+The cutover modes are internal to the reviewed one-time legacy cutover. The
+interrupted variants accept at most one stopped container per application
+service and require at least one to be absent, while retaining exactly one
+healthy legacy database and cache. They respectively attest the legacy-volume,
+remediated-volume, or database/cache-only transition states and cannot be
+combined with another exception.
 
 Environment:
   ARENZYRA_DEPLOY_DISK_PATH=/        Must remain the production root filesystem.
@@ -64,8 +67,14 @@ while [ "$#" -gt 0 ]; do
     --allow-legacy-cutover-stopped)
       ALLOW_LEGACY_CUTOVER_STOPPED=1
       ;;
+    --allow-legacy-cutover-interrupted)
+      ALLOW_LEGACY_CUTOVER_INTERRUPTED=1
+      ;;
     --allow-cutover-stopped)
       ALLOW_CUTOVER_STOPPED=1
+      ;;
+    --allow-cutover-interrupted)
+      ALLOW_CUTOVER_INTERRUPTED=1
       ;;
     --allow-cutover-transition)
       ALLOW_CUTOVER_TRANSITION=1
@@ -124,7 +133,8 @@ if [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ] && \
     "--allow-legacy-cutover-stopped cannot be combined with another exception mode."
 fi
 cutover_mode_count=$((
-  ALLOW_LEGACY_CUTOVER_STOPPED + ALLOW_CUTOVER_STOPPED +
+  ALLOW_LEGACY_CUTOVER_STOPPED + ALLOW_LEGACY_CUTOVER_INTERRUPTED +
+  ALLOW_CUTOVER_STOPPED + ALLOW_CUTOVER_INTERRUPTED +
   ALLOW_CUTOVER_TRANSITION
 ))
 if [ "$cutover_mode_count" -gt 1 ] || \
@@ -223,7 +233,8 @@ if [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
   volume_gate_args+=(--allow-absent)
 elif [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
   volume_gate_args+=(--allow-running-legacy-root-api)
-elif [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ]; then
+elif [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ] || \
+  [ "$ALLOW_LEGACY_CUTOVER_INTERRUPTED" -eq 1 ]; then
   volume_gate_args+=(--allow-stopped-legacy-cutover)
 fi
 if ! volume_gate_output="$(
@@ -283,7 +294,9 @@ else
     esac
 
     if [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ] || \
-      [ "$ALLOW_CUTOVER_STOPPED" -eq 1 ]; then
+      [ "$ALLOW_LEGACY_CUTOVER_INTERRUPTED" -eq 1 ] || \
+      [ "$ALLOW_CUTOVER_STOPPED" -eq 1 ] || \
+      [ "$ALLOW_CUTOVER_INTERRUPTED" -eq 1 ]; then
       case "$service" in
         postgres|redis)
           if [ "$status" != "running" ] || [ "$health" != "healthy" ]; then
@@ -376,6 +389,25 @@ else
       fi
     done
   fi
+  if [ "$ALLOW_LEGACY_CUTOVER_INTERRUPTED" -eq 1 ] || \
+    [ "$ALLOW_CUTOVER_INTERRUPTED" -eq 1 ]; then
+    [ "$postgres_count" -eq 1 ] && [ "$redis_count" -eq 1 ] || \
+      unhealthy+=("interrupted cutover requires exactly one database and cache container")
+    application_counts=(
+      "$proxy_count" "$api_count" "$media_ai_count" "$web_count"
+      "$discord_bot_count"
+    )
+    missing_application_count=0
+    for application_count in "${application_counts[@]}"; do
+      if [ "$application_count" -eq 0 ]; then
+        missing_application_count=$((missing_application_count + 1))
+      elif [ "$application_count" -ne 1 ]; then
+        unhealthy+=("interrupted cutover application container count exceeds one")
+      fi
+    done
+    [ "$missing_application_count" -ge 1 ] || \
+      unhealthy+=("interrupted cutover requires at least one absent stopped application container")
+  fi
   if [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
     if [ "$postgres_count" -ne 1 ] || [ "$redis_count" -ne 1 ] || \
       [ "${#containers[@]}" -ne 2 ]; then
@@ -396,8 +428,14 @@ else
   if [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ]; then
     printf '[deploy-preflight] legacy_cutover=pass applications=stopped database_cache=healthy\n'
   fi
+  if [ "$ALLOW_LEGACY_CUTOVER_INTERRUPTED" -eq 1 ]; then
+    printf '[deploy-preflight] legacy_cutover_interrupted=pass applications=stopped_or_absent database_cache=healthy\n'
+  fi
   if [ "$ALLOW_CUTOVER_STOPPED" -eq 1 ]; then
     printf '[deploy-preflight] cutover=pass applications=stopped database_cache=healthy data_volumes=verified\n'
+  fi
+  if [ "$ALLOW_CUTOVER_INTERRUPTED" -eq 1 ]; then
+    printf '[deploy-preflight] cutover_interrupted=pass applications=stopped_or_absent database_cache=healthy data_volumes=verified\n'
   fi
   if [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
     printf '[deploy-preflight] cutover_transition=pass database_cache=healthy data_volumes=verified\n'
