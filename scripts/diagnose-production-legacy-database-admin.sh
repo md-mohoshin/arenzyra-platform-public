@@ -83,29 +83,35 @@ if ! diagnostic="$({
   scram_setting=0
   super_login=0
   if socket_summary="$(psql -X -v ON_ERROR_STOP=1 -At -F "|" -c "SELECT CASE WHEN current_user = session_user AND current_user::text = current_setting('"'"'arenzyra.expected_role'"'"') THEN 1 ELSE 0 END, CASE WHEN current_database() = current_setting('"'"'arenzyra.expected_database'"'"') THEN 1 ELSE 0 END, CASE WHEN COALESCE(current_schema(), '"'"''"'"') = current_setting('"'"'arenzyra.expected_schema'"'"') THEN 1 ELSE 0 END, CASE WHEN current_setting('"'"'port'"'"') = current_setting('"'"'arenzyra.expected_port'"'"') THEN 1 ELSE 0 END, CASE WHEN inet_client_addr() IS NULL THEN 1 ELSE 0 END, CASE WHEN current_setting('"'"'password_encryption'"'"') = '"'"'scram-sha-256'"'"' THEN 1 ELSE 0 END, CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolcanlogin AND rolsuper) THEN 1 ELSE 0 END" 2>/dev/null)"; then
-    identity_query=1
-    IFS="|" read -r role_match database_match schema_match port_match \
-      unix_socket scram_setting super_login <<<"$socket_summary"
+    case "$socket_summary" in
+      [01]\|[01]\|[01]\|[01]\|[01]\|[01]\|[01])
+        identity_query=1
+        IFS="|" read -r role_match database_match schema_match port_match \
+          unix_socket scram_setting super_login <<<"$socket_summary"
+        ;;
+    esac
   fi
   authid_access=0
   scram_hash=0
   if authid_summary="$(psql -X -v ON_ERROR_STOP=1 -At -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_authid WHERE rolname = current_user AND rolpassword LIKE '"'"'SCRAM-SHA-256$%'"'"') THEN 1 ELSE 0 END" 2>/dev/null)"; then
-    authid_access=1
-    scram_hash="$authid_summary"
+    case "$authid_summary" in
+      0|1) authid_access=1; scram_hash="$authid_summary" ;;
+    esac
   fi
   hba_access=0
   hba_errors=0
   hba_non_scram=0
   if hba_summary="$(psql -X -v ON_ERROR_STOP=1 -At -F "|" -c "SELECT count(*) FILTER (WHERE error IS NOT NULL), count(*) FILTER (WHERE type LIKE '"'"'host%'"'"' AND auth_method IS DISTINCT FROM '"'"'scram-sha-256'"'"') FROM pg_hba_file_rules" 2>/dev/null)"; then
-    hba_access=1
-    IFS="|" read -r hba_errors hba_non_scram <<<"$hba_summary"
+    case "$hba_summary" in
+      [0-9]*\|[0-9]*)
+        hba_access=1
+        IFS="|" read -r hba_errors hba_non_scram <<<"$hba_summary"
+        case "$hba_errors:$hba_non_scram" in
+          *[!0-9:]*|:*|*:) hba_access=0; hba_errors=0; hba_non_scram=0 ;;
+        esac
+        ;;
+    esac
   fi
-  for value in "$role_match" "$database_match" "$schema_match" "$port_match" \
-    "$unix_socket" "$scram_setting" "$scram_hash" "$super_login" \
-    "$identity_query" "$authid_access" "$hba_access" "$hba_errors" \
-    "$hba_non_scram"; do
-    case "$value" in ""|*[!0-9]*) exit 75 ;; esac
-  done
   printf "container_env_match=%s tcp_reviewed_password=%s socket_connection=1 identity_query=%s role_match=%s database_match=%s schema_match=%s port_match=%s unix_socket=%s scram_setting=%s super_login=%s authid_access=%s scram_hash=%s hba_access=%s hba_errors=%s hba_non_scram=%s\n" \
     "$container_env_match" "$tcp_reviewed_password" "$identity_query" \
     "$role_match" "$database_match" "$schema_match" "$port_match" \
