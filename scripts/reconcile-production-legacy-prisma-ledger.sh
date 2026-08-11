@@ -144,6 +144,8 @@ SELECT CASE
    AND (SELECT count(*) FROM pg_prepared_xacts) = 0
   THEN true ELSE false
 END AS fence_sessions_clear \gset
+\echo LEGACY_RECONCILE_PREDICATE name=fence_roles_present value=:fence_roles_present
+\echo LEGACY_RECONCILE_PREDICATE name=fence_sessions_clear value=:fence_sessions_clear
 \if :fence_roles_present
 \else
   SELECT 1 / 0;
@@ -188,6 +190,7 @@ SELECT stale_active_trial AS entitlement_stale_before,
          THEN true ELSE false
        END AS entitlement_ready
 FROM entitlement_counts \gset
+\echo LEGACY_RECONCILE_PREDICATE name=entitlement_ready value=:entitlement_ready stale=:entitlement_stale_before
 \if :entitlement_ready
 \else
   SELECT 1 / 0;
@@ -205,6 +208,7 @@ WITH updated AS (
 SELECT count(*) AS entitlement_updated FROM updated \gset
 SELECT :'entitlement_updated'::bigint = :'entitlement_stale_before'::bigint
   AS entitlement_update_exact \gset
+\echo LEGACY_RECONCILE_PREDICATE name=entitlement_update_exact value=:entitlement_update_exact updated=:entitlement_updated
 \if :entitlement_update_exact
 \else
   SELECT 1 / 0;
@@ -230,6 +234,7 @@ SELECT CASE
 END AS entitlement_postcondition
 FROM "Organization"
 WHERE "deletedAt" IS NULL \gset
+\echo LEGACY_RECONCILE_PREDICATE name=entitlement_postcondition value=:entitlement_postcondition
 \if :entitlement_postcondition
 \else
   SELECT 1 / 0;
@@ -295,6 +300,7 @@ SELECT CASE
         WHERE index_name = 'WidgetInstance_widgetType_idx') = 0
   THEN true ELSE false
 END AS schema_ready \gset
+\echo LEGACY_RECONCILE_PREDICATE name=schema_ready value=:schema_ready
 \if :schema_ready
 \else
   SELECT 1 / 0;
@@ -315,6 +321,7 @@ SELECT CASE
 END AS ledger_ready
 FROM "_prisma_migrations"
 WHERE migration_name = :'expected_migration' \gset
+\echo LEGACY_RECONCILE_PREDICATE name=ledger_ready value=:ledger_ready
 \if :ledger_ready
 \else
   SELECT 1 / 0;
@@ -331,6 +338,7 @@ WITH updated AS (
   RETURNING 1
 )
 SELECT count(*) <= 1 AS ledger_updated FROM updated \gset
+\echo LEGACY_RECONCILE_PREDICATE name=ledger_updated value=:ledger_updated
 \if :ledger_updated
 \else
   SELECT 1 / 0;
@@ -354,6 +362,7 @@ SELECT CASE
 END AS postcondition
 FROM "_prisma_migrations"
 WHERE migration_name = :'expected_migration' \gset
+\echo LEGACY_RECONCILE_PREDICATE name=postcondition value=:postcondition
 \if :postcondition
 \else
   SELECT 1 / 0;

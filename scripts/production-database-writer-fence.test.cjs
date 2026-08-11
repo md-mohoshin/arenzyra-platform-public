@@ -20,6 +20,9 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
   assert.match(script, /pg_terminate_backend/);
   assert.match(script, /pg_prepared_xacts/);
   assert.match(script, /writer-fence\.released/);
+  assert.match(script, /--engage\|--engage-or-verify\|--release/);
+  assert.match(script, /verify_engaged_marker/);
+  assert.doesNotMatch(script, /\\quit\s+75/);
   assert.ok(
     script.indexOf("write_marker_state engaging") <
       script.indexOf("run_role_transition engage"),

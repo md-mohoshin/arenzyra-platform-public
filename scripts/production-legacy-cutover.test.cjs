@@ -61,7 +61,7 @@ test("legacy cutover preserves volumes and fences all writers through migrations
   const transitionUp = branch.indexOf(
     '"${compose[@]}" up --no-build -d --pull never postgres redis',
   );
-  const engage = branch.indexOf("--engage --release-id");
+  const engage = branch.indexOf("--engage-or-verify --release-id");
   const ledgerReconcile = branch.indexOf(
     "reconcile-production-legacy-prisma-ledger.sh",
   );
@@ -104,6 +104,14 @@ test("legacy cutover preserves volumes and fences all writers through migrations
     read("scripts/production-database-writer-fence.sh"),
     /ALTER ROLE :"api_runtime_role" :role_action;[\s\S]*ALTER ROLE :"studio_runtime_role" :role_action;[\s\S]*pg_terminate_backend/,
   );
+  assert.match(
+    read("scripts/production-database-writer-fence.sh"),
+    /engage-or-verify[\s\S]*verify_engaged_marker[\s\S]*run_role_transition engage[\s\S]*DATABASE WRITER FENCE REVERIFIED/,
+  );
+  assert.doesNotMatch(
+    read("scripts/production-database-writer-fence.sh"),
+    /\\quit\s+75/,
+  );
 });
 
 test("legacy entitlement and zero-step ledger reconciliation is exact, fenced, and operation-adjacent", () => {
@@ -137,6 +145,10 @@ test("legacy entitlement and zero-step ledger reconciliation is exact, fenced, a
     /SET\s+"(?:subscriptionStatus|paidUntil|updatedAt)"\s*=/,
   );
   assert.match(reconcile, /LEGACY_ENTITLEMENT_RECONCILED before=/);
+  assert.match(
+    reconcile,
+    /LEGACY_RECONCILE_PREDICATE name=fence_roles_present[\s\S]*name=entitlement_ready[\s\S]*name=schema_ready[\s\S]*name=ledger_ready[\s\S]*name=postcondition/,
+  );
   assert.match(reconcile, /attname = 'widgetKey'/);
   assert.match(reconcile, /attname = 'widgetType'/);
   assert.match(reconcile, /WidgetInstance_widgetKey_idx/);
@@ -179,7 +191,7 @@ test("cutover failure refuses to restart incompatible old writers", () => {
   );
   const partial = deploy.indexOf("--legacy-cutover-partial");
   const schemaBoundary = deploy.indexOf("schema_change_possible=1", partial);
-  const engage = deploy.indexOf("--engage --release-id", schemaBoundary);
+  const engage = deploy.indexOf("--engage-or-verify --release-id", schemaBoundary);
   assert.ok(partial < schemaBoundary && schemaBoundary < engage);
 });
 

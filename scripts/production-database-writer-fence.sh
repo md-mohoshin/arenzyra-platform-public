@@ -10,7 +10,7 @@ RELEASE_ID=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --engage|--release)
+    --engage|--engage-or-verify|--release)
       [ -z "$MODE" ] || exit 2
       MODE="${1#--}"
       ;;
@@ -128,7 +128,8 @@ WHERE rolname IN (:'"'"'api_runtime_role'"'"', :'"'"'studio_runtime_role'"'"')
   AND NOT rolsuper \gset
 \if :exact_runtime_roles
 \else
-  \quit 75
+  \echo DATABASE_WRITER_FENCE_SQL_BLOCKED predicate=exact_runtime_roles
+  SELECT 1 / 0;
 \endif
 ALTER ROLE :"api_runtime_role" :role_action;
 ALTER ROLE :"studio_runtime_role" :role_action;
@@ -149,7 +150,8 @@ FROM pg_roles
 WHERE rolname IN (:'"'"'api_runtime_role'"'"', :'"'"'studio_runtime_role'"'"') \gset
 \if :fence_verified
 \else
-  \quit 75
+  \echo DATABASE_WRITER_FENCE_SQL_BLOCKED predicate=fence_verified
+  SELECT 1 / 0;
 \endif
 COMMIT;
 SQL
@@ -174,18 +176,7 @@ write_marker_state() {
   mv -T "$temporary_marker" "$marker"
 }
 
-if [ "$MODE" = engage ]; then
-  [ ! -e "$marker" ] && [ ! -L "$marker" ] && \
-    [ ! -e "$released_marker" ] && [ ! -L "$released_marker" ] || \
-    block "a fence marker already exists for this release."
-  # Persist the physical target before the role transaction. If the process is
-  # interrupted at any later point, the marker remains sufficient for the
-  # reviewed release path to restore LOGIN only after clean postconditions.
-  write_marker_state engaging
-  run_role_transition engage || block "runtime roles could not be fenced."
-  write_marker_state engaged
-  printf 'DATABASE WRITER FENCE ENGAGED release=%s runtime_roles=2\n' "$RELEASE_ID"
-else
+verify_engaged_marker() {
   [ ! -L "$marker" ] && [ -f "$marker" ] && \
     [ "$(stat -c '%u:%g:%a:%h' "$marker")" = "0:0:600:1" ] && \
     [ ! -e "$released_marker" ] && [ ! -L "$released_marker" ] || \
@@ -202,6 +193,27 @@ else
     { [ "${marker_lines[7]}" = state=engaged ] || \
       [ "${marker_lines[7]}" = state=engaging ]; } || \
     block "the fence marker does not match this database and release."
+}
+
+if [ "$MODE" = engage ] || { [ "$MODE" = engage-or-verify ] && \
+  [ ! -e "$marker" ] && [ ! -L "$marker" ]; }; then
+  [ ! -e "$marker" ] && [ ! -L "$marker" ] && \
+    [ ! -e "$released_marker" ] && [ ! -L "$released_marker" ] || \
+    block "a fence marker already exists for this release."
+  # Persist the physical target before the role transaction. If the process is
+  # interrupted at any later point, the marker remains sufficient for the
+  # reviewed release path to restore LOGIN only after clean postconditions.
+  write_marker_state engaging
+  run_role_transition engage || block "runtime roles could not be fenced."
+  write_marker_state engaged
+  printf 'DATABASE WRITER FENCE ENGAGED release=%s runtime_roles=2\n' "$RELEASE_ID"
+elif [ "$MODE" = engage-or-verify ]; then
+  verify_engaged_marker
+  run_role_transition engage || block "runtime role fence could not be reverified."
+  write_marker_state engaged
+  printf 'DATABASE WRITER FENCE REVERIFIED release=%s runtime_roles=2\n' "$RELEASE_ID"
+else
+  verify_engaged_marker
   bash scripts/verify-production-idp-encryption.sh
   bash scripts/verify-production-entitlement-invariants.sh
   run_role_transition release || block "runtime role login could not be restored."

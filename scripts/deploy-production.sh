@@ -1567,7 +1567,7 @@ else
   schema_change_possible=1
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/production-database-writer-fence.sh \
-      --engage --release-id "$new_release_id"
+      --engage-or-verify --release-id "$new_release_id"
   # Reconcile only the exact legacy ACTIVE stale-trial shape and the historical
   # Prisma zero-step bookkeeping field after the fresh off-site recovery point,
   # immutable candidate build, stopped writers, target upgrade, and durable
