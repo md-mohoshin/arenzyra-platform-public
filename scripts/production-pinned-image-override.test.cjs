@@ -47,27 +47,47 @@ test("Discord override contains only the bot and rejects mutable or extra images
   );
 });
 
-test("IDP maintenance override pins only the reviewed dry-run service", () => {
+test("legacy cutover pins every runtime, migrator, and IDP maintenance image", () => {
+  const text = canonicalPinnedOverride("legacy-cutover", ids);
+  const override = validatePinnedOverride(text, "legacy-cutover", ids);
+  assert.deepEqual(override.services["discord-bot"], {
+    image: ids["discord-bot"],
+  });
+  assert.deepEqual(override.services["api-maintenance-idp-apply"], {
+    image: ids.api,
+  });
+  assert.deepEqual(override.services["api-maintenance-idp-validate"], {
+    image: ids.api,
+  });
+  assert.deepEqual(override.services["studio-migrate"], { image: ids.web });
+});
+
+test("IDP maintenance override pins the complete reviewed credential closure", () => {
   const apiIds = { api: ids.api };
   const text = canonicalPinnedOverride("idp-maintenance", apiIds);
-  assert.deepEqual(
-    validatePinnedOverride(text, "idp-maintenance", apiIds),
-    {
-      services: {
-        "api-maintenance-idp-dry-run": { image: ids.api },
-      },
+  assert.deepEqual(validatePinnedOverride(text, "idp-maintenance", apiIds), {
+    services: {
+      "api-maintenance-idp-dry-run": { image: ids.api },
+      "api-maintenance-idp-apply": { image: ids.api },
+      "api-maintenance-idp-validate": { image: ids.api },
     },
-  );
+  });
   assert.doesNotMatch(text, /youtube|api-migrate|\"api\":/i);
 });
 
 test("override validation rejects noncanonical and expanded Compose documents", () => {
   const fullIds = { api: ids.api, web: ids.web, "media-ai": ids["media-ai"] };
   const canonical = canonicalPinnedOverride("full", fullIds);
-  assert.throws(() => validatePinnedOverride(canonical.trim(), "full", fullIds));
+  assert.throws(() =>
+    validatePinnedOverride(canonical.trim(), "full", fullIds),
+  );
   const expanded = JSON.parse(canonical);
   expanded.services.api.environment = { UNSAFE: "true" };
   assert.throws(() =>
-    validatePinnedOverride(`${JSON.stringify(expanded, null, 2)}\n`, "full", fullIds),
+    validatePinnedOverride(
+      `${JSON.stringify(expanded, null, 2)}\n`,
+      "full",
+      fullIds,
+    ),
   );
 });

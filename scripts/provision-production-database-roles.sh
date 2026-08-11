@@ -10,6 +10,8 @@ FIRST_DEPLOY_CREATE_ONLY=0
 ADOPT_REVIEWED_OWNERSHIP=0
 WRITERS_STOPPED=0
 OWNERSHIP_CONFIRMATION=""
+LEGACY_CUTOVER_PARTIAL=0
+RUNTIME_ROLES_FENCED=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --env) ENV_FILE="$2"; shift ;;
@@ -25,8 +27,10 @@ while [ "$#" -gt 0 ]; do
     --adopt-reviewed-ownership) ADOPT_REVIEWED_OWNERSHIP=1 ;;
     --writers-stopped) WRITERS_STOPPED=1 ;;
     --confirm=*) OWNERSHIP_CONFIRMATION="${1#--confirm=}" ;;
+    --legacy-cutover-partial) LEGACY_CUTOVER_PARTIAL=1 ;;
+    --runtime-roles-fenced) RUNTIME_ROLES_FENCED=1 ;;
     -h|--help)
-      printf 'Usage: %s [--env infra/.env.publish] (--dry-run|--apply) [--first-deploy-create-only | --adopt-reviewed-ownership --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP]\n' "$0"
+      printf 'Usage: %s [--env infra/.env.publish] (--dry-run|--apply) [--first-deploy-create-only | --adopt-reviewed-ownership --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP [--legacy-cutover-partial] | --runtime-roles-fenced]\n' "$0"
       exit 0
       ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -54,6 +58,16 @@ if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
   }
 elif [ "$WRITERS_STOPPED" -eq 1 ] || [ -n "$OWNERSHIP_CONFIRMATION" ]; then
   printf '%s\n' 'Writer-stop and ownership confirmation flags require --adopt-reviewed-ownership.' >&2
+  exit 2
+fi
+if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ] && \
+  [ "$ADOPT_REVIEWED_OWNERSHIP" -ne 1 ]; then
+  printf '%s\n' '--legacy-cutover-partial requires reviewed ownership adoption.' >&2
+  exit 2
+fi
+if [ "$RUNTIME_ROLES_FENCED" -eq 1 ] && \
+  { [ "$MODE" != apply ] || [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; }; then
+  printf '%s\n' '--runtime-roles-fenced is only valid for post-migration apply.' >&2
   exit 2
 fi
 
@@ -260,8 +274,18 @@ else
 fi
 export ARENZYRA_DEPLOY_COMPOSE_PROJECT="$compose_project"
 export ARENZYRA_DEPLOY_ENV_FILE="$ENV_FILE"
-bash scripts/production-deploy-preflight.sh
-mapfile -t database_binding < <(bash scripts/verify-production-database-container.sh)
+if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
+  bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
+  mapfile -t database_binding < <(
+    bash scripts/verify-production-database-container.sh --allow-running-legacy-backup
+  )
+elif [ "$RUNTIME_ROLES_FENCED" -eq 1 ]; then
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  mapfile -t database_binding < <(bash scripts/verify-production-database-container.sh)
+else
+  bash scripts/production-deploy-preflight.sh
+  mapfile -t database_binding < <(bash scripts/verify-production-database-container.sh)
+fi
 if [ "${#database_binding[@]}" -ne 5 ]; then
   printf 'Database role provisioning target was not verified.\n' >&2
   exit 75
@@ -394,9 +418,13 @@ precheck_existing_role() {
     existing_role_count=$((existing_role_count + 1))
   fi
 }
-precheck_existing_role api-runtime "$api_runtime_role" "$api_runtime_password"
+if [ "$RUNTIME_ROLES_FENCED" -eq 0 ]; then
+  precheck_existing_role api-runtime "$api_runtime_role" "$api_runtime_password"
+fi
 precheck_existing_role api-migrator "$api_migration_role" "$api_migration_password"
-precheck_existing_role studio-runtime "$studio_runtime_role" "$studio_runtime_password"
+if [ "$RUNTIME_ROLES_FENCED" -eq 0 ]; then
+  precheck_existing_role studio-runtime "$studio_runtime_role" "$studio_runtime_password"
+fi
 precheck_existing_role studio-migrator "$studio_migration_role" "$studio_migration_password"
 precheck_existing_role maintenance-read "$maintenance_read_role" "$maintenance_read_password"
 precheck_existing_role idp-maintenance "$idp_maintenance_role" "$idp_maintenance_password"
@@ -462,7 +490,11 @@ if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
     exit 75
   }
 else
-  bash scripts/production-deploy-preflight.sh
+  if [ "$RUNTIME_ROLES_FENCED" -eq 1 ]; then
+    bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  else
+    bash scripts/production-deploy-preflight.sh
+  fi
 fi
 role_change_possible=0
 role_change_failed() {
@@ -480,6 +512,9 @@ role_change_possible=1
 object_policy_require_complete=true
 object_policy_adopt_ownership=false
 if [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 1 ]; then
+  object_policy_require_complete=false
+fi
+if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
   object_policy_require_complete=false
 fi
 if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
@@ -626,6 +661,9 @@ if [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 1 ]; then
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY=1 \
     bash "$SCRIPT_DIR/verify-production-database-roles.sh"
+elif [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ] || \
+  [ "$RUNTIME_ROLES_FENCED" -eq 1 ]; then
+  printf 'Database roles and grants applied under the controlled maintenance fence; final role verification is deferred.\n'
 else
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash "$SCRIPT_DIR/verify-production-database-roles.sh"

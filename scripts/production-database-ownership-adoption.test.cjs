@@ -65,6 +65,23 @@ test("ownership targets come only from the closed object policy", () => {
   assert.doesNotMatch(sql, /REASSIGN OWNED|DROP OWNED|ALTER EXTENSION/);
 });
 
+test("legacy partial adoption permits missing candidate objects but no unclassified present object", () => {
+  assert.match(provisioner, /--legacy-cutover-partial/);
+  assert.match(provisioner, /object_policy_require_complete=false/);
+  for (const relation of [
+    "policy.relation_name IS NULL",
+    "type.policy_name IS NULL",
+    "routine.policy_name IS NULL",
+    "trigger.policy_name IS NULL",
+  ]) {
+    assert.match(sql, new RegExp(relation.replaceAll(".", "\\.")));
+  }
+  assert.match(
+    sql,
+    /missing_policy_relation[\s\S]*object_policy_require_complete/,
+  );
+});
+
 test("ordinary role reconciliation does not activate ownership adoption", () => {
   assert.match(provisioner, /object_policy_adopt_ownership=false/);
   assert.match(

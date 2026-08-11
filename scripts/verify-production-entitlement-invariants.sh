@@ -3,6 +3,13 @@ set -Eeuo pipefail
 source scripts/require-local-production-docker.sh
 
 ENV_FILE="${ARENZYRA_DEPLOY_ENV_FILE:-infra/.env.publish}"
+database_identity_args=()
+if [ "${1:-}" = "--allow-running-legacy-cutover" ] && [ "$#" -eq 1 ]; then
+  database_identity_args+=(--allow-running-legacy-backup)
+elif [ "$#" -ne 0 ]; then
+  printf 'ENTITLEMENT INVARIANT GATE BLOCKED: unsupported argument.\n' >&2
+  exit 75
+fi
 test -f "$ENV_FILE"
 
 for command in docker node; do
@@ -12,7 +19,9 @@ for command in docker node; do
   }
 done
 
-mapfile -t database_binding < <(bash scripts/verify-production-database-container.sh)
+mapfile -t database_binding < <(
+  bash scripts/verify-production-database-container.sh "${database_identity_args[@]}"
+)
 if [ "${#database_binding[@]}" -ne 5 ]; then
   printf 'ENTITLEMENT INVARIANT GATE BLOCKED: production database identity was not verified.\n' >&2
   exit 75

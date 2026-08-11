@@ -85,12 +85,15 @@ credential/message zero-plaintext postcondition; entitlement inventory reports
 4 expired `ACTIVE` clocks and 2 invalid `TRIALING` clocks (runtime access is
 denied, but these elapsed clocks are not a deployment blocker); and the
 `api-uploads` and `api-storage` roots are `0:0` mode `0777`. These are current
-hard blockers, not optional warnings. The deploy must not change customer rows,
-volume contents, ownership, modes, or database state to make them pass.
-The follow-up inventory also found no production `rclone` executable or
-configured off-host destination, so environment migration and any mutating
-release step remain blocked until an operator supplies and verifies that
-external recovery target.
+hard blockers, not optional warnings. The routine deploy must not change
+customer rows, volume contents, ownership, modes, or database state to make
+them pass. The separately reviewed one-time `legacy-cutover` command below
+performs only the explicit conversion steps needed for this exact legacy
+profile, after a fresh immutable off-site backup.
+That follow-up inventory initially found no production `rclone` executable or
+configured off-host destination. The reviewed backup bootstrap now supplies
+that boundary; a cutover remains blocked unless its same-session backup proves
+the configured immutable off-site destination immediately before mutation.
 
 For a full API release, the guarded deploy then performs a second read-only
 release-safety check. It inventories every row in `_prisma_migrations`, binds
@@ -281,6 +284,35 @@ commands that consume them. The deploy later recomputes every release input
 before build. Both layers disable Git
 replacement objects and reject grafts, replacement refs, and alternate object
 stores, so a reviewed commit name cannot resolve to substituted tree bytes.
+
+The existing audited legacy installation has one dedicated, argument-free
+forward cutover:
+
+```bash
+production_entry legacy-cutover
+```
+
+Use it only with the exact reviewed Root/API/Web commits in the clean-parent
+launcher above. It builds and archives immutable API, web, media, and Discord
+images; pins every runtime, migrator, and IDP maintenance service by image ID;
+pulls the reviewed PostgreSQL, Redis, and proxy images; and completes a new
+encrypted off-site backup before stopping any writer. It then stops ingress and
+all application writers, adopts only present objects from the closed ownership
+policy, changes only API-volume ownership and modes while hashing every regular
+file before and after, and removes no volume. PostgreSQL and Redis are recreated
+on the reviewed private network with the existing volumes attached.
+
+Before either migration runs, the cutover sets both runtime database roles to
+`NOLOGIN`, terminates their sessions, rejects prepared transactions, and writes
+a physical-database-bound fence marker in the root-only release archive. The
+fence stays engaged while API and Studio migrations run, grants are reconciled,
+legacy IDP credentials are encrypted, the constraint is validated, and both
+structural and compiled zero-plaintext checks pass. Runtime login is restored
+only after those postconditions; application services and then exactly one
+Discord bot are started and health-checked afterward. Any failure after the
+ownership/schema boundary deliberately leaves incompatible writers stopped and
+requires a reviewed forward-recovery action; never start an older API image or
+use an image-only rollback.
 
 This matters because non-interactive Bash evaluates `BASH_ENV` before the
 script body, and Node can evaluate `NODE_OPTIONS` before an application
@@ -628,26 +660,15 @@ source, backup, database-identity, and release gates pass. Existing installation
 whose tables/types are owned by a prior administrator still require a reviewed
 DBA ownership migration before the dedicated DDL roles can migrate.
 
-The repository does not yet contain a complete writer-stopped
-ownership-adoption entrypoint. The normal role helper requires the ordinary
-healthy-service preflight, while a safe ownership conversion must prove that
-every API, web, Studio, bot, migration, maintenance, and other database writer
-is stopped and that the target has no unreviewed sessions. Therefore do
-**not** run the helper's `--apply` mode against an existing production
-installation whose ownership is not already compliant, and do not improvise
-`ALTER OWNER` statements on the live system.
-
-The reviewed ownership command sheet must first tie a fresh encrypted off-host
-backup and isolated restore result to the clean release. It must inventory every
-table, partition, sequence, view, materialized view, type/domain, routine,
-extension, and default ACL; explicitly classify each object as API- or
-Studio-owned; stop ingress and every writer; and prove the session inventory is
-empty. Use an explicit, reviewed `ALTER ... OWNER` list for those exact objects,
-then reapply the closed-world grants and run the role verifier before any writer
-returns. Never use blanket `REASSIGN OWNED`, ad hoc `\gexec`, dynamically
-generated unreviewed ownership SQL, or a superuser service URL to make the
-migration pass. The tracked bootstrap's closed, reviewed `\gexec` statements
-for exact ACL reconciliation do not authorize operator-generated ownership SQL.
+The normal role helper still requires the ordinary healthy-service preflight,
+and its raw `--apply` mode is not an operator entrypoint. Existing legacy
+ownership conversion is supported only inside `production_entry
+legacy-cutover`: the dispatcher holds the deployment lock, proves the exact
+stopped legacy service set, closes database connections around the reviewed
+partial object policy, and later requires the complete post-migration policy
+and role verifier before login is restored. Do not invoke its internal flags,
+improvise `ALTER OWNER`, use blanket `REASSIGN OWNED`, or generate ad hoc
+ownership SQL.
 
 The role verifier also enforces these application, cluster, and schema
 boundaries. Candidate-source object classification is closed, but the

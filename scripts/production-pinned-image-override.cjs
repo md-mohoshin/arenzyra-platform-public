@@ -16,8 +16,21 @@ const MODE_BINDINGS = Object.freeze({
   "discord-bot": Object.freeze({
     "discord-bot": "discord-bot",
   }),
+  "legacy-cutover": Object.freeze({
+    api: "api",
+    "api-migrate": "api",
+    "api-maintenance-idp-dry-run": "api",
+    "api-maintenance-idp-apply": "api",
+    "api-maintenance-idp-validate": "api",
+    web: "web",
+    "studio-migrate": "web",
+    "media-ai": "media-ai",
+    "discord-bot": "discord-bot",
+  }),
   "idp-maintenance": Object.freeze({
     "api-maintenance-idp-dry-run": "api",
+    "api-maintenance-idp-apply": "api",
+    "api-maintenance-idp-validate": "api",
   }),
 });
 const IMAGE_FLAGS = Object.freeze({
@@ -93,7 +106,9 @@ function validatePinnedOverride(text, mode, imageIds) {
       `Pinned Compose override service ${service}`,
     );
     if (override.services[service].image !== imageIds[imageName]) {
-      throw new Error(`Pinned Compose override service ${service} image differs.`);
+      throw new Error(
+        `Pinned Compose override service ${service} image differs.`,
+      );
     }
   }
   const canonical = canonicalPinnedOverride(mode, imageIds);
@@ -109,19 +124,25 @@ function sha256(text) {
 
 function parseArguments(argv) {
   const values = Object.create(null);
-  const booleanFlags = new Set(["--create", "--validate-stdin", "--print-sha256"]);
+  const booleanFlags = new Set([
+    "--create",
+    "--validate-stdin",
+    "--print-sha256",
+  ]);
   const valueFlags = new Set(["--mode", ...Object.values(IMAGE_FLAGS)]);
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (booleanFlags.has(flag)) {
-      if (Object.hasOwn(values, flag)) throw new Error(`Duplicate flag: ${flag}`);
+      if (Object.hasOwn(values, flag))
+        throw new Error(`Duplicate flag: ${flag}`);
       values[flag] = true;
       continue;
     }
     if (!valueFlags.has(flag)) throw new Error(`Unknown flag: ${flag}`);
     if (Object.hasOwn(values, flag)) throw new Error(`Duplicate flag: ${flag}`);
     const value = argv[index + 1];
-    if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}.`);
+    if (!value || value.startsWith("--"))
+      throw new Error(`Missing value for ${flag}.`);
     values[flag] = value;
     index += 1;
   }

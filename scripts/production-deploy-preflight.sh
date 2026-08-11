@@ -9,10 +9,13 @@ PUBLISH_ENV_FILE="${ARENZYRA_DEPLOY_ENV_FILE:-infra/.env.publish}"
 SKIP_HEALTH=0
 ALLOW_WEB_RECOVERY=0
 ALLOW_READ_ONLY_LEGACY_BACKUP=0
+ALLOW_LEGACY_CUTOVER_STOPPED=0
+ALLOW_CUTOVER_STOPPED=0
+ALLOW_CUTOVER_TRANSITION=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health] [--allow-web-recovery] [--allow-read-only-legacy-backup]
+Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-cutover-stopped | --allow-cutover-transition]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -29,6 +32,12 @@ healthy while recognizing only the exact observed root-owned API volume profile.
 It is reserved for the reviewed encrypted pre-remediation backup commands and
 does not authorize a build, pull, recreate, restart, migration, ownership
 change, or Compose operation.
+
+The three cutover modes are internal to the reviewed one-time legacy cutover.
+They respectively attest the stopped legacy application set, the stopped set
+after API-volume remediation, or the transition state containing zero managed
+containers or exactly healthy PostgreSQL and Redis. They cannot be combined
+with another exception.
 
 Environment:
   ARENZYRA_DEPLOY_DISK_PATH=/        Must remain the production root filesystem.
@@ -51,6 +60,15 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-read-only-legacy-backup)
       ALLOW_READ_ONLY_LEGACY_BACKUP=1
+      ;;
+    --allow-legacy-cutover-stopped)
+      ALLOW_LEGACY_CUTOVER_STOPPED=1
+      ;;
+    --allow-cutover-stopped)
+      ALLOW_CUTOVER_STOPPED=1
+      ;;
+    --allow-cutover-transition)
+      ALLOW_CUTOVER_TRANSITION=1
       ;;
     --allow-stopped-idp-maintenance)
       printf '%s\n' \
@@ -98,6 +116,23 @@ if { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ]; } && \
   [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
   block "INCOMPATIBLE PREFLIGHT MODES" \
     "--allow-read-only-legacy-backup cannot be combined with another exception mode."
+fi
+if [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ] && \
+  { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || \
+    [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; }; then
+  block "INCOMPATIBLE PREFLIGHT MODES" \
+    "--allow-legacy-cutover-stopped cannot be combined with another exception mode."
+fi
+cutover_mode_count=$((
+  ALLOW_LEGACY_CUTOVER_STOPPED + ALLOW_CUTOVER_STOPPED +
+  ALLOW_CUTOVER_TRANSITION
+))
+if [ "$cutover_mode_count" -gt 1 ] || \
+  { [ "$cutover_mode_count" -eq 1 ] && \
+    { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || \
+      [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; }; }; then
+  block "INCOMPATIBLE PREFLIGHT MODES" \
+    "a cutover mode must be the only preflight exception."
 fi
 
 if [ ! -f "$PUBLISH_ENV_FILE" ]; then
@@ -184,10 +219,12 @@ while IFS= read -r container_id; do
 done <<<"$container_output"
 
 volume_gate_args=()
-if [ "$SKIP_HEALTH" -eq 1 ]; then
+if [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
   volume_gate_args+=(--allow-absent)
 elif [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
   volume_gate_args+=(--allow-running-legacy-root-api)
+elif [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ]; then
+  volume_gate_args+=(--allow-stopped-legacy-cutover)
 fi
 if ! volume_gate_output="$(
   ARENZYRA_DEPLOY_COMPOSE_PROJECT="$COMPOSE_PROJECT" \
@@ -205,6 +242,8 @@ if [ "$SKIP_HEALTH" -eq 1 ]; then
       "Existing managed containers: ${#containers[@]}"
   fi
   printf '[deploy-preflight] first-deploy assertion passed: no managed containers\n'
+elif [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ] && [ "${#containers[@]}" -eq 0 ]; then
+  printf '[deploy-preflight] cutover_transition=pass managed_containers=0 data_volumes=verified\n'
 else
 
   if [ "${#containers[@]}" -eq 0 ]; then
@@ -220,6 +259,7 @@ else
   api_count=0
   media_ai_count=0
   web_count=0
+  discord_bot_count=0
   for container_id in "${containers[@]}"; do
     [ -n "$container_id" ] || continue
     if ! state="$(
@@ -239,7 +279,39 @@ else
       api) api_count=$((api_count + 1)) ;;
       media-ai) media_ai_count=$((media_ai_count + 1)) ;;
       web) web_count=$((web_count + 1)) ;;
+      discord-bot) discord_bot_count=$((discord_bot_count + 1)) ;;
     esac
+
+    if [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ] || \
+      [ "$ALLOW_CUTOVER_STOPPED" -eq 1 ]; then
+      case "$service" in
+        postgres|redis)
+          if [ "$status" != "running" ] || [ "$health" != "healthy" ]; then
+            unhealthy+=("${name#/}: cutover database/cache must be running/healthy, observed=${status}/${health}")
+          fi
+          ;;
+        proxy|api|media-ai|web|discord-bot)
+          [ "$status" = "exited" ] || \
+            unhealthy+=("${name#/}: cutover application service must be stopped, observed=${status}")
+          ;;
+        *)
+          unhealthy+=("${name#/}: unexpected managed cutover service=${service}")
+          ;;
+      esac
+      continue
+    fi
+
+    if [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
+      case "$service" in
+        postgres|redis)
+          if [ "$status" != "running" ] || [ "$health" != "healthy" ]; then
+            unhealthy+=("${name#/}: transition database/cache must be running/healthy, observed=${status}/${health}")
+          fi
+          ;;
+        *) unhealthy+=("${name#/}: unexpected transition service=${service}") ;;
+      esac
+      continue
+    fi
 
     if [ "$ALLOW_WEB_RECOVERY" -eq 1 ] && [ "$service" = "web" ]; then
       if [ "$status" = "exited" ]; then
@@ -291,6 +363,25 @@ else
       fi
     done
   fi
+  if [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ] || \
+    [ "$ALLOW_CUTOVER_STOPPED" -eq 1 ]; then
+    required_services=(proxy postgres redis api media-ai web discord-bot)
+    required_counts=(
+      "$proxy_count" "$postgres_count" "$redis_count" "$api_count"
+      "$media_ai_count" "$web_count" "$discord_bot_count"
+    )
+    for required_index in "${!required_services[@]}"; do
+      if [ "${required_counts[$required_index]}" -ne 1 ]; then
+        unhealthy+=("service=${required_services[$required_index]}: required_container_count=1 observed=${required_counts[$required_index]}")
+      fi
+    done
+  fi
+  if [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
+    if [ "$postgres_count" -ne 1 ] || [ "$redis_count" -ne 1 ] || \
+      [ "${#containers[@]}" -ne 2 ]; then
+      unhealthy+=("cutover transition requires exactly postgres and redis")
+    fi
+  fi
 
   if [ "${#unhealthy[@]}" -gt 0 ]; then
     block "EXISTING PRODUCTION SERVICE UNHEALTHY" "${unhealthy[@]}"
@@ -301,6 +392,15 @@ else
   fi
   if [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
     printf '[deploy-preflight] legacy_backup=pass services=healthy data_volumes=read_only\n'
+  fi
+  if [ "$ALLOW_LEGACY_CUTOVER_STOPPED" -eq 1 ]; then
+    printf '[deploy-preflight] legacy_cutover=pass applications=stopped database_cache=healthy\n'
+  fi
+  if [ "$ALLOW_CUTOVER_STOPPED" -eq 1 ]; then
+    printf '[deploy-preflight] cutover=pass applications=stopped database_cache=healthy data_volumes=verified\n'
+  fi
+  if [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
+    printf '[deploy-preflight] cutover_transition=pass database_cache=healthy data_volumes=verified\n'
   fi
   printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi

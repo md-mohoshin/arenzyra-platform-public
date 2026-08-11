@@ -451,8 +451,20 @@ BEGIN;
 -- objects outside the closed policy and accepts only the administrator,
 -- PostgreSQL's stock owner, or the final reviewed owners as predecessors.
 SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
-  :'object_policy_require_complete'::boolean
-  AND (SELECT count(*) FROM arenzyra_object_policy) = (
+  (
+    NOT :'object_policy_require_complete'::boolean
+    OR (SELECT count(*) FROM arenzyra_object_policy) = (
+      SELECT count(*)
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      JOIN arenzyra_object_policy policy
+        ON policy.relation_name = relation.relname
+       AND policy.relation_kind = relation.relkind
+      WHERE namespace.nspname = :'schema_name'
+        AND relation.relkind = 'r'
+    )
+  )
+  AND (
     SELECT count(*)
     FROM pg_class relation
     JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
@@ -467,6 +479,12 @@ SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
         :'api_migration_role',
         :'studio_migration_role'
       )
+  ) = (
+    SELECT count(*)
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = :'schema_name'
+      AND relation.relkind = 'r'
   )
 ) THEN 1 ELSE 0 END AS reviewed_relation_adoption_precondition;
 
@@ -476,6 +494,12 @@ SELECT format(
   policy.relation_name
 )
 FROM arenzyra_object_policy policy
+JOIN pg_class relation
+  ON relation.relname = policy.relation_name
+ AND relation.relkind = policy.relation_kind
+JOIN pg_namespace namespace
+  ON namespace.oid = relation.relnamespace
+ AND namespace.nspname = :'schema_name'
 WHERE :'object_policy_adopt_ownership'::boolean
 ORDER BY policy.relation_name
 \gexec
@@ -490,12 +514,29 @@ SELECT format(
   END
 )
 FROM arenzyra_object_policy policy
+JOIN pg_class relation
+  ON relation.relname = policy.relation_name
+ AND relation.relkind = policy.relation_kind
+JOIN pg_namespace namespace
+  ON namespace.oid = relation.relnamespace
+ AND namespace.nspname = :'schema_name'
 WHERE :'object_policy_adopt_ownership'::boolean
 ORDER BY policy.relation_name
 \gexec
 
 SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
-  (SELECT count(*) FROM arenzyra_enum_policy) = (
+  (
+    NOT :'object_policy_require_complete'::boolean
+    OR (SELECT count(*) FROM arenzyra_enum_policy) = (
+      SELECT count(*)
+      FROM pg_type type
+      JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+      JOIN arenzyra_enum_policy policy ON policy.type_name = type.typname
+      WHERE namespace.nspname = :'schema_name'
+        AND type.typtype = 'e'
+    )
+  )
+  AND (
     SELECT count(*)
     FROM pg_type type
     JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
@@ -507,6 +548,12 @@ SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
         'postgres',
         :'api_migration_role'
       )
+  ) = (
+    SELECT count(*)
+    FROM pg_type type
+    JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+    WHERE namespace.nspname = :'schema_name'
+      AND type.typtype = 'e'
   )
 ) THEN 1 ELSE 0 END AS reviewed_enum_adoption_precondition;
 
@@ -517,12 +564,17 @@ SELECT format(
   :'api_migration_role'
 )
 FROM arenzyra_enum_policy policy
+JOIN pg_type type ON type.typname = policy.type_name
+JOIN pg_namespace namespace
+  ON namespace.oid = type.typnamespace
+ AND namespace.nspname = :'schema_name'
 WHERE :'object_policy_adopt_ownership'::boolean
 ORDER BY policy.type_name
 \gexec
 
 SELECT 1 / CASE WHEN NOT :'object_policy_adopt_ownership'::boolean OR (
-  (SELECT count(*) FROM arenzyra_function_policy) = (
+  NOT :'object_policy_require_complete'::boolean
+  OR (SELECT count(*) FROM arenzyra_function_policy) = (
     SELECT count(*)
     FROM pg_proc routine
     JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
@@ -575,8 +627,7 @@ WITH present_relation AS (
   LEFT JOIN arenzyra_object_policy policy
     ON policy.relation_name = relation.relname
    AND policy.relation_kind = relation.relkind
-  WHERE NOT :'object_policy_require_complete'::boolean
-     OR policy.relation_name IS NULL
+  WHERE policy.relation_name IS NULL
      OR pg_get_userbyid(relation.relowner) <> CASE policy.owner_profile
        WHEN 'api' THEN :'api_migration_role'
        WHEN 'studio' THEN :'studio_migration_role'
@@ -629,8 +680,7 @@ WITH present_relation AS (
 ), type_mismatch AS (
   SELECT type.oid
   FROM present_type type
-  WHERE NOT :'object_policy_require_complete'::boolean
-     OR type.policy_name IS NULL
+  WHERE type.policy_name IS NULL
      OR type.typtype <> 'e'
      OR pg_get_userbyid(type.typowner) <> :'api_migration_role'
      OR type.type_labels IS DISTINCT FROM type.policy_labels
@@ -703,8 +753,7 @@ WITH present_relation AS (
 ), function_mismatch AS (
   SELECT routine.oid
   FROM present_function routine
-  WHERE NOT :'object_policy_require_complete'::boolean
-     OR routine.policy_name IS NULL
+  WHERE routine.policy_name IS NULL
      OR pg_get_userbyid(routine.proowner) <> :'api_migration_role'
      OR routine.prokind <> routine.policy_kind
      OR routine.prorettype <> 'pg_catalog.trigger'::regtype
@@ -810,8 +859,7 @@ WITH present_relation AS (
 ), trigger_mismatch AS (
   SELECT trigger.oid
   FROM present_trigger trigger
-  WHERE NOT :'object_policy_require_complete'::boolean
-     OR trigger.policy_name IS NULL
+  WHERE trigger.policy_name IS NULL
      OR trigger.policy_owner_profile <> 'api'
      OR pg_get_userbyid(trigger.table_owner) <> :'api_migration_role'
      OR pg_get_userbyid(trigger.function_owner) <> :'api_migration_role'

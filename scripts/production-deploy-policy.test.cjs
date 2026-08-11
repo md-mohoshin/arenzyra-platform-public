@@ -286,6 +286,8 @@ test("deploy binds Compose, gates, backup, runtimes, and migrators to one review
     ),
     [
       "api-maintenance-idp-dry-run",
+      "api-maintenance-idp-apply",
+      "api-maintenance-idp-validate",
     ],
   );
   assert.doesNotMatch(compose, /api-maintenance-youtube/);
@@ -624,6 +626,10 @@ test("mutable Compose operations consume only attested immutable image-ID overri
 
 test("Discord-only deploy and rollback never start or recreate dependencies", () => {
   const deploy = read("scripts/deploy-production.sh");
+  const discordBranch = deploy.slice(
+    deploy.indexOf('if [ "$MODE" = "discord-bot" ]; then'),
+    deploy.indexOf('elif [ "$MODE" = "full" ]; then'),
+  );
   const rollback = read("scripts/rollback-production-images.sh");
   const isolatedUp =
     /"\$\{compose\[@\]\}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot/;
@@ -631,7 +637,7 @@ test("Discord-only deploy and rollback never start or recreate dependencies", ()
   assert.match(deploy, isolatedUp);
   assert.match(rollback, isolatedUp);
   assert.equal(
-    [...deploy.matchAll(/--profile discord-bot up[^\n]*/g)].every((match) =>
+    [...discordBranch.matchAll(/--profile discord-bot up[^\n]*/g)].every((match) =>
       /--no-deps discord-bot$/.test(match[0]),
     ),
     true,
@@ -663,7 +669,7 @@ test("post-build source provenance is recomputed exactly from a root-only checko
     checkoutSafety < metadataGeneration,
     "checkout ownership and mode safety must be established before Git is invoked",
   );
-  assert.equal(verificationCalls.length, 4);
+  assert.equal(verificationCalls.length, 5);
   assert.ok(
     verificationCalls.some(
       (index) =>
@@ -839,30 +845,37 @@ test("production read-only database gates fail within bounded time", () => {
 
 test("entitlements are rechecked after backup, before cutover, and after health", () => {
   const deploy = read("scripts/deploy-production.sh");
+  const fullBranch = deploy.slice(
+    deploy.indexOf('elif [ "$MODE" = "full" ]; then'),
+    deploy.indexOf("else\n  # One-time forward-only conversion"),
+  );
   const calls = [
-    ...deploy.matchAll(
+    ...fullBranch.matchAll(
       /bash scripts\/verify-production-entitlement-invariants\.sh/g,
     ),
   ].map((match) => match.index);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 2);
 
-  const backup = deploy.lastIndexOf("create_pre_migration_backup");
-  const apiMigration = deploy.indexOf("api-migrate", backup);
-  const studioMigration = deploy.indexOf("studio-migrate", apiMigration);
-  const cutover = deploy.indexOf(
+  const backup = fullBranch.indexOf("create_pre_migration_backup");
+  const apiMigration = fullBranch.indexOf("api-migrate", backup);
+  const studioMigration = fullBranch.indexOf("studio-migrate", apiMigration);
+  const cutover = fullBranch.indexOf(
     '"${compose[@]}" up --no-build -d',
     studioMigration,
   );
   const health = deploy.lastIndexOf('wait_for_health "${services[@]}"');
+  const finalEntitlement = deploy.lastIndexOf(
+    "bash scripts/verify-production-entitlement-invariants.sh",
+  );
   assert.ok(calls.some((index) => index > backup && index < apiMigration));
   assert.ok(calls.some((index) => index > studioMigration && index < cutover));
-  assert.ok(calls.some((index) => index > health));
+  assert.ok(finalEntitlement > health);
   assert.match(
-    deploy.slice(backup, apiMigration),
+    fullBranch.slice(backup, apiMigration),
     /production-deploy-preflight\.sh[\s\S]*verify-production-entitlement-invariants\.sh[\s\S]*production-deploy-preflight\.sh/,
   );
   assert.match(
-    deploy.slice(studioMigration, cutover),
+    fullBranch.slice(studioMigration, cutover),
     /production-deploy-preflight\.sh[\s\S]*verify-production-entitlement-invariants\.sh[\s\S]*production-deploy-preflight\.sh/,
   );
 });
@@ -909,7 +922,7 @@ test("database roles are verified before mutation, after migrations, before cuto
     ...deploy.matchAll(/ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY=1/g),
   ].map((match) => match.index);
 
-  assert.equal(roleCalls.length, 3);
+  assert.equal(roleCalls.length, 4);
   assert.equal(
     inheritedRoleCalls.length,
     roleCalls.length,
@@ -1282,6 +1295,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
     [...launcher.matchAll(/^  ([a-z][a-z-]+)\)$/gm)].map((match) => match[1]),
     [
       "deploy",
+      "legacy-cutover",
       "deploy-discord",
       "rollback-discord",
       "recover-web",

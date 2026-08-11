@@ -25,9 +25,7 @@ test("production API maintenance is an exact authenticated IDP dry-run closure",
   const dockerGuard = wrapper.indexOf(
     "source scripts/require-local-production-docker.sh",
   );
-  const bootstrap = wrapper.indexOf(
-    "verify_bootstrap_repository ROOT",
-  );
+  const bootstrap = wrapper.indexOf("verify_bootstrap_repository ROOT");
   const sourceGate = wrapper.indexOf(
     "verify-production-release-source.cjs --check-checkout-only",
   );
@@ -48,12 +46,12 @@ test("production API maintenance is an exact authenticated IDP dry-run closure",
   assert.ok(exactSourceGate > sourceGate && exactSourceGate < imageInspect);
   assert.ok(imageInspect < composeRun);
   assert.match(wrapper.slice(0, dockerGuard), /GIT_NO_REPLACE_OBJECTS=1/);
-  assert.match(wrapper.slice(0, dockerGuard), /--porcelain=v1 --untracked-files=all/);
-  assert.match(wrapper, /exit 75/);
   assert.match(
-    wrapper,
-    /only authenticated IDP dry-run is available/,
+    wrapper.slice(0, dockerGuard),
+    /--porcelain=v1 --untracked-files=all/,
   );
+  assert.match(wrapper, /exit 75/);
+  assert.match(wrapper, /only authenticated IDP dry-run is available/);
   assert.match(wrapper, /api-maintenance-idp-dry-run/);
   assert.doesNotMatch(wrapper, /api-maintenance-idp-(?:apply|validate)/);
   assert.doesNotMatch(wrapper, /youtube/i);
@@ -64,13 +62,16 @@ test("production API maintenance is an exact authenticated IDP dry-run closure",
   assert.match(wrapper, /verify-production-api-capabilities\.cjs/);
   assert.match(wrapper, /--mode idp-maintenance/);
   assert.match(wrapper, /--assert-compose-json/);
-  assert.doesNotMatch(wrapper, /--apply|--writers-stopped|BACKFILL_IDP_CREDENTIALS|VALIDATE_IDP_ENVELOPE_CONSTRAINT/);
+  assert.doesNotMatch(
+    wrapper,
+    /--apply|--writers-stopped|BACKFILL_IDP_CREDENTIALS|VALIDATE_IDP_ENVELOPE_CONSTRAINT/,
+  );
   assert.match(wrapper, /verify-idp-maintenance-summary\.cjs[\s\S]*--preview/);
   assert.doesNotMatch(wrapper, /docker\s+(?:build|pull)\b/);
   assert.doesNotMatch(wrapper, /docker\s+compose\s+up\b/);
 });
 
-test("publish Compose exposes only the compiled IDP dry-run service", () => {
+test("publish Compose exposes only the compiled IDP credential closure", () => {
   const compose = read("infra/docker-compose.publish.yml");
   const migration = compose.match(
     /\n  api-migrate:\r?\n([\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\r?\n|\nvolumes:\r?\n)/,
@@ -88,6 +89,8 @@ test("publish Compose exposes only the compiled IDP dry-run service", () => {
     ),
     [
       "api-maintenance-idp-dry-run",
+      "api-maintenance-idp-apply",
+      "api-maintenance-idp-validate",
     ],
   );
 
@@ -96,6 +99,16 @@ test("publish Compose exposes only the compiled IDP dry-run service", () => {
       "api-maintenance-idp-dry-run",
       "MAINTENANCE_READ_DATABASE_URL",
       "dist-maintenance/scripts/backfill-idp-credentials.js",
+    ],
+    [
+      "api-maintenance-idp-apply",
+      "IDP_MAINTENANCE_DATABASE_URL",
+      "dist-maintenance/scripts/backfill-idp-credentials.js",
+    ],
+    [
+      "api-maintenance-idp-validate",
+      "MIGRATION_DATABASE_URL",
+      "dist-maintenance/scripts/validate-idp-envelope-constraint.js",
     ],
   ];
   for (const [serviceName, databaseKey, compiledPath] of expected) {
@@ -113,7 +126,14 @@ test("publish Compose exposes only the compiled IDP dry-run service", () => {
     assert.doesNotMatch(service, /\n    (?:build|volumes|ports|entrypoint):/);
     assert.doesNotMatch(service, /(?:npx|ts-node|\.ts\b|\/bin\/sh|youtube)/i);
   }
-  assert.doesNotMatch(compose, /api-maintenance-idp-(?:apply|validate)/);
+  assert.match(
+    serviceBlock(compose, "api-maintenance-idp-apply"),
+    /--apply[\s\S]*--writers-stopped[\s\S]*--confirm=BACKFILL_IDP_CREDENTIALS/,
+  );
+  assert.match(
+    serviceBlock(compose, "api-maintenance-idp-validate"),
+    /validate[\s\S]*--writers-stopped[\s\S]*--confirm=VALIDATE_IDP_ENVELOPE_CONSTRAINT/,
+  );
   assert.doesNotMatch(compose, /api-maintenance-youtube/);
 });
 

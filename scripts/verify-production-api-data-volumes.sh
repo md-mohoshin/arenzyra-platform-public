@@ -8,11 +8,14 @@ EXPECTED_ROOT="/opt/arenzyra"
 ENV_FILE="$REPOSITORY_ROOT/infra/.env.publish"
 ALLOW_ABSENT=0
 ALLOW_RUNNING_LEGACY_ROOT_API=0
+ALLOW_STOPPED_LEGACY_CUTOVER=0
 
 if [ "${1:-}" = "--allow-absent" ] && [ "$#" -eq 1 ]; then
   ALLOW_ABSENT=1
 elif [ "${1:-}" = "--allow-running-legacy-root-api" ] && [ "$#" -eq 1 ]; then
   ALLOW_RUNNING_LEGACY_ROOT_API=1
+elif [ "${1:-}" = "--allow-stopped-legacy-cutover" ] && [ "$#" -eq 1 ]; then
+  ALLOW_STOPPED_LEGACY_CUTOVER=1
 elif [ "$#" -ne 0 ]; then
   printf 'API DATA VOLUME GATE BLOCKED: unsupported argument.\n' >&2
   exit 75
@@ -84,6 +87,22 @@ if [ "$ALLOW_RUNNING_LEGACY_ROOT_API" -eq 1 ]; then
     exit 75
   fi
 fi
+if [ "$ALLOW_STOPPED_LEGACY_CUTOVER" -eq 1 ]; then
+  [ "${#api_containers[@]}" -eq 1 ] || {
+    printf 'API DATA VOLUME GATE BLOCKED: legacy cutover requires exactly one stopped API container.\n' >&2
+    exit 75
+  }
+  legacy_api_runtime="$(
+    docker inspect --format '{{.State.Status}}|{{.Config.User}}' \
+      "${api_containers[0]}" 2>/dev/null || true
+  )"
+  IFS='|' read -r legacy_api_status legacy_api_user <<<"$legacy_api_runtime"
+  case "$legacy_api_user" in ''|0|0:0) ;; *) exit 75 ;; esac
+  [ "$legacy_api_status" = "exited" ] || {
+    printf 'API DATA VOLUME GATE BLOCKED: legacy cutover API is not stopped.\n' >&2
+    exit 75
+  }
+fi
 
 expected_uid=1000
 expected_gid=1000
@@ -132,7 +151,8 @@ for logical_name in api-uploads api-storage; do
     exit 75
   fi
   root_identity="$(stat -Lc '%u:%g:%a' -- "$mountpoint" 2>/dev/null || true)"
-  if [ "$ALLOW_RUNNING_LEGACY_ROOT_API" -eq 1 ]; then
+  if [ "$ALLOW_RUNNING_LEGACY_ROOT_API" -eq 1 ] || \
+    [ "$ALLOW_STOPPED_LEGACY_CUTOVER" -eq 1 ]; then
     if [ "$root_identity" != "0:0:777" ]; then
       printf 'API DATA VOLUME GATE BLOCKED: legacy web recovery volume root identity changed.\n' >&2
       exit 75
@@ -169,6 +189,8 @@ done
 
 if [ "$ALLOW_RUNNING_LEGACY_ROOT_API" -eq 1 ]; then
   printf 'API DATA VOLUME GATE PASSED recovery_profile=legacy-root-read-only owner=0:0 root_mode=777 api=running/healthy\n'
+elif [ "$ALLOW_STOPPED_LEGACY_CUTOVER" -eq 1 ]; then
+  printf 'API DATA VOLUME GATE PASSED recovery_profile=legacy-root-cutover owner=0:0 root_mode=777 api=stopped\n'
 else
   printf 'API DATA VOLUME GATE PASSED owner=%s:%s root_mode=%s world_writable=0\n' \
     "$expected_uid" "$expected_gid" "$expected_root_mode"

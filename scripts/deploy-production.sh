@@ -72,7 +72,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -90,6 +90,7 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --discord-bot) MODE="discord-bot" ;;
+    --legacy-cutover) MODE="legacy-cutover" ;;
     --first-deploy) FIRST_DEPLOY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -97,7 +98,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ "$MODE" = "full" ] && [ "$FIRST_DEPLOY" -eq 1 ]; then
+if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ]; } && \
+  [ "$FIRST_DEPLOY" -eq 1 ]; then
   printf '%s\n' \
     'DEPLOYMENT BLOCKED: FULL FIRST DEPLOY REQUIRES REVIEWED EMPTY-TARGET BOOTSTRAP' \
     'The normal deploy cannot implicitly migrate or validate the IDP contract.' \
@@ -229,10 +231,13 @@ test -f scripts/verify-production-entitlement-invariants.sh
 test -f scripts/verify-production-idp-encryption.sh
 test -f scripts/verify-production-idp-compiled.sh
 test -f scripts/verify-idp-maintenance-summary.cjs
+test -f scripts/verify-idp-maintenance-mutation-summary.cjs
 test -f scripts/production-database-target.cjs
 test -f scripts/verify-production-database-container.sh
 test -f scripts/verify-production-database-roles.sh
 test -f scripts/provision-production-database-roles.sh
+test -f scripts/production-api-data-volume-remediation.sh
+test -f scripts/production-database-writer-fence.sh
 test -f scripts/validate-publish-release-env.cjs
 test -f scripts/validate-release-image-manifest.cjs
 test -f scripts/production-pinned-image-override.cjs
@@ -639,6 +644,15 @@ create_pinned_compose_override() {
         --discord-bot-image-id "$discord_bot_image_id"
       )
       ;;
+    legacy-cutover)
+      pinned_override_validator_args=(
+        --mode legacy-cutover
+        --api-image-id "$api_image_id"
+        --web-image-id "$web_image_id"
+        --media-ai-image-id "$media_ai_image_id"
+        --discord-bot-image-id "$discord_bot_image_id"
+      )
+      ;;
     *)
       printf 'Unsupported pinned Compose override mode.\n' >&2
       return 75
@@ -713,7 +727,8 @@ attest_idp_verification_override() {
 }
 
 create_idp_verification_override() {
-  if [ "$pinned_override_mode" != "full" ] || \
+  if { [ "$pinned_override_mode" != "full" ] && \
+    [ "$pinned_override_mode" != "legacy-cutover" ]; } || \
     [ "$idp_verification_override_fd_open" -ne 0 ] || \
     [ -n "$idp_verification_override_path" ] || \
     ! [[ "$api_image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
@@ -800,12 +815,58 @@ verify_compiled_idp_storage() {
     bash scripts/verify-production-idp-compiled.sh
 }
 
+run_idp_cutover_action() {
+  local action="$1" service verifier_flag
+  local -a idp_compose
+  case "$action" in
+    dry-run)
+      service=api-maintenance-idp-dry-run
+      verifier_flag=--require-clean
+      ;;
+    apply)
+      service=api-maintenance-idp-apply
+      verifier_flag=--apply
+      ;;
+    validate)
+      service=api-maintenance-idp-validate
+      verifier_flag=--validate
+      ;;
+    *) return 75 ;;
+  esac
+  attest_pinned_compose_override
+  attest_idp_verification_override
+  attest_idp_database_identity
+  idp_compose=(
+    "${sanitized_environment[@]}"
+    "DOCKER_HOST=$DOCKER_HOST"
+    "ARENZYRA_EXPECTED_DATABASE_NAME=$idp_database_name"
+    "ARENZYRA_EXPECTED_DATABASE_OID=$idp_database_oid"
+    "ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER=$idp_database_system_identifier"
+    docker compose -p "$compose_project"
+    --env-file infra/.env.publish --env-file "$release_env"
+    -f infra/docker-compose.publish.yml -f /proc/$$/fd/9 -f /proc/$$/fd/10
+  )
+  if [ "$action" = dry-run ]; then
+    "${idp_compose[@]}" --profile maintenance run --rm --no-deps \
+      --pull never -T "$service" \
+      | "${sanitized_environment[@]}" \
+          node scripts/verify-idp-maintenance-summary.cjs "$verifier_flag"
+  else
+    "${idp_compose[@]}" --profile maintenance run --rm --no-deps \
+      --pull never -T "$service" \
+      | "${sanitized_environment[@]}" \
+          node scripts/verify-idp-maintenance-mutation-summary.cjs \
+            "$verifier_flag"
+  fi
+}
+
 verify_running_release_images() {
   local actual_image_id container_id expected_image_id service
   local -a runtime_services
   case "$pinned_override_mode" in
     full) runtime_services=(api web media-ai) ;;
     discord-bot) runtime_services=(discord-bot) ;;
+    legacy-cutover) runtime_services=(api web media-ai discord-bot) ;;
     *) return 75 ;;
   esac
   attest_pinned_compose_override
@@ -890,6 +951,9 @@ guard_args=()
 if [ "$FIRST_DEPLOY" -eq 1 ]; then
   guard_args+=(--skip-health)
 fi
+if [ "$MODE" = "legacy-cutover" ]; then
+  guard_args+=(--allow-read-only-legacy-backup)
+fi
 # Before release metadata, image builds, backups, migrations, or service
 # changes, prove that the current database has no pending contract migration
 # that an existing API writer cannot survive. The normal full-deploy path has
@@ -909,6 +973,10 @@ if [ "$MODE" = "full" ]; then
   # evidence. The immutable candidate image performs authenticated dry-runs
   # before any subsequent release mutation and again after health convergence.
   bash scripts/verify-production-idp-encryption.sh
+elif [ "$MODE" = "legacy-cutover" ]; then
+  bash scripts/production-release-safety-gate.sh --legacy-cutover
+  bash scripts/verify-production-entitlement-invariants.sh \
+    --allow-running-legacy-cutover
 fi
 
 verify_release_archive_root
@@ -978,7 +1046,7 @@ wait_for_health() {
 create_pre_migration_backup() {
   local backup_start_epoch backup_root backup_id backup_dir resolved_backup_dir
   local marker_epoch result_file
-  local -a backup_result backup_environment
+  local -a backup_result backup_environment backup_arguments
 
   runtime_temp_dir="$(mktemp -d /run/arenzyra-pre-migration-backup.XXXXXX)"
   chmod 700 "$runtime_temp_dir"
@@ -994,7 +1062,12 @@ create_pre_migration_backup() {
     "ARENZYRA_DEPLOY_LOCK_INHERITED=1"
   )
 
-  env "${backup_environment[@]}" bash scripts/production-backup.sh
+  backup_arguments=()
+  if [ "$MODE" = "legacy-cutover" ]; then
+    backup_arguments+=(--allow-running-legacy-backup)
+  fi
+  env "${backup_environment[@]}" \
+    bash scripts/production-backup.sh "${backup_arguments[@]}"
   test -f "$result_file"
   mapfile -t backup_result < "$result_file"
   if [ "${#backup_result[@]}" -ne 2 ]; then
@@ -1049,7 +1122,7 @@ if [ "$MODE" = "discord-bot" ]; then
   attest_pinned_compose_override
   "${compose[@]}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot
   services=(discord-bot)
-else
+elif [ "$MODE" = "full" ]; then
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" build api media-ai web
   verify_clean_release_source
@@ -1097,13 +1170,106 @@ else
   attest_pinned_compose_override
   "${compose[@]}" up --no-build -d --pull never
   services=(proxy postgres redis api media-ai web)
+else
+  # One-time forward-only conversion of the exact reviewed legacy profile.
+  # Candidate images and the off-site recovery point are complete before the
+  # first writer stops. Once ownership or schema work starts, failure leaves
+  # application writers stopped and runtime database roles fenced.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" build api media-ai web
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" --profile discord-bot build discord-bot
+  verify_clean_release_source
+  for built_service in api web media-ai discord-bot; do
+    archive_built_image_manifest "$built_service"
+  done
+  api_image_id="$(read_archived_release_image_id api)"
+  web_image_id="$(read_archived_release_image_id web)"
+  media_ai_image_id="$(read_archived_release_image_id media-ai)"
+  discord_bot_image_id="$(read_archived_release_image_id discord-bot)"
+  create_pinned_compose_override legacy-cutover
+  create_idp_verification_override
+
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  "${compose[@]}" pull postgres redis proxy
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  create_pre_migration_backup
+
+  # The legacy writers were allowed to run while the backup streamed. Recheck
+  # the read-only entitlement ledger before stopping them, then repeat the
+  # mandatory preflight literally adjacent to the stop operation.
+  bash scripts/verify-production-entitlement-invariants.sh \
+    --allow-running-legacy-cutover
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  "${compose[@]}" --profile discord-bot stop -t 60 \
+    proxy web api media-ai discord-bot
+  bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
+  schema_change_possible=1
+
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/provision-production-database-roles.sh \
+      --env infra/.env.publish --apply --adopt-reviewed-ownership \
+      --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP \
+      --legacy-cutover-partial
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/production-api-data-volume-remediation.sh
+
+  bash scripts/production-deploy-preflight.sh --allow-cutover-stopped
+  attest_pinned_compose_override
+  "${compose[@]}" --profile discord-bot down --remove-orphans
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  attest_pinned_compose_override
+  "${compose[@]}" up --no-build -d --pull never postgres redis
+  wait_for_health postgres redis
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  bash scripts/verify-production-database-container.sh >/dev/null
+
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/production-database-writer-fence.sh \
+      --engage --release-id "$new_release_id"
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  attest_pinned_compose_override
+  "${compose[@]}" --profile migration run --rm --no-deps --pull never api-migrate
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  attest_pinned_compose_override
+  "${compose[@]}" --profile migration run --rm --no-deps --pull never studio-migrate
+
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/provision-production-database-roles.sh \
+      --env infra/.env.publish --apply --runtime-roles-fenced
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  run_idp_cutover_action apply
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  run_idp_cutover_action validate
+  bash scripts/verify-production-idp-encryption.sh
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  run_idp_cutover_action dry-run
+
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/production-database-writer-fence.sh \
+      --release --release-id "$new_release_id"
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/verify-production-database-roles.sh
+
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  attest_pinned_compose_override
+  "${compose[@]}" up --no-build -d --pull never
+  wait_for_health proxy postgres redis api media-ai web
+  bash scripts/production-deploy-preflight.sh
+  attest_pinned_compose_override
+  "${compose[@]}" --profile discord-bot up --no-build -d --pull never \
+    --no-deps discord-bot
+  wait_for_health discord-bot
+  services=(proxy postgres redis api media-ai web discord-bot)
 fi
 
 verify_running_release_images
 wait_for_health "${services[@]}"
 
 "${compose[@]}" --profile discord-bot ps
-if [ "$MODE" = "full" ]; then
+if [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ]; then
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/verify-production-database-roles.sh
   bash scripts/verify-production-entitlement-invariants.sh

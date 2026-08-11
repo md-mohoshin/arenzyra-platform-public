@@ -250,6 +250,25 @@ function validateIdpMaintenanceServices(compose, errors) {
       entrypoint: "dist-maintenance/scripts/backfill-idp-credentials.js",
       arguments: [],
     }),
+    "api-maintenance-idp-apply": Object.freeze({
+      database: "IDP_MAINTENANCE_DATABASE_URL",
+      entrypoint: "dist-maintenance/scripts/backfill-idp-credentials.js",
+      arguments: [
+        "--apply",
+        "--writers-stopped",
+        "--confirm=BACKFILL_IDP_CREDENTIALS",
+      ],
+    }),
+    "api-maintenance-idp-validate": Object.freeze({
+      database: "MIGRATION_DATABASE_URL",
+      entrypoint:
+        "dist-maintenance/scripts/validate-idp-envelope-constraint.js",
+      arguments: [
+        "validate",
+        "--writers-stopped",
+        "--confirm=VALIDATE_IDP_ENVELOPE_CONSTRAINT",
+      ],
+    }),
   });
   const discovered = [
     ...compose.matchAll(/^  (api-maintenance-[a-zA-Z0-9_-]+):\s*$/gm),
@@ -260,7 +279,7 @@ function validateIdpMaintenanceServices(compose, errors) {
     expected.some((service) => !discovered.includes(service))
   ) {
     errors.push(
-      "Publish Compose maintenance services must match the exact IDP-only dry-run allowlist.",
+      "Publish Compose maintenance services must match the exact IDP-only cutover allowlist.",
     );
   }
   if (/youtube|token-rotation|rotate-youtube/i.test(compose)) {
@@ -284,17 +303,19 @@ function validateIdpMaintenanceServices(compose, errors) {
       'ARENZYRA_EXPECTED_DATABASE_NAME: "${ARENZYRA_EXPECTED_DATABASE_NAME:-UNSEALED}"',
       'ARENZYRA_EXPECTED_DATABASE_OID: "${ARENZYRA_EXPECTED_DATABASE_OID:-0}"',
       'ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER: "${ARENZYRA_EXPECTED_DATABASE_SYSTEM_IDENTIFIER:-0}"',
-      'read_only: true',
-      'nodev',
-      'cap_drop: - ALL',
-      'security_opt: - no-new-privileges:true',
+      "read_only: true",
+      "nodev",
+      "cap_drop: - ALL",
+      "security_opt: - no-new-privileges:true",
       'restart: "no"',
-      'pids_limit: 64',
-      'mem_limit: 512m',
-      'cpus: 1.0',
+      "pids_limit: 64",
+      "mem_limit: 512m",
+      "cpus: 1.0",
     ]) {
       if (!normalized.includes(fragment.replace(/\s+/g, " "))) {
-        errors.push(`Publish ${service} is missing its exact ${fragment} boundary.`);
+        errors.push(
+          `Publish ${service} is missing its exact ${fragment} boundary.`,
+        );
       }
     }
     if (
@@ -303,7 +324,9 @@ function validateIdpMaintenanceServices(compose, errors) {
         (argument) => !normalized.includes(`"${argument}"`),
       )
     ) {
-      errors.push(`Publish ${service} command differs from the IDP image allowlist.`);
+      errors.push(
+        `Publish ${service} command differs from the IDP image allowlist.`,
+      );
     }
     if (
       /^    (?:build|volumes|ports|entrypoint):/m.test(block) ||
@@ -312,7 +335,9 @@ function validateIdpMaintenanceServices(compose, errors) {
         block,
       )
     ) {
-      errors.push(`Publish ${service} exposes an unsupported maintenance surface.`);
+      errors.push(
+        `Publish ${service} exposes an unsupported maintenance surface.`,
+      );
     }
   }
 }
@@ -339,6 +364,12 @@ function validateComposeWiring(errors) {
       "DATABASE_URL",
       "MAINTENANCE_READ_DATABASE_URL",
     ],
+    [
+      "api-maintenance-idp-apply",
+      "DATABASE_URL",
+      "IDP_MAINTENANCE_DATABASE_URL",
+    ],
+    ["api-maintenance-idp-validate", "DATABASE_URL", "MIGRATION_DATABASE_URL"],
   ];
   for (const [service, serviceKey, envKey] of databaseBindings) {
     const block =
@@ -697,9 +728,7 @@ function validateEnvRelationships(
     errors.push("SUPERADMIN_MFA_REQUIRED must be exactly true in production.");
   }
 
-  if (
-    (env.PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED ?? "").trim() !== "false"
-  ) {
+  if ((env.PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED ?? "").trim() !== "false") {
     errors.push(
       "PUBLIC_ORGANIZATION_APPLICATIONS_ENABLED must be exactly false in production.",
     );
