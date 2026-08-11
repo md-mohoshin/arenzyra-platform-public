@@ -8,6 +8,7 @@ const test = require("node:test");
 const {
   MAX_MIGRATION_LEDGER_INPUT_BYTES,
   MAX_MIGRATION_LEDGER_ROWS,
+  LEGACY_RECONCILABLE_LEDGER_ROW,
   assertUnambiguousMigrationNames,
   candidateMigrationMetadata,
   detectedContractOperations,
@@ -612,6 +613,88 @@ test("unfinished and ambiguous migration ledger rows fail closed", (t) => {
   assert.equal(retried.ok, true);
 });
 
+test("only the exact legacy widget-key zero-step row can defer to fenced cutover reconciliation", (t) => {
+  const migrationSql = fs.readFileSync(
+    path.join(
+      __dirname,
+      "..",
+      "apps",
+      "api",
+      "prisma",
+      "migrations",
+      LEGACY_RECONCILABLE_LEDGER_ROW.migrationName,
+      "migration.sql",
+    ),
+    "utf8",
+  );
+  const migrationsPath = fixture(t, {
+    [LEGACY_RECONCILABLE_LEDGER_ROW.migrationName]: migrationSql,
+  });
+  assert.equal(
+    candidateMigrationMetadata(migrationsPath)[0].checksum,
+    LEGACY_RECONCILABLE_LEDGER_ROW.checksum,
+  );
+  const legacyRow = ledgerRow(
+    LEGACY_RECONCILABLE_LEDGER_ROW.migrationName,
+    LEGACY_RECONCILABLE_LEDGER_ROW.checksum,
+    { finished: true, rolledBack: false, appliedStepsCount: 0 },
+  );
+
+  const routine = evaluateMigrationSafety({
+    migrationLedger: [legacyRow],
+    manifest: manifestFor([]),
+    migrationsPath,
+    noOldWriters: true,
+    deferDataImpact: true,
+    requireAppliedMigration: true,
+  });
+  assert.equal(routine.reason, "database-migration-ledger-incomplete");
+
+  const controlled = evaluateMigrationSafety({
+    migrationLedger: [legacyRow],
+    manifest: manifestFor([]),
+    migrationsPath,
+    noOldWriters: true,
+    deferDataImpact: true,
+    requireAppliedMigration: true,
+    allowLegacyWidgetKeyLedgerReconcile: true,
+  });
+  assert.equal(controlled.ok, true);
+  assert.equal(
+    controlled.reason,
+    "verified-no-old-writers-data-impact-deferred-legacy-ledger-reconcile-pending",
+  );
+  assert.deepEqual(controlled.legacyLedgerReconcilePending, [
+    {
+      migrationName: LEGACY_RECONCILABLE_LEDGER_ROW.migrationName,
+      checksum: LEGACY_RECONCILABLE_LEDGER_ROW.checksum,
+      appliedStepsCount: 0,
+    },
+  ]);
+
+  assert.throws(
+    () =>
+      evaluateMigrationSafety({
+        migrationLedger: [legacyRow],
+        manifest: manifestFor([]),
+        migrationsPath,
+        allowLegacyWidgetKeyLedgerReconcile: true,
+      }),
+    /requires the controlled no-old-writers data-impact deferral/,
+  );
+
+  const mismatched = evaluateMigrationSafety({
+    migrationLedger: [{ ...legacyRow, checksum: "f".repeat(64) }],
+    manifest: manifestFor([]),
+    migrationsPath,
+    noOldWriters: true,
+    deferDataImpact: true,
+    requireAppliedMigration: true,
+    allowLegacyWidgetKeyLedgerReconcile: true,
+  });
+  assert.equal(mismatched.reason, "database-migration-ledger-incomplete");
+});
+
 test("a non-first target requires at least one successfully applied migration", (t) => {
   const migrationsPath = fixture(t, { baseline: "SELECT 1;" });
   const checksum = candidateMigrationMetadata(migrationsPath)[0].checksum;
@@ -713,6 +796,10 @@ test("production ledger collection emits every checksum and row state as JSON", 
   assert.match(gate, /ORDER BY started_at, migration_name, id/);
   assert.match(gate, /LIMIT 4097/);
   assert.match(gate, /--require-applied-migration/);
+  assert.match(
+    gate,
+    /LEGACY_CUTOVER[\s\S]*--allow-legacy-widget-key-ledger-reconcile/,
+  );
   assert.match(gate, /default_transaction_read_only=on/);
   assert.match(gate, /statement_timeout=30000/);
   assert.match(gate, /lock_timeout=5000/);

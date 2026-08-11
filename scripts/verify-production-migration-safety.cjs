@@ -23,6 +23,11 @@ const MAX_CANDIDATE_MIGRATIONS = 4096;
 const MAX_MIGRATION_SQL_BYTES = 16 * 1024 * 1024;
 const MAX_MIGRATION_LEDGER_ROWS = 4096;
 const MAX_MIGRATION_LEDGER_INPUT_BYTES = 16 * 1024 * 1024;
+const LEGACY_RECONCILABLE_LEDGER_ROW = Object.freeze({
+  migrationName: "20260308132829_widget_instance_permanent_keys",
+  checksum:
+    "c573af92b312df565eaf1d490dfafa3d6cc8a20220c87f39d659a62826628163",
+});
 
 const obviousContractPatterns = Object.freeze([
   Object.freeze({ name: "drop-column", pattern: /\bDROP\s+COLUMN\b/i }),
@@ -540,6 +545,7 @@ function evaluateMigrationSafety({
   deferDataImpact = false,
   verifiedEmptyTarget = false,
   requireAppliedMigration = false,
+  allowLegacyWidgetKeyLedgerReconcile = false,
 }) {
   if (deferDataImpact && verifiedEmptyTarget) {
     throw new Error(
@@ -549,6 +555,14 @@ function evaluateMigrationSafety({
   if ((deferDataImpact || verifiedEmptyTarget) && !noOldWriters) {
     throw new Error(
       "Data-impact deferral or empty-target verification requires noOldWriters.",
+    );
+  }
+  if (
+    allowLegacyWidgetKeyLedgerReconcile &&
+    (!noOldWriters || !deferDataImpact || verifiedEmptyTarget)
+  ) {
+    throw new Error(
+      "Legacy widget-key ledger reconciliation requires the controlled no-old-writers data-impact deferral.",
     );
   }
   const ledgerRows = [...migrationLedger].map((row, index) =>
@@ -564,12 +578,45 @@ function evaluateMigrationSafety({
   );
   const migrationNames = candidateMigrations.map(({ name }) => name);
   const knownMigrations = new Set(migrationNames);
-  const incompleteMigrationLedgerRows = ledgerRows
-    .filter(
-      ({ finished, rolledBack, appliedStepsCount }) =>
-        (!finished && !rolledBack) ||
-        (finished && !rolledBack && appliedStepsCount === 0),
-    )
+  const incompleteLedgerRows = ledgerRows.filter(
+    ({ finished, rolledBack, appliedStepsCount }) =>
+      (!finished && !rolledBack) ||
+      (finished && !rolledBack && appliedStepsCount === 0),
+  );
+  const legacyReconcileRows = incompleteLedgerRows.filter(
+    ({ migrationName, checksum, finished, rolledBack, appliedStepsCount }) =>
+      migrationName === LEGACY_RECONCILABLE_LEDGER_ROW.migrationName &&
+      checksum === LEGACY_RECONCILABLE_LEDGER_ROW.checksum &&
+      finished &&
+      !rolledBack &&
+      appliedStepsCount === 0,
+  );
+  const activeLegacyRows = ledgerRows.filter(
+    ({ migrationName, finished, rolledBack }) =>
+      migrationName === LEGACY_RECONCILABLE_LEDGER_ROW.migrationName &&
+      finished &&
+      !rolledBack,
+  );
+  const candidateLegacyMigration = candidateByName.get(
+    LEGACY_RECONCILABLE_LEDGER_ROW.migrationName,
+  );
+  const legacyLedgerReconcilePending =
+    allowLegacyWidgetKeyLedgerReconcile &&
+    legacyReconcileRows.length === 1 &&
+    activeLegacyRows.length === 1 &&
+    candidateLegacyMigration?.checksum ===
+      LEGACY_RECONCILABLE_LEDGER_ROW.checksum
+      ? legacyReconcileRows
+          .map(({ migrationName, checksum, appliedStepsCount }) => ({
+            migrationName,
+            checksum,
+            appliedStepsCount,
+          }))
+      : [];
+  const permittedLegacyReconcileRow =
+    legacyLedgerReconcilePending.length === 1 ? legacyReconcileRows[0] : null;
+  const incompleteMigrationLedgerRows = incompleteLedgerRows
+    .filter((row) => row !== permittedLegacyReconcileRow)
     .map(({ migrationName, checksum, appliedStepsCount }) => ({
       migrationName,
       checksum,
@@ -869,13 +916,16 @@ function evaluateMigrationSafety({
   }
   return {
     ok: true,
-    reason: verifiedEmptyTarget
-      ? "verified-empty-target-no-old-writers"
-      : deferDataImpact
-        ? "verified-no-old-writers-data-impact-deferred"
-        : noOldWriters
-          ? "verified-no-old-writers"
-          : "no-pending-contract-or-data-impact-migrations",
+    reason:
+      legacyLedgerReconcilePending.length === 1
+        ? "verified-no-old-writers-data-impact-deferred-legacy-ledger-reconcile-pending"
+        : verifiedEmptyTarget
+          ? "verified-empty-target-no-old-writers"
+          : deferDataImpact
+            ? "verified-no-old-writers-data-impact-deferred"
+            : noOldWriters
+              ? "verified-no-old-writers"
+              : "no-pending-contract-or-data-impact-migrations",
     candidateMigrations: candidateMetadata,
     incompleteMigrationLedgerRows,
     ambiguousMigrationLedgerRows,
@@ -885,6 +935,7 @@ function evaluateMigrationSafety({
     unclassifiedContract,
     pendingDataImpact,
     unclassifiedDataImpact,
+    legacyLedgerReconcilePending,
   };
 }
 
@@ -904,6 +955,9 @@ function main() {
   const requireAppliedMigration = process.argv.includes(
     "--require-applied-migration",
   );
+  const allowLegacyWidgetKeyLedgerReconcile = process.argv.includes(
+    "--allow-legacy-widget-key-ledger-reconcile",
+  );
   const appliedInput = fs.readFileSync(0, "utf8");
   const manifestPath = path.resolve(
     flagValue("--manifest", defaultManifestPath),
@@ -919,6 +973,7 @@ function main() {
     deferDataImpact,
     verifiedEmptyTarget,
     requireAppliedMigration,
+    allowLegacyWidgetKeyLedgerReconcile,
   });
 
   if (!result.ok) {
@@ -936,7 +991,8 @@ function main() {
       `candidate_migrations=${result.candidateMigrations.length} ` +
       `pending_contract=${result.pendingContract.length} ` +
       `pending_data_impact=${result.pendingDataImpact.length} ` +
-      `unclassified_data_impact=${result.unclassifiedDataImpact.length}\n`,
+      `unclassified_data_impact=${result.unclassifiedDataImpact.length} ` +
+      `legacy_ledger_reconcile_pending=${result.legacyLedgerReconcilePending.length}\n`,
   );
 }
 
@@ -954,6 +1010,7 @@ if (require.main === module) {
 module.exports = {
   MAX_MIGRATION_LEDGER_INPUT_BYTES,
   MAX_MIGRATION_LEDGER_ROWS,
+  LEGACY_RECONCILABLE_LEDGER_ROW,
   assertUnambiguousMigrationNames,
   candidateMigrationMetadata,
   detectedContractOperations,

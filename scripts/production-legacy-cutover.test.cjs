@@ -62,6 +62,9 @@ test("legacy cutover preserves volumes and fences all writers through migrations
     '"${compose[@]}" up --no-build -d --pull never postgres redis',
   );
   const engage = branch.indexOf("--engage --release-id");
+  const ledgerReconcile = branch.indexOf(
+    "reconcile-production-legacy-prisma-ledger.sh",
+  );
   const apiMigration = branch.indexOf("api-migrate", engage);
   const studioMigration = branch.indexOf("studio-migrate", apiMigration);
   const idpApply = branch.indexOf("run_idp_cutover_action apply");
@@ -78,7 +81,8 @@ test("legacy cutover preserves volumes and fences all writers through migrations
       remediation < down &&
       down < transitionUp &&
       transitionUp < engage &&
-      engage < apiMigration &&
+      engage < ledgerReconcile &&
+      ledgerReconcile < apiMigration &&
       apiMigration < studioMigration &&
       studioMigration < idpApply &&
       idpApply < idpValidate &&
@@ -94,6 +98,46 @@ test("legacy cutover preserves volumes and fences all writers through migrations
   assert.match(
     read("scripts/production-database-writer-fence.sh"),
     /ALTER ROLE :"api_runtime_role" :role_action;[\s\S]*ALTER ROLE :"studio_runtime_role" :role_action;[\s\S]*pg_terminate_backend/,
+  );
+});
+
+test("legacy zero-step ledger reconciliation is exact, fenced, and operation-adjacent", () => {
+  const reconcile = read("scripts/reconcile-production-legacy-prisma-ledger.sh");
+  const preflight = reconcile.indexOf(
+    "production-deploy-preflight.sh --allow-cutover-transition",
+  );
+  const write = reconcile.indexOf('UPDATE "_prisma_migrations"', preflight);
+  assert.ok(preflight >= 0 && write > preflight);
+  assert.match(
+    reconcile,
+    /EXPECTED_MIGRATION="20260308132829_widget_instance_permanent_keys"/,
+  );
+  assert.match(
+    reconcile,
+    /EXPECTED_CHECKSUM="c573af92b312df565eaf1d490dfafa3d6cc8a20220c87f39d659a62826628163"/,
+  );
+  assert.match(reconcile, /writer-fence marker/);
+  assert.match(reconcile, /postgres_schema="\$\{database_binding\[4\]\}"/);
+  assert.doesNotMatch(reconcile, /read-dotenv-value\.cjs[^\n]*POSTGRES_SCHEMA/);
+  assert.match(reconcile, /bool_and\(NOT rolcanlogin\)/);
+  assert.match(reconcile, /pg_stat_activity/);
+  assert.match(reconcile, /pg_prepared_xacts/);
+  assert.match(reconcile, /attname = 'widgetKey'/);
+  assert.match(reconcile, /attname = 'widgetType'/);
+  assert.match(reconcile, /WidgetInstance_widgetKey_idx/);
+  assert.match(
+    reconcile,
+    /WidgetInstance_organizationId_widgetKey_key/,
+  );
+  assert.match(
+    reconcile,
+    /SET applied_steps_count = 1[\s\S]*applied_steps_count = 0/,
+  );
+  assert.match(reconcile, /applied_steps_count IN \(0, 1\)/);
+  assert.match(reconcile, /count\(\*\) <= 1 AS ledger_updated/);
+  assert.doesNotMatch(
+    reconcile,
+    /DELETE\s+FROM\s+"_prisma_migrations"|SET\s+(?:checksum|finished_at|rolled_back_at)\s*=/i,
   );
 });
 

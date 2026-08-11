@@ -416,6 +416,21 @@ reviewed against the production topology. Every build, restart, recreate, or
 Compose-up in that sheet remains subject to `scripts/production-deploy-preflight.sh`
 and the repository production rules.
 
+The argument-free one-time `legacy-cutover` contains one narrower reviewed
+ledger reconciliation for
+`20260308132829_widget_instance_permanent_keys`. Production already records the
+exact migration checksum and a finished timestamp, and the isolated restore
+proves the complete renamed column/default/index postconditions, but the legacy
+row records zero applied steps. The initial safety gate defers only that exact
+checksum/state. After the immutable candidate and fresh verified off-site
+backup exist, all old writers are stopped, PostgreSQL is on the reviewed target,
+and the durable runtime-role fence is engaged, the cutover transaction repeats
+the exact schema, ledger, session, prepared-transaction, and role predicates and
+changes only `applied_steps_count` from `0` to `1`. Any different row, checksum,
+schema, writer state, target, or fence marker remains blocked. Routine deploys
+have no such exception. A forward-recovery retry accepts the same exact row
+already at `1`, re-verifies every predicate, and performs no ledger write.
+
 The canonical API image ships the reviewed compiled IDP dry-run/apply/validate
 artifacts so the full sequence can be rehearsed against an isolated private
 restore. Production Publish Compose exposes only the authenticated one-shot

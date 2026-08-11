@@ -87,7 +87,8 @@ docker exec "${database_binding[0]}" sh -ceu '
 ' sh "${database_binding[3]}" "${database_binding[4]}" \
   | if [ "$LEGACY_CUTOVER" -eq 1 ]; then
       node scripts/verify-production-migration-safety.cjs \
-        --require-applied-migration --no-old-writers --defer-data-impact
+        --require-applied-migration --no-old-writers --defer-data-impact \
+        --allow-legacy-widget-key-ledger-reconcile
     else
       node scripts/verify-production-migration-safety.cjs \
         --require-applied-migration
