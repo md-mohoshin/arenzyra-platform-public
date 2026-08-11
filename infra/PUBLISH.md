@@ -330,6 +330,21 @@ permits only `scripts/` or this runbook to differ between their exact trees.
 Any application source change, missing/unsafe artifact, or incompatible source
 tree fails closed.
 
+If that resume already completed all four immutable candidate builds and their
+archived image manifests, but stopped before ownership or schema work, it can
+also reuse the candidate rather than rebuilding it:
+
+```bash
+production_entry legacy-cutover-resume-interrupted-candidate \
+  <release-id> <backup-id>
+```
+
+This command requires the same verified-backup contract, an archived clean-Git
+release that exactly matches the current checkout, all four root-owned immutable
+image manifests, and all four images still present by their archived SHA-256
+IDs. It skips only candidate creation; every stopped-writer, backup, role,
+migration, IDP, health, and public HTTPS gate still runs.
+
 It requires exactly one healthy legacy PostgreSQL and Redis container, no
 running application or maintenance writer, no duplicate application container,
 and at least one absent stopped application container. It also requires the

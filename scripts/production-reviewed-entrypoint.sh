@@ -97,6 +97,16 @@ case "$command_id" in
     exec /bin/bash scripts/deploy-production.sh \
       --legacy-cutover-resume-interrupted --reuse-verified-backup "$1"
     ;;
+  legacy-cutover-resume-interrupted-candidate)
+    [ "$#" -eq 2 ] && \
+      [[ "$1" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] && \
+      [[ "$2" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || \
+      block "legacy-cutover-resume-interrupted-candidate requires one release ID and one backup ID."
+    require_nested_assembly
+    exec /bin/bash scripts/deploy-production.sh \
+      --legacy-cutover-resume-interrupted \
+      --reuse-verified-backup "$2" --reuse-candidate-release "$1"
+    ;;
   deploy-discord)
     if [ "$#" -eq 0 ]; then
       first_deploy=()

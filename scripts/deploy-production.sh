@@ -12,6 +12,7 @@ LOCK_FILE="/run/arenzyra-production-deploy.lock"
 MODE="full"
 FIRST_DEPLOY=0
 REUSE_VERIFIED_BACKUP_ID=""
+REUSE_CANDIDATE_RELEASE_ID=""
 LOCK_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_LOCK_TIMEOUT_SECONDS:-10}"
 HEALTH_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_HEALTH_TIMEOUT_SECONDS:-240}"
 RELEASE_ARCHIVE_ROOT="${ARENZYRA_RELEASE_ARCHIVE_ROOT:-$EXPECTED_RELEASE_ARCHIVE_ROOT}"
@@ -73,7 +74,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted] [--reuse-verified-backup BACKUP_ID] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -100,6 +101,12 @@ while [ "$#" -gt 0 ]; do
       REUSE_VERIFIED_BACKUP_ID="$2"
       shift
       ;;
+    --reuse-candidate-release)
+      [ "$#" -ge 2 ] || { printf '%s\n' '--reuse-candidate-release requires one release ID.' >&2; exit 2; }
+      [ -z "$REUSE_CANDIDATE_RELEASE_ID" ] || { printf '%s\n' '--reuse-candidate-release may be specified only once.' >&2; exit 2; }
+      REUSE_CANDIDATE_RELEASE_ID="$2"
+      shift
+      ;;
     --first-deploy) FIRST_DEPLOY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -114,6 +121,17 @@ if [ -n "$REUSE_VERIFIED_BACKUP_ID" ]; then
   }
   [[ "$REUSE_VERIFIED_BACKUP_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || {
     printf '%s\n' '--reuse-verified-backup received an invalid backup ID.' >&2
+    exit 2
+  }
+fi
+if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ] && \
+    [ -n "$REUSE_VERIFIED_BACKUP_ID" ] || {
+    printf '%s\n' '--reuse-candidate-release requires the interrupted resume and a verified backup ID.' >&2
+    exit 2
+  }
+  [[ "$REUSE_CANDIDATE_RELEASE_ID" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || {
+    printf '%s\n' '--reuse-candidate-release received an invalid release ID.' >&2
     exit 2
   }
 fi
@@ -236,7 +254,6 @@ verify_bootstrap_repository() {
 verify_bootstrap_repository ROOT "$resolved_root" ARENZYRA_REVIEWED_ROOT_COMMIT
 verify_bootstrap_repository API "$resolved_root/apps/api" ARENZYRA_REVIEWED_API_COMMIT
 verify_bootstrap_repository WEB "$resolved_root/apps/arenzyra-web" ARENZYRA_REVIEWED_WEB_COMMIT
-unset bootstrap_git
 
 source scripts/require-local-production-docker.sh
 sanitized_environment=(
@@ -601,6 +618,49 @@ verify_clean_release_source() {
   "${sanitized_environment[@]}" \
     node scripts/verify-production-release-source.cjs \
       --release-env "$release_env"
+}
+
+verify_management_compatible_release_source() {
+  local compatible_release_env="$1"
+  local compatible_release_id="$2"
+  local source_root_revision source_api_revision source_web_revision
+  local source_root_commit root_changes changed_path
+
+  verify_archived_release_file "$compatible_release_env" "$compatible_release_id"
+  [ "$(node scripts/read-dotenv-value.cjs "$compatible_release_env" ARENZYRA_BUILD_SOURCE)" = git ] && \
+    [ "$(node scripts/read-dotenv-value.cjs "$compatible_release_env" ARENZYRA_BUILD_DIRTY)" = false ] || {
+      printf '%s\n' 'Compatible release provenance is not clean Git.' >&2
+      return 75
+    }
+  source_root_revision="$(node scripts/read-dotenv-value.cjs "$compatible_release_env" ARENZYRA_ROOT_GIT_COMMIT)"
+  source_api_revision="$(node scripts/read-dotenv-value.cjs "$compatible_release_env" ARENZYRA_API_GIT_COMMIT)"
+  source_web_revision="$(node scripts/read-dotenv-value.cjs "$compatible_release_env" ARENZYRA_WEB_GIT_COMMIT)"
+  [[ "$source_root_revision" =~ ^[0-9a-f]{12,40}$ ]] && \
+    [[ "$source_api_revision" =~ ^[0-9a-f]{12,40}$ ]] && \
+    [[ "$source_web_revision" =~ ^[0-9a-f]{12,40}$ ]] && \
+    [ "$source_api_revision" = "${ARENZYRA_REVIEWED_API_COMMIT:0:${#source_api_revision}}" ] && \
+    [ "$source_web_revision" = "${ARENZYRA_REVIEWED_WEB_COMMIT:0:${#source_web_revision}}" ] || {
+      printf '%s\n' 'Compatible release components differ from the reviewed deployment.' >&2
+      return 75
+    }
+  source_root_commit="$("${bootstrap_git[@]}" -C "$resolved_root" rev-parse --verify "${source_root_revision}^{commit}" 2>/dev/null || true)"
+  [ -n "$source_root_commit" ] || {
+    printf '%s\n' 'Compatible release Root revision is unavailable in the reviewed repository.' >&2
+    return 75
+  }
+  if ! root_changes="$("${bootstrap_git[@]}" -C "$resolved_root" diff --name-only "$source_root_commit" "$ARENZYRA_REVIEWED_ROOT_COMMIT")"; then
+    printf '%s\n' 'Compatible release Root source trees could not be compared.' >&2
+    return 75
+  fi
+  while IFS= read -r changed_path; do
+    [ -n "$changed_path" ] || continue
+    case "$changed_path" in
+      infra/PUBLISH.md|scripts/*) ;;
+      *) printf 'Compatible release has an application-affecting Root change: %s\n' "$changed_path" >&2; return 75 ;;
+    esac
+  done <<< "$root_changes"
+  printf 'COMPATIBLE RELEASE SOURCE VERIFIED release=%s management_changes_only=true\n' \
+    "$compatible_release_id"
 }
 
 attest_pinned_compose_override() {
@@ -1023,11 +1083,20 @@ trap deploy_failed ERR
 # provenance. The emergency override is intentionally not exposed here.
 "${sanitized_environment[@]}" \
   node scripts/verify-production-release-source.cjs --check-checkout-only
-"${sanitized_environment[@]}" node scripts/create-publish-release-metadata.cjs
-new_release_id="$(archive_release_file infra/.env.release)"
+if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+  new_release_id="$REUSE_CANDIDATE_RELEASE_ID"
+else
+  "${sanitized_environment[@]}" node scripts/create-publish-release-metadata.cjs
+  new_release_id="$(archive_release_file infra/.env.release)"
+fi
 release_env="$RELEASE_ARCHIVE_ROOT/$new_release_id.env"
 verify_archived_release_file "$release_env" "$new_release_id"
-verify_clean_release_source
+if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+  verify_management_compatible_release_source "$release_env" "$new_release_id"
+  printf 'REVIEWED CANDIDATE RELEASE SELECTED release=%s\n' "$new_release_id"
+else
+  verify_clean_release_source
+fi
 
 compose=(
   "${sanitized_environment[@]}"
@@ -1346,18 +1415,35 @@ else
   # writers stopped and creates a new recovery point before continuing. Once
   # ownership or schema work starts, failures keep writers stopped and roles
   # fenced.
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-  "${compose[@]}" build api media-ai web
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-  "${compose[@]}" --profile discord-bot build discord-bot
-  verify_clean_release_source
-  for built_service in api web media-ai discord-bot; do
-    archive_built_image_manifest "$built_service"
-  done
-  api_image_id="$(read_archived_release_image_id api)"
-  web_image_id="$(read_archived_release_image_id web)"
-  media_ai_image_id="$(read_archived_release_image_id media-ai)"
-  discord_bot_image_id="$(read_archived_release_image_id discord-bot)"
+  if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+    api_image_id="$(read_archived_release_image_id api)"
+    web_image_id="$(read_archived_release_image_id web)"
+    media_ai_image_id="$(read_archived_release_image_id media-ai)"
+    discord_bot_image_id="$(read_archived_release_image_id discord-bot)"
+    for candidate_image_id in \
+      "$api_image_id" "$web_image_id" "$media_ai_image_id" "$discord_bot_image_id"; do
+      [[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] && \
+        docker image inspect "$candidate_image_id" >/dev/null || {
+        printf '%s\n' 'Reviewed candidate release image is unavailable by immutable ID.' >&2
+        exit 75
+      }
+    done
+    printf 'REVIEWED CANDIDATE IMAGES VERIFIED release=%s services=4\n' "$new_release_id"
+  else
+    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+    "${compose[@]}" build api media-ai web
+    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+    "${compose[@]}" --profile discord-bot build discord-bot
+    verify_clean_release_source
+    for built_service in api web media-ai discord-bot; do
+      archive_built_image_manifest "$built_service"
+    done
+    api_image_id="$(read_archived_release_image_id api)"
+    web_image_id="$(read_archived_release_image_id web)"
+    media_ai_image_id="$(read_archived_release_image_id media-ai)"
+    discord_bot_image_id="$(read_archived_release_image_id discord-bot)"
+  fi
   create_pinned_compose_override legacy-cutover
   create_idp_verification_override
 

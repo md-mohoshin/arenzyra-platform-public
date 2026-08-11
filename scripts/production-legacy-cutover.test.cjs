@@ -282,3 +282,29 @@ test("interrupted resume may reuse only a recent compatible reviewed off-site ba
     /if \[ -n "\$REUSE_VERIFIED_BACKUP_ID" \]; then\s*reuse_verified_pre_migration_backup\s*return/,
   );
 });
+
+test("interrupted resume may reuse a complete immutable candidate without rebuilding", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  assert.match(
+    launcher,
+    /legacy-cutover-resume-interrupted-candidate\)[\s\S]*requires one release ID and one backup ID[\s\S]*require_nested_assembly[\s\S]*--reuse-verified-backup "\$2" --reuse-candidate-release "\$1"/,
+  );
+  assert.match(
+    deploy,
+    /--reuse-candidate-release requires the interrupted resume and a verified backup ID/,
+  );
+  assert.match(
+    deploy,
+    /REVIEWED CANDIDATE RELEASE SELECTED[\s\S]*if \[ -n "\$REUSE_CANDIDATE_RELEASE_ID" \]; then[\s\S]*read_archived_release_image_id api[\s\S]*read_archived_release_image_id discord-bot[\s\S]*docker image inspect "\$candidate_image_id"/,
+  );
+  assert.match(
+    deploy,
+    /verify_management_compatible_release_source\(\)[\s\S]*ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*infra\/PUBLISH\.md\|scripts\/\*\)[\s\S]*application-affecting Root change/,
+  );
+  assert.doesNotMatch(deploy, /unset bootstrap_git/);
+  assert.match(
+    deploy,
+    /if \[ -n "\$REUSE_CANDIDATE_RELEASE_ID" \]; then[\s\S]*else[\s\S]*"\$\{compose\[@\]\}" build api media-ai web/,
+  );
+});
