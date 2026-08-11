@@ -157,6 +157,14 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/deploy-production.sh --discord-bot "${first_deploy[@]}"
     ;;
+  deploy-web-candidate)
+    [ "$#" -eq 1 ] && \
+      [[ "$1" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || \
+      block "deploy-web-candidate requires one immutable release ID."
+    require_nested_assembly
+    exec /bin/bash scripts/deploy-production.sh \
+      --web-candidate --reuse-candidate-release "$1"
+    ;;
   rollback-discord)
     [ "$#" -eq 1 ] && [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || \
       block "rollback-discord requires one immutable release ID."

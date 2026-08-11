@@ -550,6 +550,27 @@ not authorized by a raw checkout script or preflight alone. Extend and review
 the committed dispatcher and all applicable full-application gates before such
 an action is supported.
 
+For an urgent web-only correction whose immutable image and release manifests
+were already produced by the reviewed full build, use the closed candidate
+activation instead of rerunning migrations or rebuilding the application:
+
+```bash
+production_entry deploy-web-candidate \
+  'git-YYYYMMDD-HHMMSSmmm-<12-hex-source-digest>'
+```
+
+The command accepts exactly one archived release ID. It repeats the normal
+30-GiB/service preflight immediately before Compose, validates the archived web
+manifest and exact immutable image ID, and uses `--no-deps --force-recreate`
+for only the stateless `web` service. It never builds or pulls, runs no API or
+Studio migration, changes no database role, and does not recreate PostgreSQL,
+Redis, API, media, proxy, or Discord. Their container/image fingerprints must
+remain identical through public HTTPS and browser-origin authentication
+verification. Because this is deliberately a mixed full-release/web-candidate
+state, it does not rewrite the full-release `CURRENT` or `PREVIOUS` recovery
+pointers; the running web container label plus its archived manifest identify
+the active web candidate until the next complete deployment.
+
 ## Contract and data-impact migrations
 
 The current manifest names both

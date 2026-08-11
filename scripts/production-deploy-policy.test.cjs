@@ -685,6 +685,39 @@ test("Discord-only deploy and rollback never start or recreate dependencies", ()
   );
 });
 
+test("web-candidate activation is immutable, dependency-isolated, and preserves full-release pointers", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const entrypoint = read("scripts/production-reviewed-entrypoint.sh");
+  const branch = deploy.slice(
+    deploy.indexOf('elif [ "$MODE" = "web-candidate" ]; then'),
+    deploy.indexOf("else\n  # One-time forward-only conversion"),
+  );
+
+  assert.match(
+    entrypoint,
+    /deploy-web-candidate\)[\s\S]*\^git-\[0-9\]\{8\}-\[0-9\]\{9\}-\[a-f0-9\]\{12\}\$[\s\S]*require_nested_assembly[\s\S]*--web-candidate --reuse-candidate-release "\$1"/,
+  );
+  assert.match(
+    deploy,
+    /Web-candidate activation requires one exact archived immutable release ID/,
+  );
+  assert.match(branch, /read_archived_release_image_id web/);
+  assert.match(branch, /create_pinned_compose_override web-candidate/);
+  assert.match(
+    branch,
+    /production-deploy-preflight\.sh[\s\S]*production-deploy-preflight\.sh[\s\S]*attest_pinned_compose_override[\s\S]*up --no-build -d --pull never --no-deps --force-recreate web/,
+  );
+  assert.match(branch, /non_web_runtime_fingerprint/);
+  assert.doesNotMatch(
+    branch,
+    /"\$\{compose\[@\]\}" build|"\$\{compose\[@\]\}" pull|api-migrate|studio-migrate|create_pre_migration_backup|provision-production-database-roles/,
+  );
+  assert.match(
+    deploy,
+    /if \[ "\$MODE" = "web-candidate" \]; then[\s\S]*non_web_runtime_fingerprint[\s\S]*else[\s\S]*write_release_pointer CURRENT/,
+  );
+});
+
 test("post-build source provenance is recomputed exactly from a root-only checkout", () => {
   const deploy = read("scripts/deploy-production.sh");
   const sourceVerifier = read("scripts/verify-production-release-source.cjs");
@@ -1342,6 +1375,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-resume-transition-rebuild",
       "legacy-cutover-resume-transition-candidate-fresh-backup",
       "deploy-discord",
+      "deploy-web-candidate",
       "rollback-discord",
       "recover-web",
       "idp-dry-run",

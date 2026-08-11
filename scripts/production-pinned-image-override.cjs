@@ -13,6 +13,9 @@ const MODE_BINDINGS = Object.freeze({
     "studio-migrate": "web",
     "media-ai": "media-ai",
   }),
+  "web-candidate": Object.freeze({
+    web: "web",
+  }),
   "discord-bot": Object.freeze({
     "discord-bot": "discord-bot",
   }),

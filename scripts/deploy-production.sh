@@ -36,6 +36,7 @@ web_image_id=""
 media_ai_image_id=""
 discord_bot_image_id=""
 schema_change_possible=0
+non_web_fingerprint_before=""
 
 cleanup_runtime_files() {
   if [ "$idp_verification_override_fd_open" -eq 1 ]; then
@@ -75,7 +76,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--web-candidate|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -93,6 +94,7 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --discord-bot) MODE="discord-bot" ;;
+    --web-candidate) MODE="web-candidate" ;;
     --legacy-cutover) MODE="legacy-cutover" ;;
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
     --legacy-cutover-resume-interrupted) MODE="legacy-cutover-resume-interrupted" ;;
@@ -141,8 +143,9 @@ if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
       printf '%s\n' '--reuse-candidate-release requires a verified backup ID for an interrupted resume.' >&2
       exit 2
     }
-  elif [ "$MODE" != "legacy-cutover-resume-transition" ]; then
-    printf '%s\n' '--reuse-candidate-release requires an interrupted or dependency-transition resume.' >&2
+  elif [ "$MODE" != "legacy-cutover-resume-transition" ] && \
+    [ "$MODE" != "web-candidate" ]; then
+    printf '%s\n' '--reuse-candidate-release requires web-candidate or an interrupted/dependency-transition resume.' >&2
     exit 2
   fi
   [[ "$REUSE_CANDIDATE_RELEASE_ID" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || {
@@ -156,11 +159,16 @@ if [ "$MODE" = "legacy-cutover-resume-transition" ] && \
   printf '%s\n' 'Dependency-transition resume requires the exact immutable candidate release ID.' >&2
   exit 2
 fi
+if [ "$MODE" = "web-candidate" ] && [ -z "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+  printf '%s\n' 'Web-candidate activation requires one exact archived immutable release ID.' >&2
+  exit 2
+fi
 
 if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
   [ "$MODE" = "legacy-cutover-resume" ] || \
   [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
-  [ "$MODE" = "legacy-cutover-resume-transition" ]; } && \
+  [ "$MODE" = "legacy-cutover-resume-transition" ] || \
+  [ "$MODE" = "web-candidate" ]; } && \
   [ "$FIRST_DEPLOY" -eq 1 ]; then
   printf '%s\n' \
     'DEPLOYMENT BLOCKED: FULL FIRST DEPLOY REQUIRES REVIEWED EMPTY-TARGET BOOTSTRAP' \
@@ -754,6 +762,12 @@ create_pinned_compose_override() {
         --discord-bot-image-id "$discord_bot_image_id"
       )
       ;;
+    web-candidate)
+      pinned_override_validator_args=(
+        --mode web-candidate
+        --web-image-id "$web_image_id"
+      )
+      ;;
     legacy-cutover)
       pinned_override_validator_args=(
         --mode legacy-cutover
@@ -971,10 +985,11 @@ run_idp_cutover_action() {
 }
 
 verify_running_release_images() {
-  local actual_image_id container_id expected_image_id service
+  local actual_image_id actual_release_id container_id expected_image_id service
   local -a runtime_services
   case "$pinned_override_mode" in
     full) runtime_services=(api web media-ai) ;;
+    web-candidate) runtime_services=(web) ;;
     discord-bot) runtime_services=(discord-bot) ;;
     legacy-cutover) runtime_services=(api web media-ai discord-bot) ;;
     *) return 75 ;;
@@ -997,11 +1012,34 @@ verify_running_release_images() {
       return 75
     fi
     actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
+    actual_release_id="$(
+      docker inspect --format \
+        '{{index .Config.Labels "com.arenzyra.release-id"}}' "$container_id"
+    )"
     if [ "$actual_image_id" != "$expected_image_id" ]; then
       printf 'Running release service image differs from its archived image ID: %s\n' "$service" >&2
       return 75
     fi
+    if [ "$actual_release_id" != "$new_release_id" ]; then
+      printf 'Running release service label differs from its archived release ID: %s\n' "$service" >&2
+      return 75
+    fi
   done
+}
+
+non_web_runtime_fingerprint() {
+  local container_id service
+  while IFS= read -r container_id; do
+    [ -n "$container_id" ] || continue
+    service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container_id")"
+    [ "$service" = "web" ] && continue
+    docker inspect --format \
+      '{{.Id}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+      "$container_id"
+  done < <(
+    docker ps -aq --no-trunc \
+      --filter "label=com.docker.compose.project=${compose_project}" | LC_ALL=C sort
+  ) | LC_ALL=C sort
 }
 
 read_release_pointer() {
@@ -1452,6 +1490,32 @@ elif [ "$MODE" = "full" ]; then
   attest_pinned_compose_override
   "${compose[@]}" up --no-build -d --pull never
   services=(proxy postgres redis api media-ai web)
+elif [ "$MODE" = "web-candidate" ]; then
+  # This path reuses one already-built, archived immutable web image. It never
+  # builds, pulls, migrates, changes a database role, touches a volume, or
+  # recreates a dependency. The running non-web container/image identities are
+  # captured before the final guard and must remain byte-for-byte unchanged.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  web_image_id="$(read_archived_release_image_id web)"
+  [[ "$web_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] && \
+    docker image inspect "$web_image_id" >/dev/null || {
+    printf '%s\n' 'Reviewed web candidate image is unavailable by immutable ID.' >&2
+    exit 75
+  }
+  create_pinned_compose_override web-candidate
+  non_web_fingerprint_before="$(non_web_runtime_fingerprint)"
+  [ -n "$non_web_fingerprint_before" ] || {
+    printf '%s\n' 'Production non-web container inventory is empty.' >&2
+    exit 75
+  }
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  [ "$(non_web_runtime_fingerprint)" = "$non_web_fingerprint_before" ] || {
+    printf '%s\n' 'A non-web production container changed after the final preflight.' >&2
+    exit 75
+  }
+  "${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate web
+  services=(web)
 else
   # One-time forward-only conversion of the exact reviewed legacy profile, or
   # its stopped-state resume. The initial path completes candidate images and
@@ -1675,10 +1739,17 @@ if [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
 fi
 node scripts/verify-publish.cjs --env infra/.env.publish
 verify_running_release_images
-if [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "$prior_release_id" != "$new_release_id" ]; then
-  write_release_pointer PREVIOUS "$prior_release_id"
+if [ "$MODE" = "web-candidate" ]; then
+  [ "$(non_web_runtime_fingerprint)" = "$non_web_fingerprint_before" ] || {
+    printf '%s\n' 'A non-web production container changed during web candidate activation.' >&2
+    exit 75
+  }
+else
+  if [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "$prior_release_id" != "$new_release_id" ]; then
+    write_release_pointer PREVIOUS "$prior_release_id"
+  fi
+  write_release_pointer CURRENT "$new_release_id"
 fi
-write_release_pointer CURRENT "$new_release_id"
 trap - ERR
 cleanup_runtime_files
 trap - EXIT

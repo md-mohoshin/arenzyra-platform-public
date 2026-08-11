@@ -47,6 +47,18 @@ test("Discord override contains only the bot and rejects mutable or extra images
   );
 });
 
+test("web candidate override pins only the stateless web service", () => {
+  const webIds = { web: ids.web };
+  const text = canonicalPinnedOverride("web-candidate", webIds);
+  assert.deepEqual(validatePinnedOverride(text, "web-candidate", webIds), {
+    services: { web: { image: ids.web } },
+  });
+  assert.doesNotMatch(text, /api|postgres|redis|media-ai|discord-bot/);
+  assert.throws(() =>
+    createPinnedOverride("web-candidate", { ...webIds, api: ids.api }),
+  );
+});
+
 test("legacy cutover pins every runtime, migrator, and IDP maintenance image", () => {
   const text = canonicalPinnedOverride("legacy-cutover", ids);
   const override = validatePinnedOverride(text, "legacy-cutover", ids);
