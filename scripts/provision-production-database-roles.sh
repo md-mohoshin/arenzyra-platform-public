@@ -303,14 +303,20 @@ export ARENZYRA_DEPLOY_ENV_FILE="$ENV_FILE"
 if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
   if [ "$LEGACY_CUTOVER_TRANSITION_RECOVERY" -eq 1 ]; then
     bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+    mapfile -t database_binding < <(
+      bash scripts/verify-production-database-container.sh
+    )
   elif [ "$LEGACY_CUTOVER_INTERRUPTED" -eq 1 ]; then
     bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-interrupted
+    mapfile -t database_binding < <(
+      bash scripts/verify-production-database-container.sh --allow-running-legacy-backup
+    )
   else
     bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
+    mapfile -t database_binding < <(
+      bash scripts/verify-production-database-container.sh --allow-running-legacy-backup
+    )
   fi
-  mapfile -t database_binding < <(
-    bash scripts/verify-production-database-container.sh --allow-running-legacy-backup
-  )
 elif [ "$RUNTIME_ROLES_FENCED" -eq 1 ]; then
   bash scripts/production-deploy-preflight.sh --allow-cutover-transition
   mapfile -t database_binding < <(bash scripts/verify-production-database-container.sh)

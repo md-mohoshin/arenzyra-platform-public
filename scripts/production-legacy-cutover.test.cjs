@@ -387,7 +387,7 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
   );
   assert.match(
     read("scripts/provision-production-database-roles.sh"),
-    /--legacy-cutover-transition-recovery[\s\S]*--allow-cutover-transition[\s\S]*LEGACY_CUTOVER_TRANSITION_RECOVERY[^\n]*-eq 0/,
+    /--legacy-cutover-transition-recovery[\s\S]*--allow-cutover-transition[\s\S]*verify-production-database-container\.sh\s*\n\s*\)[\s\S]*LEGACY_CUTOVER_TRANSITION_RECOVERY[^\n]*-eq 0/,
   );
   assert.doesNotMatch(transition, /\bdown\b|--volumes|docker\s+volume\s+(?:rm|prune)/);
   assert.match(compose, /redis:[\s\S]*user: "999:1000"/);
