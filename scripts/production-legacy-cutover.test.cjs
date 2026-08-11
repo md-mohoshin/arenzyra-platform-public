@@ -287,7 +287,7 @@ test("interrupted resume may reuse only a recent compatible reviewed off-site ba
   );
   assert.match(
     deploy,
-    /infra\/PUBLISH\.md\|infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*\)[\s\S]*application-affecting Root change/,
+    /infra\/PUBLISH\.md\|infra\/\.env\.example\|infra\/\.env\.publish\.example\|infra\/docker-compose\.yml\|infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*\)[\s\S]*application-affecting Root change/,
   );
   assert.match(
     deploy,
@@ -312,12 +312,23 @@ test("interrupted resume may reuse a complete immutable candidate without rebuil
   );
   assert.match(
     deploy,
-    /verify_management_compatible_release_source\(\)[\s\S]*ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*infra\/PUBLISH\.md\|infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*\)[\s\S]*application-affecting Root change/,
+    /verify_management_compatible_release_source\(\)[\s\S]*ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*infra\/PUBLISH\.md\|infra\/\.env\.example\|infra\/\.env\.publish\.example\|infra\/docker-compose\.yml\|infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*\)[\s\S]*application-affecting Root change/,
   );
   assert.doesNotMatch(deploy, /unset bootstrap_git/);
   assert.match(
     deploy,
     /if \[ -n "\$REUSE_CANDIDATE_RELEASE_ID" \]; then[\s\S]*else[\s\S]*"\$\{compose\[@\]\}" build api media-ai web/,
+  );
+});
+
+test("candidate and backup reuse permit only exact non-runtime capacity templates", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const allowlist =
+    /infra\/PUBLISH\.md\|infra\/\.env\.example\|infra\/\.env\.publish\.example\|infra\/docker-compose\.yml\|infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*/g;
+  assert.equal(deploy.match(allowlist)?.length, 2);
+  assert.doesNotMatch(
+    deploy,
+    /infra\/docker-compose\.publish\.yml\|infra\/docker-compose\.yml/,
   );
 });
 
