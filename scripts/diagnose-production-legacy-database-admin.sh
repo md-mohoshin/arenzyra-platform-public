@@ -86,8 +86,17 @@ if ! diagnostic="$({
     case "$socket_summary" in
       [01]\|[01]\|[01]\|[01]\|[01]\|[01]\|[01])
         identity_query=1
-        IFS="|" read -r role_match database_match schema_match port_match \
-          unix_socket scram_setting super_login <<<"$socket_summary"
+        saved_ifs="$IFS"
+        IFS="|"
+        set -- $socket_summary
+        IFS="$saved_ifs"
+        role_match="$1"
+        database_match="$2"
+        schema_match="$3"
+        port_match="$4"
+        unix_socket="$5"
+        scram_setting="$6"
+        super_login="$7"
         ;;
     esac
   fi
@@ -105,7 +114,12 @@ if ! diagnostic="$({
     case "$hba_summary" in
       [0-9]*\|[0-9]*)
         hba_access=1
-        IFS="|" read -r hba_errors hba_non_scram <<<"$hba_summary"
+        saved_ifs="$IFS"
+        IFS="|"
+        set -- $hba_summary
+        IFS="$saved_ifs"
+        hba_errors="$1"
+        hba_non_scram="$2"
         case "$hba_errors:$hba_non_scram" in
           *[!0-9:]*|:*|*:) hba_access=0; hba_errors=0; hba_non_scram=0 ;;
         esac
