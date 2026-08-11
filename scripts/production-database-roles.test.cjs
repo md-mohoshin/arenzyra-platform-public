@@ -617,6 +617,26 @@ test("provisioning preauthenticates, backs up, and reconciles under the shared l
   );
   assert.match(
     provisioner,
+    /DATABASE_ROLE_TRANSITION_OWNERSHIP_PRECONDITION database_count=:transition_database_count database_current=:transition_database_current_owner_count database_postgres=:transition_database_postgres_owner_count schema_count=:transition_schema_count schema_accepted=:transition_schema_accepted_owner_count schema_postgres=:transition_schema_postgres_owner_count/,
+  );
+  assert.match(
+    provisioner,
+    /transition_ownership_predecessors_allowed[\s\S]*ALTER DATABASE %I OWNER TO %I[\s\S]*pg_get_userbyid\(database\.datdba\) = 'postgres'/,
+  );
+  assert.match(
+    provisioner,
+    /ALTER SCHEMA %I OWNER TO pg_database_owner[\s\S]*pg_get_userbyid\(namespace\.nspowner\) = 'postgres'/,
+  );
+  assert.match(
+    provisioner,
+    /BEGIN;[\s\S]*ALTER DATABASE %I OWNER TO %I[\s\S]*ALTER SCHEMA %I OWNER TO pg_database_owner[\s\S]*transition_ownership_reconciled[\s\S]*COMMIT;/,
+  );
+  assert.doesNotMatch(
+    provisioner,
+    /REASSIGN OWNED|DROP OWNED|ALTER DATABASE %I OWNER TO %I[\s\S]*WHERE[^\n]*NOT/i,
+  );
+  assert.match(
+    provisioner,
     /transition_runtime_roles_must_remain_fenced[\s\S]*ALTER ROLE :"api_runtime_role"[\s\S]*NOLOGIN[\s\S]*ALTER ROLE :"studio_runtime_role"[\s\S]*NOLOGIN[\s\S]*transition_runtime_roles_fenced/,
   );
   assert.match(provisioner, /read_env ARENZYRA_BACKUP_ROOT/);

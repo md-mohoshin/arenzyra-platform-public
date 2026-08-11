@@ -883,6 +883,94 @@ fi
   printf '\\set object_policy_adopt_ownership '\''%s'\''\n' "$object_policy_adopt_ownership"
   printf '\\set object_policy_partial_preflight '\''%s'\''\n' "$object_policy_partial_preflight"
   printf '\\set transition_runtime_roles_must_remain_fenced '\''%s'\''\n' "$transition_runtime_roles_must_remain_fenced"
+  cat <<'SQL'
+\if :transition_runtime_roles_must_remain_fenced
+-- A legacy cluster may retain the stock postgres owner even after the reviewed
+-- administrator credential is adopted. Accept only that one predecessor, and
+-- move the database plus public-schema boundary atomically while the outer
+-- ownership fence has disabled connections and terminated every other client.
+SELECT count(*) AS transition_database_count,
+  count(*) FILTER (
+    WHERE database.datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+  ) AS transition_database_current_owner_count,
+  count(*) FILTER (
+    WHERE pg_get_userbyid(database.datdba) = 'postgres'
+  ) AS transition_database_postgres_owner_count
+FROM pg_database database
+WHERE database.datname = :'database_name'
+\gset
+SELECT count(*) AS transition_schema_count,
+  count(*) FILTER (
+    WHERE namespace.nspowner IN (
+      SELECT oid FROM pg_roles
+      WHERE rolname IN (current_user, 'pg_database_owner')
+    )
+  ) AS transition_schema_accepted_owner_count,
+  count(*) FILTER (
+    WHERE pg_get_userbyid(namespace.nspowner) = 'postgres'
+  ) AS transition_schema_postgres_owner_count
+FROM pg_namespace namespace
+WHERE namespace.nspname = :'schema_name'
+\gset
+\echo DATABASE_ROLE_TRANSITION_OWNERSHIP_PRECONDITION database_count=:transition_database_count database_current=:transition_database_current_owner_count database_postgres=:transition_database_postgres_owner_count schema_count=:transition_schema_count schema_accepted=:transition_schema_accepted_owner_count schema_postgres=:transition_schema_postgres_owner_count
+SELECT :'transition_database_count'::integer = 1
+  AND (
+    :'transition_database_current_owner_count'::integer = 1
+    OR :'transition_database_postgres_owner_count'::integer = 1
+  )
+  AND :'transition_schema_count'::integer = 1
+  AND (
+    :'transition_schema_accepted_owner_count'::integer = 1
+    OR :'transition_schema_postgres_owner_count'::integer = 1
+  ) AS transition_ownership_predecessors_allowed
+\gset
+\if :transition_ownership_predecessors_allowed
+\else
+  \echo DATABASE_ROLE_PROVISIONING_SQL_BLOCKED predicate=transition_ownership_predecessors_allowed
+  SELECT 1 / 0;
+\endif
+BEGIN;
+SELECT format(
+  'ALTER DATABASE %I OWNER TO %I',
+  :'database_name',
+  current_user
+)
+FROM pg_database database
+WHERE database.datname = :'database_name'
+  AND pg_get_userbyid(database.datdba) = 'postgres'
+\gexec
+SELECT format(
+  'ALTER SCHEMA %I OWNER TO pg_database_owner',
+  :'schema_name'
+)
+FROM pg_namespace namespace
+WHERE namespace.nspname = :'schema_name'
+  AND pg_get_userbyid(namespace.nspowner) = 'postgres'
+\gexec
+SELECT CASE WHEN
+  EXISTS (
+    SELECT 1 FROM pg_database database
+    WHERE database.datname = :'database_name'
+      AND database.datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+  )
+  AND EXISTS (
+    SELECT 1 FROM pg_namespace namespace
+    WHERE namespace.nspname = :'schema_name'
+      AND namespace.nspowner IN (
+        SELECT oid FROM pg_roles
+        WHERE rolname IN (current_user, 'pg_database_owner')
+      )
+  )
+THEN true ELSE false END AS transition_ownership_reconciled
+\gset
+\if :transition_ownership_reconciled
+\else
+  \echo DATABASE_ROLE_PROVISIONING_SQL_BLOCKED predicate=transition_ownership_reconciled
+  SELECT 1 / 0;
+\endif
+COMMIT;
+\endif
+SQL
   cat "$SQL_FILE"
   cat <<'SQL'
 

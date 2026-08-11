@@ -88,6 +88,7 @@ test("ownership targets come only from the closed object policy", () => {
   assert.match(sql, /api_migration_role/);
   assert.match(sql, /studio_migration_role/);
   assert.doesNotMatch(sql, /REASSIGN OWNED|DROP OWNED|ALTER EXTENSION/);
+  assert.doesNotMatch(provisioner, /REASSIGN OWNED|DROP OWNED/);
 });
 
 test("legacy partial adoption permits missing candidate objects but no unclassified present object", () => {
