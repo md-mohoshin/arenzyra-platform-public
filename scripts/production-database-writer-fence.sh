@@ -217,6 +217,24 @@ verify_engaged_marker() {
     block "the fence marker does not match this database and release."
 }
 
+verify_released_marker() {
+  [ ! -L "$released_marker" ] && [ -f "$released_marker" ] && \
+    [ "$(stat -c '%u:%g:%a:%h' "$released_marker")" = "0:0:600:1" ] && \
+    [ ! -e "$marker" ] && [ ! -L "$marker" ] || \
+    block "the released fence marker is unavailable or unsafe."
+  mapfile -t marker_lines <"$released_marker"
+  [ "${#marker_lines[@]}" -eq 8 ] && \
+    [ "${marker_lines[0]}" = schema=arenzyra-writer-fence-v1 ] && \
+    [ "${marker_lines[1]}" = "release=$RELEASE_ID" ] && \
+    [ "${marker_lines[2]}" = "database=$physical_database" ] && \
+    [ "${marker_lines[3]}" = "database_oid=$physical_oid" ] && \
+    [ "${marker_lines[4]}" = "system_identifier=$physical_system_identifier" ] && \
+    [ "${marker_lines[5]}" = "api_runtime_role=$api_runtime_role" ] && \
+    [ "${marker_lines[6]}" = "studio_runtime_role=$studio_runtime_role" ] && \
+    [ "${marker_lines[7]}" = state=engaged ] || \
+    block "the released fence marker does not match this database and release."
+}
+
 if [ "$MODE" = recover-closed ]; then
   verify_engaged_marker
   # The preflight is deliberately operation-adjacent. This mode changes only
@@ -248,8 +266,7 @@ if [ "$MODE" = recover-closed ]; then
   exit 0
 fi
 
-if [ "$MODE" = engage ] || { [ "$MODE" = engage-or-verify ] && \
-  [ ! -e "$marker" ] && [ ! -L "$marker" ]; }; then
+if [ "$MODE" = engage ]; then
   [ ! -e "$marker" ] && [ ! -L "$marker" ] && \
     [ ! -e "$released_marker" ] && [ ! -L "$released_marker" ] || \
     block "a fence marker already exists for this release."
@@ -261,10 +278,30 @@ if [ "$MODE" = engage ] || { [ "$MODE" = engage-or-verify ] && \
   write_marker_state engaged
   printf 'DATABASE WRITER FENCE ENGAGED release=%s runtime_roles=2\n' "$RELEASE_ID"
 elif [ "$MODE" = engage-or-verify ]; then
-  verify_engaged_marker
-  run_role_transition engage || block "runtime role fence could not be reverified."
-  write_marker_state engaged
-  printf 'DATABASE WRITER FENCE REVERIFIED release=%s runtime_roles=2\n' "$RELEASE_ID"
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    verify_engaged_marker
+    run_role_transition engage || block "runtime role fence could not be reverified."
+    write_marker_state engaged
+    printf 'DATABASE WRITER FENCE REVERIFIED release=%s runtime_roles=2\n' "$RELEASE_ID"
+  elif [ -e "$released_marker" ] || [ -L "$released_marker" ]; then
+    # A forward-recovery retry can reach this state when every fenced
+    # postcondition passed and LOGIN was restored, but a later final gate
+    # stopped before any application writer started. Rebind the exact physical
+    # marker before changing either role so an interruption remains recoverable.
+    verify_released_marker
+    mv -T "$released_marker" "$marker"
+    run_role_transition engage || block "released runtime role fence could not be reengaged."
+    write_marker_state engaged
+    printf 'DATABASE WRITER FENCE REENGAGED release=%s runtime_roles=2\n' "$RELEASE_ID"
+  else
+    [ ! -e "$marker" ] && [ ! -L "$marker" ] && \
+      [ ! -e "$released_marker" ] && [ ! -L "$released_marker" ] || \
+      block "a fence marker already exists for this release."
+    write_marker_state engaging
+    run_role_transition engage || block "runtime roles could not be fenced."
+    write_marker_state engaged
+    printf 'DATABASE WRITER FENCE ENGAGED release=%s runtime_roles=2\n' "$RELEASE_ID"
+  fi
 else
   verify_engaged_marker
   bash scripts/verify-production-idp-encryption.sh

@@ -31,6 +31,7 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
     /--engage\|--engage-or-verify\|--release\|--recover-closed/,
   );
   assert.match(script, /verify_engaged_marker/);
+  assert.match(script, /verify_released_marker/);
   assert.match(script, /count\(\*\) = 2[\s\S]*rolbypassrls/);
   assert.match(
     script,
@@ -48,6 +49,26 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
   );
   assert.match(script, /state=engaged[\s\S]*state=engaging/);
   assert.doesNotMatch(script, /REASSIGN OWNED|DROP OWNED/);
+});
+
+test("forward retry reengages only an exact released physical fence", () => {
+  const retry = script.indexOf('elif [ -e "$released_marker" ]');
+  const verify = script.indexOf("verify_released_marker", retry);
+  const persist = script.indexOf('mv -T "$released_marker" "$marker"', verify);
+  const engage = script.indexOf("run_role_transition engage", persist);
+  const rewrite = script.indexOf("write_marker_state engaged", engage);
+  assert.ok(
+    retry > 0 &&
+      verify > retry &&
+      persist > verify &&
+      engage > persist &&
+      rewrite > engage,
+  );
+  assert.match(
+    script,
+    /verify_released_marker\(\)[\s\S]*0:0:600:1[\s\S]*system_identifier[\s\S]*state=engaged/,
+  );
+  assert.match(script, /DATABASE WRITER FENCE REENGAGED/);
 });
 
 test("closed database recovery is exact, marker-bound, and session empty", () => {
