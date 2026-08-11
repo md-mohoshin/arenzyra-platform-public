@@ -947,11 +947,14 @@ enabled on the server:
 ```bash
 production_entry host-maintenance --check-only
 production_entry host-maintenance
+production_entry host-maintenance --builder-cache
 ```
 
 The maintenance script defaults are conservative:
 
 - Docker builder cache is pruned with a `15GB` reserved cache target.
+- The explicit `--builder-cache` mode prunes only rebuildable Docker builder
+  cache and never runs backup retention.
 - Only local backup sets with both `OFFSITE_VERIFIED` and
   `RESTORE_DRILL_VERIFIED` markers are eligible for age-based deletion; every
   unverified set and the newest verified set are preserved.

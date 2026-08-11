@@ -8,7 +8,7 @@ const { execFileSync, spawnSync } = require('child_process');
 
 const args = new Set(process.argv.slice(2));
 if (args.has('-h') || args.has('--help')) {
-  console.log(`Usage: node scripts/production-maintenance.cjs [--check-only] [--dry-run]
+  console.log(`Usage: node scripts/production-maintenance.cjs [--check-only|--builder-cache] [--dry-run]
 
 Environment:
   ARENZYRA_DISK_PATH=/                         Disk mount to monitor.
@@ -22,14 +22,19 @@ Environment:
 }
 
 for (const arg of args) {
-  if (arg !== '--check-only' && arg !== '--dry-run') {
+  if (arg !== '--check-only' && arg !== '--builder-cache' && arg !== '--dry-run') {
     console.error(`Unknown option: ${arg}`);
     process.exit(2);
   }
 }
 
 const checkOnly = args.has('--check-only');
+const builderCacheOnly = args.has('--builder-cache');
 const dryRun = args.has('--dry-run');
+if (builderCacheOnly && (checkOnly || dryRun)) {
+  console.error('--builder-cache cannot be combined with another mode.');
+  process.exit(2);
+}
 const logTag = process.env.ARENZYRA_MAINTENANCE_LOG_TAG || 'arenzyra-maintenance';
 const diskPath = process.env.ARENZYRA_DISK_PATH || (process.platform === 'win32' ? process.cwd().slice(0, 3) : '/');
 const warnPercent = Number(process.env.ARENZYRA_DISK_WARN_PERCENT || 85);
@@ -151,7 +156,7 @@ async function sendAlert(message) {
 }
 
 function pruneDockerBuilder() {
-  if (!allowGlobalBuilderPrune) {
+  if (!allowGlobalBuilderPrune && !builderCacheOnly) {
     log('global Docker build-cache prune disabled; set ARENZYRA_MAINTENANCE_ALLOW_GLOBAL_BUILDER_PRUNE=1 only after operator review');
     return;
   }
@@ -273,6 +278,7 @@ async function runMaintenance({
   pruneBuilder = pruneDockerBuilder,
   pruneBackups = pruneOldBackups,
   alert = sendAlert,
+  builderCacheOnlyMode = builderCacheOnly,
 } = {}) {
   const configurationErrors = validateMaintenanceConfiguration();
   if (configurationErrors.length > 0) {
@@ -289,7 +295,7 @@ async function runMaintenance({
   }
   if (!checkOnly) {
     pruneBuilder();
-    pruneBackups();
+    if (!builderCacheOnlyMode) pruneBackups();
   }
   const after = checkOnly ? before : inspectDisk();
   const diskStatus = await checkDisk(after, alert);

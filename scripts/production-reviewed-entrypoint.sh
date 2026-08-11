@@ -168,8 +168,10 @@ case "$command_id" in
       exec /bin/bash scripts/production-maintenance.sh
     elif [ "$#" -eq 1 ] && [ "$1" = "--check-only" ]; then
       exec /bin/bash scripts/production-maintenance.sh --check-only
+    elif [ "$#" -eq 1 ] && [ "$1" = "--builder-cache" ]; then
+      exec /bin/bash scripts/production-maintenance.sh --builder-cache
     fi
-    block "host-maintenance accepts only optional --check-only."
+    block "host-maintenance accepts only optional --check-only or --builder-cache."
     ;;
   observe)
     [ "$#" -eq 1 ] && { [ "$1" = "ps" ] || [ "$1" = "logs" ]; } || \
