@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/require-local-production-docker.sh"
 ALLOW_RUNNING_LEGACY_BACKUP=0
 ALLOW_STOPPED_LEGACY_CUTOVER=0
 ALLOW_INTERRUPTED_LEGACY_CUTOVER=0
+ALLOW_CUTOVER_DEPENDENCY_RECOVERY=0
 if [ "$#" -eq 1 ] && [ "${1:-}" = "--allow-running-legacy-backup" ]; then
   ALLOW_RUNNING_LEGACY_BACKUP=1
   shift
@@ -15,6 +16,9 @@ elif [ "$#" -eq 1 ] && [ "${1:-}" = "--allow-stopped-legacy-cutover" ]; then
   shift
 elif [ "$#" -eq 1 ] && [ "${1:-}" = "--allow-interrupted-legacy-cutover" ]; then
   ALLOW_INTERRUPTED_LEGACY_CUTOVER=1
+  shift
+elif [ "$#" -eq 1 ] && [ "${1:-}" = "--allow-cutover-dependency-recovery" ]; then
+  ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1
   shift
 elif [ "$#" -ne 0 ]; then
   printf 'Backup arguments are unsupported.\n' >&2
@@ -76,6 +80,11 @@ elif [ "$ALLOW_STOPPED_LEGACY_CUTOVER" -eq 1 ]; then
 elif [ "$ALLOW_INTERRUPTED_LEGACY_CUTOVER" -eq 1 ]; then
   bash "$SCRIPT_DIR/production-deploy-preflight.sh" --allow-legacy-cutover-interrupted
   database_identity_args=(--allow-running-legacy-backup)
+elif [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ]; then
+  # Application writers remain absent, PostgreSQL is healthy on the reviewed
+  # target, and Redis may be in only the narrowly attested restart failure.
+  bash "$SCRIPT_DIR/production-deploy-preflight.sh" --allow-cutover-dependency-recovery
+  database_identity_args=()
 else
   bash "$SCRIPT_DIR/production-deploy-preflight.sh"
   database_identity_args=()

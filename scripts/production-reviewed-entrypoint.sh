@@ -117,6 +117,14 @@ case "$command_id" in
       --legacy-cutover-resume-transition \
       --reuse-verified-backup "$2" --reuse-candidate-release "$1"
     ;;
+  legacy-cutover-resume-transition-candidate-fresh-backup)
+    [ "$#" -eq 1 ] && \
+      [[ "$1" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || \
+      block "legacy-cutover-resume-transition-candidate-fresh-backup requires one release ID."
+    require_nested_assembly
+    exec /bin/bash scripts/deploy-production.sh \
+      --legacy-cutover-resume-transition --reuse-candidate-release "$1"
+    ;;
   deploy-discord)
     if [ "$#" -eq 0 ]; then
       first_deploy=()

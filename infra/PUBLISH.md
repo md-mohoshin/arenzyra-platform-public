@@ -363,6 +363,20 @@ as the pinned image's `999:1000` account without changing or deleting its named
 volume, requires both dependencies to become healthy, and then rejoins the
 ordinary writer-fence, migration, IDP, service-health, and public HTTPS chain.
 
+If that backup is no longer within the strict two-hour reuse window, create a
+fresh encrypted off-site recovery point from the same attested transition state
+without rebuilding the immutable candidate:
+
+```bash
+production_entry legacy-cutover-resume-transition-candidate-fresh-backup \
+  <release-id>
+```
+
+The fresh-backup form runs the same dependency-recovery preflight before the
+read-only PostgreSQL dump and volume archives, requires immutable off-site
+upload verification, and only then recreates Redis and rejoins the same fenced
+cutover. It does not start an application writer or remove a named volume.
+
 It requires exactly one healthy legacy PostgreSQL and Redis container, no
 running application or maintenance writer, no duplicate application container,
 and at least one absent stopped application container. It also requires the

@@ -292,7 +292,7 @@ test("interrupted resume may reuse a complete immutable candidate without rebuil
   );
   assert.match(
     deploy,
-    /--reuse-candidate-release requires an interrupted or dependency-transition resume and a verified backup ID/,
+    /--reuse-candidate-release requires a verified backup ID for an interrupted resume/,
   );
   assert.match(
     deploy,
@@ -320,8 +320,20 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
     /legacy-cutover-resume-transition-candidate\)[\s\S]*requires one release ID and one backup ID[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume-transition[\s\S]*--reuse-verified-backup "\$2" --reuse-candidate-release "\$1"/,
   );
   assert.match(
+    launcher,
+    /legacy-cutover-resume-transition-candidate-fresh-backup\)[\s\S]*requires one release ID[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume-transition --reuse-candidate-release "\$1"/,
+  );
+  assert.match(
     deploy,
-    /Dependency-transition resume requires both the exact verified backup and immutable candidate release IDs/,
+    /Dependency-transition resume requires the exact immutable candidate release ID/,
+  );
+  assert.match(
+    deploy,
+    /\[ "\$MODE" = "legacy-cutover-resume-transition" \][\s\S]*backup_arguments\+=\(--allow-cutover-dependency-recovery\)/,
+  );
+  assert.match(
+    read("scripts/production-backup.sh"),
+    /--allow-cutover-dependency-recovery[\s\S]*production-deploy-preflight\.sh" --allow-cutover-dependency-recovery[\s\S]*database_identity_args=\(\)/,
   );
   const transition = deploy.slice(
     deploy.indexOf('else\n    for candidate_service in api web media-ai discord-bot'),

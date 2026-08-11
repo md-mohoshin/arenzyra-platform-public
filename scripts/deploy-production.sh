@@ -127,20 +127,23 @@ if [ -n "$REUSE_VERIFIED_BACKUP_ID" ]; then
   }
 fi
 if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
-  { [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
-    [ "$MODE" = "legacy-cutover-resume-transition" ]; } && \
+  if [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
     [ -n "$REUSE_VERIFIED_BACKUP_ID" ] || {
-    printf '%s\n' '--reuse-candidate-release requires an interrupted or dependency-transition resume and a verified backup ID.' >&2
+      printf '%s\n' '--reuse-candidate-release requires a verified backup ID for an interrupted resume.' >&2
+      exit 2
+    }
+  elif [ "$MODE" != "legacy-cutover-resume-transition" ]; then
+    printf '%s\n' '--reuse-candidate-release requires an interrupted or dependency-transition resume.' >&2
     exit 2
-  }
+  fi
   [[ "$REUSE_CANDIDATE_RELEASE_ID" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || {
     printf '%s\n' '--reuse-candidate-release received an invalid release ID.' >&2
     exit 2
   }
 fi
 if [ "$MODE" = "legacy-cutover-resume-transition" ] && \
-  { [ -z "$REUSE_VERIFIED_BACKUP_ID" ] || [ -z "$REUSE_CANDIDATE_RELEASE_ID" ]; }; then
-  printf '%s\n' 'Dependency-transition resume requires both the exact verified backup and immutable candidate release IDs.' >&2
+  [ -z "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+  printf '%s\n' 'Dependency-transition resume requires the exact immutable candidate release ID.' >&2
   exit 2
 fi
 
@@ -1326,6 +1329,8 @@ create_pre_migration_backup() {
     backup_arguments+=(--allow-stopped-legacy-cutover)
   elif [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
     backup_arguments+=(--allow-interrupted-legacy-cutover)
+  elif [ "$MODE" = "legacy-cutover-resume-transition" ]; then
+    backup_arguments+=(--allow-cutover-dependency-recovery)
   fi
   env "${backup_environment[@]}" \
     bash scripts/production-backup.sh "${backup_arguments[@]}"
