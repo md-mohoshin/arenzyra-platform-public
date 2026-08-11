@@ -995,6 +995,13 @@ Set these public URLs correctly too:
 - `API_BASE_URL`
 - `API_PUBLIC_URL`
 
+The web container receives `WEB_APP_ORIGIN` and `FRONTEND_ORIGIN` as
+server-only runtime values. Its authentication BFF accepts browser mutations
+only from those normalized origins (or its direct request origin for local
+operation). Public verification sends an empty login request with the real web
+`Origin` header and must reach ordinary credential validation; a cross-origin
+403 blocks the release.
+
 Set `ASSET_BASE_URL` if uploaded/team media should resolve from a different public host than the API.
 
 Launcher downloads are disabled unless the optional server-only

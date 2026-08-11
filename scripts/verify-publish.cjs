@@ -61,11 +61,19 @@ function readEnvValue(filePath, key) {
   return "";
 }
 
-async function fetchWithTimeout(url, timeoutMs, headers = {}) {
+async function fetchWithTimeout(
+  url,
+  timeoutMs,
+  headers = {},
+  method = "GET",
+  body,
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, {
+      method,
+      body,
       redirect: "follow",
       signal: controller.signal,
       headers: {
@@ -90,7 +98,13 @@ async function readBody(response, asJson) {
 }
 
 async function checkHttp(check, timeoutMs) {
-  const response = await fetchWithTimeout(check.url, timeoutMs, check.headers);
+  const response = await fetchWithTimeout(
+    check.url,
+    timeoutMs,
+    check.headers,
+    check.method,
+    check.body,
+  );
   const body = await readBody(response, check.json);
   if (!check.status.includes(response.status)) {
     throw new Error(
@@ -152,6 +166,25 @@ async function main() {
       validate(body) {
         if (!body || typeof body !== "object" || !body.buildId) {
           throw new Error("web build version did not include buildId.");
+        }
+      },
+    },
+    {
+      name: "web browser-origin authentication gate",
+      url: withPath(webOrigin, "/api/auth/session/login"),
+      status: [400],
+      json: true,
+      method: "POST",
+      body: "{}",
+      headers: {
+        origin: webOrigin,
+        "content-type": "application/json",
+      },
+      validate(body) {
+        if (body?.message !== "Email and password are required.") {
+          throw new Error(
+            "web browser-origin authentication gate did not reach credential validation.",
+          );
         }
       },
     },

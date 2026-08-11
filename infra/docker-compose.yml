@@ -228,6 +228,8 @@ services:
     environment:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
+      WEB_APP_ORIGIN: "${WEB_APP_ORIGIN:-http://localhost:3005}"
+      FRONTEND_ORIGIN: "${FRONTEND_ORIGIN:-http://localhost:3005}"
       NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:3000}"
       INTERNAL_API_URL: "${INTERNAL_API_URL:-http://api:3000}"
       # Optional server-only release metadata; empty keeps downloads disabled.

@@ -9,6 +9,38 @@ const repositoryRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(repositoryRoot, relativePath), "utf8");
 
+test("web authentication receives a reviewed external origin and verifies it publicly", () => {
+  const publishCompose = read("infra/docker-compose.publish.yml");
+  const localCompose = read("infra/docker-compose.yml");
+  const authSession = read(
+    "apps/arenzyra-web/src/lib/server/auth-session.ts",
+  );
+  const verifier = read("scripts/verify-publish.cjs");
+
+  for (const [name, compose] of [
+    ["publish", publishCompose],
+    ["local", localCompose],
+  ]) {
+    const webService =
+      compose.match(
+        /\n  web:\r?\n([\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\r?\n|\nvolumes:\r?\n)/,
+      )?.[1] ?? "";
+    const environmentAt = webService.indexOf("\n    environment:");
+    assert.ok(environmentAt >= 0, `${name} web environment is missing`);
+    for (const variable of ["WEB_APP_ORIGIN", "FRONTEND_ORIGIN"]) {
+      const binding = new RegExp(`\\n      ${variable}:`);
+      assert.match(webService.slice(environmentAt), binding);
+      assert.doesNotMatch(webService.slice(0, environmentAt), binding);
+    }
+  }
+
+  assert.match(authSession, /process\.env\.WEB_APP_ORIGIN/);
+  assert.match(authSession, /process\.env\.FRONTEND_ORIGIN/);
+  assert.match(verifier, /web browser-origin authentication gate/);
+  assert.match(verifier, /origin: webOrigin/);
+  assert.match(verifier, /Email and password are required\./);
+});
+
 test("full deploy verifies a fresh encrypted off-host backup before migrations", () => {
   const deploy = read("scripts/deploy-production.sh");
   const backupCall = deploy.lastIndexOf("create_pre_migration_backup");
