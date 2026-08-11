@@ -232,9 +232,11 @@ case "$command_id" in
     [[ "$1" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || \
       block "legacy-cutover-database-reopen release ID is invalid."
     require_nested_assembly
+    recovery_release_id="$1"
+    shift
     source scripts/acquire-production-deploy-lock.sh
     exec /bin/bash scripts/production-database-writer-fence.sh \
-      --recover-closed --release-id "$1"
+      --recover-closed --release-id "$recovery_release_id"
     ;;
   host-maintenance)
     if [ "$#" -eq 0 ]; then

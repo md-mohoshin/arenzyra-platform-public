@@ -56,7 +56,7 @@ test("closed database recovery is exact, marker-bound, and session empty", () =>
   );
   assert.match(
     launcher,
-    /legacy-cutover-database-reopen\)[\s\S]*requires one immutable release ID[\s\S]*require_nested_assembly[\s\S]*acquire-production-deploy-lock\.sh[\s\S]*--recover-closed/,
+    /legacy-cutover-database-reopen\)[\s\S]*requires one immutable release ID[\s\S]*require_nested_assembly[\s\S]*recovery_release_id="\$1"[\s\S]*shift[\s\S]*acquire-production-deploy-lock\.sh[\s\S]*--recover-closed --release-id "\$recovery_release_id"/,
   );
   assert.match(script, /recover-closed[\s\S]*--allow-database-closed/);
   assert.match(
