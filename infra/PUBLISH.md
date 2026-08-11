@@ -293,6 +293,14 @@ It also reports the private Docker subnet used by the database network so an
 exact legacy read-only backup profile can be reviewed without changing that
 network.
 
+When the reviewed API or Web commit changes between source activations, source
+retention uses `production_entry source-retention --nested` followed by one
+retained and one or more superseded `release Root API Web` groups. Each supplied
+standalone checkout is verified at all three exact clean commits before only
+the explicitly superseded source archive, staging copy, and incoming transfer
+are released. Runtime volumes, release metadata, and backups are outside its
+fixed roots.
+
 Use `production_entry deploy-discord` for the supported bot-only mode and append
 `--first-deploy` only for its documented bot health exception. Do not use the
 full first-deploy form. The outer `git show` makes the dispatcher bytes come from

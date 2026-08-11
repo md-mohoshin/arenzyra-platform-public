@@ -15,6 +15,14 @@ test("source retention is allowlisted, exact, recoverable, and data-volume isola
     entrypoint,
     /source-retention\)[\s\S]*require_nested_assembly[\s\S]*release-production-source-archives\.sh/,
   );
+  assert.match(
+    entrypoint,
+    /source-retention --nested requires retained and superseded release\/Root\/API\/Web groups/,
+  );
+  assert.match(
+    retention,
+    /NESTED_IDENTITIES=1[\s\S]*retained_api_commit[\s\S]*verify_archive "\$release" "\$commit" "\$api_commit" "\$web_commit"/,
+  );
   assert.match(retention, /verify_archive "\$retained_release" "\$retained_commit"/);
   assert.match(retention, /verify_checkout[\s\S]*HEAD\^\{commit\}/);
   assert.match(retention, /verify_no_mounts/);

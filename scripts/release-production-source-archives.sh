@@ -15,15 +15,33 @@ block() {
 
 [ "$(id -u)" -eq 0 ] && [ "$(pwd -P)" = "$EXPECTED_ROOT" ] || \
   block "exact production invocation is required."
-[ "$#" -ge 4 ] && [ "$#" -le 18 ] && [ $(( $# % 2 )) -eq 0 ] || \
-  block "a retained pair and one to eight superseded pairs are required."
+NESTED_IDENTITIES=0
+if [ "${1:-}" = "--nested" ]; then
+  NESTED_IDENTITIES=1
+  shift
+  [ "$#" -ge 8 ] && [ "$#" -le 36 ] && [ $(( $# % 4 )) -eq 0 ] || \
+    block "retained and superseded release/Root/API/Web groups are required."
+else
+  [ "$#" -ge 4 ] && [ "$#" -le 18 ] && [ $(( $# % 2 )) -eq 0 ] || \
+    block "a retained pair and one to eight superseded pairs are required."
+fi
 source scripts/require-local-production-docker.sh
 
 retained_release="$1"
 retained_commit="$2"
-shift 2
+if [ "$NESTED_IDENTITIES" -eq 1 ]; then
+  retained_api_commit="$3"
+  retained_web_commit="$4"
+  shift 4
+else
+  retained_api_commit="$ARENZYRA_REVIEWED_API_COMMIT"
+  retained_web_commit="$ARENZYRA_REVIEWED_WEB_COMMIT"
+  shift 2
+fi
 [[ "$retained_release" =~ ^[a-zA-Z0-9._-]{8,128}$ ]] && \
-  [[ "$retained_commit" =~ ^[0-9a-f]{40}$ ]] || \
+  [[ "$retained_commit" =~ ^[0-9a-f]{40}$ ]] && \
+  [[ "$retained_api_commit" =~ ^[0-9a-f]{40}$ ]] && \
+  [[ "$retained_web_commit" =~ ^[0-9a-f]{40}$ ]] || \
   block "the retained source identity is invalid."
 [[ "${ARENZYRA_REVIEWED_API_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] && \
   [[ "${ARENZYRA_REVIEWED_WEB_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] || \
@@ -70,9 +88,11 @@ verify_checkout() {
 }
 
 verify_archive() {
-  local release expected path
+  local release expected expected_api expected_web path
   release="$1"
   expected="$2"
+  expected_api="$3"
+  expected_web="$4"
   path="$ARCHIVE_ROOT/$release"
   [ ! -L "$path" ] && [ -d "$path" ] && \
     [ "$(realpath -e -- "$path")" = "$path" ] && \
@@ -81,8 +101,8 @@ verify_archive() {
     block "a source archive target is unsafe."
   verify_no_mounts "$path"
   verify_checkout "$path" "$expected"
-  verify_checkout "$path/apps/api" "$ARENZYRA_REVIEWED_API_COMMIT"
-  verify_checkout "$path/apps/arenzyra-web" "$ARENZYRA_REVIEWED_WEB_COMMIT"
+  verify_checkout "$path/apps/api" "$expected_api"
+  verify_checkout "$path/apps/arenzyra-web" "$expected_web"
 }
 
 verify_transfer_copy() {
@@ -119,22 +139,33 @@ verify_transfer_copy() {
 verify_parent "$INCOMING_ROOT"
 verify_parent "$STAGING_ROOT"
 verify_parent "$ARCHIVE_ROOT"
-verify_archive "$retained_release" "$retained_commit"
+verify_archive "$retained_release" "$retained_commit" \
+  "$retained_api_commit" "$retained_web_commit"
 
 declare -a release_ids=()
 while [ "$#" -gt 0 ]; do
   release="$1"
   commit="$2"
-  shift 2
+  if [ "$NESTED_IDENTITIES" -eq 1 ]; then
+    api_commit="$3"
+    web_commit="$4"
+    shift 4
+  else
+    api_commit="$ARENZYRA_REVIEWED_API_COMMIT"
+    web_commit="$ARENZYRA_REVIEWED_WEB_COMMIT"
+    shift 2
+  fi
   [[ "$release" =~ ^[a-zA-Z0-9._-]{8,128}$ ]] && \
     [[ "$commit" =~ ^[0-9a-f]{40}$ ]] && \
+    [[ "$api_commit" =~ ^[0-9a-f]{40}$ ]] && \
+    [[ "$web_commit" =~ ^[0-9a-f]{40}$ ]] && \
     [ "$release" != "$retained_release" ] || \
     block "a superseded source identity is invalid."
   for seen in "${release_ids[@]:-}"; do
     [ "$release" != "$seen" ] || \
       block "a superseded source identity is duplicated."
   done
-  verify_archive "$release" "$commit"
+  verify_archive "$release" "$commit" "$api_commit" "$web_commit"
   verify_transfer_copy "$release"
   release_ids+=("$release")
 done
@@ -157,6 +188,7 @@ for release in "${release_ids[@]}"; do
   released_kib=$((released_kib + target_kib))
 done
 
-verify_archive "$retained_release" "$retained_commit"
+verify_archive "$retained_release" "$retained_commit" \
+  "$retained_api_commit" "$retained_web_commit"
 printf 'PRODUCTION SOURCE RETENTION COMPLETE released_sets=%s released_mib=%s retained=%s\n' \
   "${#release_ids[@]}" "$((released_kib / 1024))" "$retained_release"

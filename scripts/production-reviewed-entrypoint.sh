@@ -188,8 +188,13 @@ case "$command_id" in
     exec /bin/bash scripts/release-local-production-backup.sh "$1" "$2"
     ;;
   source-retention)
-    [ "$#" -ge 4 ] && [ "$#" -le 18 ] && [ $(( $# % 2 )) -eq 0 ] || \
-      block "source-retention requires a retained release/commit pair and one to eight superseded release/commit pairs."
+    if [ "${1:-}" = "--nested" ]; then
+      [ "$#" -ge 9 ] && [ "$#" -le 37 ] && [ $(( ($# - 1) % 4 )) -eq 0 ] || \
+        block "source-retention --nested requires retained and superseded release/Root/API/Web groups."
+    else
+      [ "$#" -ge 4 ] && [ "$#" -le 18 ] && [ $(( $# % 2 )) -eq 0 ] || \
+        block "source-retention requires a retained release/commit pair and one to eight superseded release/commit pairs."
+    fi
     require_nested_assembly
     exec /bin/bash scripts/release-production-source-archives.sh "$@"
     ;;
