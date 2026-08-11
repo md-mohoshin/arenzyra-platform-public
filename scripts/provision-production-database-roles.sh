@@ -56,7 +56,8 @@ if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
       printf '%s\n' 'Reviewed ownership adoption requires --apply, --writers-stopped, and --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP.' >&2
       exit 2
     }
-  [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" = "1" ] || {
+  { [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" = "1" ] || \
+    [ "$LEGACY_AUXILIARY_ACL_ONLY" -eq 1 ]; } || {
     printf '%s\n' 'Reviewed ownership adoption requires the inherited production deployment lock and its verified backup.' >&2
     exit 75
   }
@@ -611,7 +612,8 @@ remediate_legacy_cross_database_acl() {
   local result
   [ "$MODE" = apply ] && [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ] && \
     [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ] && \
-    [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" = 1 ] || return 75
+    { [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" = 1 ] || \
+      [ "$LEGACY_AUXILIARY_ACL_ONLY" -eq 1 ]; } || return 75
   verify_adoption_writers_stopped
   require_verified_deploy_backup || {
     printf '%s\n' 'Legacy auxiliary-database ACL remediation requires the fresh verified off-site deployment backup.' >&2

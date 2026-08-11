@@ -379,6 +379,10 @@ test("stock auxiliary database privileges block first-deploy role verification",
     /LEGACY_AUXILIARY_ACL_ONLY[\s\S]*LEGACY AUXILIARY DATABASE ACL CLOSURE VERIFIED/,
   );
   assert.match(
+    provisioner,
+    /ARENZYRA_DEPLOY_LOCK_INHERITED[\s\S]*LEGACY_AUXILIARY_ACL_ONLY/,
+  );
+  assert.match(
     publishGuide,
     /Restrictive HBA rules remain defense-in-depth but do not satisfy this ACL\s+gate/,
   );
