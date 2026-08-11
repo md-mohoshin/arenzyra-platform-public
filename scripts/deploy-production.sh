@@ -1010,7 +1010,7 @@ compose=(
   --env-file "$release_env"
   -f infra/docker-compose.publish.yml
 )
-if ! "${compose[@]}" --profile migration config --format json \
+if ! "${compose[@]}" --profile migration --profile maintenance config --format json \
   | node scripts/production-database-target.cjs \
       --env infra/.env.publish --assert-compose-json; then
   printf 'DEPLOYMENT BLOCKED: resolved Compose database bindings differ from the reviewed environment.\n' >&2

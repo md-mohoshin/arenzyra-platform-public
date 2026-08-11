@@ -253,7 +253,10 @@ test("deploy binds Compose, gates, backup, runtimes, and migrators to one review
   assert.doesNotMatch(deploy, /for database_key in/);
   assert.doesNotMatch(deploy, /export "\$database_key"|export \$database_key/);
   assert.match(deploy, /-p "\$compose_project"/);
-  assert.match(deploy, /--profile migration config --format json/);
+  assert.match(
+    deploy,
+    /--profile migration --profile maintenance config --format json/,
+  );
   assert.match(deploy, /--assert-compose-json/);
 
   for (const script of [
