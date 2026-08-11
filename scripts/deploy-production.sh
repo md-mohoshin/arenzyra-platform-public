@@ -72,7 +72,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -91,6 +91,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --discord-bot) MODE="discord-bot" ;;
     --legacy-cutover) MODE="legacy-cutover" ;;
+    --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
     --first-deploy) FIRST_DEPLOY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -98,7 +99,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ]; } && \
+if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
+  [ "$MODE" = "legacy-cutover-resume" ]; } && \
   [ "$FIRST_DEPLOY" -eq 1 ]; then
   printf '%s\n' \
     'DEPLOYMENT BLOCKED: FULL FIRST DEPLOY REQUIRES REVIEWED EMPTY-TARGET BOOTSTRAP' \
@@ -953,6 +955,8 @@ if [ "$FIRST_DEPLOY" -eq 1 ]; then
 fi
 if [ "$MODE" = "legacy-cutover" ]; then
   guard_args+=(--allow-read-only-legacy-backup)
+elif [ "$MODE" = "legacy-cutover-resume" ]; then
+  guard_args+=(--allow-legacy-cutover-stopped)
 fi
 # Before release metadata, image builds, backups, migrations, or service
 # changes, prove that the current database has no pending contract migration
@@ -973,7 +977,8 @@ if [ "$MODE" = "full" ]; then
   # evidence. The immutable candidate image performs authenticated dry-runs
   # before any subsequent release mutation and again after health convergence.
   bash scripts/verify-production-idp-encryption.sh
-elif [ "$MODE" = "legacy-cutover" ]; then
+elif [ "$MODE" = "legacy-cutover" ] || \
+  [ "$MODE" = "legacy-cutover-resume" ]; then
   bash scripts/production-release-safety-gate.sh --legacy-cutover
   bash scripts/verify-production-entitlement-invariants.sh \
     --allow-running-legacy-cutover
@@ -1065,6 +1070,8 @@ create_pre_migration_backup() {
   backup_arguments=()
   if [ "$MODE" = "legacy-cutover" ]; then
     backup_arguments+=(--allow-running-legacy-backup)
+  elif [ "$MODE" = "legacy-cutover-resume" ]; then
+    backup_arguments+=(--allow-stopped-legacy-cutover)
   fi
   env "${backup_environment[@]}" \
     bash scripts/production-backup.sh "${backup_arguments[@]}"
@@ -1171,10 +1178,12 @@ elif [ "$MODE" = "full" ]; then
   "${compose[@]}" up --no-build -d --pull never
   services=(proxy postgres redis api media-ai web)
 else
-  # One-time forward-only conversion of the exact reviewed legacy profile.
-  # Candidate images and the off-site recovery point are complete before the
-  # first writer stops. Once ownership or schema work starts, failure leaves
-  # application writers stopped and runtime database roles fenced.
+  # One-time forward-only conversion of the exact reviewed legacy profile, or
+  # its stopped-state resume. The initial path completes candidate images and
+  # an off-site recovery point before the first writer stops. The resume keeps
+  # writers stopped and creates a new recovery point before continuing. Once
+  # ownership or schema work starts, failures keep writers stopped and roles
+  # fenced.
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" build api media-ai web
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
@@ -1196,15 +1205,17 @@ else
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   create_pre_migration_backup
 
-  # The legacy writers were allowed to run while the backup streamed. Recheck
-  # the read-only entitlement ledger before stopping them, then repeat the
-  # mandatory preflight literally adjacent to the stop operation.
-  bash scripts/verify-production-entitlement-invariants.sh \
-    --allow-running-legacy-cutover
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-  attest_pinned_compose_override
-  "${compose[@]}" --profile discord-bot stop -t 60 \
-    proxy web api media-ai discord-bot
+  # A resume starts only from the exact stopped legacy topology and takes a new
+  # verified off-site recovery point before any credential or database change.
+  # The initial path instead stops writers only after its fresh backup.
+  if [ "$MODE" = "legacy-cutover" ]; then
+    bash scripts/verify-production-entitlement-invariants.sh \
+      --allow-running-legacy-cutover
+    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+    attest_pinned_compose_override
+    "${compose[@]}" --profile discord-bot stop -t 60 \
+      proxy web api media-ai discord-bot
+  fi
   bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
 
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
@@ -1279,7 +1290,8 @@ verify_running_release_images
 wait_for_health "${services[@]}"
 
 "${compose[@]}" --profile discord-bot ps
-if [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ]; then
+if [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
+  [ "$MODE" = "legacy-cutover-resume" ]; then
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/verify-production-database-roles.sh
   bash scripts/verify-production-entitlement-invariants.sh

@@ -1299,6 +1299,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
     [
       "deploy",
       "legacy-cutover",
+      "legacy-cutover-resume",
       "deploy-discord",
       "rollback-discord",
       "recover-web",

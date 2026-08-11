@@ -11,7 +11,7 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 function legacyBranch() {
   const deploy = read("scripts/deploy-production.sh");
   const start = deploy.indexOf(
-    "else\n  # One-time forward-only conversion of the exact reviewed legacy profile.",
+    "else\n  # One-time forward-only conversion of the exact reviewed legacy profile, or",
   );
   const end = deploy.indexOf("\nfi\n\nverify_running_release_images", start);
   assert.ok(start >= 0 && end > start);
@@ -181,4 +181,27 @@ test("cutover failure refuses to restart incompatible old writers", () => {
   const schemaBoundary = deploy.indexOf("schema_change_possible=1", partial);
   const engage = deploy.indexOf("--engage --release-id", schemaBoundary);
   assert.ok(partial < schemaBoundary && schemaBoundary < engage);
+});
+
+test("reviewed resume accepts only a stopped legacy topology and makes a new off-site backup", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const backup = read("scripts/production-backup.sh");
+  assert.match(
+    launcher,
+    /legacy-cutover-resume\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume/,
+  );
+  assert.match(
+    deploy,
+    /\[ "\$MODE" = "legacy-cutover-resume" \][\s\S]*guard_args\+=\(--allow-legacy-cutover-stopped\)/,
+  );
+  assert.match(
+    deploy,
+    /\[ "\$MODE" = "legacy-cutover-resume" \][\s\S]*backup_arguments\+=\(--allow-stopped-legacy-cutover\)/,
+  );
+  assert.match(
+    backup,
+    /--allow-stopped-legacy-cutover[\s\S]*production-deploy-preflight\.sh" --allow-legacy-cutover-stopped[\s\S]*database_identity_args=\(--allow-running-legacy-backup\)/,
+  );
+  assert.match(deploy, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
 });

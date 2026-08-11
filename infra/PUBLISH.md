@@ -292,6 +292,20 @@ forward cutover:
 production_entry legacy-cutover
 ```
 
+If the one-time cutover stops the legacy application set but fails before the
+database transition begins, resume only with the argument-free reviewed path:
+
+```bash
+production_entry legacy-cutover-resume
+```
+
+The resume path accepts only the exact stopped legacy topology, rebuilds and
+archives immutable images from the currently reviewed commits, and creates and
+verifies a new encrypted off-site backup while writers remain stopped. It then
+continues the same ownership, volume, database, migration, IDP, writer-fence,
+health, and public verification chain. It never reuses a stale backup or starts
+the previous application writers.
+
 Use it only with the exact reviewed Root/API/Web commits in the clean-parent
 launcher above. It builds and archives immutable API, web, media, and Discord
 images; pins every runtime, migrator, and IDP maintenance service by image ID;

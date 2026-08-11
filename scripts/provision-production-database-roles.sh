@@ -189,6 +189,7 @@ encode_password() {
   printf '%s' "$1" | base64 | tr -d '\r\n'
 }
 api_runtime_password_base64="$(encode_password "$api_runtime_password")"
+postgres_admin_password_base64="$(encode_password "$postgres_admin_password")"
 api_migration_password_base64="$(encode_password "$api_migration_password")"
 studio_runtime_password_base64="$(encode_password "$studio_runtime_password")"
 studio_migration_password_base64="$(encode_password "$studio_migration_password")"
@@ -329,6 +330,80 @@ verify_tcp_identity() {
   }
 }
 
+verify_adoption_writers_stopped() {
+  local unexpected_writers
+  unexpected_writers="$({
+    docker ps \
+      --filter "label=com.docker.compose.project=$compose_project" \
+      --format '{{.Label "com.docker.compose.service"}}'
+  } | sort -u | grep -Ev '^(postgres|redis|proxy|media-ai)$' || true)"
+  [ -z "$unexpected_writers" ] || {
+    printf '%s\n' 'Reviewed ownership adoption requires every managed application and maintenance writer to be stopped.' >&2
+    return 75
+  }
+}
+
+adopt_legacy_administrator_credential() {
+  local result
+  [ "$MODE" = apply ] && [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ] && \
+    [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ] || return 75
+  verify_adoption_writers_stopped
+  if ! result="$({
+    printf '%s\n' \
+      "$postgres_admin_role" "$postgres_admin_password_base64" \
+      "$postgres_database" "$schema_name" "$postgres_port"
+  } | docker exec -i "$postgres_container" sh -ceu '
+    IFS= read -r PGUSER
+    IFS= read -r admin_password_base64
+    IFS= read -r PGDATABASE
+    IFS= read -r expected_schema
+    IFS= read -r PGPORT
+    [ "$PGUSER" = "${POSTGRES_USER:-}" ] || exit 75
+    case "$PGUSER" in ""|*[!A-Za-z0-9_]*) exit 75 ;; esac
+    case "$PGDATABASE" in ""|*[!A-Za-z0-9_-]*) exit 75 ;; esac
+    case "$admin_password_base64" in ""|*[!A-Za-z0-9+/=]*) exit 75 ;; esac
+    desired_password="$(printf "%s" "$admin_password_base64" | base64 -d)" || exit 75
+    [ -n "$desired_password" ] && \
+      [ "$(printf "%s" "$desired_password" | base64 | tr -d "\r\n")" = "$admin_password_base64" ] && \
+      ! printf "%s" "$desired_password" | grep -q "[[:cntrl:]]" || exit 75
+    unset PGPASSWORD PGSERVICE PGSERVICEFILE
+    export PGUSER PGDATABASE PGPORT PGHOST=/var/run/postgresql PGCONNECT_TIMEOUT=5
+    export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000 -c search_path=$expected_schema -c arenzyra.expected_role=$PGUSER -c arenzyra.expected_database=$PGDATABASE -c arenzyra.expected_schema=$expected_schema -c arenzyra.expected_port=$PGPORT"
+    attestation="$(psql -X -v ON_ERROR_STOP=1 -At -c "SELECT CASE WHEN current_user = session_user AND current_user::text = current_setting('"'"'arenzyra.expected_role'"'"') AND current_database() = current_setting('"'"'arenzyra.expected_database'"'"') AND COALESCE(current_schema(), '"'"''"'"') = current_setting('"'"'arenzyra.expected_schema'"'"') AND inet_server_port() = current_setting('"'"'arenzyra.expected_port'"'"')::integer AND inet_client_addr() IS NULL AND current_setting('"'"'password_encryption'"'"') = '"'"'scram-sha-256'"'"' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolcanlogin AND rolsuper) AND NOT EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE error IS NOT NULL OR (type LIKE '"'"'host%'"'"' AND auth_method IS DISTINCT FROM '"'"'scram-sha-256'"'"')) THEN '"'"'verified'"'"' ELSE '"'"'blocked'"'"' END" 2>/dev/null)" || exit 75
+    [ "$attestation" = verified ] || exit 75
+    export PGOPTIONS="-c statement_timeout=15000 -c lock_timeout=5000 -c search_path=$expected_schema"
+    {
+      printf "\\set admin_password_base64 '\''%s'\''\n" "$admin_password_base64"
+      cat <<'"'"'SQL'"'"'
+BEGIN;
+CREATE TEMP TABLE arenzyra_legacy_admin_credential(secret text NOT NULL) ON COMMIT DROP;
+INSERT INTO arenzyra_legacy_admin_credential(secret)
+SELECT convert_from(decode(:'admin_password_base64', 'base64'), 'UTF8');
+DO $credential$
+DECLARE
+  desired_password text;
+BEGIN
+  SELECT secret INTO STRICT desired_password
+    FROM arenzyra_legacy_admin_credential;
+  IF desired_password = '' OR desired_password ~ '[[:cntrl:]]' THEN
+    RAISE EXCEPTION 'invalid reviewed administrator credential';
+  END IF;
+  EXECUTE format('ALTER ROLE %I PASSWORD %L', current_user, desired_password);
+END
+$credential$;
+TRUNCATE arenzyra_legacy_admin_credential;
+COMMIT;
+SQL
+    } | psql -X -v ON_ERROR_STOP=1 -f - >/dev/null 2>&1
+    unset desired_password admin_password_base64
+    printf adopted
+  ' 2>/dev/null)" || [ "$result" != adopted ]; then
+    printf '%s\n' 'Legacy administrator credential adoption failed; the reviewed password may already have committed. Keep writers stopped and retry only through the reviewed resume command.' >&2
+    return 75
+  fi
+  printf '%s\n' 'Legacy PostgreSQL administrator credential adopted under the stopped-writer cutover boundary.'
+}
+
 verify_cross_database_acl_closed() {
   local blocking_database_json result
   if ! result="$({
@@ -398,9 +473,17 @@ configured_role_exists() {
   printf '%s' "$result"
 }
 
-# No mutation is allowed before the configured administrator and every
-# already-existing application role authenticate over bounded TCP.
-verify_tcp_identity administrator "$postgres_admin_role" "$postgres_admin_password"
+# The one stopped-writer legacy-resume boundary may first adopt only the
+# reviewed administrator password through an attested local socket. Every
+# ordinary path, and the resulting credential in that exception, must still
+# authenticate over bounded TCP before any role/ownership reconciliation.
+if ! verify_tcp_identity administrator "$postgres_admin_role" "$postgres_admin_password"; then
+  if [ "$LEGACY_CUTOVER_PARTIAL" -ne 1 ]; then
+    exit 75
+  fi
+  adopt_legacy_administrator_credential
+  verify_tcp_identity administrator "$postgres_admin_role" "$postgres_admin_password"
+fi
 # Stock PostgreSQL clusters grant PUBLIC access to connectable auxiliary
 # databases. Existing app-role ownership and direct/effective grants fail too.
 # Block before backup or role creation; ACL remediation is an explicit operator
@@ -480,15 +563,7 @@ fi
 
 # Backup work can consume disk. This guard is deliberately adjacent to SQL.
 if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
-  unexpected_writers="$({
-    docker ps \
-      --filter "label=com.docker.compose.project=$compose_project" \
-      --format '{{.Label "com.docker.compose.service"}}'
-  } | sort -u | grep -Ev '^(postgres|redis|proxy|media-ai)$' || true)"
-  [ -z "$unexpected_writers" ] || {
-    printf '%s\n' 'Reviewed ownership adoption requires every managed application and maintenance writer to be stopped.' >&2
-    exit 75
-  }
+  verify_adoption_writers_stopped
 else
   if [ "$RUNTIME_ROLES_FENCED" -eq 1 ]; then
     bash scripts/production-deploy-preflight.sh --allow-cutover-transition

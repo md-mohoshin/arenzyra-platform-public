@@ -99,3 +99,42 @@ test("ordinary role reconciliation does not activate ownership adoption", () => 
     1,
   );
 });
+
+test("stopped legacy cutover may adopt only the reviewed administrator credential", () => {
+  const failedTcp = provisioner.indexOf(
+    'if ! verify_tcp_identity administrator "$postgres_admin_role"',
+  );
+  const adoption = provisioner.indexOf(
+    "adopt_legacy_administrator_credential",
+    failedTcp,
+  );
+  const repeatedTcp = provisioner.indexOf(
+    'verify_tcp_identity administrator "$postgres_admin_role"',
+    adoption,
+  );
+  assert.ok(failedTcp >= 0 && adoption > failedTcp && repeatedTcp > adoption);
+  assert.match(
+    provisioner,
+    /adopt_legacy_administrator_credential\(\)[\s\S]*\[ "\$MODE" = apply \][\s\S]*\[ "\$LEGACY_CUTOVER_PARTIAL" -eq 1 \][\s\S]*verify_adoption_writers_stopped/,
+  );
+  assert.match(provisioner, /postgres_admin_password_base64/);
+  assert.match(provisioner, /PGHOST=\/var\/run\/postgresql/);
+  assert.match(provisioner, /inet_client_addr\(\) IS NULL/);
+  assert.match(
+    provisioner,
+    /CREATE TEMP TABLE arenzyra_legacy_admin_credential[\s\S]*ON COMMIT DROP/,
+  );
+  assert.match(
+    provisioner,
+    /EXECUTE format\('ALTER ROLE %I PASSWORD %L', current_user, desired_password\)/,
+  );
+  const adoptionBody = provisioner.slice(
+    provisioner.indexOf("adopt_legacy_administrator_credential()"),
+    provisioner.indexOf("verify_cross_database_acl_closed()"),
+  );
+  assert.match(
+    adoptionBody,
+    /"\$postgres_admin_role" "\$postgres_admin_password_base64"/,
+  );
+  assert.doesNotMatch(adoptionBody, /"\$postgres_admin_password"/);
+});

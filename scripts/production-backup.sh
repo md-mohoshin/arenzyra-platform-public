@@ -5,8 +5,12 @@ umask 077
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/require-local-production-docker.sh"
 ALLOW_RUNNING_LEGACY_BACKUP=0
-if [ "${1:-}" = "--allow-running-legacy-backup" ] && [ "$#" -eq 1 ]; then
+ALLOW_STOPPED_LEGACY_CUTOVER=0
+if [ "$#" -eq 1 ] && [ "${1:-}" = "--allow-running-legacy-backup" ]; then
   ALLOW_RUNNING_LEGACY_BACKUP=1
+  shift
+elif [ "$#" -eq 1 ] && [ "${1:-}" = "--allow-stopped-legacy-cutover" ]; then
+  ALLOW_STOPPED_LEGACY_CUTOVER=1
   shift
 elif [ "$#" -ne 0 ]; then
   printf 'Backup arguments are unsupported.\n' >&2
@@ -59,6 +63,11 @@ ALLOW_MISSING_APP_VOLUMES="${ARENZYRA_BACKUP_ALLOW_MISSING_APP_VOLUMES:-0}"
 backup_id="$(date -u '+%Y%m%dT%H%M%SZ')-$(openssl rand -hex 4)"
 if [ "$ALLOW_RUNNING_LEGACY_BACKUP" -eq 1 ]; then
   bash "$SCRIPT_DIR/production-deploy-preflight.sh" --allow-read-only-legacy-backup
+  database_identity_args=(--allow-running-legacy-backup)
+elif [ "$ALLOW_STOPPED_LEGACY_CUTOVER" -eq 1 ]; then
+  bash "$SCRIPT_DIR/production-deploy-preflight.sh" --allow-legacy-cutover-stopped
+  # The application writers are stopped, but PostgreSQL is intentionally still
+  # the attested legacy 16.13 container until the cutover replaces it.
   database_identity_args=(--allow-running-legacy-backup)
 else
   bash "$SCRIPT_DIR/production-deploy-preflight.sh"

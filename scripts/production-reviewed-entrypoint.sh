@@ -78,6 +78,11 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/deploy-production.sh --legacy-cutover
     ;;
+  legacy-cutover-resume)
+    [ "$#" -eq 0 ] || block "legacy-cutover-resume accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/deploy-production.sh --legacy-cutover-resume
+    ;;
   deploy-discord)
     if [ "$#" -eq 0 ]; then
       first_deploy=()
