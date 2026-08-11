@@ -9,6 +9,14 @@ OBJECT_POLICY_FILE="$REPOSITORY_ROOT/infra/production-database-object-policy.jso
 OBJECT_POLICY_ALLOW_EMPTY="${ARENZYRA_OBJECT_POLICY_ALLOW_EMPTY:-0}"
 LOCK_FILE="/run/arenzyra-production-deploy.lock"
 LOCK_TIMEOUT_SECONDS=10
+ADMIN_DIAGNOSTIC=0
+if [ "$#" -eq 1 ] && [ "$1" = "--diagnose-administrator" ]; then
+  ADMIN_DIAGNOSTIC=1
+  shift
+elif [ "$#" -ne 0 ]; then
+  printf 'DATABASE ROLE GATE BLOCKED: arguments are invalid.\n' >&2
+  exit 75
+fi
 ENV_FILE="$(realpath -e -- "$ENV_FILE" 2>/dev/null)" || {
   printf 'DATABASE ROLE GATE BLOCKED: reviewed environment file is unavailable.\n' >&2
   exit 75
@@ -213,8 +221,11 @@ run_credential_attestation() {
       "$profile" "$role" "$password" "$postgres_database" "$schema_name" "$postgres_port" \
       "$api_runtime_role" "$api_migration_role" "$studio_runtime_role" "$studio_migration_role" \
       "$maintenance_read_role" "$idp_maintenance_role" "$youtube_maintenance_role" \
-      "$object_policy_base64" "$OBJECT_POLICY_ALLOW_EMPTY"
+      "$object_policy_base64" "$OBJECT_POLICY_ALLOW_EMPTY" "$ADMIN_DIAGNOSTIC"
     cat <<'SQL'
+\if :diagnose_explain
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON)
+\endif
 WITH object_policy_document AS (
   SELECT convert_from(
     decode(:'object_policy_base64', 'base64'),
@@ -1674,6 +1685,8 @@ SQL
     IFS= read -r youtube_maintenance_role
     IFS= read -r object_policy_base64
     IFS= read -r object_policy_allow_empty
+    IFS= read -r diagnose_explain
+    [ "$diagnose_explain" = 0 ] || [ "$diagnose_explain" = 1 ] || exit 75
     if [ "$profile" = "administrator" ] && [ "$PGUSER" != "${POSTGRES_USER:-}" ]; then
       exit 75
     fi
@@ -1692,12 +1705,26 @@ SQL
     fi
     result="$(psql -X -v ON_ERROR_STOP=1 \
       -v object_policy_base64="$object_policy_base64" \
+      -v diagnose_explain="$diagnose_explain" \
       -At -f - 2>/dev/null)" || exit 75
-    [ "$result" = "0" ] || exit 75
-    printf verified
+    if [ "$diagnose_explain" = 1 ]; then
+      printf "%s" "$result"
+    else
+      [ "$result" = "0" ] || exit 75
+      printf verified
+    fi
   ' 2>/dev/null)"; then
     printf 'DATABASE ROLE GATE BLOCKED: credential or policy attestation failed for %s.\n' "$profile" >&2
     return 75
+  fi
+  if [ "$ADMIN_DIAGNOSTIC" -eq 1 ]; then
+    summary="$(printf '%s' "$result" | node \
+      "$SCRIPT_DIR/parse-production-role-gate-explain.cjs")" || {
+      printf 'DATABASE ROLE GATE BLOCKED: administrator diagnostic result was invalid.\n' >&2
+      return 75
+    }
+    printf 'DATABASE ROLE GATE DIAGNOSTIC %s\n' "$summary"
+    return 0
   fi
   if [ "$result" != "verified" ]; then
     printf 'DATABASE ROLE GATE BLOCKED: credential or policy attestation failed for %s.\n' "$profile" >&2
@@ -1708,6 +1735,9 @@ SQL
 # Every credential travels through protected stdin and is suppressed from all
 # subprocess output. The administrator check is TCP, never a local socket.
 run_credential_attestation administrator "$postgres_admin_role" "$postgres_admin_password"
+if [ "$ADMIN_DIAGNOSTIC" -eq 1 ]; then
+  exit 0
+fi
 run_credential_attestation api-runtime "$api_runtime_role" "$api_runtime_password"
 run_credential_attestation api-migrator "$api_migration_role" "$api_migration_password"
 run_credential_attestation studio-runtime "$studio_runtime_role" "$studio_runtime_password"

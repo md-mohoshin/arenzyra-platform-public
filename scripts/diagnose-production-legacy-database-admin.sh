@@ -156,3 +156,7 @@ case "$diagnostic" in
   *) printf 'LEGACY ADMIN DIAGNOSTIC BLOCKED: result was invalid.\n' >&2; exit 75 ;;
 esac
 printf 'LEGACY ADMIN DIAGNOSTIC %s\n' "$diagnostic"
+if [ "$PREFLIGHT_MODE" = "cutover-transition" ]; then
+  bash scripts/verify-production-database-roles.sh \
+    --diagnose-administrator
+fi

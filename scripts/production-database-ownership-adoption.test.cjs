@@ -234,6 +234,10 @@ test("legacy administrator diagnostic is allowlisted, bounded, and read-only", (
   assert.doesNotMatch(diagnostic, /<<<\s*"\$(?:socket|hba)_summary"/);
   assert.match(diagnostic, /tcp_reviewed_password/);
   assert.match(diagnostic, /hba_non_scram/);
+  assert.match(
+    diagnostic,
+    /PREFLIGHT_MODE" = "cutover-transition"[\s\S]*verify-production-database-roles\.sh[\s\\]*\n[\s\\]*--diagnose-administrator/,
+  );
   assert.doesNotMatch(
     diagnostic,
     /\b(?:ALTER|CREATE|DROP|TRUNCATE|UPDATE|DELETE|INSERT)\b/,

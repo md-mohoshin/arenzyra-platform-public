@@ -89,6 +89,16 @@ test("role verifier binds eight stdin-only TCP credentials with bounded checks",
   assert.doesNotMatch(verifier, /mktemp|password.*>.*\/tmp/i);
   assert.match(verifier, /\[ "\$result" != "verified" \]/);
   assert.match(verifier, /credentials=8 policy_violations=0/);
+  assert.match(verifier, /--diagnose-administrator/);
+  assert.match(
+    verifier,
+    /EXPLAIN \(ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON\)/,
+  );
+  assert.match(verifier, /parse-production-role-gate-explain\.cjs/);
+  assert.ok(
+    verifier.indexOf('if [ "$ADMIN_DIAGNOSTIC" -eq 1 ]; then\n  exit 0') <
+      verifier.indexOf("run_credential_attestation api-runtime"),
+  );
 });
 
 test("role entrypoints attest the shared lock path and open descriptor identity", () => {
