@@ -136,5 +136,10 @@ test("stopped legacy cutover may adopt only the reviewed administrator credentia
     adoptionBody,
     /"\$postgres_admin_role" "\$postgres_admin_password_base64"/,
   );
+  assert.match(
+    adoptionBody,
+    /current_setting\('"'"'port'"'"'\) = current_setting\('"'"'arenzyra\.expected_port'"'"'\)/,
+  );
+  assert.doesNotMatch(adoptionBody, /inet_server_port\(\)/);
   assert.doesNotMatch(adoptionBody, /"\$postgres_admin_password"/);
 });
