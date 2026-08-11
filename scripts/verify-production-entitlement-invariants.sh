@@ -4,8 +4,10 @@ source scripts/require-local-production-docker.sh
 
 ENV_FILE="${ARENZYRA_DEPLOY_ENV_FILE:-infra/.env.publish}"
 database_identity_args=()
+entitlement_policy_args=()
 if [ "${1:-}" = "--allow-running-legacy-cutover" ] && [ "$#" -eq 1 ]; then
   database_identity_args+=(--allow-running-legacy-backup)
+  entitlement_policy_args+=(--allow-legacy-active-stale-trial)
 elif [ "$#" -ne 0 ]; then
   printf 'ENTITLEMENT INVARIANT GATE BLOCKED: unsupported argument.\n' >&2
   exit 75
@@ -53,6 +55,12 @@ SELECT
         OR "trialEndsAt" IS NOT NULL
       )
   ),
+  count(*) FILTER (
+    WHERE status = 'ACTIVE' AND "paidUntil" IS NULL
+  ),
+  count(*) FILTER (
+    WHERE status = 'ACTIVE' AND "trialEndsAt" IS NOT NULL
+  ),
   count(*) FILTER (WHERE status = 'TRIALING'),
   count(*) FILTER (
     WHERE status = 'TRIALING'
@@ -77,11 +85,12 @@ SQL
   exit 75
 fi
 
-if ! [[ "$entitlement_counts" =~ ^[0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+$ ]]; then
+if ! [[ "$entitlement_counts" =~ ^[0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+$ ]]; then
   printf 'ENTITLEMENT INVARIANT GATE BLOCKED: invalid aggregate query result.\n' >&2
   exit 75
 fi
 read -r organization_count active_count active_inconsistent_count \
+  active_missing_paid_count active_trial_present_count \
   trialing_count trialing_inconsistent_count expired_count \
   expired_inconsistent_count unknown_status_count <<<"$entitlement_counts"
 
@@ -89,11 +98,14 @@ node scripts/verify-production-entitlement-invariants.cjs \
   --organization-count "$organization_count" \
   --active-count "$active_count" \
   --active-inconsistent-count "$active_inconsistent_count" \
+  --active-missing-paid-count "$active_missing_paid_count" \
+  --active-trial-present-count "$active_trial_present_count" \
   --trialing-count "$trialing_count" \
   --trialing-inconsistent-count "$trialing_inconsistent_count" \
   --expired-count "$expired_count" \
   --expired-inconsistent-count "$expired_inconsistent_count" \
-  --unknown-status-count "$unknown_status_count"
+  --unknown-status-count "$unknown_status_count" \
+  "${entitlement_policy_args[@]}"
 
 # Runtime access is strictly clock-bounded, while deployment authorization uses
 # the stable stored-shape gate above. Reuse the aggregate-only inventory and its

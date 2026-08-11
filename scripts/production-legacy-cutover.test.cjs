@@ -65,6 +65,10 @@ test("legacy cutover preserves volumes and fences all writers through migrations
   const ledgerReconcile = branch.indexOf(
     "reconcile-production-legacy-prisma-ledger.sh",
   );
+  const entitlementPostcondition = branch.indexOf(
+    "verify-production-entitlement-invariants.sh",
+    ledgerReconcile,
+  );
   const apiMigration = branch.indexOf("api-migrate", engage);
   const studioMigration = branch.indexOf("studio-migrate", apiMigration);
   const idpApply = branch.indexOf("run_idp_cutover_action apply");
@@ -82,7 +86,8 @@ test("legacy cutover preserves volumes and fences all writers through migrations
       down < transitionUp &&
       transitionUp < engage &&
       engage < ledgerReconcile &&
-      ledgerReconcile < apiMigration &&
+      ledgerReconcile < entitlementPostcondition &&
+      entitlementPostcondition < apiMigration &&
       apiMigration < studioMigration &&
       studioMigration < idpApply &&
       idpApply < idpValidate &&
@@ -101,7 +106,7 @@ test("legacy cutover preserves volumes and fences all writers through migrations
   );
 });
 
-test("legacy zero-step ledger reconciliation is exact, fenced, and operation-adjacent", () => {
+test("legacy entitlement and zero-step ledger reconciliation is exact, fenced, and operation-adjacent", () => {
   const reconcile = read("scripts/reconcile-production-legacy-prisma-ledger.sh");
   const preflight = reconcile.indexOf(
     "production-deploy-preflight.sh --allow-cutover-transition",
@@ -122,6 +127,16 @@ test("legacy zero-step ledger reconciliation is exact, fenced, and operation-adj
   assert.match(reconcile, /bool_and\(NOT rolcanlogin\)/);
   assert.match(reconcile, /pg_stat_activity/);
   assert.match(reconcile, /pg_prepared_xacts/);
+  assert.match(reconcile, /stale_active_trial BETWEEN 0 AND 4096/);
+  assert.match(
+    reconcile,
+    /UPDATE "Organization"[\s\S]*SET "trialEndsAt" = NULL/,
+  );
+  assert.doesNotMatch(
+    reconcile,
+    /SET\s+"(?:subscriptionStatus|paidUntil|updatedAt)"\s*=/,
+  );
+  assert.match(reconcile, /LEGACY_ENTITLEMENT_RECONCILED before=/);
   assert.match(reconcile, /attname = 'widgetKey'/);
   assert.match(reconcile, /attname = 'widgetType'/);
   assert.match(reconcile, /WidgetInstance_widgetKey_idx/);

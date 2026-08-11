@@ -156,6 +156,18 @@ counts. Keep identifiers and private billing details out of gate output. Rerun
 the read-only gate and require zero inconsistent counts before continuing the
 standard release. Do not add an automatic migration or deployment backfill.
 
+The reviewed argument-free one-time `legacy-cutover` is the only shipped
+exception to the routine block. It accepts only the aggregate legacy shape in
+which every inconsistent `ACTIVE` row already has `paidUntil` and differs solely
+because `trialEndsAt` is still present. Missing paid clocks and every other
+status/shape remain blocked. The cutover records aggregate before/updated/after
+counts without identifiers and, only after its fresh verified off-host backup,
+stopped writers, target-database attestation, and durable login fence, clears
+that stale field in the same serializable transaction as the exact historical
+migration-ledger reconciliation. It does not change status, `paidUntil`,
+`updatedAt`, deleted organizations, billing proofs, or audit rows. A normal
+deploy has no entitlement exception.
+
 After release, verify API/container health and the public HTTPS endpoint, then
 exercise one non-sensitive test submission through the UI and confirm:
 

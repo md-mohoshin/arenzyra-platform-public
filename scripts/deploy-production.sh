@@ -1231,13 +1231,14 @@ else
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/production-database-writer-fence.sh \
       --engage --release-id "$new_release_id"
-  # A historical Prisma row has the exact finished migration checksum and
-  # complete widget-key schema but recorded zero applied steps. Reconcile only
-  # that bookkeeping field after the fresh off-site recovery point, immutable
-  # candidate build, stopped writers, target upgrade, and durable role fence.
+  # Reconcile only the exact legacy ACTIVE stale-trial shape and the historical
+  # Prisma zero-step bookkeeping field after the fresh off-site recovery point,
+  # immutable candidate build, stopped writers, target upgrade, and durable
+  # role fence. The transaction proves every other entitlement is canonical.
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/reconcile-production-legacy-prisma-ledger.sh \
       --release-id "$new_release_id"
+  bash scripts/verify-production-entitlement-invariants.sh
   bash scripts/production-deploy-preflight.sh --allow-cutover-transition
   attest_pinned_compose_override
   "${compose[@]}" --profile migration run --rm --no-deps --pull never api-migrate

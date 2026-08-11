@@ -413,6 +413,8 @@ test("entitlement aggregate verification fails closed for every invalid state", 
     "6",
     "2",
     "0",
+    "0",
+    "0",
     "2",
     "0",
     "2",
@@ -422,10 +424,10 @@ test("entitlement aggregate verification fails closed for every invalid state", 
   assert.equal(verifyEntitlementInvariants(valid).ok, true);
 
   for (const [label, values] of [
-    ["active", ["6", "2", "1", "2", "0", "2", "0", "0"]],
-    ["trialing", ["6", "2", "0", "2", "1", "2", "0", "0"]],
-    ["expired", ["6", "2", "0", "2", "0", "2", "1", "0"]],
-    ["unknown", ["7", "2", "0", "2", "0", "2", "0", "1"]],
+    ["active", ["6", "2", "1", "0", "1", "2", "0", "2", "0", "0"]],
+    ["trialing", ["6", "2", "0", "0", "0", "2", "1", "2", "0", "0"]],
+    ["expired", ["6", "2", "0", "0", "0", "2", "0", "2", "1", "0"]],
+    ["unknown", ["7", "2", "0", "0", "0", "2", "0", "2", "0", "1"]],
   ]) {
     const result = verifyEntitlementInvariants(parseEntitlementCounts(values));
     assert.equal(result.ok, false, label);
@@ -435,6 +437,8 @@ test("entitlement aggregate verification fails closed for every invalid state", 
   const mismatch = parseEntitlementCounts([
     "7",
     "2",
+    "0",
+    "0",
     "0",
     "2",
     "0",
@@ -448,7 +452,82 @@ test("entitlement aggregate verification fails closed for every invalid state", 
   );
   assert.throws(() => parseEntitlementCounts(["0"]));
   assert.throws(() =>
-    parseEntitlementCounts(["0", "0", "0", "0", "0", "0", "0", "1x"]),
+    parseEntitlementCounts([
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "1x",
+    ]),
+  );
+});
+
+test("only legacy ACTIVE rows with paid clocks and stale trial clocks can defer to fenced cutover", () => {
+  const staleTrialOnly = parseEntitlementCounts([
+    "11",
+    "7",
+    "2",
+    "0",
+    "2",
+    "4",
+    "0",
+    "0",
+    "0",
+    "0",
+  ]);
+  assert.equal(verifyEntitlementInvariants(staleTrialOnly).ok, false);
+  assert.deepEqual(
+    verifyEntitlementInvariants(staleTrialOnly, {
+      allowLegacyActiveStaleTrial: true,
+    }),
+    {
+      ok: true,
+      reason: "legacy-active-stale-trial-reconcile-pending",
+      inconsistentCount: 2,
+      legacyActiveStaleTrialReconcilePending: 2,
+      counts: staleTrialOnly,
+    },
+  );
+
+  const missingPaid = parseEntitlementCounts([
+    "11",
+    "7",
+    "2",
+    "1",
+    "1",
+    "4",
+    "0",
+    "0",
+    "0",
+    "0",
+  ]);
+  assert.equal(
+    verifyEntitlementInvariants(missingPaid, {
+      allowLegacyActiveStaleTrial: true,
+    }).reason,
+    "inconsistent-production-entitlements",
+  );
+
+  const impossibleBreakdown = parseEntitlementCounts([
+    "11",
+    "7",
+    "0",
+    "1",
+    "0",
+    "4",
+    "0",
+    "0",
+    "0",
+    "0",
+  ]);
+  assert.equal(
+    verifyEntitlementInvariants(impossibleBreakdown).reason,
+    "aggregate-active-inconsistency-breakdown-mismatch",
   );
 });
 

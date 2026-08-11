@@ -86,5 +86,8 @@ test("production invariant wrapper streams the exact reviewed inventory", () => 
   assert.match(wrapper, /parse-production-entitlement-inventory\.cjs/);
   assert.match(wrapper, /verify-production-entitlement-deployment\.cjs/);
   assert.match(wrapper, /default_transaction_read_only=on/);
+  assert.match(wrapper, /active_missing_paid_count/);
+  assert.match(wrapper, /active_trial_present_count/);
+  assert.match(wrapper, /--allow-legacy-active-stale-trial/);
   assert.doesNotMatch(wrapper, /\b(?:INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE)\b/i);
 });

@@ -153,6 +153,88 @@ END AS fence_sessions_clear \gset
   SELECT 1 / 0;
 \endif
 
+WITH entitlement_counts AS (
+  SELECT
+    count(*) FILTER (
+      WHERE "subscriptionStatus"::text = 'ACTIVE'
+        AND "paidUntil" IS NOT NULL
+        AND "trialEndsAt" IS NOT NULL
+    ) AS stale_active_trial,
+    count(*) FILTER (
+      WHERE "subscriptionStatus"::text = 'ACTIVE'
+        AND "paidUntil" IS NULL
+    ) AS active_missing_paid,
+    count(*) FILTER (
+      WHERE "subscriptionStatus"::text = 'TRIALING'
+        AND ("trialEndsAt" IS NULL OR "paidUntil" IS NOT NULL)
+    ) AS trialing_inconsistent,
+    count(*) FILTER (
+      WHERE "subscriptionStatus"::text = 'EXPIRED'
+        AND ("paidUntil" IS NOT NULL OR "trialEndsAt" IS NOT NULL)
+    ) AS expired_inconsistent,
+    count(*) FILTER (
+      WHERE "subscriptionStatus"::text NOT IN ('ACTIVE', 'TRIALING', 'EXPIRED')
+    ) AS unknown_status
+  FROM "Organization"
+  WHERE "deletedAt" IS NULL
+)
+SELECT stale_active_trial AS entitlement_stale_before,
+       CASE
+         WHEN stale_active_trial BETWEEN 0 AND 4096
+          AND active_missing_paid = 0
+          AND trialing_inconsistent = 0
+          AND expired_inconsistent = 0
+          AND unknown_status = 0
+         THEN true ELSE false
+       END AS entitlement_ready
+FROM entitlement_counts \gset
+\if :entitlement_ready
+\else
+  SELECT 1 / 0;
+\endif
+
+WITH updated AS (
+  UPDATE "Organization"
+     SET "trialEndsAt" = NULL
+   WHERE "deletedAt" IS NULL
+     AND "subscriptionStatus"::text = 'ACTIVE'
+     AND "paidUntil" IS NOT NULL
+     AND "trialEndsAt" IS NOT NULL
+  RETURNING 1
+)
+SELECT count(*) AS entitlement_updated FROM updated \gset
+SELECT :'entitlement_updated'::bigint = :'entitlement_stale_before'::bigint
+  AS entitlement_update_exact \gset
+\if :entitlement_update_exact
+\else
+  SELECT 1 / 0;
+\endif
+
+SELECT CASE
+  WHEN count(*) FILTER (
+         WHERE "subscriptionStatus"::text = 'ACTIVE'
+           AND ("paidUntil" IS NULL OR "trialEndsAt" IS NOT NULL)
+       ) = 0
+   AND count(*) FILTER (
+         WHERE "subscriptionStatus"::text = 'TRIALING'
+           AND ("trialEndsAt" IS NULL OR "paidUntil" IS NOT NULL)
+       ) = 0
+   AND count(*) FILTER (
+         WHERE "subscriptionStatus"::text = 'EXPIRED'
+           AND ("paidUntil" IS NOT NULL OR "trialEndsAt" IS NOT NULL)
+       ) = 0
+   AND count(*) FILTER (
+         WHERE "subscriptionStatus"::text NOT IN ('ACTIVE', 'TRIALING', 'EXPIRED')
+       ) = 0
+  THEN true ELSE false
+END AS entitlement_postcondition
+FROM "Organization"
+WHERE "deletedAt" IS NULL \gset
+\if :entitlement_postcondition
+\else
+  SELECT 1 / 0;
+\endif
+
 WITH target_table AS (
   SELECT relation.oid
   FROM pg_class relation
@@ -277,6 +359,7 @@ WHERE migration_name = :'expected_migration' \gset
   SELECT 1 / 0;
 \endif
 COMMIT;
+\echo LEGACY_ENTITLEMENT_RECONCILED before=:entitlement_stale_before updated=:entitlement_updated after=0
 SQL
 } | docker exec -i "$postgres_container" sh -ceu '
   IFS= read -r PGUSER

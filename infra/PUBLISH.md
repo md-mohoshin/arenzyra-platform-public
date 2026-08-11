@@ -440,6 +440,18 @@ migration, applying a later migration outside the prefix, duplicate active
 rows, unknown names, checksum drift, unfinished rows, and impossible states all
 remain deployment blockers.
 
+The same one-time cutover can defer one exact legacy entitlement shape:
+non-deleted `ACTIVE` organizations whose `paidUntil` is present but whose old
+`trialEndsAt` was not cleared. The aggregate gate separately proves that no
+`ACTIVE` row is missing `paidUntil`, that every active inconsistency is exactly
+this stale-trial shape, and that `TRIALING`, `EXPIRED`, and unknown statuses are
+canonical. Routine deploys still block any inconsistent count. After the fresh
+verified off-site backup, stopped writers, reviewed PostgreSQL target, and
+durable runtime-role fence, the same serializable reconciliation transaction
+clears only `trialEndsAt` on that exact bounded target set. It never changes
+status, `paidUntil`, `updatedAt`, deleted organizations, or identifiers, and it
+requires zero inconsistent rows afterward before migrations continue.
+
 The canonical API image ships the reviewed compiled IDP dry-run/apply/validate
 artifacts so the full sequence can be rehearsed against an isolated private
 restore. Production Publish Compose exposes only the authenticated one-shot
