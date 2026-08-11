@@ -127,6 +127,11 @@ case "$command_id" in
     require_nested_assembly
     exec bash scripts/recover-production-redis-capacity.sh
     ;;
+  proxy-address-transition)
+    [ "$#" -eq 1 ] || block "proxy-address-transition requires one release ID."
+    require_nested_assembly
+    exec bash scripts/recover-production-proxy-address.sh "$1"
+    ;;
   legacy-cutover-resume-transition-rebuild)
     [ "$#" -eq 0 ] || block "legacy-cutover-resume-transition-rebuild accepts no arguments."
     require_nested_assembly

@@ -443,6 +443,27 @@ root-owned `0600` production environment. It does not restart a service or
 select, modify, or remove a volume. The standard continuation repeats preflight
 immediately before recreating Redis with the preserved persistent volume.
 
+If all candidate services become healthy but Docker refuses the never-started
+proxy because PostgreSQL received the historical static proxy address while the
+proxy was absent, use the closed address transition and then resume the same
+candidate:
+
+```bash
+production_entry proxy-address-transition <release-id>
+production_entry legacy-cutover-resume-transition-candidate \
+  <release-id> <backup-id>
+```
+
+The address transition accepts only the exact healthy five-service topology,
+one attested never-started proxy, no Discord container, and the observed
+`.2` through `.6` private addresses. It verifies the three immutable candidate
+images and pinned proxy, then stops and removes only those four application
+container shells. Named volumes remain untouched. After proving the exact
+PostgreSQL/Redis transition state, it atomically changes only the proxy and
+trusted-proxy address from `172.30.50.2` to the first unused address,
+`172.30.50.7`. The standard continuation recreates the candidate with that
+permanent non-colliding address and repeats the complete health/HTTPS gate.
+
 When the failure needs a new application commit, continue forward with:
 
 ```bash

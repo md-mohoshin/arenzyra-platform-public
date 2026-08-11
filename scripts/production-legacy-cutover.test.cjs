@@ -485,3 +485,36 @@ test("failed candidate recovery preserves volumes and rebuilds forward from depe
     /MEDIA_AI_U2NET_SHA256="8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491"[\s\S]*MEDIA_AI_ISNET_SHA256="60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a"[\s\S]*warm-media-ai-model-cache\.sh[\s\S]*create_pre_migration_backup/,
   );
 });
+
+test("proxy address collision recovery is exact, resumable, and volume preserving", () => {
+  const recovery = read("scripts/recover-production-proxy-address.sh");
+  const updater = read("scripts/set-production-proxy-address.cjs");
+  const preflight = read("scripts/production-deploy-preflight.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const compose = read("infra/docker-compose.publish.yml");
+
+  assert.match(
+    launcher,
+    /proxy-address-transition\)[\s\S]*requires one release ID[\s\S]*require_nested_assembly[\s\S]*recover-production-proxy-address\.sh "\$1"/,
+  );
+  assert.match(
+    preflight,
+    /ALLOW_CUTOVER_PROXY_COLLISION[\s\S]*proxy-collision recovery dependency must be running\/healthy[\s\S]*colliding proxy must never have started[\s\S]*proxy-collision recovery requires exactly healthy postgres, redis, api, media-ai, web and one never-started proxy/,
+  );
+  assert.match(
+    recovery,
+    /production-deploy-preflight\.sh --allow-cutover-proxy-collision[\s\S]*validate-release-image-manifest\.cjs[\s\S]*expected_networks=\(postgres:172\.30\.50\.2 redis:172\.30\.50\.3 media-ai:172\.30\.50\.4 api:172\.30\.50\.5 web:172\.30\.50\.6\)[\s\S]*docker stop --time 60[\s\S]*docker rm "\$\{removable_containers\[@\]\}"[\s\S]*production-deploy-preflight\.sh --allow-cutover-dependency-recovery[\s\S]*set-production-proxy-address\.cjs/,
+  );
+  assert.doesNotMatch(
+    recovery,
+    /--volumes|docker\s+volume|docker\s+system\s+prune|docker\s+network\s+(?:disconnect|rm|prune)/,
+  );
+  assert.match(
+    updater,
+    /ARENZYRA_PROXY_IP=172\\\.30\\\.50\\\.2[\s\S]*TRUSTED_PROXY_IPS=172\\\.30\\\.50\\\.2[\s\S]*ARENZYRA_PROXY_IP=172\.30\.50\.7[\s\S]*TRUSTED_PROXY_IPS=172\.30\.50\.7[\s\S]*fs\.renameSync/,
+  );
+  assert.match(
+    compose,
+    /ipv4_address: "\$\{ARENZYRA_PROXY_IP:-172\.30\.50\.7\}"/,
+  );
+});
