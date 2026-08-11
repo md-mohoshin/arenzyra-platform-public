@@ -745,8 +745,15 @@ function evaluateMigrationSafety({
     };
   }
   const expectedAppliedPrefix = migrationNames.slice(0, appliedRows.length);
-  const migrationLineageMismatches = appliedRows
-    .map(({ migrationName }, index) => ({
+  // Prisma lineage is the checksum-authenticated set of successful migration
+  // names, not the wall-clock ordering of their started_at audit timestamps.
+  // Canonicalize by the reviewed directory order, then require that set to be
+  // exactly one candidate prefix. Missing earlier migrations still fail.
+  const canonicalAppliedNames = migrationNames.filter((migrationName) =>
+    applied.has(migrationName),
+  );
+  const migrationLineageMismatches = canonicalAppliedNames
+    .map((migrationName, index) => ({
       position: index + 1,
       expectedMigrationName: expectedAppliedPrefix[index],
       databaseMigrationName: migrationName,

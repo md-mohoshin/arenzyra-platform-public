@@ -81,7 +81,7 @@ docker exec "${database_binding[0]}" sh -ceu '
                 rolled_back_at IS NOT NULL AS \"rolledBack\",
                 applied_steps_count AS \"appliedStepsCount\"
            FROM \"_prisma_migrations\"
-          ORDER BY started_at, migration_name, id
+          ORDER BY migration_name, id
           LIMIT 4097
        ) AS ledger_row;"
 ' sh "${database_binding[3]}" "${database_binding[4]}" \

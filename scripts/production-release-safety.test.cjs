@@ -722,7 +722,7 @@ test("a non-first target requires at least one successfully applied migration", 
   }
 });
 
-test("successfully applied migrations must be the ordered candidate prefix", (t) => {
+test("successfully applied migrations must form the candidate prefix set", (t) => {
   const migrationsPath = fixture(t, {
     "001_first": "SELECT 1;",
     "002_second": "SELECT 2;",
@@ -765,10 +765,7 @@ test("successfully applied migrations must be the ordered candidate prefix", (t)
     migrationsPath,
     requireAppliedMigration: true,
   });
-  assert.equal(
-    reorderedHistory.reason,
-    "database-migration-lineage-is-not-candidate-prefix",
-  );
+  assert.equal(reorderedHistory.ok, true);
 
   const validPrefix = evaluateMigrationSafety({
     migrationLedger: [
@@ -793,7 +790,8 @@ test("production ledger collection emits every checksum and row state as JSON", 
   assert.match(gate, /finished_at IS NOT NULL AS finished/);
   assert.match(gate, /rolled_back_at IS NOT NULL AS \\"rolledBack\\"/);
   assert.match(gate, /applied_steps_count AS \\"appliedStepsCount\\"/);
-  assert.match(gate, /ORDER BY started_at, migration_name, id/);
+  assert.match(gate, /ORDER BY migration_name, id/);
+  assert.doesNotMatch(gate, /ORDER BY started_at/);
   assert.match(gate, /LIMIT 4097/);
   assert.match(gate, /--require-applied-migration/);
   assert.match(

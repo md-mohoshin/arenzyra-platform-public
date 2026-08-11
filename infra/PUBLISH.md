@@ -431,6 +431,15 @@ schema, writer state, target, or fence marker remains blocked. Routine deploys
 have no such exception. A forward-recovery retry accepts the same exact row
 already at `1`, re-verifies every predicate, and performs no ledger write.
 
+Migration lineage is the unique checksum-authenticated set of successfully
+finished migration names. That set must equal one lexical prefix of the exact
+reviewed migration directories. `_prisma_migrations.started_at` remains audit
+metadata and is not lineage ordering: historical workers can record timestamps
+out of lexical order even when the exact prefix was applied. Missing an earlier
+migration, applying a later migration outside the prefix, duplicate active
+rows, unknown names, checksum drift, unfinished rows, and impossible states all
+remain deployment blockers.
+
 The canonical API image ships the reviewed compiled IDP dry-run/apply/validate
 artifacts so the full sequence can be rehearsed against an isolated private
 restore. Production Publish Compose exposes only the authenticated one-shot
