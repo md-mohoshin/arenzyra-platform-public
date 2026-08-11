@@ -397,6 +397,34 @@ read-only PostgreSQL dump and volume archives, requires immutable off-site
 upload verification, and only then recreates Redis and rejoins the same fenced
 cutover. It does not start an application writer or remove a named volume.
 
+If an immutable candidate reaches the API and media startup step but both
+services remain non-ready before web, proxy, or Discord starts, first remove
+only those two attested failed containers:
+
+```bash
+production_entry failed-candidate-remove <release-id>
+```
+
+This recovery accepts exactly healthy PostgreSQL and Redis plus one running,
+non-ready API and media container. It verifies both container image IDs against
+the root-owned archived manifests, stops them with a bounded grace period, and
+removes only the two containers. It never selects or removes a named volume.
+The command must finish by proving the exact database/cache-only dependency
+transition state.
+
+When the failure needs a new application commit, continue forward with:
+
+```bash
+production_entry legacy-cutover-resume-transition-rebuild
+```
+
+The rebuild form accepts only that dependency-transition state. It rebuilds and
+archives all four immutable candidate images from the currently reviewed clean
+Root/API/Web commits, installs the two pinned media models only after verifying
+their SHA-256 digests, creates and off-site verifies a fresh encrypted backup,
+and then rejoins the ordinary writer-fence, migration, IDP, full health, and
+public HTTPS verification chain. It never starts an older application image.
+
 If an interrupted ownership-fence worker leaves the exact target database with
 connections disabled, first run the narrow marker-bound recovery and then retry
 the applicable transition continuation:

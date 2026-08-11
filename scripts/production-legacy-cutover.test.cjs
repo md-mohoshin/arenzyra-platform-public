@@ -348,8 +348,8 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
     /--allow-cutover-dependency-recovery[\s\S]*production-deploy-preflight\.sh" --allow-cutover-dependency-recovery[\s\S]*database_identity_args=\(\)/,
   );
   const transition = deploy.slice(
-    deploy.indexOf('else\n    for candidate_service in api web media-ai discord-bot'),
-    deploy.indexOf("\n  fi\n\n  # From this point", deploy.indexOf('else\n    for candidate_service in api web media-ai discord-bot')),
+    deploy.indexOf('else\n    if [ "$REBUILD_TRANSITION_CANDIDATE" -eq 1 ]; then'),
+    deploy.indexOf("\n  fi\n\n  # From this point", deploy.indexOf('else\n    if [ "$REBUILD_TRANSITION_CANDIDATE" -eq 1 ]; then')),
   );
   const backup = transition.indexOf("create_pre_migration_backup");
   const immediateGuard = transition.lastIndexOf(
@@ -419,5 +419,38 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
   assert.match(
     read("scripts/verify-production-entitlement-invariants.sh"),
     /--allow-cutover-transition[\s\S]*entitlement_policy_args\+=\(--allow-legacy-active-stale-trial\)/,
+  );
+});
+
+test("failed candidate recovery preserves volumes and rebuilds forward from dependency transition", () => {
+  const recovery = read("scripts/recover-production-failed-candidate.sh");
+  const preflight = read("scripts/production-deploy-preflight.sh");
+  const deploy = read("scripts/deploy-production.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+
+  assert.match(
+    launcher,
+    /failed-candidate-remove\)[\s\S]*requires one release ID[\s\S]*require_nested_assembly[\s\S]*recover-production-failed-candidate\.sh "\$1"/,
+  );
+  assert.match(
+    launcher,
+    /legacy-cutover-resume-transition-rebuild\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume-transition-rebuild/,
+  );
+  assert.match(
+    recovery,
+    /production-deploy-preflight\.sh --allow-cutover-failed-candidate[\s\S]*validate-release-image-manifest\.cjs[\s\S]*actual_image[\s\S]*docker stop --time 60[\s\S]*docker rm "\$\{candidate_containers\[@\]\}"[\s\S]*production-deploy-preflight\.sh --allow-cutover-dependency-recovery/,
+  );
+  assert.doesNotMatch(recovery, /--volumes|docker\s+volume\s+(?:rm|prune)|docker\s+system\s+prune/);
+  assert.match(
+    preflight,
+    /ALLOW_CUTOVER_FAILED_CANDIDATE[\s\S]*failed-candidate recovery requires exactly postgres, redis, api, and media-ai/,
+  );
+  assert.match(
+    deploy,
+    /REBUILD_TRANSITION_CANDIDATE[\s\S]*build api media-ai web[\s\S]*build discord-bot[\s\S]*DEPENDENCY-TRANSITION CANDIDATE REBUILT/,
+  );
+  assert.match(
+    deploy,
+    /MEDIA_AI_U2NET_SHA256="8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491"[\s\S]*MEDIA_AI_ISNET_SHA256="60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a"[\s\S]*warm-media-ai-model-cache\.sh[\s\S]*create_pre_migration_backup/,
   );
 });

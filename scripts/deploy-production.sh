@@ -13,6 +13,7 @@ MODE="full"
 FIRST_DEPLOY=0
 REUSE_VERIFIED_BACKUP_ID=""
 REUSE_CANDIDATE_RELEASE_ID=""
+REBUILD_TRANSITION_CANDIDATE=0
 LOCK_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_LOCK_TIMEOUT_SECONDS:-10}"
 HEALTH_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_HEALTH_TIMEOUT_SECONDS:-240}"
 RELEASE_ARCHIVE_ROOT="${ARENZYRA_RELEASE_ARCHIVE_ROOT:-$EXPECTED_RELEASE_ARCHIVE_ROOT}"
@@ -74,7 +75,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -96,6 +97,10 @@ while [ "$#" -gt 0 ]; do
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
     --legacy-cutover-resume-interrupted) MODE="legacy-cutover-resume-interrupted" ;;
     --legacy-cutover-resume-transition) MODE="legacy-cutover-resume-transition" ;;
+    --legacy-cutover-resume-transition-rebuild)
+      MODE="legacy-cutover-resume-transition"
+      REBUILD_TRANSITION_CANDIDATE=1
+      ;;
     --reuse-verified-backup)
       [ "$#" -ge 2 ] || { printf '%s\n' '--reuse-verified-backup requires one backup ID.' >&2; exit 2; }
       [ -z "$REUSE_VERIFIED_BACKUP_ID" ] || { printf '%s\n' '--reuse-verified-backup may be specified only once.' >&2; exit 2; }
@@ -127,6 +132,10 @@ if [ -n "$REUSE_VERIFIED_BACKUP_ID" ]; then
   }
 fi
 if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+  [ "$REBUILD_TRANSITION_CANDIDATE" -eq 0 ] || {
+    printf '%s\n' '--reuse-candidate-release cannot be combined with a transition candidate rebuild.' >&2
+    exit 2
+  }
   if [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
     [ -n "$REUSE_VERIFIED_BACKUP_ID" ] || {
       printf '%s\n' '--reuse-candidate-release requires a verified backup ID for an interrupted resume.' >&2
@@ -142,7 +151,8 @@ if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
   }
 fi
 if [ "$MODE" = "legacy-cutover-resume-transition" ] && \
-  [ -z "$REUSE_CANDIDATE_RELEASE_ID" ]; then
+  [ -z "$REUSE_CANDIDATE_RELEASE_ID" ] && \
+  [ "$REBUILD_TRANSITION_CANDIDATE" -eq 0 ]; then
   printf '%s\n' 'Dependency-transition resume requires the exact immutable candidate release ID.' >&2
   exit 2
 fi
@@ -1534,24 +1544,47 @@ else
   bash scripts/production-deploy-preflight.sh --allow-cutover-transition
   bash scripts/verify-production-database-container.sh >/dev/null
   else
-    for candidate_service in api web media-ai discord-bot; do
-      case "$candidate_service" in
-        api) api_image_id="$(read_archived_release_image_id api)" ;;
-        web) web_image_id="$(read_archived_release_image_id web)" ;;
-        media-ai) media_ai_image_id="$(read_archived_release_image_id media-ai)" ;;
-        discord-bot) discord_bot_image_id="$(read_archived_release_image_id discord-bot)" ;;
-      esac
-    done
-    for candidate_image_id in \
-      "$api_image_id" "$web_image_id" "$media_ai_image_id" "$discord_bot_image_id"; do
-      [[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] && \
-        docker image inspect "$candidate_image_id" >/dev/null || {
-        printf '%s\n' 'Reviewed dependency-transition candidate image is unavailable by immutable ID.' >&2
-        exit 75
-      }
-    done
+    if [ "$REBUILD_TRANSITION_CANDIDATE" -eq 1 ]; then
+      bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery
+      "${compose[@]}" build api media-ai web
+      bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery
+      "${compose[@]}" --profile discord-bot build discord-bot
+      verify_clean_release_source
+      for built_service in api web media-ai discord-bot; do
+        archive_built_image_manifest "$built_service"
+      done
+      api_image_id="$(read_archived_release_image_id api)"
+      web_image_id="$(read_archived_release_image_id web)"
+      media_ai_image_id="$(read_archived_release_image_id media-ai)"
+      discord_bot_image_id="$(read_archived_release_image_id discord-bot)"
+      printf 'DEPENDENCY-TRANSITION CANDIDATE REBUILT release=%s services=4\n' "$new_release_id"
+    else
+      for candidate_service in api web media-ai discord-bot; do
+        case "$candidate_service" in
+          api) api_image_id="$(read_archived_release_image_id api)" ;;
+          web) web_image_id="$(read_archived_release_image_id web)" ;;
+          media-ai) media_ai_image_id="$(read_archived_release_image_id media-ai)" ;;
+          discord-bot) discord_bot_image_id="$(read_archived_release_image_id discord-bot)" ;;
+        esac
+      done
+      for candidate_image_id in \
+        "$api_image_id" "$web_image_id" "$media_ai_image_id" "$discord_bot_image_id"; do
+        [[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] && \
+          docker image inspect "$candidate_image_id" >/dev/null || {
+          printf '%s\n' 'Reviewed dependency-transition candidate image is unavailable by immutable ID.' >&2
+          exit 75
+        }
+      done
+    fi
     create_pinned_compose_override legacy-cutover
     create_idp_verification_override
+    bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery
+    MEDIA_AI_MODEL_VOLUME="${compose_project}_media-ai-models" \
+      MEDIA_AI_U2NET_URL="https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx" \
+      MEDIA_AI_U2NET_SHA256="8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491" \
+      MEDIA_AI_ISNET_URL="https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx" \
+      MEDIA_AI_ISNET_SHA256="60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a" \
+      bash scripts/warm-media-ai-model-cache.sh
     bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery
     create_pre_migration_backup
     bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery

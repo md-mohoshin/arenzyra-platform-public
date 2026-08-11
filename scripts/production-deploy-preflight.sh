@@ -15,12 +15,13 @@ ALLOW_CUTOVER_STOPPED=0
 ALLOW_CUTOVER_INTERRUPTED=0
 ALLOW_CUTOVER_TRANSITION=0
 ALLOW_CUTOVER_DEPENDENCY_RECOVERY=0
+ALLOW_CUTOVER_FAILED_CANDIDATE=0
 ALLOW_LOW_DISK_BACKUP_RELEASE=0
 ALLOW_LOW_DISK_SOURCE_RELEASE=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery | --allow-low-disk-backup-release | --allow-low-disk-source-release]
+Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery | --allow-cutover-failed-candidate | --allow-low-disk-backup-release | --allow-low-disk-source-release]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -84,6 +85,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-cutover-dependency-recovery)
       ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1
+      ;;
+    --allow-cutover-failed-candidate)
+      ALLOW_CUTOVER_FAILED_CANDIDATE=1
       ;;
     --allow-low-disk-backup-release)
       # This maintenance-only form retains the exact dependency-recovery
@@ -154,7 +158,8 @@ fi
 cutover_mode_count=$((
   ALLOW_LEGACY_CUTOVER_STOPPED + ALLOW_LEGACY_CUTOVER_INTERRUPTED +
   ALLOW_CUTOVER_STOPPED + ALLOW_CUTOVER_INTERRUPTED +
-  ALLOW_CUTOVER_TRANSITION + ALLOW_CUTOVER_DEPENDENCY_RECOVERY
+  ALLOW_CUTOVER_TRANSITION + ALLOW_CUTOVER_DEPENDENCY_RECOVERY +
+  ALLOW_CUTOVER_FAILED_CANDIDATE
 ))
 if [ "$cutover_mode_count" -gt 1 ] || \
   { [ "$cutover_mode_count" -eq 1 ] && \
@@ -259,7 +264,8 @@ done <<<"$container_output"
 
 volume_gate_args=()
 if [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ] || \
-  [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ]; then
+  [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ] || \
+  [ "$ALLOW_CUTOVER_FAILED_CANDIDATE" -eq 1 ]; then
   volume_gate_args+=(--allow-absent)
 elif [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
   volume_gate_args+=(--allow-running-legacy-root-api)
@@ -376,6 +382,24 @@ else
       continue
     fi
 
+    if [ "$ALLOW_CUTOVER_FAILED_CANDIDATE" -eq 1 ]; then
+      case "$service" in
+        postgres|redis)
+          if [ "$status" != "running" ] || [ "$health" != "healthy" ]; then
+            unhealthy+=("${name#/}: failed-candidate database/cache must be running/healthy, observed=${status}/${health}")
+          fi
+          ;;
+        api|media-ai)
+          if [ "$status" != "running" ] || \
+            { [ "$health" != "unhealthy" ] && [ "$health" != "starting" ]; }; then
+            unhealthy+=("${name#/}: failed candidate must be running and non-ready, observed=${status}/${health}")
+          fi
+          ;;
+        *) unhealthy+=("${name#/}: unexpected failed-candidate service=${service}") ;;
+      esac
+      continue
+    fi
+
     if [ "$ALLOW_WEB_RECOVERY" -eq 1 ] && [ "$service" = "web" ]; then
       if [ "$status" = "exited" ]; then
         continue
@@ -470,6 +494,14 @@ else
       unhealthy+=("cutover dependency recovery requires exactly postgres and redis")
     fi
   fi
+  if [ "$ALLOW_CUTOVER_FAILED_CANDIDATE" -eq 1 ]; then
+    if [ "$postgres_count" -ne 1 ] || [ "$redis_count" -ne 1 ] || \
+      [ "$api_count" -ne 1 ] || [ "$media_ai_count" -ne 1 ] || \
+      [ "$proxy_count" -ne 0 ] || [ "$web_count" -ne 0 ] || \
+      [ "$discord_bot_count" -ne 0 ] || [ "${#containers[@]}" -ne 4 ]; then
+      unhealthy+=("failed-candidate recovery requires exactly postgres, redis, api, and media-ai")
+    fi
+  fi
 
   if [ "${#unhealthy[@]}" -gt 0 ]; then
     block "EXISTING PRODUCTION SERVICE UNHEALTHY" "${unhealthy[@]}"
@@ -498,6 +530,9 @@ else
   fi
   if [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ]; then
     printf '[deploy-preflight] cutover_dependency_recovery=pass postgres=healthy redis=recoverable data_volumes=verified\n'
+  fi
+  if [ "$ALLOW_CUTOVER_FAILED_CANDIDATE" -eq 1 ]; then
+    printf '[deploy-preflight] cutover_failed_candidate=pass dependencies=healthy candidates=non_ready data_volumes=verified\n'
   fi
   printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi

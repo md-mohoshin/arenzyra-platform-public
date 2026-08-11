@@ -117,6 +117,17 @@ case "$command_id" in
       --legacy-cutover-resume-transition \
       --reuse-verified-backup "$2" --reuse-candidate-release "$1"
     ;;
+  failed-candidate-remove)
+    [ "$#" -eq 1 ] || block "failed-candidate-remove requires one release ID."
+    require_nested_assembly
+    exec bash scripts/recover-production-failed-candidate.sh "$1"
+    ;;
+  legacy-cutover-resume-transition-rebuild)
+    [ "$#" -eq 0 ] || block "legacy-cutover-resume-transition-rebuild accepts no arguments."
+    require_nested_assembly
+    exec bash scripts/deploy-production.sh \
+      --legacy-cutover-resume-transition-rebuild
+    ;;
   legacy-cutover-resume-transition-candidate-fresh-backup)
     [ "$#" -eq 1 ] && \
       [[ "$1" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || \

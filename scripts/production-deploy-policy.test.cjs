@@ -672,7 +672,7 @@ test("post-build source provenance is recomputed exactly from a root-only checko
     checkoutSafety < metadataGeneration,
     "checkout ownership and mode safety must be established before Git is invoked",
   );
-  assert.equal(verificationCalls.length, 5);
+  assert.equal(verificationCalls.length, 6);
   assert.ok(
     verificationCalls.some(
       (index) =>
@@ -1304,6 +1304,8 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-resume-interrupted-verified-backup",
       "legacy-cutover-resume-interrupted-candidate",
       "legacy-cutover-resume-transition-candidate",
+      "failed-candidate-remove",
+      "legacy-cutover-resume-transition-rebuild",
       "legacy-cutover-resume-transition-candidate-fresh-backup",
       "deploy-discord",
       "rollback-discord",
