@@ -757,11 +757,13 @@ production cluster prerequisites below remain release blockers:
   closure procedure before any separate first-installation bootstrap.
   Restrictive HBA rules remain defense-in-depth but do not satisfy this ACL
   gate. The role provisioner checks PUBLIC and every already-existing
-  configured app role with the administrator before backup, role creation, or
-  any SQL mutation. It fails safely on a stock cluster and reports the blocking
-  database/role/reason tuples as escaped JSON. The role scripts never
-  auto-revoke cluster-wide ACLs; the first deployment remains blocked until
-  that prerequisite is complete and the gate passes.
+  configured app role with the administrator before role creation or ownership
+  changes. Ordinary deploy and role paths fail safely on a stock cluster and
+  report the blocking database/role/reason tuples as escaped JSON. The
+  stopped-writer legacy cutover is the sole exception: after attesting its
+  fresh encrypted off-site deployment backup, it atomically revokes only the
+  exact stock `PUBLIC CONNECT,TEMPORARY` grants on `postgres` and `template1`,
+  verifies the closed result, and rolls the transaction back on any drift.
 - The role bootstrap revokes `pg_catalog.pg_control_system()` execution from
   `PUBLIC` and every application role, then grants it only to the exact API
   migrator, maintenance-read, and IDP-maintenance roles so the immutable

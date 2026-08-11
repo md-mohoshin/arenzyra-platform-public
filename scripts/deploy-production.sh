@@ -1053,6 +1053,9 @@ wait_for_health() {
   done
 }
 
+verified_backup_id=""
+verified_backup_dir=""
+verified_backup_not_before_epoch=""
 create_pre_migration_backup() {
   local backup_start_epoch backup_root backup_id backup_dir resolved_backup_dir
   local marker_epoch result_file
@@ -1120,6 +1123,9 @@ create_pre_migration_backup() {
   fi
 
   printf 'PRE-MIGRATION BACKUP VERIFIED id=%s path=%s\n' "$backup_id" "$resolved_backup_dir"
+  verified_backup_id="$backup_id"
+  verified_backup_dir="$resolved_backup_dir"
+  verified_backup_not_before_epoch="$backup_start_epoch"
   rm -f -- "$result_file"
   rmdir -- "$runtime_temp_dir"
   runtime_temp_dir=""
@@ -1173,6 +1179,9 @@ elif [ "$MODE" = "full" ]; then
   # created their objects. Ownership drift and runtime ledger access fail shut.
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="$verified_backup_id" \
+    ARENZYRA_DEPLOY_VERIFIED_BACKUP_DIR="$verified_backup_dir" \
+    ARENZYRA_DEPLOY_VERIFIED_BACKUP_NOT_BEFORE_EPOCH="$verified_backup_not_before_epoch" \
     bash scripts/provision-production-database-roles.sh \
       --env infra/.env.publish --apply
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
@@ -1236,6 +1245,9 @@ else
   bash scripts/production-deploy-preflight.sh \
     "${pre_remediation_preflight[@]}"
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="$verified_backup_id" \
+    ARENZYRA_DEPLOY_VERIFIED_BACKUP_DIR="$verified_backup_dir" \
+    ARENZYRA_DEPLOY_VERIFIED_BACKUP_NOT_BEFORE_EPOCH="$verified_backup_not_before_epoch" \
     bash scripts/provision-production-database-roles.sh \
       --env infra/.env.publish --apply --adopt-reviewed-ownership \
       --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP \

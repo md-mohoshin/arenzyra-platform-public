@@ -247,4 +247,8 @@ test("reviewed resumes accept only exact stopped states and make a new off-site 
     /elif \[ "\$application_count" -ne 1 \]; then[\s\S]*application container count exceeds one/,
   );
   assert.match(deploy, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
+  assert.match(
+    deploy,
+    /verified_backup_id="\$backup_id"[\s\S]*ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="\$verified_backup_id"[\s\S]*ARENZYRA_DEPLOY_VERIFIED_BACKUP_DIR="\$verified_backup_dir"[\s\S]*ARENZYRA_DEPLOY_VERIFIED_BACKUP_NOT_BEFORE_EPOCH="\$verified_backup_not_before_epoch"[\s\S]*provision-production-database-roles\.sh/,
+  );
 });

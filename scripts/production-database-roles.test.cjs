@@ -311,7 +311,10 @@ test("stock auxiliary database privileges block first-deploy role verification",
     publishGuide,
     /before any separate first-installation bootstrap/,
   );
-  assert.match(publishGuide, /never\s+auto-revoke cluster-wide ACLs/);
+  assert.match(
+    publishGuide,
+    /stopped-writer legacy cutover is the sole exception/,
+  );
 
   const provisioner = read("scripts/provision-production-database-roles.sh");
   const administratorPrecheck = provisioner.indexOf(
@@ -354,6 +357,18 @@ test("stock auxiliary database privileges block first-deploy role verification",
   );
   assert.match(provisioner, /json_build_object/);
   assert.match(provisioner, /blocking grants=%s/);
+  assert.match(
+    provisioner,
+    /ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID[\s\S]*OFFSITE_VERIFIED/,
+  );
+  assert.match(
+    provisioner,
+    /4\\\|4\\\|0[\s\S]*REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;[\s\S]*REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;/,
+  );
+  assert.match(
+    provisioner,
+    /Legacy auxiliary-database ACL remediation failed; its transaction was rolled back/,
+  );
   assert.match(
     publishGuide,
     /Restrictive HBA rules remain defense-in-depth but do not satisfy this ACL\s+gate/,
