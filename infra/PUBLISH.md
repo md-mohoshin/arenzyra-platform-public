@@ -313,6 +313,22 @@ container inventory, use only the separate argument-free recovery path:
 production_entry legacy-cutover-resume-interrupted
 ```
 
+If an interrupted resume already completed its fresh encrypted off-site backup
+but failed before ownership or schema work, the reviewed recovery launcher can
+reuse that backup without creating another large local copy:
+
+```bash
+production_entry legacy-cutover-resume-interrupted-verified-backup \
+  <backup-id>
+```
+
+This path remains limited to the exact stopped interrupted-cutover topology. It
+accepts only a backup completed and off-site verified within the last two hours,
+requires its archived clean-Git release to have the same reviewed API and Web
+commits, requires its Root commit to be an ancestor of the current Root, and
+permits only `scripts/` or this runbook to differ in Root. Any application
+source change, missing/unsafe artifact, or incompatible lineage fails closed.
+
 It requires exactly one healthy legacy PostgreSQL and Redis container, no
 running application or maintenance writer, no duplicate application container,
 and at least one absent stopped application container. It also requires the

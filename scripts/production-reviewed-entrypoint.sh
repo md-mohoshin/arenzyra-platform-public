@@ -90,6 +90,13 @@ case "$command_id" in
     exec /bin/bash scripts/deploy-production.sh \
       --legacy-cutover-resume-interrupted
     ;;
+  legacy-cutover-resume-interrupted-verified-backup)
+    [ "$#" -eq 1 ] && [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || \
+      block "legacy-cutover-resume-interrupted-verified-backup requires one backup ID."
+    require_nested_assembly
+    exec /bin/bash scripts/deploy-production.sh \
+      --legacy-cutover-resume-interrupted --reuse-verified-backup "$1"
+    ;;
   deploy-discord)
     if [ "$#" -eq 0 ]; then
       first_deploy=()

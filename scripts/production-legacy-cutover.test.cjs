@@ -252,3 +252,33 @@ test("reviewed resumes accept only exact stopped states and make a new off-site 
     /verified_backup_id="\$backup_id"[\s\S]*ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="\$verified_backup_id"[\s\S]*ARENZYRA_DEPLOY_VERIFIED_BACKUP_DIR="\$verified_backup_dir"[\s\S]*ARENZYRA_DEPLOY_VERIFIED_BACKUP_NOT_BEFORE_EPOCH="\$verified_backup_not_before_epoch"[\s\S]*provision-production-database-roles\.sh/,
   );
 });
+
+test("interrupted resume may reuse only a recent compatible reviewed off-site backup", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  assert.match(
+    launcher,
+    /legacy-cutover-resume-interrupted-verified-backup\)[\s\S]*requires one backup ID[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume-interrupted --reuse-verified-backup "\$1"/,
+  );
+  assert.match(
+    deploy,
+    /--reuse-verified-backup is allowed only for the interrupted legacy-cutover resume/,
+  );
+  assert.match(
+    deploy,
+    /reuse_verified_pre_migration_backup\(\)[\s\S]*BACKUP_COMPLETE OFFSITE_VERIFIED database\.dump\.age database-globals\.sql\.age[\s\S]*volume-api-storage\.tar\.gz\.age[\s\S]*volume-api-uploads\.tar\.gz\.age/,
+  );
+  assert.match(deploy, /marker is older than two hours/);
+  assert.match(
+    deploy,
+    /ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*merge-base --is-ancestor/,
+  );
+  assert.match(
+    deploy,
+    /infra\/PUBLISH\.md\|scripts\/\*\)[\s\S]*application-affecting Root change/,
+  );
+  assert.match(
+    deploy,
+    /if \[ -n "\$REUSE_VERIFIED_BACKUP_ID" \]; then\s*reuse_verified_pre_migration_backup\s*return/,
+  );
+});

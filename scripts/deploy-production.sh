@@ -11,6 +11,7 @@ EXPECTED_RELEASE_ARCHIVE_ROOT="/opt/arenzyra-release-metadata"
 LOCK_FILE="/run/arenzyra-production-deploy.lock"
 MODE="full"
 FIRST_DEPLOY=0
+REUSE_VERIFIED_BACKUP_ID=""
 LOCK_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_LOCK_TIMEOUT_SECONDS:-10}"
 HEALTH_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_HEALTH_TIMEOUT_SECONDS:-240}"
 RELEASE_ARCHIVE_ROOT="${ARENZYRA_RELEASE_ARCHIVE_ROOT:-$EXPECTED_RELEASE_ARCHIVE_ROOT}"
@@ -72,7 +73,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted] [--reuse-verified-backup BACKUP_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -93,12 +94,29 @@ while [ "$#" -gt 0 ]; do
     --legacy-cutover) MODE="legacy-cutover" ;;
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
     --legacy-cutover-resume-interrupted) MODE="legacy-cutover-resume-interrupted" ;;
+    --reuse-verified-backup)
+      [ "$#" -ge 2 ] || { printf '%s\n' '--reuse-verified-backup requires one backup ID.' >&2; exit 2; }
+      [ -z "$REUSE_VERIFIED_BACKUP_ID" ] || { printf '%s\n' '--reuse-verified-backup may be specified only once.' >&2; exit 2; }
+      REUSE_VERIFIED_BACKUP_ID="$2"
+      shift
+      ;;
     --first-deploy) FIRST_DEPLOY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+
+if [ -n "$REUSE_VERIFIED_BACKUP_ID" ]; then
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ] || {
+    printf '%s\n' '--reuse-verified-backup is allowed only for the interrupted legacy-cutover resume.' >&2
+    exit 2
+  }
+  [[ "$REUSE_VERIFIED_BACKUP_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || {
+    printf '%s\n' '--reuse-verified-backup received an invalid backup ID.' >&2
+    exit 2
+  }
+fi
 
 if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
   [ "$MODE" = "legacy-cutover-resume" ] || \
@@ -1056,10 +1074,139 @@ wait_for_health() {
 verified_backup_id=""
 verified_backup_dir=""
 verified_backup_not_before_epoch=""
+reuse_verified_pre_migration_backup() {
+  local backup_id backup_root resolved_backup_dir marker_epoch now_epoch
+  local complete_release_id release_env backup_root_revision backup_root_commit
+  local backup_api_revision backup_web_revision changed_path identity root_changes
+  local artifact artifact_path
+  local -a required children
+
+  backup_id="$REUSE_VERIFIED_BACKUP_ID"
+  backup_root="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYRA_RECOVERY_V1_ROOT)"
+  if [ -z "$backup_root" ]; then
+    backup_root="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYRA_BACKUP_ROOT)"
+  fi
+  backup_root="${backup_root:-/opt/arenzyra-backups}"
+  backup_root="$(realpath -e -- "$backup_root")"
+  resolved_backup_dir="$(realpath -e -- "$backup_root/$backup_id")"
+  [ "$(dirname -- "$resolved_backup_dir")" = "$backup_root" ] && \
+    [ "$(basename -- "$resolved_backup_dir")" = "$backup_id" ] || {
+      printf '%s\n' 'Verified backup reuse escaped its configured root.' >&2
+      return 75
+    }
+  [ "$(stat -Lc '%u:%g:%a' -- "$resolved_backup_dir" 2>/dev/null || true)" = "0:0:700" ] || {
+    printf '%s\n' 'Verified backup reuse directory permissions differ.' >&2
+    return 75
+  }
+
+  required=(
+    BACKUP_COMPLETE OFFSITE_VERIFIED database.dump.age database-globals.sql.age
+    manifest.sha256.age metadata.txt.age volume-api-storage.tar.gz.age
+    volume-api-uploads.tar.gz.age
+  )
+  for artifact in "${required[@]}"; do
+    [ -f "$resolved_backup_dir/$artifact" ] && [ ! -L "$resolved_backup_dir/$artifact" ] || {
+      printf 'Verified backup reuse artifact is unsafe or missing: %s\n' "$artifact" >&2
+      return 75
+    }
+    identity="$(stat -Lc '%u:%g:%a:%h:%s' -- "$resolved_backup_dir/$artifact" 2>/dev/null || true)"
+    [[ "$identity" =~ ^0:0:600:1:[1-9][0-9]*$ ]] || {
+      printf 'Verified backup reuse artifact identity differs: %s\n' "$artifact" >&2
+      return 75
+    }
+  done
+  shopt -s nullglob dotglob
+  children=("$resolved_backup_dir"/*)
+  shopt -u dotglob nullglob
+  for artifact_path in "${children[@]}"; do
+    artifact="${artifact_path##*/}"
+    case "$artifact" in
+      BACKUP_COMPLETE|OFFSITE_VERIFIED|database.dump.age|database-globals.sql.age|manifest.sha256.age|metadata.txt.age|volume-api-storage.tar.gz.age|volume-api-uploads.tar.gz.age|volume-redis-data.tar.gz.age|volume-caddy-data.tar.gz.age|volume-caddy-config.tar.gz.age|volume-discord-bot-state.tar.gz.age) ;;
+      *) printf 'Verified backup reuse found an unsupported artifact: %s\n' "$artifact" >&2; return 75 ;;
+    esac
+    [ -f "$artifact_path" ] && [ ! -L "$artifact_path" ] && \
+      [[ "$(stat -Lc '%u:%g:%a:%h:%s' -- "$artifact_path" 2>/dev/null || true)" =~ ^0:0:600:1:[1-9][0-9]*$ ]] || {
+      printf 'Verified backup reuse found an unsafe artifact: %s\n' "$artifact" >&2
+      return 75
+    }
+  done
+
+  [ "$(wc -l < "$resolved_backup_dir/BACKUP_COMPLETE")" -eq 3 ] && \
+    [ "$(grep -Fxc -- "backup_id=$backup_id" "$resolved_backup_dir/BACKUP_COMPLETE")" -eq 1 ] && \
+    [ "$(grep -Ec '^created_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$resolved_backup_dir/BACKUP_COMPLETE")" -eq 1 ] && \
+    [ "$(grep -Ec '^reason=pre-migration:git-[a-zA-Z0-9._-]+$' "$resolved_backup_dir/BACKUP_COMPLETE")" -eq 1 ] || {
+      printf '%s\n' 'Verified backup reuse completion marker is invalid.' >&2
+      return 75
+    }
+  [ "$(wc -l < "$resolved_backup_dir/OFFSITE_VERIFIED")" -eq 2 ] && \
+    [ "$(grep -Ec '^verified_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$resolved_backup_dir/OFFSITE_VERIFIED")" -eq 1 ] && \
+    [ "$(grep -Ec "^remote=.+/$backup_id$" "$resolved_backup_dir/OFFSITE_VERIFIED")" -eq 1 ] || {
+      printf '%s\n' 'Verified backup reuse off-site marker is invalid.' >&2
+      return 75
+    }
+  complete_release_id="$(sed -n 's/^reason=pre-migration://p' "$resolved_backup_dir/BACKUP_COMPLETE")"
+  release_env="$RELEASE_ARCHIVE_ROOT/$complete_release_id.env"
+  verify_archived_release_file "$release_env" "$complete_release_id"
+  [ "$(node scripts/read-dotenv-value.cjs "$release_env" ARENZYRA_BUILD_SOURCE)" = git ] && \
+    [ "$(node scripts/read-dotenv-value.cjs "$release_env" ARENZYRA_BUILD_DIRTY)" = false ] || {
+      printf '%s\n' 'Verified backup reuse release provenance is not clean Git.' >&2
+      return 75
+    }
+  backup_root_revision="$(node scripts/read-dotenv-value.cjs "$release_env" ARENZYRA_ROOT_GIT_COMMIT)"
+  backup_api_revision="$(node scripts/read-dotenv-value.cjs "$release_env" ARENZYRA_API_GIT_COMMIT)"
+  backup_web_revision="$(node scripts/read-dotenv-value.cjs "$release_env" ARENZYRA_WEB_GIT_COMMIT)"
+  [[ "$backup_root_revision" =~ ^[0-9a-f]{12,40}$ ]] && \
+    [[ "$backup_api_revision" =~ ^[0-9a-f]{12,40}$ ]] && \
+    [[ "$backup_web_revision" =~ ^[0-9a-f]{12,40}$ ]] && \
+    [ "$backup_api_revision" = "${ARENZYRA_REVIEWED_API_COMMIT:0:${#backup_api_revision}}" ] && \
+    [ "$backup_web_revision" = "${ARENZYRA_REVIEWED_WEB_COMMIT:0:${#backup_web_revision}}" ] || {
+      printf '%s\n' 'Verified backup reuse release components differ from the reviewed deployment.' >&2
+      return 75
+    }
+  backup_root_commit="$("${bootstrap_git[@]}" -C "$resolved_root" rev-parse --verify "${backup_root_revision}^{commit}" 2>/dev/null || true)"
+  [ -n "$backup_root_commit" ] && \
+    "${bootstrap_git[@]}" -C "$resolved_root" merge-base --is-ancestor "$backup_root_commit" "$ARENZYRA_REVIEWED_ROOT_COMMIT" || {
+      printf '%s\n' 'Verified backup reuse Root lineage differs from the reviewed deployment.' >&2
+      return 75
+    }
+  if ! root_changes="$("${bootstrap_git[@]}" -C "$resolved_root" diff --name-only "$backup_root_commit" "$ARENZYRA_REVIEWED_ROOT_COMMIT")"; then
+    printf '%s\n' 'Verified backup reuse could not compare Root source changes.' >&2
+    return 75
+  fi
+  while IFS= read -r changed_path; do
+    [ -n "$changed_path" ] || continue
+    case "$changed_path" in
+      infra/PUBLISH.md|scripts/*) ;;
+      *) printf 'Verified backup reuse found an application-affecting Root change: %s\n' "$changed_path" >&2; return 75 ;;
+    esac
+  done <<< "$root_changes"
+
+  now_epoch="$(date +%s)"
+  for artifact in BACKUP_COMPLETE OFFSITE_VERIFIED; do
+    marker_epoch="$(stat -c %Y -- "$resolved_backup_dir/$artifact")"
+    [[ "$marker_epoch" =~ ^[0-9]+$ ]] && [ "$marker_epoch" -le "$now_epoch" ] && \
+      [ $(( now_epoch - marker_epoch )) -le 7200 ] || {
+        printf '%s\n' 'Verified backup reuse marker is older than two hours.' >&2
+        return 75
+      }
+  done
+
+  verified_backup_id="$backup_id"
+  verified_backup_dir="$resolved_backup_dir"
+  verified_backup_not_before_epoch=""
+  printf 'PRE-MIGRATION BACKUP REUSE VERIFIED id=%s path=%s source_release=%s\n' \
+    "$backup_id" "$resolved_backup_dir" "$complete_release_id"
+}
+
 create_pre_migration_backup() {
   local backup_start_epoch backup_root backup_id backup_dir resolved_backup_dir
   local marker_epoch result_file
   local -a backup_result backup_environment backup_arguments
+
+  if [ -n "$REUSE_VERIFIED_BACKUP_ID" ]; then
+    reuse_verified_pre_migration_backup
+    return
+  fi
 
   runtime_temp_dir="$(mktemp -d /run/arenzyra-pre-migration-backup.XXXXXX)"
   chmod 700 "$runtime_temp_dir"
