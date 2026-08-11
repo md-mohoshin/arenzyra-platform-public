@@ -7,6 +7,7 @@ LOCK_FILE="/run/arenzyra-production-deploy.lock"
 PREFLIGHT_MODE="legacy-interrupted"
 if [ "$#" -eq 1 ] && [ "$1" = "--cutover-transition" ]; then
   PREFLIGHT_MODE="cutover-transition"
+  shift
 elif [ "$#" -ne 0 ]; then
   printf 'LEGACY ADMIN DIAGNOSTIC BLOCKED: arguments are invalid.\n' >&2
   exit 75
