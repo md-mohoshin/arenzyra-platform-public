@@ -55,6 +55,7 @@ if ! diagnostic="$({
   IFS= read -r PGDATABASE
   IFS= read -r expected_schema
   IFS= read -r PGPORT
+  export PGUSER PGDATABASE PGPORT
   container_env_match=0
   [ "$PGUSER" = "${POSTGRES_USER:-}" ] && container_env_match=1
 

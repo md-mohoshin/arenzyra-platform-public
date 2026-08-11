@@ -168,6 +168,7 @@ test("legacy administrator diagnostic is allowlisted, bounded, and read-only", (
   );
   assert.match(diagnostic, /default_transaction_read_only=on/);
   assert.match(diagnostic, /PGHOST=\/var\/run\/postgresql/);
+  assert.match(diagnostic, /export PGUSER PGDATABASE PGPORT/);
   assert.match(diagnostic, /tcp_reviewed_password/);
   assert.match(diagnostic, /hba_non_scram/);
   assert.doesNotMatch(
