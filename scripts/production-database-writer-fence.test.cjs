@@ -34,6 +34,11 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
   assert.match(script, /count\(\*\) = 2[\s\S]*rolbypassrls/);
   assert.match(
     script,
+    /rolcanlogin IS DISTINCT FROM :'"'"'expected_login'"'"'::boolean/,
+  );
+  assert.doesNotMatch(script, /rolcanlogin::text/);
+  assert.match(
+    script,
     /DATABASE_WRITER_FENCE_PREDICATE name=runtime_role_count value=:runtime_role_count api=:api_runtime_role_count studio=:studio_runtime_role_count/,
   );
   assert.doesNotMatch(script, /\\quit\s+75/);

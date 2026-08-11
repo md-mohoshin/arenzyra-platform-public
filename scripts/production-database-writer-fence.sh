@@ -158,7 +158,7 @@ WHERE usename IN (:'"'"'api_runtime_role'"'"', :'"'"'studio_runtime_role'"'"')
 SELECT CASE
   WHEN count(*) = 2
    AND count(*) FILTER (
-         WHERE rolcanlogin::text <> :'"'"'expected_login'"'"'
+         WHERE rolcanlogin IS DISTINCT FROM :'"'"'expected_login'"'"'::boolean
             OR rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit
             OR rolreplication OR rolbypassrls
        ) = 0
