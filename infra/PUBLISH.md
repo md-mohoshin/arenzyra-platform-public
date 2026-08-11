@@ -763,7 +763,11 @@ production cluster prerequisites below remain release blockers:
   stopped-writer legacy cutover is the sole exception: after attesting its
   fresh encrypted off-site deployment backup, it atomically revokes only the
   exact stock `PUBLIC CONNECT,TEMPORARY` grants on `postgres` and `template1`,
-  verifies the closed result, and rolls the transaction back on any drift.
+  verifies the closed result, and rolls the transaction back if either revoke
+  fails. If a deployment transport ends after its verified backup but before
+  this closure, `production_entry legacy-auxiliary-acl-close <backup-id>` may
+  reuse only that still-recent verified backup under the same exact stopped
+  interrupted-cutover boundary; it performs no role, ownership, or row change.
 - The role bootstrap revokes `pg_catalog.pg_control_system()` execution from
   `PUBLIC` and every application role, then grants it only to the exact API
   migrator, maintenance-read, and IDP-maintenance roles so the immutable

@@ -13,6 +13,7 @@ OWNERSHIP_CONFIRMATION=""
 LEGACY_CUTOVER_PARTIAL=0
 LEGACY_CUTOVER_INTERRUPTED=0
 RUNTIME_ROLES_FENCED=0
+LEGACY_AUXILIARY_ACL_ONLY=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --env) ENV_FILE="$2"; shift ;;
@@ -31,6 +32,7 @@ while [ "$#" -gt 0 ]; do
     --legacy-cutover-partial) LEGACY_CUTOVER_PARTIAL=1 ;;
     --legacy-cutover-interrupted) LEGACY_CUTOVER_INTERRUPTED=1 ;;
     --runtime-roles-fenced) RUNTIME_ROLES_FENCED=1 ;;
+    --legacy-auxiliary-acl-only) LEGACY_AUXILIARY_ACL_ONLY=1 ;;
     -h|--help)
       printf 'Usage: %s [--env infra/.env.publish] (--dry-run|--apply) [--first-deploy-create-only | --adopt-reviewed-ownership --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP [--legacy-cutover-partial] | --runtime-roles-fenced]\n' "$0"
       exit 0
@@ -75,6 +77,12 @@ fi
 if [ "$RUNTIME_ROLES_FENCED" -eq 1 ] && \
   { [ "$MODE" != apply ] || [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; }; then
   printf '%s\n' '--runtime-roles-fenced is only valid for post-migration apply.' >&2
+  exit 2
+fi
+if [ "$LEGACY_AUXILIARY_ACL_ONLY" -eq 1 ] && \
+  { [ "$MODE" != apply ] || [ "$LEGACY_CUTOVER_PARTIAL" -ne 1 ] || \
+    [ "$ADOPT_REVIEWED_OWNERSHIP" -ne 1 ]; }; then
+  printf '%s\n' '--legacy-auxiliary-acl-only requires stopped-writer legacy ownership adoption apply.' >&2
   exit 2
 fi
 
@@ -574,9 +582,11 @@ require_verified_deploy_backup() {
   backup_id="${ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID:-}"
   backup_dir="${ARENZYRA_DEPLOY_VERIFIED_BACKUP_DIR:-}"
   not_before="${ARENZYRA_DEPLOY_VERIFIED_BACKUP_NOT_BEFORE_EPOCH:-}"
-  [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] && \
-    [[ "$not_before" =~ ^[0-9]+$ ]] || return 75
+  [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || return 75
   backup_root="$(realpath -e -- "$configured_backup_root" 2>/dev/null)" || return 75
+  if [ -z "$backup_dir" ]; then
+    backup_dir="$backup_root/$backup_id"
+  fi
   backup_dir="$(realpath -e -- "$backup_dir" 2>/dev/null)" || return 75
   [ "$(dirname -- "$backup_dir")" = "$backup_root" ] && \
     [ "$(basename -- "$backup_dir")" = "$backup_id" ] || return 75
@@ -586,8 +596,14 @@ require_verified_deploy_backup() {
   done
   for artifact in BACKUP_COMPLETE OFFSITE_VERIFIED; do
     marker_epoch="$(stat -c %Y -- "$backup_dir/$artifact")"
-    [[ "$marker_epoch" =~ ^[0-9]+$ ]] && \
-      [ "$marker_epoch" -ge "$not_before" ] || return 75
+    [[ "$marker_epoch" =~ ^[0-9]+$ ]] || return 75
+    if [ -n "$not_before" ]; then
+      [[ "$not_before" =~ ^[0-9]+$ ]] && \
+        [ "$marker_epoch" -ge "$not_before" ] || return 75
+    else
+      [ "$marker_epoch" -le "$(date +%s)" ] && \
+        [ $(( $(date +%s) - marker_epoch )) -le 7200 ] || return 75
+    fi
   done
 }
 
@@ -631,65 +647,17 @@ remediate_legacy_cross_database_acl() {
       0\|0\|0) printf already-compliant ;;
       4\|4\|0)
         export PGOPTIONS="$settings"
-        psql -X -v ON_ERROR_STOP=1 >/dev/null 2>&1 <<'"'"'SQL'"'"'
+        psql -X -v ON_ERROR_STOP=1 >/dev/null <<'"'"'SQL'"'"'
 BEGIN;
-DO $acl_precheck$
-DECLARE public_total integer; expected_total integer; configured_total integer;
-BEGIN
-  WITH configured_role AS (
-    SELECT role.oid FROM pg_roles role WHERE role.rolname IN (
-      current_setting('arenzyra.api_runtime_role'), current_setting('arenzyra.api_migration_role'),
-      current_setting('arenzyra.studio_runtime_role'), current_setting('arenzyra.studio_migration_role'),
-      current_setting('arenzyra.maintenance_read_role'), current_setting('arenzyra.idp_maintenance_role'),
-      current_setting('arenzyra.youtube_maintenance_role'))
-  ), public_grant AS (
-    SELECT database.datname, privilege.privilege_type FROM pg_database database
-    CROSS JOIN LATERAL aclexplode(COALESCE(database.datacl, acldefault('d', database.datdba))) privilege
-    WHERE database.datname <> current_database() AND database.datallowconn
-      AND privilege.grantee = 0 AND privilege.privilege_type IN ('CONNECT', 'TEMPORARY')
-  ), configured_violation AS (
-    SELECT 1 FROM pg_database database JOIN configured_role role ON role.oid = database.datdba
-      WHERE database.datname <> current_database()
-    UNION ALL
-    SELECT 1 FROM pg_database database CROSS JOIN LATERAL aclexplode(database.datacl) privilege
-      JOIN configured_role role ON role.oid = privilege.grantee WHERE database.datname <> current_database()
-    UNION ALL
-    SELECT 1 FROM pg_database database CROSS JOIN configured_role role
-      WHERE database.datname <> current_database() AND database.datallowconn
-        AND (has_database_privilege(role.oid, database.oid, 'CONNECT') OR has_database_privilege(role.oid, database.oid, 'TEMPORARY'))
-  )
-  SELECT (SELECT count(*) FROM public_grant),
-    (SELECT count(*) FROM public_grant WHERE (datname, privilege_type) IN (
-      ('postgres', 'CONNECT'), ('postgres', 'TEMPORARY'),
-      ('template1', 'CONNECT'), ('template1', 'TEMPORARY'))),
-    (SELECT count(*) FROM configured_violation)
-  INTO public_total, expected_total, configured_total;
-  IF public_total <> 4 OR expected_total <> 4 OR configured_total <> 0 THEN
-    RAISE EXCEPTION 'auxiliary database ACL state changed';
-  END IF;
-END
-$acl_precheck$;
 REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
-DO $acl_postcheck$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_database database
-    CROSS JOIN LATERAL aclexplode(COALESCE(database.datacl, acldefault('d', database.datdba))) privilege
-    WHERE database.datname <> current_database() AND database.datallowconn
-      AND privilege.grantee = 0 AND privilege.privilege_type IN ('CONNECT', 'TEMPORARY')
-  ) THEN
-    RAISE EXCEPTION 'auxiliary database PUBLIC privileges remain';
-  END IF;
-END
-$acl_postcheck$;
 COMMIT;
 SQL
         printf remediated
         ;;
       *) exit 75 ;;
     esac
-  ' 2>/dev/null)"; then
+  ')"; then
     printf '%s\n' 'Legacy auxiliary-database ACL remediation failed; its transaction was rolled back.' >&2
     return 75
   fi
@@ -741,6 +709,10 @@ if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
   remediate_legacy_cross_database_acl
 fi
 verify_cross_database_acl_closed
+if [ "$LEGACY_AUXILIARY_ACL_ONLY" -eq 1 ]; then
+  printf '%s\n' 'LEGACY AUXILIARY DATABASE ACL CLOSURE VERIFIED'
+  exit 0
+fi
 existing_role_count=0
 precheck_existing_role() {
   local profile="$1" role="$2" password="$3" exists

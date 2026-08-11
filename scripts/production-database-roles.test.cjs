@@ -369,6 +369,15 @@ test("stock auxiliary database privileges block first-deploy role verification",
     provisioner,
     /Legacy auxiliary-database ACL remediation failed; its transaction was rolled back/,
   );
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  assert.match(
+    launcher,
+    /legacy-auxiliary-acl-close\)[\s\S]*requires one backup ID[\s\S]*ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID[\s\S]*--legacy-auxiliary-acl-only/,
+  );
+  assert.match(
+    provisioner,
+    /LEGACY_AUXILIARY_ACL_ONLY[\s\S]*LEGACY AUXILIARY DATABASE ACL CLOSURE VERIFIED/,
+  );
   assert.match(
     publishGuide,
     /Restrictive HBA rules remain defense-in-depth but do not satisfy this ACL\s+gate/,

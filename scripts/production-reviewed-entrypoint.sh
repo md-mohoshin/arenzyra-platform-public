@@ -168,6 +168,18 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/diagnose-production-legacy-database-admin.sh
     ;;
+  legacy-auxiliary-acl-close)
+    [ "$#" -eq 1 ] || block "legacy-auxiliary-acl-close requires one backup ID."
+    [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || block "legacy-auxiliary-acl-close backup ID is invalid."
+    require_nested_assembly
+    exec /usr/bin/env ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="$1" \
+      /bin/bash scripts/provision-production-database-roles.sh \
+        --env /opt/arenzyra/infra/.env.publish --apply \
+        --adopt-reviewed-ownership --writers-stopped \
+        --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP \
+        --legacy-cutover-partial --legacy-cutover-interrupted \
+        --legacy-auxiliary-acl-only
+    ;;
   host-maintenance)
     if [ "$#" -eq 0 ]; then
       exec /bin/bash scripts/production-maintenance.sh
