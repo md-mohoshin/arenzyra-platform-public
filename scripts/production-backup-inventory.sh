@@ -24,7 +24,7 @@ source scripts/require-local-production-docker.sh
 source scripts/acquire-production-deploy-lock.sh
 bash scripts/production-deploy-preflight.sh --allow-read-only-legacy-backup
 
-for required_command in stat; do
+for required_command in realpath stat; do
   command -v "$required_command" >/dev/null 2>&1 || \
     block "required inventory command is unavailable: $required_command"
 done
@@ -157,6 +157,11 @@ shopt -s nullglob dotglob
 top_level_entries=("$BACKUP_ROOT"/*)
 for entry in "${top_level_entries[@]}"; do
   entry_name="${entry##*/}"
+  if [ "$entry" = "$MANAGED_BACKUP_ROOT" ] && safe_directory "$entry"; then
+    # The managed encrypted-v1 root is inventoried separately below. It is a
+    # reviewed child of the legacy parent, not an unexpected legacy artifact.
+    continue
+  fi
   if [ "$entry_name" = ".backup.lock" ]; then
     lock_present=1
     if safe_regular_file "$entry" 0; then
@@ -240,3 +245,118 @@ printf 'BACKUP_INVENTORY complete_markers=%s offsite_markers=%s restore_markers=
   "$complete_markers" "$offsite_markers" "$restore_markers" \
   "$encrypted_artifacts" "$unexpected_children"
 printf 'BACKUP_INVENTORY lock_only=%s\n' "$lock_only"
+
+if [ ! -e "$MANAGED_BACKUP_ROOT" ] && [ ! -L "$MANAGED_BACKUP_ROOT" ]; then
+  printf '%s\n' \
+    'MANAGED_BACKUP_INVENTORY root_exists=0 root_safe=1 top_level_entries=0' \
+    'MANAGED_BACKUP_INVENTORY lock_present=0 lock_safe=0' \
+    'MANAGED_BACKUP_INVENTORY completed_sets=0 incomplete_sets=0 unexpected_entries=0' \
+    'MANAGED_BACKUP_INVENTORY complete_markers=0 offsite_markers=0 restore_markers=0 encrypted_artifacts=0 unexpected_children=0'
+  exit 0
+fi
+
+safe_directory "$MANAGED_BACKUP_ROOT" || \
+  block "managed backup root ownership or permissions are unsafe."
+managed_root_resolved="$(realpath -e -- "$MANAGED_BACKUP_ROOT" 2>/dev/null || true)"
+[ "$managed_root_resolved" = "$MANAGED_BACKUP_ROOT" ] || \
+  block "managed backup root identity is unsafe."
+
+managed_lock_present=0
+managed_lock_safe=0
+managed_completed_sets=0
+managed_incomplete_sets=0
+managed_unexpected_entries=0
+managed_complete_markers=0
+managed_offsite_markers=0
+managed_restore_markers=0
+managed_encrypted_artifacts=0
+managed_unexpected_children=0
+
+shopt -s nullglob dotglob
+managed_top_level_entries=("$MANAGED_BACKUP_ROOT"/*)
+for managed_entry in "${managed_top_level_entries[@]}"; do
+  managed_entry_name="${managed_entry##*/}"
+  if [ "$managed_entry_name" = ".backup.lock" ]; then
+    managed_lock_present=1
+    if safe_regular_file "$managed_entry" 0; then
+      managed_lock_safe=1
+    else
+      managed_unexpected_entries=$((managed_unexpected_entries + 1))
+    fi
+    continue
+  fi
+  if [[ "$managed_entry_name" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]] && \
+    safe_directory "$managed_entry"; then
+    managed_completed_sets=$((managed_completed_sets + 1))
+    managed_set_complete=0
+    managed_set_offsite=0
+    managed_set_restore=0
+    managed_set_encrypted=0
+    managed_set_unexpected=0
+    managed_backup_children=("$managed_entry"/*)
+    for managed_child in "${managed_backup_children[@]}"; do
+      managed_child_name="${managed_child##*/}"
+      case "$managed_child_name" in
+        BACKUP_COMPLETE)
+          if safe_regular_file "$managed_child"; then
+            managed_set_complete=1
+          else
+            managed_set_unexpected=$((managed_set_unexpected + 1))
+          fi
+          ;;
+        OFFSITE_VERIFIED)
+          if safe_regular_file "$managed_child"; then
+            managed_set_offsite=1
+          else
+            managed_set_unexpected=$((managed_set_unexpected + 1))
+          fi
+          ;;
+        RESTORE_DRILL_VERIFIED)
+          if safe_regular_file "$managed_child"; then
+            managed_set_restore=1
+          else
+            managed_set_unexpected=$((managed_set_unexpected + 1))
+          fi
+          ;;
+        *.age)
+          if safe_regular_file "$managed_child"; then
+            managed_set_encrypted=$((managed_set_encrypted + 1))
+          else
+            managed_set_unexpected=$((managed_set_unexpected + 1))
+          fi
+          ;;
+        *)
+          managed_set_unexpected=$((managed_set_unexpected + 1))
+          ;;
+      esac
+    done
+    managed_complete_markers=$((managed_complete_markers + managed_set_complete))
+    managed_offsite_markers=$((managed_offsite_markers + managed_set_offsite))
+    managed_restore_markers=$((managed_restore_markers + managed_set_restore))
+    managed_encrypted_artifacts=$((managed_encrypted_artifacts + managed_set_encrypted))
+    managed_unexpected_children=$((managed_unexpected_children + managed_set_unexpected))
+    printf 'MANAGED_BACKUP_SET id=%s state=complete backup_marker=%s offsite_marker=%s restore_marker=%s encrypted_artifacts=%s unexpected_children=%s\n' \
+      "$managed_entry_name" "$managed_set_complete" "$managed_set_offsite" \
+      "$managed_set_restore" "$managed_set_encrypted" "$managed_set_unexpected"
+    continue
+  fi
+  if [[ "$managed_entry_name" =~ ^\.incomplete-([0-9]{8}T[0-9]{6}Z-[0-9a-f]{8})$ ]] && \
+    safe_directory "$managed_entry"; then
+    managed_incomplete_sets=$((managed_incomplete_sets + 1))
+    printf 'MANAGED_BACKUP_SET id=%s state=incomplete\n' "${BASH_REMATCH[1]}"
+    continue
+  fi
+  managed_unexpected_entries=$((managed_unexpected_entries + 1))
+done
+shopt -u dotglob nullglob
+
+printf 'MANAGED_BACKUP_INVENTORY root_exists=1 root_safe=1 top_level_entries=%s\n' \
+  "${#managed_top_level_entries[@]}"
+printf 'MANAGED_BACKUP_INVENTORY lock_present=%s lock_safe=%s\n' \
+  "$managed_lock_present" "$managed_lock_safe"
+printf 'MANAGED_BACKUP_INVENTORY completed_sets=%s incomplete_sets=%s unexpected_entries=%s\n' \
+  "$managed_completed_sets" "$managed_incomplete_sets" "$managed_unexpected_entries"
+printf 'MANAGED_BACKUP_INVENTORY complete_markers=%s offsite_markers=%s restore_markers=%s encrypted_artifacts=%s unexpected_children=%s\n' \
+  "$managed_complete_markers" "$managed_offsite_markers" \
+  "$managed_restore_markers" "$managed_encrypted_artifacts" \
+  "$managed_unexpected_children"
