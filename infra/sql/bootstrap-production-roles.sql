@@ -1116,30 +1116,30 @@ GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system()
 -- No runtime DML defaults are allowed: a broad default grant would also make a
 -- newly-created migration ledger writable. Reconciliation runs after migration.
 ALTER DEFAULT PRIVILEGES FOR ROLE :"api_migration_role"
-  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"api_migration_role"
-  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"api_migration_role"
   REVOKE ALL PRIVILEGES ON FUNCTIONS FROM PUBLIC, :"api_runtime_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"api_migration_role"
   REVOKE ALL PRIVILEGES ON TYPES FROM PUBLIC, :"api_runtime_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"studio_migration_role"
-  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"studio_migration_role"
-  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"studio_migration_role"
   REVOKE ALL PRIVILEGES ON FUNCTIONS FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"studio_migration_role"
   REVOKE ALL PRIVILEGES ON TYPES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 
 ALTER DEFAULT PRIVILEGES FOR ROLE :"api_migration_role" IN SCHEMA :"schema_name"
-  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"api_migration_role" IN SCHEMA :"schema_name"
-  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"studio_migration_role" IN SCHEMA :"schema_name"
-  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"studio_migration_role" IN SCHEMA :"schema_name"
-  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC, :"api_runtime_role", :"api_migration_role", :"studio_runtime_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"api_migration_role" IN SCHEMA :"schema_name"
   REVOKE ALL PRIVILEGES ON FUNCTIONS FROM PUBLIC, :"api_runtime_role", :"studio_runtime_role", :"studio_migration_role", :"maintenance_read_role", :"idp_maintenance_role", :"youtube_maintenance_role";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"studio_migration_role" IN SCHEMA :"schema_name"
@@ -1249,6 +1249,33 @@ WHERE namespace.nspname = :'schema_name'
   AND attribute.attnum > 0
   AND NOT attribute.attisdropped
   AND privilege.grantee <> relation.relowner
+\gexec
+
+-- A migration owner must retain DML on its own exact closed-policy relations.
+-- Ownership permits DDL but an explicit REVOKE can still remove SELECT/INSERT/
+-- UPDATE/DELETE and make data migrations or constraint validation fail. Restore
+-- the complete owner ACL only for reviewed relations and only to the owner that
+-- the policy already attested above; cross-migrator access remains absent.
+SELECT format(
+  'GRANT ALL PRIVILEGES ON TABLE %I.%I TO %I',
+  namespace.nspname,
+  relation.relname,
+  CASE policy.owner_profile
+    WHEN 'api' THEN :'api_migration_role'
+    WHEN 'studio' THEN :'studio_migration_role'
+  END
+)
+FROM pg_class relation
+JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+JOIN arenzyra_object_policy policy
+  ON policy.relation_name = relation.relname
+ AND policy.relation_kind = relation.relkind
+WHERE namespace.nspname = :'schema_name'
+  AND pg_get_userbyid(relation.relowner) = CASE policy.owner_profile
+    WHEN 'api' THEN :'api_migration_role'
+    WHEN 'studio' THEN :'studio_migration_role'
+  END
+ORDER BY policy.relation_name
 \gexec
 
 -- Enum types are closed policy objects. PostgreSQL otherwise gives PUBLIC

@@ -1589,6 +1589,16 @@ WITH object_policy_document AS (
     AND ((NOT is_studio AND owner_name <> current_user)
       OR (is_studio AND owner_name = current_user))
   UNION ALL
+  SELECT 1 FROM app_relation CROSS JOIN parameter
+  WHERE profile = 'api-migrator' AND NOT is_studio
+    AND NOT (has_table_privilege(oid, 'SELECT')
+      AND has_table_privilege(oid, 'INSERT')
+      AND has_table_privilege(oid, 'UPDATE')
+      AND has_table_privilege(oid, 'DELETE')
+      AND has_table_privilege(oid, 'TRUNCATE')
+      AND has_table_privilege(oid, 'REFERENCES')
+      AND has_table_privilege(oid, 'TRIGGER'))
+  UNION ALL
   SELECT 1 FROM app_type CROSS JOIN parameter
   WHERE profile = 'api-migrator' AND owner_name <> current_user
   UNION ALL
@@ -1600,6 +1610,16 @@ WITH object_policy_document AS (
   WHERE profile = 'studio-migrator'
     AND ((is_studio AND owner_name <> current_user)
       OR (NOT is_studio AND owner_name = current_user))
+  UNION ALL
+  SELECT 1 FROM app_relation CROSS JOIN parameter
+  WHERE profile = 'studio-migrator' AND is_studio
+    AND NOT (has_table_privilege(oid, 'SELECT')
+      AND has_table_privilege(oid, 'INSERT')
+      AND has_table_privilege(oid, 'UPDATE')
+      AND has_table_privilege(oid, 'DELETE')
+      AND has_table_privilege(oid, 'TRUNCATE')
+      AND has_table_privilege(oid, 'REFERENCES')
+      AND has_table_privilege(oid, 'TRIGGER'))
   UNION ALL
   SELECT 1 FROM app_type CROSS JOIN parameter
   WHERE profile = 'studio-migrator' AND owner_name = current_user

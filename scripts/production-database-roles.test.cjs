@@ -417,6 +417,27 @@ test("bootstrap removes ambient grants and never default-grants runtime DML", ()
     sql,
     /GRANT EXECUTE ON FUNCTION %s TO %I[\s\S]{0,120}:'api_migration_role'/,
   );
+  assert.match(
+    sql,
+    /GRANT ALL PRIVILEGES ON TABLE %I\.%I TO %I[\s\S]*CASE policy\.owner_profile[\s\S]*api_migration_role[\s\S]*studio_migration_role/,
+  );
+  assert.match(
+    verifier,
+    /profile = 'api-migrator' AND NOT is_studio[\s\S]*has_table_privilege\(oid, 'SELECT'\)[\s\S]*has_table_privilege\(oid, 'TRIGGER'\)/,
+  );
+  assert.match(
+    verifier,
+    /profile = 'studio-migrator' AND is_studio[\s\S]*has_table_privilege\(oid, 'SELECT'\)[\s\S]*has_table_privilege\(oid, 'TRIGGER'\)/,
+  );
+  const defaultPrivilegeClosures = [
+    ...sql.matchAll(
+      /ALTER DEFAULT PRIVILEGES FOR ROLE :"(api_migration_role|studio_migration_role)"(?: IN SCHEMA :"schema_name")?\s+REVOKE ALL PRIVILEGES ON (?:TABLES|SEQUENCES|FUNCTIONS|TYPES) FROM ([^;]+);/g,
+    ),
+  ];
+  assert.equal(defaultPrivilegeClosures.length, 16);
+  for (const [, ownerVariable, revokedGrantees] of defaultPrivilegeClosures) {
+    assert.ok(!revokedGrantees.includes(`:"${ownerVariable}"`));
+  }
   assert.doesNotMatch(
     sql,
     /GRANT EXECUTE ON FUNCTION[^\n]*(?:api_runtime_role|studio_runtime_role|maintenance_read_role|idp_maintenance_role|youtube_maintenance_role)/,
