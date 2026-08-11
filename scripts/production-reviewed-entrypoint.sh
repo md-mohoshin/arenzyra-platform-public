@@ -170,6 +170,12 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/export-production-backup.sh "$1"
     ;;
+  backup-local-release)
+    [ "$#" -eq 2 ] || \
+      block "backup-local-release requires superseded and replacement backup IDs."
+    require_nested_assembly
+    exec /bin/bash scripts/release-local-production-backup.sh "$1" "$2"
+    ;;
   backup-legacy)
     [ "$#" -eq 0 ] || block "backup-legacy accepts no arguments."
     require_nested_assembly

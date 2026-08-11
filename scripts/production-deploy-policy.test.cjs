@@ -1313,6 +1313,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "backup-configure",
       "backup-inventory",
       "backup-export",
+      "backup-local-release",
       "backup-legacy",
       "backup-resume",
       "backup-resume-legacy",

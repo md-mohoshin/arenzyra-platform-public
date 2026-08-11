@@ -243,3 +243,34 @@ test("legacy backup is a narrow read-only profile and normal backup remains stri
   assert.match(lock, /flock -w "\$PRODUCTION_DEPLOY_LOCK_TIMEOUT_SECONDS" 8/);
   assert.match(deploy, /"ARENZYRA_DEPLOY_LOCK_INHERITED=1"/);
 });
+
+test("local backup release preserves B2 and one newer verified local recovery set", () => {
+  const release = read("scripts/release-local-production-backup.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const preflight = read("scripts/production-deploy-preflight.sh");
+
+  assert.match(
+    launcher,
+    /backup-local-release\)[\s\S]*requires superseded and replacement backup IDs[\s\S]*require_nested_assembly[\s\S]*release-local-production-backup\.sh "\$1" "\$2"/,
+  );
+  assert.match(release, /replacement backup must be a newer distinct set/);
+  assert.match(
+    release,
+    /acquire-production-deploy-lock\.sh[\s\S]*production-deploy-preflight\.sh --allow-low-disk-backup-release/,
+  );
+  assert.match(release, /exec 9>"\$resolved_root\/\.backup\.lock"[\s\S]*flock -n 9/);
+  assert.match(release, /safe_file\(\)[\s\S]*0:0:700/);
+  assert.match(release, /BACKUP_COMPLETE[\s\S]*OFFSITE_VERIFIED[\s\S]*database\.dump\.age/);
+  assert.match(release, /grep -Fxq "remote=\$\{EXPECTED_REMOTE\}\/\$\{backup_id\}"/);
+  assert.equal((release.match(/rclone check/g) ?? []).length, 2);
+  assert.match(release, /rclone check "\$superseded_dir"[\s\S]*rclone check "\$replacement_dir"/);
+  assert.match(
+    release,
+    /production-deploy-preflight\.sh --allow-low-disk-backup-release[\s\S]*find "\$superseded_dir" -mindepth 1 -maxdepth 1 -type f -delete[\s\S]*rmdir -- "\$superseded_dir"/,
+  );
+  assert.doesNotMatch(release, /rclone\s+(?:delete|purge|rmdir)|docker\s+(?:compose|volume|system)|rm\s+-rf/);
+  assert.match(
+    preflight,
+    /--allow-low-disk-backup-release[\s\S]*ALLOW_LOW_DISK_BACKUP_RELEASE=1[\s\S]*low_disk_backup_release=pass deployment_remains_blocked=true/,
+  );
+});

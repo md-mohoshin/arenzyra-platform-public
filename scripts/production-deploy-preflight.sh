@@ -15,10 +15,11 @@ ALLOW_CUTOVER_STOPPED=0
 ALLOW_CUTOVER_INTERRUPTED=0
 ALLOW_CUTOVER_TRANSITION=0
 ALLOW_CUTOVER_DEPENDENCY_RECOVERY=0
+ALLOW_LOW_DISK_BACKUP_RELEASE=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery]
+Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery | --allow-low-disk-backup-release]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -82,6 +83,13 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-cutover-dependency-recovery)
       ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1
+      ;;
+    --allow-low-disk-backup-release)
+      # This maintenance-only form retains the exact dependency-recovery
+      # topology and data-volume checks while permitting only the operation
+      # that releases one reverified, superseded local encrypted backup copy.
+      ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1
+      ALLOW_LOW_DISK_BACKUP_RELEASE=1
       ;;
     --allow-stopped-idp-maintenance)
       printf '%s\n' \
@@ -204,11 +212,16 @@ printf '[deploy-preflight] disk=%s mounted_on=%s used=%s free=%sGiB required=%sG
   "$DISK_PATH" "${mounted_on:-unknown}" "${used_percent:-unknown}" \
   "$available_gib" "$MIN_FREE_GIB"
 
-if [ "$available_kib" -lt "$required_kib" ]; then
+if [ "$available_kib" -lt "$required_kib" ] && \
+  [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -ne 1 ]; then
   block "LOW DISK SPACE" \
     "Available: ${available_gib} GiB" \
     "Required:  ${MIN_FREE_GIB} GiB" \
     "Free space must be reviewed safely before deployment."
+fi
+if [ "$available_kib" -lt "$required_kib" ] && \
+  [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -eq 1 ]; then
+  printf '[deploy-preflight] low_disk_backup_release=pass deployment_remains_blocked=true\n'
 fi
 
 if ! command -v docker >/dev/null 2>&1; then

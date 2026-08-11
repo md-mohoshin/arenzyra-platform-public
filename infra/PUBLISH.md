@@ -236,6 +236,24 @@ production_entry backup-resume 20260810T205616Z-a1e31ee3
 production_entry backup-resume-legacy 20260810T205616Z-a1e31ee3
 ```
 
+If a newly completed and off-site-verified encrypted recovery set makes the
+root filesystem fail the 30 GiB deployment gate, release only one older local
+duplicate while retaining both its Object-Locked B2 copy and the newer local
+set:
+
+```bash
+production_entry backup-local-release \
+  <superseded-backup-id> <newer-replacement-backup-id>
+```
+
+This maintenance command accepts only the exact low-disk dependency-recovery
+topology. It locks deployment and backup activity, validates the closed local
+artifact inventory and permissions for both sets, checksum-verifies both sets
+against the fixed private B2 destination, repeats the topology gate, deletes
+only the superseded local files and now-empty exact directory, and performs no
+remote deletion. The ordinary 30 GiB gate remains mandatory before deployment
+can resume.
+
 `backup-configure` accepts only the fixed hash-pinned incoming `age`/`rclone`
 binaries, the private EU Central B2 endpoint, bucket
 `arenzyra-prod-backup-84f2c9`, and prefix `arenzyra/production`. It leaves the
