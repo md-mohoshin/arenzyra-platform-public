@@ -102,7 +102,7 @@ test("legacy cutover preserves volumes and fences all writers through migrations
   );
   assert.match(
     read("scripts/production-database-writer-fence.sh"),
-    /ALTER ROLE :"api_runtime_role" :role_action;[\s\S]*ALTER ROLE :"studio_runtime_role" :role_action;[\s\S]*pg_terminate_backend/,
+    /ALTER ROLE :"api_runtime_role" NOSUPERUSER[\s\S]*ALTER ROLE :"studio_runtime_role" NOSUPERUSER[\s\S]*pg_terminate_backend/,
   );
   assert.match(
     read("scripts/production-database-writer-fence.sh"),

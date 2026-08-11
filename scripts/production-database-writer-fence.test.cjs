@@ -15,13 +15,20 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
   assert.match(script, /flock -n 8/);
   assert.match(script, /verify-production-database-container\.sh/);
   assert.match(script, /pg_control_system/);
-  assert.match(script, /ALTER ROLE :"api_runtime_role" :role_action/);
-  assert.match(script, /ALTER ROLE :"studio_runtime_role" :role_action/);
+  assert.match(
+    script,
+    /ALTER ROLE :"api_runtime_role" NOSUPERUSER NOCREATEDB NOCREATEROLE[\s\S]*NOINHERIT NOREPLICATION NOBYPASSRLS :role_action/,
+  );
+  assert.match(
+    script,
+    /ALTER ROLE :"studio_runtime_role" NOSUPERUSER NOCREATEDB NOCREATEROLE[\s\S]*NOINHERIT NOREPLICATION NOBYPASSRLS :role_action/,
+  );
   assert.match(script, /pg_terminate_backend/);
   assert.match(script, /pg_prepared_xacts/);
   assert.match(script, /writer-fence\.released/);
   assert.match(script, /--engage\|--engage-or-verify\|--release/);
   assert.match(script, /verify_engaged_marker/);
+  assert.match(script, /count\(\*\) = 2[\s\S]*rolbypassrls/);
   assert.doesNotMatch(script, /\\quit\s+75/);
   assert.ok(
     script.indexOf("write_marker_state engaging") <

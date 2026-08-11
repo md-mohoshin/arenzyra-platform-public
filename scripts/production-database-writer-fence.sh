@@ -122,24 +122,31 @@ BEGIN;
 SELECT CASE
   WHEN count(*) = 2 THEN true
   ELSE false
-END AS exact_runtime_roles
+END AS runtime_roles_present
 FROM pg_roles
 WHERE rolname IN (:'"'"'api_runtime_role'"'"', :'"'"'studio_runtime_role'"'"')
-  AND NOT rolsuper \gset
-\if :exact_runtime_roles
+\gset
+\if :runtime_roles_present
 \else
-  \echo DATABASE_WRITER_FENCE_SQL_BLOCKED predicate=exact_runtime_roles
+  \echo DATABASE_WRITER_FENCE_SQL_BLOCKED predicate=runtime_roles_present
   SELECT 1 / 0;
 \endif
-ALTER ROLE :"api_runtime_role" :role_action;
-ALTER ROLE :"studio_runtime_role" :role_action;
+ALTER ROLE :"api_runtime_role" NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS :role_action;
+ALTER ROLE :"studio_runtime_role" NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS :role_action;
 SELECT pg_terminate_backend(pid)
 FROM pg_stat_activity
 WHERE usename IN (:'"'"'api_runtime_role'"'"', :'"'"'studio_runtime_role'"'"')
   AND pid <> pg_backend_pid()
   AND backend_type = '"'"'client backend'"'"';
 SELECT CASE
-  WHEN count(*) FILTER (WHERE rolcanlogin::text <> :'"'"'expected_login'"'"') = 0
+  WHEN count(*) = 2
+   AND count(*) FILTER (
+         WHERE rolcanlogin::text <> :'"'"'expected_login'"'"'
+            OR rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit
+            OR rolreplication OR rolbypassrls
+       ) = 0
    AND (SELECT count(*) FROM pg_stat_activity
         WHERE usename IN (:'"'"'api_runtime_role'"'"', :'"'"'studio_runtime_role'"'"')
           AND backend_type = '"'"'client backend'"'"') = 0
