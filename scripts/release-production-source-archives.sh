@@ -70,7 +70,10 @@ verify_checkout() {
 }
 
 verify_archive() {
-  local release="$1" expected="$2" path="$ARCHIVE_ROOT/$release"
+  local release expected path
+  release="$1"
+  expected="$2"
+  path="$ARCHIVE_ROOT/$release"
   [ ! -L "$path" ] && [ -d "$path" ] && \
     [ "$(realpath -e -- "$path")" = "$path" ] && \
     [ "$(dirname -- "$path")" = "$ARCHIVE_ROOT" ] && \
@@ -83,8 +86,11 @@ verify_archive() {
 }
 
 verify_transfer_copy() {
-  local release="$1" incoming="$INCOMING_ROOT/$release" staging="$STAGING_ROOT/$release"
+  local release incoming staging
   local incoming_names staging_names repository_names file path
+  release="$1"
+  incoming="$INCOMING_ROOT/$release"
+  staging="$STAGING_ROOT/$release"
   for path in "$incoming" "$staging"; do
     [ ! -L "$path" ] && [ -d "$path" ] && \
       [ "$(realpath -e -- "$path")" = "$path" ] && \
