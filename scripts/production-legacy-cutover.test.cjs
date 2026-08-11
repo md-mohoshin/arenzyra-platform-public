@@ -368,13 +368,26 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
     "production-deploy-preflight.sh --allow-cutover-transition",
     redisHealth,
   );
+  const roleRecovery = transition.indexOf(
+    "--legacy-cutover-transition-recovery",
+    strictTransition,
+  );
   assert.ok(
     backup >= 0 &&
       backup < immediateGuard &&
       immediateGuard < attest &&
       attest < redisUp &&
       redisUp < redisHealth &&
-      redisHealth < strictTransition,
+      redisHealth < strictTransition &&
+      strictTransition < roleRecovery,
+  );
+  assert.match(
+    transition,
+    /ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="\$verified_backup_id"[\s\S]*provision-production-database-roles\.sh[\s\S]*--legacy-cutover-partial --legacy-cutover-interrupted[\s\\]*\n\s*--legacy-cutover-transition-recovery/,
+  );
+  assert.match(
+    read("scripts/provision-production-database-roles.sh"),
+    /--legacy-cutover-transition-recovery[\s\S]*--allow-cutover-transition[\s\S]*LEGACY_CUTOVER_TRANSITION_RECOVERY[^\n]*-eq 0/,
   );
   assert.doesNotMatch(transition, /\bdown\b|--volumes|docker\s+volume\s+(?:rm|prune)/);
   assert.match(compose, /redis:[\s\S]*user: "999:1000"/);

@@ -1560,6 +1560,20 @@ else
     wait_for_health redis
     bash scripts/production-deploy-preflight.sh --allow-cutover-transition
     bash scripts/verify-production-database-container.sh >/dev/null
+    # An interrupted pre-fence attempt may have advanced dependencies to the
+    # exact transition topology before its role transaction committed. Re-run
+    # the idempotent partial provisioner under the same verified backup and
+    # stopped-writer ownership fence so missing roles cannot be mistaken for
+    # an already-engaged runtime fence.
+    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+      ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="$verified_backup_id" \
+      ARENZYRA_DEPLOY_VERIFIED_BACKUP_DIR="$verified_backup_dir" \
+      ARENZYRA_DEPLOY_VERIFIED_BACKUP_NOT_BEFORE_EPOCH="$verified_backup_not_before_epoch" \
+      bash scripts/provision-production-database-roles.sh \
+        --env infra/.env.publish --apply --adopt-reviewed-ownership \
+        --writers-stopped --confirm=ADOPT_REVIEWED_DATABASE_OWNERSHIP \
+        --legacy-cutover-partial --legacy-cutover-interrupted \
+        --legacy-cutover-transition-recovery
   fi
 
   # From this point a durable database-login fence or a forward schema change

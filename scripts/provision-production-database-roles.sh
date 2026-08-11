@@ -12,6 +12,7 @@ WRITERS_STOPPED=0
 OWNERSHIP_CONFIRMATION=""
 LEGACY_CUTOVER_PARTIAL=0
 LEGACY_CUTOVER_INTERRUPTED=0
+LEGACY_CUTOVER_TRANSITION_RECOVERY=0
 RUNTIME_ROLES_FENCED=0
 LEGACY_AUXILIARY_ACL_ONLY=0
 while [ "$#" -gt 0 ]; do
@@ -31,6 +32,7 @@ while [ "$#" -gt 0 ]; do
     --confirm=*) OWNERSHIP_CONFIRMATION="${1#--confirm=}" ;;
     --legacy-cutover-partial) LEGACY_CUTOVER_PARTIAL=1 ;;
     --legacy-cutover-interrupted) LEGACY_CUTOVER_INTERRUPTED=1 ;;
+    --legacy-cutover-transition-recovery) LEGACY_CUTOVER_TRANSITION_RECOVERY=1 ;;
     --runtime-roles-fenced) RUNTIME_ROLES_FENCED=1 ;;
     --legacy-auxiliary-acl-only) LEGACY_AUXILIARY_ACL_ONLY=1 ;;
     -h|--help)
@@ -73,6 +75,13 @@ fi
 if [ "$LEGACY_CUTOVER_INTERRUPTED" -eq 1 ] && \
   [ "$LEGACY_CUTOVER_PARTIAL" -ne 1 ]; then
   printf '%s\n' '--legacy-cutover-interrupted requires --legacy-cutover-partial.' >&2
+  exit 2
+fi
+if [ "$LEGACY_CUTOVER_TRANSITION_RECOVERY" -eq 1 ] && \
+  { [ "$MODE" != apply ] || [ "$LEGACY_CUTOVER_PARTIAL" -ne 1 ] || \
+    [ "$LEGACY_CUTOVER_INTERRUPTED" -ne 1 ] || \
+    [ "$ADOPT_REVIEWED_OWNERSHIP" -ne 1 ]; }; then
+  printf '%s\n' '--legacy-cutover-transition-recovery requires the interrupted stopped-writer ownership-adoption apply.' >&2
   exit 2
 fi
 if [ "$RUNTIME_ROLES_FENCED" -eq 1 ] && \
@@ -292,7 +301,9 @@ fi
 export ARENZYRA_DEPLOY_COMPOSE_PROJECT="$compose_project"
 export ARENZYRA_DEPLOY_ENV_FILE="$ENV_FILE"
 if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
-  if [ "$LEGACY_CUTOVER_INTERRUPTED" -eq 1 ]; then
+  if [ "$LEGACY_CUTOVER_TRANSITION_RECOVERY" -eq 1 ]; then
+    bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  elif [ "$LEGACY_CUTOVER_INTERRUPTED" -eq 1 ]; then
     bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-interrupted
   else
     bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
@@ -741,11 +752,13 @@ precheck_existing_role() {
     existing_role_count=$((existing_role_count + 1))
   fi
 }
-if [ "$RUNTIME_ROLES_FENCED" -eq 0 ]; then
+if [ "$RUNTIME_ROLES_FENCED" -eq 0 ] && \
+  [ "$LEGACY_CUTOVER_TRANSITION_RECOVERY" -eq 0 ]; then
   precheck_existing_role api-runtime "$api_runtime_role" "$api_runtime_password"
 fi
 precheck_existing_role api-migrator "$api_migration_role" "$api_migration_password"
-if [ "$RUNTIME_ROLES_FENCED" -eq 0 ]; then
+if [ "$RUNTIME_ROLES_FENCED" -eq 0 ] && \
+  [ "$LEGACY_CUTOVER_TRANSITION_RECOVERY" -eq 0 ]; then
   precheck_existing_role studio-runtime "$studio_runtime_role" "$studio_runtime_password"
 fi
 precheck_existing_role studio-migrator "$studio_migration_role" "$studio_migration_password"
