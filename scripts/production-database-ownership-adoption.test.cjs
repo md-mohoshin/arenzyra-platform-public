@@ -56,7 +56,7 @@ test("ownership adoption holds a database fence around the exact transaction", (
   assert.match(provisioner, /if ! wait "\$worker_pid"; then[\s\S]*exit 75/);
   assert.match(
     provisioner,
-    /cleanup_fence_files\(\)[\s\S]*trap - EXIT HUP INT TERM[\s\S]*fence_closed[\s\S]*ALLOW_CONNECTIONS true[\s\S]*database connections could not be restored/,
+    /cleanup_fence_files\(\)[\s\S]*trap - EXIT HUP INT TERM[\s\S]*fence_closed[\s\S]*ALLOW_CONNECTIONS true[\s\S]*printf "\%s\\n" "DATABASE ROLE PROVISIONING CLEANUP BLOCKED: target database connections could not be restored\."/,
   );
   assert.match(
     provisioner,

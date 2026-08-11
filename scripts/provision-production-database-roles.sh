@@ -1071,7 +1071,7 @@ SQL
         [ "$(PGDATABASE=postgres psql -X -At -v ON_ERROR_STOP=1 -c "SELECT datallowconn FROM pg_database WHERE datname = \$arenzyra\$$PGDATABASE\$arenzyra\$;" 2>/dev/null)" = t ]; then
         fence_closed=0
       else
-        printf '%s\n' 'DATABASE ROLE PROVISIONING CLEANUP BLOCKED: target database connections could not be restored.' >&2
+        printf "%s\n" "DATABASE ROLE PROVISIONING CLEANUP BLOCKED: target database connections could not be restored." >&2
         status=75
       fi
     fi
