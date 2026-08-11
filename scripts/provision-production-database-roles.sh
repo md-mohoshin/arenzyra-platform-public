@@ -846,6 +846,7 @@ role_change_possible=1
 object_policy_require_complete=true
 object_policy_adopt_ownership=false
 object_policy_partial_preflight=false
+transition_runtime_roles_must_remain_fenced=false
 if [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 1 ]; then
   object_policy_require_complete=false
 fi
@@ -855,6 +856,9 @@ if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
 fi
 if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
   object_policy_adopt_ownership=true
+fi
+if [ "$LEGACY_CUTOVER_TRANSITION_RECOVERY" -eq 1 ]; then
+  transition_runtime_roles_must_remain_fenced=true
 fi
 {
   printf '%s\n' "$postgres_admin_role" "$postgres_admin_password" "$postgres_database" "$schema_name" "$postgres_port" "$object_policy_adopt_ownership"
@@ -878,7 +882,64 @@ fi
   printf '\\set object_policy_require_complete '\''%s'\''\n' "$object_policy_require_complete"
   printf '\\set object_policy_adopt_ownership '\''%s'\''\n' "$object_policy_adopt_ownership"
   printf '\\set object_policy_partial_preflight '\''%s'\''\n' "$object_policy_partial_preflight"
+  printf '\\set transition_runtime_roles_must_remain_fenced '\''%s'\''\n' "$transition_runtime_roles_must_remain_fenced"
   cat "$SQL_FILE"
+  cat <<'SQL'
+
+-- This postcondition is deliberately part of the same protected SQL stream.
+-- A successful outer database fence is not evidence that an asynchronous SQL
+-- feeder received its stdin, so all seven configured identities are proved
+-- independently before the provisioner may report success.
+SELECT count(*) AS configured_application_role_count
+FROM pg_roles
+WHERE rolname IN (
+  :'api_runtime_role',
+  :'api_migration_role',
+  :'studio_runtime_role',
+  :'studio_migration_role',
+  :'maintenance_read_role',
+  :'idp_maintenance_role',
+  :'youtube_maintenance_role'
+)
+\gset
+\echo DATABASE_ROLE_PROVISIONING_POSTCONDITION configured_roles=:configured_application_role_count expected=7
+SELECT :'configured_application_role_count'::integer = 7
+  AS configured_application_roles_present
+\gset
+\if :configured_application_roles_present
+\else
+  \echo DATABASE_ROLE_PROVISIONING_SQL_BLOCKED predicate=configured_application_roles_present
+  SELECT 1 / 0;
+\endif
+
+-- Transition recovery may resume while a durable writer-fence marker exists.
+-- Keep both runtime identities unable to log in inside this same SQL stream;
+-- the writer-fence helper will independently re-attest the state next.
+\if :transition_runtime_roles_must_remain_fenced
+BEGIN;
+ALTER ROLE :"api_runtime_role" NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS NOLOGIN;
+ALTER ROLE :"studio_runtime_role" NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS NOLOGIN;
+SELECT CASE
+  WHEN count(*) = 2
+   AND count(*) FILTER (
+         WHERE rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole
+            OR rolinherit OR rolreplication OR rolbypassrls
+       ) = 0
+  THEN true ELSE false
+END AS transition_runtime_roles_fenced
+FROM pg_roles
+WHERE rolname IN (:'api_runtime_role', :'studio_runtime_role')
+\gset
+\if :transition_runtime_roles_fenced
+\else
+  \echo DATABASE_ROLE_PROVISIONING_SQL_BLOCKED predicate=transition_runtime_roles_fenced
+  SELECT 1 / 0;
+\endif
+COMMIT;
+\endif
+SQL
 } | docker exec -i "$postgres_container" sh -ceu '
   IFS= read -r PGUSER
   IFS= read -r PGPASSWORD
@@ -926,15 +987,20 @@ fi
   export ARENZYRA_FENCE_DIRECTORY="$fence_directory"
   export PGAPPNAME="$fence_application"
 
+  # POSIX asynchronous lists may receive /dev/null as stdin when job control is
+  # disabled. Preserve the remaining protected SQL pipe on an explicit
+  # descriptor before backgrounding the FIFO feeder, then close the parent copy.
+  exec 9<&0
   {
     printf "%s\n" \
       "\\set ON_ERROR_STOP on" \
       "SELECT pg_backend_pid() AS arenzyra_fence_pid \\gset" \
       "\\setenv ARENZYRA_FENCE_PID :arenzyra_fence_pid" \
       "\\! umask 077; printf \"%s\\n\" \"\$ARENZYRA_FENCE_PID\" > \"\$ARENZYRA_FENCE_DIRECTORY/backend.pid\"; : > \"\$ARENZYRA_FENCE_DIRECTORY/connected\"; while [ ! -f \"\$ARENZYRA_FENCE_DIRECTORY/continue\" ]; do sleep 1; done"
-    cat
+    cat <&9
   } > "$fence_fifo" &
   feed_pid="$!"
+  exec 9<&-
   psql -X -v ON_ERROR_STOP=1 -f "$fence_fifo" >"$fence_output" 2>"$fence_error" &
   worker_pid="$!"
 

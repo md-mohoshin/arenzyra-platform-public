@@ -603,6 +603,22 @@ test("provisioning preauthenticates, backs up, and reconciles under the shared l
   }
   assert.match(provisioner, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
   assert.match(provisioner, /PRE-ROLE-CHANGE BACKUP VERIFIED/);
+  assert.match(
+    provisioner,
+    /DATABASE_ROLE_PROVISIONING_POSTCONDITION configured_roles=:configured_application_role_count expected=7/,
+  );
+  assert.match(
+    provisioner,
+    /configured_application_roles_present[\s\S]*SELECT 1 \/ 0/,
+  );
+  assert.match(
+    provisioner,
+    /LEGACY_CUTOVER_TRANSITION_RECOVERY[\s\S]*transition_runtime_roles_must_remain_fenced=true/,
+  );
+  assert.match(
+    provisioner,
+    /transition_runtime_roles_must_remain_fenced[\s\S]*ALTER ROLE :"api_runtime_role"[\s\S]*NOLOGIN[\s\S]*ALTER ROLE :"studio_runtime_role"[\s\S]*NOLOGIN[\s\S]*transition_runtime_roles_fenced/,
+  );
   assert.match(provisioner, /read_env ARENZYRA_BACKUP_ROOT/);
   assert.match(provisioner, /dirname -- "\$backup_dir"\)" = "\$backup_root"/);
   assert.match(

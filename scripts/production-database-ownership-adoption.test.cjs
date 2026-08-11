@@ -54,6 +54,14 @@ test("ownership adoption holds a database fence around the exact transaction", (
   assert.doesNotMatch(sql, /ELSE\s+1\s*\/\s*0/);
   assert.match(provisioner, /\[ "\$fence_state" = "f\|1\|0\|0" \]/);
   assert.match(provisioner, /if ! wait "\$worker_pid"; then[\s\S]*exit 75/);
+  assert.match(
+    provisioner,
+    /exec 9<&0[\s\S]*cat <&9[\s\S]*> "\$fence_fifo" &[\s\S]*feed_pid="\$!"[\s\S]*exec 9<&-/,
+  );
+  assert.ok(
+    provisioner.indexOf("exec 9<&0") <
+      provisioner.indexOf('psql -X -v ON_ERROR_STOP=1 -f "$fence_fifo"'),
+  );
 });
 
 test("ownership fence variables are expanded only inside the container shell", () => {
