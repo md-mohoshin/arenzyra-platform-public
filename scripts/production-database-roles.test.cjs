@@ -367,7 +367,7 @@ test("stock auxiliary database privileges block first-deploy role verification",
   );
   assert.match(
     provisioner,
-    /Legacy auxiliary-database ACL remediation failed; its transaction was rolled back/,
+    /Legacy auxiliary-database ACL remediation failed: the revoke transaction rolled back/,
   );
   const launcher = read("scripts/production-reviewed-entrypoint.sh");
   assert.match(

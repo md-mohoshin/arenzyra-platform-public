@@ -644,23 +644,37 @@ remediate_legacy_cross_database_acl() {
     export PGUSER PGPASSWORD PGDATABASE PGPORT PGHOST=127.0.0.1 PGCONNECT_TIMEOUT=5
     settings="-c statement_timeout=15000 -c lock_timeout=5000 -c search_path=$expected_schema -c arenzyra.api_runtime_role=$api_runtime_role -c arenzyra.api_migration_role=$api_migration_role -c arenzyra.studio_runtime_role=$studio_runtime_role -c arenzyra.studio_migration_role=$studio_migration_role -c arenzyra.maintenance_read_role=$maintenance_read_role -c arenzyra.idp_maintenance_role=$idp_maintenance_role -c arenzyra.youtube_maintenance_role=$youtube_maintenance_role"
     export PGOPTIONS="-c default_transaction_read_only=on $settings"
-    state="$(psql -X -v ON_ERROR_STOP=1 -At -F "|" -c "WITH configured_role AS (SELECT role.oid FROM pg_roles role WHERE role.rolname IN (current_setting('"'"'arenzyra.api_runtime_role'"'"'), current_setting('"'"'arenzyra.api_migration_role'"'"'), current_setting('"'"'arenzyra.studio_runtime_role'"'"'), current_setting('"'"'arenzyra.studio_migration_role'"'"'), current_setting('"'"'arenzyra.maintenance_read_role'"'"'), current_setting('"'"'arenzyra.idp_maintenance_role'"'"'), current_setting('"'"'arenzyra.youtube_maintenance_role'"'"'))), public_grant AS (SELECT database.datname, privilege.privilege_type FROM pg_database database CROSS JOIN LATERAL aclexplode(COALESCE(database.datacl, acldefault('"'"'d'"'"', database.datdba))) privilege WHERE database.datname <> current_database() AND database.datallowconn AND privilege.grantee = 0 AND privilege.privilege_type IN ('"'"'CONNECT'"'"', '"'"'TEMPORARY'"'"')), configured_violation AS (SELECT 1 FROM pg_database database JOIN configured_role role ON role.oid = database.datdba WHERE database.datname <> current_database() UNION ALL SELECT 1 FROM pg_database database CROSS JOIN LATERAL aclexplode(database.datacl) privilege JOIN configured_role role ON role.oid = privilege.grantee WHERE database.datname <> current_database() UNION ALL SELECT 1 FROM pg_database database CROSS JOIN configured_role role WHERE database.datname <> current_database() AND database.datallowconn AND (has_database_privilege(role.oid, database.oid, '"'"'CONNECT'"'"') OR has_database_privilege(role.oid, database.oid, '"'"'TEMPORARY'"'"'))) SELECT (SELECT count(*) FROM public_grant), (SELECT count(*) FROM public_grant WHERE (datname, privilege_type) IN (('"'"'postgres'"'"', '"'"'CONNECT'"'"'), ('"'"'postgres'"'"', '"'"'TEMPORARY'"'"'), ('"'"'template1'"'"', '"'"'CONNECT'"'"'), ('"'"'template1'"'"', '"'"'TEMPORARY'"'"'))), (SELECT count(*) FROM configured_violation)" 2>/dev/null)" || exit 75
+    if ! state="$(psql -X -v ON_ERROR_STOP=1 -At -F "|" -c "WITH configured_role AS (SELECT role.oid FROM pg_roles role WHERE role.rolname IN (current_setting('"'"'arenzyra.api_runtime_role'"'"'), current_setting('"'"'arenzyra.api_migration_role'"'"'), current_setting('"'"'arenzyra.studio_runtime_role'"'"'), current_setting('"'"'arenzyra.studio_migration_role'"'"'), current_setting('"'"'arenzyra.maintenance_read_role'"'"'), current_setting('"'"'arenzyra.idp_maintenance_role'"'"'), current_setting('"'"'arenzyra.youtube_maintenance_role'"'"'))), public_grant AS (SELECT database.datname, privilege.privilege_type FROM pg_database database CROSS JOIN LATERAL aclexplode(COALESCE(database.datacl, acldefault('"'"'d'"'"', database.datdba))) privilege WHERE database.datname <> current_database() AND database.datallowconn AND privilege.grantee = 0 AND privilege.privilege_type IN ('"'"'CONNECT'"'"', '"'"'TEMPORARY'"'"')), configured_violation AS (SELECT 1 FROM pg_database database JOIN configured_role role ON role.oid = database.datdba WHERE database.datname <> current_database() UNION ALL SELECT 1 FROM pg_database database CROSS JOIN LATERAL aclexplode(database.datacl) privilege JOIN configured_role role ON role.oid = privilege.grantee WHERE database.datname <> current_database() UNION ALL SELECT 1 FROM pg_database database CROSS JOIN configured_role role WHERE database.datname <> current_database() AND database.datallowconn AND (has_database_privilege(role.oid, database.oid, '"'"'CONNECT'"'"') OR has_database_privilege(role.oid, database.oid, '"'"'TEMPORARY'"'"'))) SELECT (SELECT count(*) FROM public_grant), (SELECT count(*) FROM public_grant WHERE (datname, privilege_type) IN (('"'"'postgres'"'"', '"'"'CONNECT'"'"'), ('"'"'postgres'"'"', '"'"'TEMPORARY'"'"'), ('"'"'template1'"'"', '"'"'CONNECT'"'"'), ('"'"'template1'"'"', '"'"'TEMPORARY'"'"'))), (SELECT count(*) FROM configured_violation)" 2>/dev/null)"; then
+      printf state-query-failed
+      exit 75
+    fi
     case "$state" in
       0\|0\|0) printf already-compliant ;;
       4\|4\|0)
         export PGOPTIONS="$settings"
-        psql -X -v ON_ERROR_STOP=1 >/dev/null <<'"'"'SQL'"'"'
+        if ! psql -X -v ON_ERROR_STOP=1 >/dev/null 2>/dev/null <<'"'"'SQL'"'"'
 BEGIN;
 REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
 COMMIT;
 SQL
+        then
+          printf transaction-failed
+          exit 75
+        fi
         printf remediated
         ;;
-      *) exit 75 ;;
+      4\|4\|*) printf state-configured-violation; exit 75 ;;
+      *) printf state-unexpected; exit 75 ;;
     esac
   ')"; then
-    printf '%s\n' 'Legacy auxiliary-database ACL remediation failed; its transaction was rolled back.' >&2
+    case "$result" in
+      state-query-failed) printf '%s\n' 'Legacy auxiliary-database ACL remediation blocked: pre-state query failed.' >&2 ;;
+      state-configured-violation) printf '%s\n' 'Legacy auxiliary-database ACL remediation blocked: configured-role privilege drift exists.' >&2 ;;
+      state-unexpected) printf '%s\n' 'Legacy auxiliary-database ACL remediation blocked: stock ACL pre-state differs.' >&2 ;;
+      transaction-failed) printf '%s\n' 'Legacy auxiliary-database ACL remediation failed: the revoke transaction rolled back.' >&2 ;;
+      *) printf '%s\n' 'Legacy auxiliary-database ACL remediation failed before a commit.' >&2 ;;
+    esac
     return 75
   fi
   case "$result" in
