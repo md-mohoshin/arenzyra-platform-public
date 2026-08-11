@@ -1104,7 +1104,7 @@ CROSS JOIN LATERAL aclexplode(
 ) privilege
 WHERE namespace.nspname = 'pg_catalog'
   AND routine.proname = 'pg_control_system'
-  AND pg_get_function_identity_arguments(routine.oid) = ''
+  AND routine.oid = to_regprocedure('pg_catalog.pg_control_system()')
   AND privilege.grantee <> routine.proowner
 GROUP BY privilege.grantee
 \gexec

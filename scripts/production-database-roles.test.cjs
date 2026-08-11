@@ -255,6 +255,14 @@ test("role verifier attests flags, memberships, ownership, and privilege boundar
   assert.match(verifier, /'idp-maintenance'/);
   assert.match(verifier, /'youtube-maintenance'/);
   assert.match(verifier, /pg_catalog\.pg_control_system\(\)/);
+  assert.equal(
+    (
+      verifier.match(
+        /routine\.oid = to_regprocedure\('pg_catalog\.pg_control_system\(\)'\)/g,
+      ) || []
+    ).length,
+    3,
+  );
   assert.match(
     verifier,
     /profile IN \('api-migrator', 'maintenance-read', 'idp-maintenance'\)/,
@@ -512,6 +520,10 @@ test("bootstrap removes ambient grants and never default-grants runtime DML", ()
   assert.match(
     sql,
     /aclexplode\([\s\S]*pg_control_system[\s\S]*privilege\.grantee <> routine\.proowner[\s\S]*\\gexec/,
+  );
+  assert.match(
+    sql,
+    /routine\.oid = to_regprocedure\('pg_catalog\.pg_control_system\(\)'\)/,
   );
   assert.match(
     verifier,

@@ -344,7 +344,9 @@ This path remains limited to the exact stopped interrupted-cutover topology. It
 accepts only a backup completed and off-site verified within the last two hours,
 requires its archived clean-Git release to have the same reviewed API and Web
 commits, requires both reviewed Root revisions to be locally available, and
-permits only `scripts/` or this runbook to differ between their exact trees.
+permits only `scripts/`, the closed database-role bootstrap SQL, or this runbook
+to differ between their exact trees. Dependency-transition recovery may also
+carry its separately checked Compose correction.
 Any application source change, missing/unsafe artifact, or incompatible source
 tree fails closed.
 

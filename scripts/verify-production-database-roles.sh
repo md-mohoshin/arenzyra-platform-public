@@ -806,7 +806,7 @@ WITH object_policy_document AS (
       JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
       WHERE namespace.nspname = 'pg_catalog'
         AND routine.proname = 'pg_control_system'
-        AND pg_get_function_identity_arguments(routine.oid) = ''
+        AND routine.oid = to_regprocedure('pg_catalog.pg_control_system()')
     )
 
   UNION ALL
@@ -820,7 +820,7 @@ WITH object_policy_document AS (
       ) privilege
       WHERE namespace.nspname = 'pg_catalog'
         AND routine.proname = 'pg_control_system'
-        AND pg_get_function_identity_arguments(routine.oid) = ''
+        AND routine.oid = to_regprocedure('pg_catalog.pg_control_system()')
         AND (
           privilege.privilege_type <> 'EXECUTE'
           OR privilege.grantee NOT IN (
@@ -847,7 +847,7 @@ WITH object_policy_document AS (
       ) privilege
       WHERE namespace.nspname = 'pg_catalog'
         AND routine.proname = 'pg_control_system'
-        AND pg_get_function_identity_arguments(routine.oid) = ''
+        AND routine.oid = to_regprocedure('pg_catalog.pg_control_system()')
         AND privilege.privilege_type = 'EXECUTE'
         AND NOT privilege.is_grantable
         AND privilege.grantee IN (

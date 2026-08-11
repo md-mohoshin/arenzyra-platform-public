@@ -287,7 +287,7 @@ test("interrupted resume may reuse only a recent compatible reviewed off-site ba
   );
   assert.match(
     deploy,
-    /infra\/PUBLISH\.md\|scripts\/\*\)[\s\S]*application-affecting Root change/,
+    /infra\/PUBLISH\.md\|infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*\)[\s\S]*application-affecting Root change/,
   );
   assert.match(
     deploy,
@@ -312,7 +312,7 @@ test("interrupted resume may reuse a complete immutable candidate without rebuil
   );
   assert.match(
     deploy,
-    /verify_management_compatible_release_source\(\)[\s\S]*ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*infra\/PUBLISH\.md\|scripts\/\*\)[\s\S]*application-affecting Root change/,
+    /verify_management_compatible_release_source\(\)[\s\S]*ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*infra\/PUBLISH\.md\|infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*\)[\s\S]*application-affecting Root change/,
   );
   assert.doesNotMatch(deploy, /unset bootstrap_git/);
   assert.match(
@@ -393,6 +393,11 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
   assert.match(compose, /redis:[\s\S]*user: "999:1000"/);
   assert.equal(
     (deploy.match(/infra\/docker-compose\.publish\.yml\)/gu) ?? []).length,
+    2,
+  );
+  assert.equal(
+    (deploy.match(/infra\/sql\/bootstrap-production-roles\.sql\|scripts\/\*/gu) ?? [])
+      .length,
     2,
   );
   assert.match(

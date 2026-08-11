@@ -667,7 +667,7 @@ verify_management_compatible_release_source() {
   while IFS= read -r changed_path; do
     [ -n "$changed_path" ] || continue
     case "$changed_path" in
-      infra/PUBLISH.md|scripts/*) ;;
+      infra/PUBLISH.md|infra/sql/bootstrap-production-roles.sql|scripts/*) ;;
       infra/docker-compose.publish.yml)
         [ "$MODE" = "legacy-cutover-resume-transition" ] || {
           printf 'Compatible release has an unsupported Compose change outside dependency recovery: %s\n' "$changed_path" >&2
@@ -1270,7 +1270,7 @@ reuse_verified_pre_migration_backup() {
   while IFS= read -r changed_path; do
     [ -n "$changed_path" ] || continue
     case "$changed_path" in
-      infra/PUBLISH.md|scripts/*) ;;
+      infra/PUBLISH.md|infra/sql/bootstrap-production-roles.sql|scripts/*) ;;
       infra/docker-compose.publish.yml)
         [ "$MODE" = "legacy-cutover-resume-transition" ] || {
           printf 'Verified backup reuse found an unsupported Compose change outside dependency recovery: %s\n' "$changed_path" >&2
