@@ -808,7 +808,10 @@ WITH object_policy_document AS (
         AND routine.proname = 'pg_control_system'
         AND pg_get_function_identity_arguments(routine.oid) = ''
     )
-     OR EXISTS (
+
+  UNION ALL
+  SELECT 1 FROM parameter
+  WHERE EXISTS (
       SELECT 1
       FROM pg_proc routine
       JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
@@ -832,7 +835,10 @@ WITH object_policy_document AS (
           )
         )
     )
-     OR 3 <> (
+
+  UNION ALL
+  SELECT 1 FROM parameter
+  WHERE 3 <> (
       SELECT count(DISTINCT privilege.grantee)
       FROM pg_proc routine
       JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
@@ -942,11 +948,9 @@ WITH object_policy_document AS (
   SELECT 1
   FROM pg_type type
   JOIN other_app_schema namespace ON namespace.oid = type.typnamespace
-  CROSS JOIN LATERAL aclexplode(
-    COALESCE(type.typacl, acldefault('T', type.typowner))
-  ) privilege
-  WHERE privilege.grantee = 0
-     OR privilege.grantee IN (SELECT oid FROM configured_app_role)
+  CROSS JOIN configured_app_role role
+  WHERE has_schema_privilege(role.oid, namespace.oid, 'USAGE')
+    AND has_type_privilege(role.oid, type.oid, 'USAGE')
 
   UNION ALL
   SELECT 1 FROM parameter

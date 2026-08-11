@@ -274,6 +274,10 @@ test("role verifier attests flags, memberships, ownership, and privilege boundar
   assert.match(verifier, /production-database-object-policy\.cjs/);
   assert.match(verifier, /production-database-object-policy\.json/);
   assert.match(verifier, /policy\.runtime_profile = 'none'/);
+  assert.match(
+    verifier,
+    /FROM pg_type type[\s\S]{0,180}JOIN other_app_schema namespace[\s\S]{0,180}CROSS JOIN configured_app_role role[\s\S]{0,180}has_schema_privilege\(role\.oid, namespace\.oid, 'USAGE'\)[\s\S]{0,120}has_type_privilege\(role\.oid, type\.oid, 'USAGE'\)/,
+  );
 });
 
 test("stock auxiliary database privileges block first-deploy role verification", () => {
@@ -515,7 +519,7 @@ test("bootstrap removes ambient grants and never default-grants runtime DML", ()
   );
   assert.match(
     verifier,
-    /OR 3 <> \([\s\S]*count\(DISTINCT privilege\.grantee\)/,
+    /WHERE 3 <> \([\s\S]*count\(DISTINCT privilege\.grantee\)/,
   );
   assert.match(verifier, /privilege\.is_grantable/);
   assert.doesNotMatch(sql, /GRANT\s+pg_monitor/i);
