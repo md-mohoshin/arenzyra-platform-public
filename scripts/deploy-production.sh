@@ -74,7 +74,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -95,6 +95,7 @@ while [ "$#" -gt 0 ]; do
     --legacy-cutover) MODE="legacy-cutover" ;;
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
     --legacy-cutover-resume-interrupted) MODE="legacy-cutover-resume-interrupted" ;;
+    --legacy-cutover-resume-transition) MODE="legacy-cutover-resume-transition" ;;
     --reuse-verified-backup)
       [ "$#" -ge 2 ] || { printf '%s\n' '--reuse-verified-backup requires one backup ID.' >&2; exit 2; }
       [ -z "$REUSE_VERIFIED_BACKUP_ID" ] || { printf '%s\n' '--reuse-verified-backup may be specified only once.' >&2; exit 2; }
@@ -115,8 +116,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -n "$REUSE_VERIFIED_BACKUP_ID" ]; then
-  [ "$MODE" = "legacy-cutover-resume-interrupted" ] || {
-    printf '%s\n' '--reuse-verified-backup is allowed only for the interrupted legacy-cutover resume.' >&2
+  { [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
+    [ "$MODE" = "legacy-cutover-resume-transition" ]; } || {
+    printf '%s\n' '--reuse-verified-backup is allowed only for an interrupted or dependency-transition legacy-cutover resume.' >&2
     exit 2
   }
   [[ "$REUSE_VERIFIED_BACKUP_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || {
@@ -125,9 +127,10 @@ if [ -n "$REUSE_VERIFIED_BACKUP_ID" ]; then
   }
 fi
 if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
-  [ "$MODE" = "legacy-cutover-resume-interrupted" ] && \
+  { [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
+    [ "$MODE" = "legacy-cutover-resume-transition" ]; } && \
     [ -n "$REUSE_VERIFIED_BACKUP_ID" ] || {
-    printf '%s\n' '--reuse-candidate-release requires the interrupted resume and a verified backup ID.' >&2
+    printf '%s\n' '--reuse-candidate-release requires an interrupted or dependency-transition resume and a verified backup ID.' >&2
     exit 2
   }
   [[ "$REUSE_CANDIDATE_RELEASE_ID" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || {
@@ -135,10 +138,16 @@ if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
     exit 2
   }
 fi
+if [ "$MODE" = "legacy-cutover-resume-transition" ] && \
+  { [ -z "$REUSE_VERIFIED_BACKUP_ID" ] || [ -z "$REUSE_CANDIDATE_RELEASE_ID" ]; }; then
+  printf '%s\n' 'Dependency-transition resume requires both the exact verified backup and immutable candidate release IDs.' >&2
+  exit 2
+fi
 
 if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
   [ "$MODE" = "legacy-cutover-resume" ] || \
-  [ "$MODE" = "legacy-cutover-resume-interrupted" ]; } && \
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
+  [ "$MODE" = "legacy-cutover-resume-transition" ]; } && \
   [ "$FIRST_DEPLOY" -eq 1 ]; then
   printf '%s\n' \
     'DEPLOYMENT BLOCKED: FULL FIRST DEPLOY REQUIRES REVIEWED EMPTY-TARGET BOOTSTRAP' \
@@ -656,6 +665,12 @@ verify_management_compatible_release_source() {
     [ -n "$changed_path" ] || continue
     case "$changed_path" in
       infra/PUBLISH.md|scripts/*) ;;
+      infra/docker-compose.publish.yml)
+        [ "$MODE" = "legacy-cutover-resume-transition" ] || {
+          printf 'Compatible release has an unsupported Compose change outside dependency recovery: %s\n' "$changed_path" >&2
+          return 75
+        }
+        ;;
       *) printf 'Compatible release has an application-affecting Root change: %s\n' "$changed_path" >&2; return 75 ;;
     esac
   done <<< "$root_changes"
@@ -1039,6 +1054,8 @@ elif [ "$MODE" = "legacy-cutover-resume" ]; then
   guard_args+=(--allow-legacy-cutover-stopped)
 elif [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
   guard_args+=(--allow-legacy-cutover-interrupted)
+elif [ "$MODE" = "legacy-cutover-resume-transition" ]; then
+  guard_args+=(--allow-cutover-dependency-recovery)
 fi
 # Before release metadata, image builds, backups, migrations, or service
 # changes, prove that the current database has no pending contract migration
@@ -1061,7 +1078,8 @@ if [ "$MODE" = "full" ]; then
   bash scripts/verify-production-idp-encryption.sh
 elif [ "$MODE" = "legacy-cutover" ] || \
   [ "$MODE" = "legacy-cutover-resume" ] || \
-  [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
+  [ "$MODE" = "legacy-cutover-resume-transition" ]; then
   bash scripts/production-release-safety-gate.sh --legacy-cutover
   bash scripts/verify-production-entitlement-invariants.sh \
     --allow-running-legacy-cutover
@@ -1245,6 +1263,12 @@ reuse_verified_pre_migration_backup() {
     [ -n "$changed_path" ] || continue
     case "$changed_path" in
       infra/PUBLISH.md|scripts/*) ;;
+      infra/docker-compose.publish.yml)
+        [ "$MODE" = "legacy-cutover-resume-transition" ] || {
+          printf 'Verified backup reuse found an unsupported Compose change outside dependency recovery: %s\n' "$changed_path" >&2
+          return 75
+        }
+        ;;
       *) printf 'Verified backup reuse found an application-affecting Root change: %s\n' "$changed_path" >&2; return 75 ;;
     esac
   done <<< "$root_changes"
@@ -1415,6 +1439,7 @@ else
   # writers stopped and creates a new recovery point before continuing. Once
   # ownership or schema work starts, failures keep writers stopped and roles
   # fenced.
+  if [ "$MODE" != "legacy-cutover-resume-transition" ]; then
   if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
     bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
     api_image_id="$(read_archived_release_image_id api)"
@@ -1498,6 +1523,34 @@ else
   wait_for_health postgres redis
   bash scripts/production-deploy-preflight.sh --allow-cutover-transition
   bash scripts/verify-production-database-container.sh >/dev/null
+  else
+    for candidate_service in api web media-ai discord-bot; do
+      case "$candidate_service" in
+        api) api_image_id="$(read_archived_release_image_id api)" ;;
+        web) web_image_id="$(read_archived_release_image_id web)" ;;
+        media-ai) media_ai_image_id="$(read_archived_release_image_id media-ai)" ;;
+        discord-bot) discord_bot_image_id="$(read_archived_release_image_id discord-bot)" ;;
+      esac
+    done
+    for candidate_image_id in \
+      "$api_image_id" "$web_image_id" "$media_ai_image_id" "$discord_bot_image_id"; do
+      [[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] && \
+        docker image inspect "$candidate_image_id" >/dev/null || {
+        printf '%s\n' 'Reviewed dependency-transition candidate image is unavailable by immutable ID.' >&2
+        exit 75
+      }
+    done
+    create_pinned_compose_override legacy-cutover
+    create_idp_verification_override
+    bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery
+    create_pre_migration_backup
+    bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery
+    attest_pinned_compose_override
+    "${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate redis
+    wait_for_health redis
+    bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+    bash scripts/verify-production-database-container.sh >/dev/null
+  fi
 
   # From this point a durable database-login fence or a forward schema change
   # may exist. Failure must never restart an older application writer.

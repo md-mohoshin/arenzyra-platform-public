@@ -77,7 +77,7 @@ test("legacy cutover preserves volumes and fences all writers through migrations
   const release = branch.indexOf("--release --release-id");
   const applicationUp = branch.indexOf(
     '"${compose[@]}" up --no-build -d --pull never',
-    transitionUp + 1,
+    release,
   );
   assert.ok(
     stop < partialAdoption &&
@@ -262,7 +262,7 @@ test("interrupted resume may reuse only a recent compatible reviewed off-site ba
   );
   assert.match(
     deploy,
-    /--reuse-verified-backup is allowed only for the interrupted legacy-cutover resume/,
+    /--reuse-verified-backup is allowed only for an interrupted or dependency-transition legacy-cutover resume/,
   );
   assert.match(
     deploy,
@@ -292,7 +292,7 @@ test("interrupted resume may reuse a complete immutable candidate without rebuil
   );
   assert.match(
     deploy,
-    /--reuse-candidate-release requires the interrupted resume and a verified backup ID/,
+    /--reuse-candidate-release requires an interrupted or dependency-transition resume and a verified backup ID/,
   );
   assert.match(
     deploy,
@@ -306,5 +306,64 @@ test("interrupted resume may reuse a complete immutable candidate without rebuil
   assert.match(
     deploy,
     /if \[ -n "\$REUSE_CANDIDATE_RELEASE_ID" \]; then[\s\S]*else[\s\S]*"\$\{compose\[@\]\}" build api media-ai web/,
+  );
+});
+
+test("dependency-transition resume repairs only Redis startup and rejoins the fenced cutover", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const preflight = read("scripts/production-deploy-preflight.sh");
+  const compose = read("infra/docker-compose.publish.yml");
+
+  assert.match(
+    launcher,
+    /legacy-cutover-resume-transition-candidate\)[\s\S]*requires one release ID and one backup ID[\s\S]*require_nested_assembly[\s\S]*--legacy-cutover-resume-transition[\s\S]*--reuse-verified-backup "\$2" --reuse-candidate-release "\$1"/,
+  );
+  assert.match(
+    deploy,
+    /Dependency-transition resume requires both the exact verified backup and immutable candidate release IDs/,
+  );
+  const transition = deploy.slice(
+    deploy.indexOf('else\n    for candidate_service in api web media-ai discord-bot'),
+    deploy.indexOf("\n  fi\n\n  # From this point", deploy.indexOf('else\n    for candidate_service in api web media-ai discord-bot')),
+  );
+  const backup = transition.indexOf("create_pre_migration_backup");
+  const immediateGuard = transition.lastIndexOf(
+    "production-deploy-preflight.sh --allow-cutover-dependency-recovery",
+    transition.indexOf('"${compose[@]}" up'),
+  );
+  const attest = transition.indexOf(
+    "attest_pinned_compose_override",
+    immediateGuard,
+  );
+  const redisUp = transition.indexOf(
+    '"${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate redis',
+  );
+  const redisHealth = transition.indexOf("wait_for_health redis", redisUp);
+  const strictTransition = transition.indexOf(
+    "production-deploy-preflight.sh --allow-cutover-transition",
+    redisHealth,
+  );
+  assert.ok(
+    backup >= 0 &&
+      backup < immediateGuard &&
+      immediateGuard < attest &&
+      attest < redisUp &&
+      redisUp < redisHealth &&
+      redisHealth < strictTransition,
+  );
+  assert.doesNotMatch(transition, /\bdown\b|--volumes|docker\s+volume\s+(?:rm|prune)/);
+  assert.match(compose, /redis:[\s\S]*user: "999:1000"/);
+  assert.equal(
+    (deploy.match(/infra\/docker-compose\.publish\.yml\)/gu) ?? []).length,
+    2,
+  );
+  assert.match(
+    deploy,
+    /infra\/docker-compose\.publish\.yml\)[\s\S]*\[ "\$MODE" = "legacy-cutover-resume-transition" \][\s\S]*unsupported Compose change outside dependency recovery/,
+  );
+  assert.match(
+    preflight,
+    /ALLOW_CUTOVER_DEPENDENCY_RECOVERY[\s\S]*dependency recovery database must be running\/healthy[\s\S]*root-to-999:1000 transition[\s\S]*requires exactly postgres and redis/,
   );
 });

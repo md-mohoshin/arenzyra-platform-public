@@ -14,10 +14,11 @@ ALLOW_LEGACY_CUTOVER_INTERRUPTED=0
 ALLOW_CUTOVER_STOPPED=0
 ALLOW_CUTOVER_INTERRUPTED=0
 ALLOW_CUTOVER_TRANSITION=0
+ALLOW_CUTOVER_DEPENDENCY_RECOVERY=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition]
+Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -79,6 +80,9 @@ while [ "$#" -gt 0 ]; do
     --allow-cutover-transition)
       ALLOW_CUTOVER_TRANSITION=1
       ;;
+    --allow-cutover-dependency-recovery)
+      ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1
+      ;;
     --allow-stopped-idp-maintenance)
       printf '%s\n' \
         'DEPLOYMENT BLOCKED: IDP MUTATION PREFLIGHT MODE IS UNAVAILABLE' \
@@ -135,7 +139,7 @@ fi
 cutover_mode_count=$((
   ALLOW_LEGACY_CUTOVER_STOPPED + ALLOW_LEGACY_CUTOVER_INTERRUPTED +
   ALLOW_CUTOVER_STOPPED + ALLOW_CUTOVER_INTERRUPTED +
-  ALLOW_CUTOVER_TRANSITION
+  ALLOW_CUTOVER_TRANSITION + ALLOW_CUTOVER_DEPENDENCY_RECOVERY
 ))
 if [ "$cutover_mode_count" -gt 1 ] || \
   { [ "$cutover_mode_count" -eq 1 ] && \
@@ -229,7 +233,8 @@ while IFS= read -r container_id; do
 done <<<"$container_output"
 
 volume_gate_args=()
-if [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
+if [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ] || \
+  [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ]; then
   volume_gate_args+=(--allow-absent)
 elif [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ]; then
   volume_gate_args+=(--allow-running-legacy-root-api)
@@ -275,13 +280,13 @@ else
     [ -n "$container_id" ] || continue
     if ! state="$(
       docker inspect \
-        --format '{{.Name}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}not-configured{{end}}' \
+        --format '{{.Name}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}not-configured{{end}}|{{.Config.User}}' \
         "$container_id"
     )"; then
       unhealthy+=("container inventory changed during inspection")
       continue
     fi
-    IFS='|' read -r name service status health <<<"$state"
+    IFS='|' read -r name service status health configured_user <<<"$state"
 
     case "$service" in
       proxy) proxy_count=$((proxy_count + 1)) ;;
@@ -322,6 +327,26 @@ else
           fi
           ;;
         *) unhealthy+=("${name#/}: unexpected transition service=${service}") ;;
+      esac
+      continue
+    fi
+
+    if [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ]; then
+      case "$service" in
+        postgres)
+          if [ "$status" != "running" ] || [ "$health" != "healthy" ]; then
+            unhealthy+=("${name#/}: dependency recovery database must be running/healthy, observed=${status}/${health}")
+          fi
+          ;;
+        redis)
+          case "$configured_user" in ''|0|0:0|999:1000) ;; *)
+            unhealthy+=("${name#/}: dependency recovery cache user is outside the reviewed root-to-999:1000 transition")
+          esac
+          case "$status" in running|restarting|exited) ;; *)
+            unhealthy+=("${name#/}: dependency recovery cache state is unsupported, observed=${status}/${health}")
+          esac
+          ;;
+        *) unhealthy+=("${name#/}: unexpected dependency recovery service=${service}") ;;
       esac
       continue
     fi
@@ -414,6 +439,12 @@ else
       unhealthy+=("cutover transition requires exactly postgres and redis")
     fi
   fi
+  if [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ]; then
+    if [ "$postgres_count" -ne 1 ] || [ "$redis_count" -ne 1 ] || \
+      [ "${#containers[@]}" -ne 2 ]; then
+      unhealthy+=("cutover dependency recovery requires exactly postgres and redis")
+    fi
+  fi
 
   if [ "${#unhealthy[@]}" -gt 0 ]; then
     block "EXISTING PRODUCTION SERVICE UNHEALTHY" "${unhealthy[@]}"
@@ -439,6 +470,9 @@ else
   fi
   if [ "$ALLOW_CUTOVER_TRANSITION" -eq 1 ]; then
     printf '[deploy-preflight] cutover_transition=pass database_cache=healthy data_volumes=verified\n'
+  fi
+  if [ "$ALLOW_CUTOVER_DEPENDENCY_RECOVERY" -eq 1 ]; then
+    printf '[deploy-preflight] cutover_dependency_recovery=pass postgres=healthy redis=recoverable data_volumes=verified\n'
   fi
   printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi

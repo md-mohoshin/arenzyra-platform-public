@@ -345,6 +345,24 @@ image manifests, and all four images still present by their archived SHA-256
 IDs. It skips only candidate creation; every stopped-writer, backup, role,
 migration, IDP, health, and public HTTPS gate still runs.
 
+If that command completed database ownership and byte-preserving API-volume
+remediation, recreated exactly PostgreSQL and Redis, and then stopped before the
+writer fence because the pinned Redis image could not traverse the legacy AOF
+directory, use only the dependency-transition continuation:
+
+```bash
+production_entry legacy-cutover-resume-transition-candidate \
+  <release-id> <backup-id>
+```
+
+This continuation accepts exactly one healthy PostgreSQL container, one
+recoverable Redis container, no application containers, and the already-
+verified nonroot API volume profile. It revalidates the same recent off-site
+backup and all four immutable candidate images, recreates only Redis directly
+as the pinned image's `999:1000` account without changing or deleting its named
+volume, requires both dependencies to become healthy, and then rejoins the
+ordinary writer-fence, migration, IDP, service-health, and public HTTPS chain.
+
 It requires exactly one healthy legacy PostgreSQL and Redis container, no
 running application or maintenance writer, no duplicate application container,
 and at least one absent stopped application container. It also requires the
