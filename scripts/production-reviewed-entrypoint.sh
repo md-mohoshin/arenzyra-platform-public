@@ -176,6 +176,12 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/release-local-production-backup.sh "$1" "$2"
     ;;
+  source-retention)
+    [ "$#" -ge 4 ] && [ "$#" -le 18 ] && [ $(( $# % 2 )) -eq 0 ] || \
+      block "source-retention requires a retained release/commit pair and one to eight superseded release/commit pairs."
+    require_nested_assembly
+    exec /bin/bash scripts/release-production-source-archives.sh "$@"
+    ;;
   backup-legacy)
     [ "$#" -eq 0 ] || block "backup-legacy accepts no arguments."
     require_nested_assembly
