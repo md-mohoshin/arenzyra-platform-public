@@ -1076,10 +1076,15 @@ if [ "$MODE" = "full" ]; then
   # evidence. The immutable candidate image performs authenticated dry-runs
   # before any subsequent release mutation and again after health convergence.
   bash scripts/verify-production-idp-encryption.sh
+elif [ "$MODE" = "legacy-cutover-resume-transition" ]; then
+  # PostgreSQL already uses the reviewed target profile in this recovery
+  # state. Retain only the legacy ledger and entitlement policy allowances.
+  bash scripts/production-release-safety-gate.sh --cutover-transition
+  bash scripts/verify-production-entitlement-invariants.sh \
+    --allow-cutover-transition
 elif [ "$MODE" = "legacy-cutover" ] || \
   [ "$MODE" = "legacy-cutover-resume" ] || \
-  [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
-  [ "$MODE" = "legacy-cutover-resume-transition" ]; then
+  [ "$MODE" = "legacy-cutover-resume-interrupted" ]; then
   bash scripts/production-release-safety-gate.sh --legacy-cutover
   bash scripts/verify-production-entitlement-invariants.sh \
     --allow-running-legacy-cutover

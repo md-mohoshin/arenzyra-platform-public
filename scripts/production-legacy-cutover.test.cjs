@@ -366,4 +366,16 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
     preflight,
     /ALLOW_CUTOVER_DEPENDENCY_RECOVERY[\s\S]*dependency recovery database must be running\/healthy[\s\S]*root-to-999:1000 transition[\s\S]*requires exactly postgres and redis/,
   );
+  assert.match(
+    deploy,
+    /\[ "\$MODE" = "legacy-cutover-resume-transition" \][\s\S]*production-release-safety-gate\.sh --cutover-transition[\s\S]*verify-production-entitlement-invariants\.sh[\s\\]*\n\s*--allow-cutover-transition/,
+  );
+  assert.match(
+    read("scripts/production-release-safety-gate.sh"),
+    /--cutover-transition[\s\S]*CUTOVER_TRANSITION=1[\s\S]*\[ "\$LEGACY_CUTOVER" -eq 1 \] \|\| \[ "\$CUTOVER_TRANSITION" -eq 1 \]/,
+  );
+  assert.match(
+    read("scripts/verify-production-entitlement-invariants.sh"),
+    /--allow-cutover-transition[\s\S]*entitlement_policy_args\+=\(--allow-legacy-active-stale-trial\)/,
+  );
 });

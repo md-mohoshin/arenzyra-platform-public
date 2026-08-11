@@ -5,6 +5,7 @@ source scripts/require-local-production-docker.sh
 ENV_FILE="${ARENZYRA_DEPLOY_ENV_FILE:-infra/.env.publish}"
 FIRST_DEPLOY=0
 LEGACY_CUTOVER=0
+CUTOVER_TRANSITION=0
 
 if [ "${1:-}" = "--first-deploy" ]; then
   FIRST_DEPLOY=1
@@ -14,8 +15,12 @@ if [ "${1:-}" = "--legacy-cutover" ]; then
   LEGACY_CUTOVER=1
   shift
 fi
+if [ "${1:-}" = "--cutover-transition" ]; then
+  CUTOVER_TRANSITION=1
+  shift
+fi
 if [ "$#" -ne 0 ]; then
-  printf 'Usage: production-release-safety-gate.sh [--first-deploy|--legacy-cutover]\n' >&2
+  printf 'Usage: production-release-safety-gate.sh [--first-deploy|--legacy-cutover|--cutover-transition]\n' >&2
   exit 2
 fi
 
@@ -85,7 +90,7 @@ docker exec "${database_binding[0]}" sh -ceu '
           LIMIT 4097
        ) AS ledger_row;"
 ' sh "${database_binding[3]}" "${database_binding[4]}" \
-  | if [ "$LEGACY_CUTOVER" -eq 1 ]; then
+  | if [ "$LEGACY_CUTOVER" -eq 1 ] || [ "$CUTOVER_TRANSITION" -eq 1 ]; then
       node scripts/verify-production-migration-safety.cjs \
         --require-applied-migration --no-old-writers --defer-data-impact \
         --allow-legacy-widget-key-ledger-reconcile

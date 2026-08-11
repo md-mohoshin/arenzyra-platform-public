@@ -8,6 +8,10 @@ entitlement_policy_args=()
 if [ "${1:-}" = "--allow-running-legacy-cutover" ] && [ "$#" -eq 1 ]; then
   database_identity_args+=(--allow-running-legacy-backup)
   entitlement_policy_args+=(--allow-legacy-active-stale-trial)
+elif [ "${1:-}" = "--allow-cutover-transition" ] && [ "$#" -eq 1 ]; then
+  # PostgreSQL has already crossed to the reviewed target profile, while the
+  # narrowly reconcilable legacy entitlement remains unchanged until fencing.
+  entitlement_policy_args+=(--allow-legacy-active-stale-trial)
 elif [ "$#" -ne 0 ]; then
   printf 'ENTITLEMENT INVARIANT GATE BLOCKED: unsupported argument.\n' >&2
   exit 75
