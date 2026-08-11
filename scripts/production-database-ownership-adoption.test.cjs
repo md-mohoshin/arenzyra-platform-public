@@ -56,6 +56,23 @@ test("ownership adoption holds a database fence around the exact transaction", (
   assert.match(provisioner, /if ! wait "\$worker_pid"; then[\s\S]*exit 75/);
 });
 
+test("ownership fence variables are expanded only inside the container shell", () => {
+  const innerShell = provisioner.slice(
+    provisioner.indexOf("docker exec -i"),
+    provisioner.indexOf("\n'\n", provisioner.indexOf("docker exec -i")),
+  );
+  assert.doesNotMatch(
+    innerShell,
+    /'''\$(?:PGDATABASE|PGUSER|fence_application|worker_backend_pid)'''/,
+  );
+  assert.match(innerShell, /\\\$arenzyra\\\$\$PGDATABASE\\\$arenzyra\\\$/);
+  assert.match(innerShell, /\\\$arenzyra\\\$\$PGUSER\\\$arenzyra\\\$/);
+  assert.match(
+    innerShell,
+    /\\\$arenzyra\\\$\$fence_application\\\$arenzyra\\\$/,
+  );
+});
+
 test("ownership targets come only from the closed object policy", () => {
   assert.match(sql, /FROM arenzyra_object_policy policy[\s\S]*ALTER TABLE/);
   assert.match(sql, /FROM arenzyra_enum_policy policy/);

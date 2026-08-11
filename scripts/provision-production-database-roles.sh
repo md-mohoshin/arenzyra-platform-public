@@ -935,7 +935,7 @@ fi
   worker_identity="$(
     PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
       psql -X -At -v ON_ERROR_STOP=1 -c \
-      "SELECT count(*) FROM pg_stat_activity WHERE datname = '''$PGDATABASE''' AND pid = $worker_backend_pid AND usename = '''$PGUSER''' AND application_name = '''$fence_application''' AND backend_type = '''client backend''';"
+      "SELECT count(*) FROM pg_stat_activity WHERE datname = \$arenzyra\$$PGDATABASE\$arenzyra\$ AND pid = $worker_backend_pid AND usename = \$arenzyra\$$PGUSER\$arenzyra\$ AND application_name = \$arenzyra\$$fence_application\$arenzyra\$ AND backend_type = \$arenzyra\$client backend\$arenzyra\$;"
   )"
   [ "$worker_identity" = 1 ] || exit 75
 
@@ -945,11 +945,11 @@ fi
   fence_closed=1
   PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
     psql -X -v ON_ERROR_STOP=1 -c \
-    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '''$PGDATABASE''' AND pid <> $worker_backend_pid AND backend_type = '''client backend''';"
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = \$arenzyra\$$PGDATABASE\$arenzyra\$ AND pid <> $worker_backend_pid AND backend_type = \$arenzyra\$client backend\$arenzyra\$;"
   fence_state="$(
     PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_coordinator \
       psql -X -At -F "|" -v ON_ERROR_STOP=1 -c \
-      "SELECT database.datallowconn, (SELECT count(*) FROM pg_stat_activity activity WHERE activity.datname = '''$PGDATABASE''' AND activity.pid = $worker_backend_pid AND activity.usename = '''$PGUSER''' AND activity.application_name = '''$fence_application''' AND activity.backend_type = '''client backend'''), (SELECT count(*) FROM pg_stat_activity activity WHERE activity.datname = '''$PGDATABASE''' AND activity.pid <> $worker_backend_pid AND activity.backend_type = '''client backend'''), (SELECT count(*) FROM pg_prepared_xacts prepared WHERE prepared.database = '''$PGDATABASE''') FROM pg_database database WHERE database.datname = '''$PGDATABASE''';"
+      "SELECT database.datallowconn, (SELECT count(*) FROM pg_stat_activity activity WHERE activity.datname = \$arenzyra\$$PGDATABASE\$arenzyra\$ AND activity.pid = $worker_backend_pid AND activity.usename = \$arenzyra\$$PGUSER\$arenzyra\$ AND activity.application_name = \$arenzyra\$$fence_application\$arenzyra\$ AND activity.backend_type = \$arenzyra\$client backend\$arenzyra\$), (SELECT count(*) FROM pg_stat_activity activity WHERE activity.datname = \$arenzyra\$$PGDATABASE\$arenzyra\$ AND activity.pid <> $worker_backend_pid AND activity.backend_type = \$arenzyra\$client backend\$arenzyra\$), (SELECT count(*) FROM pg_prepared_xacts prepared WHERE prepared.database = \$arenzyra\$$PGDATABASE\$arenzyra\$) FROM pg_database database WHERE database.datname = \$arenzyra\$$PGDATABASE\$arenzyra\$;"
   )"
   [ "$fence_state" = "f|1|0|0" ] || exit 75
   : > "$fence_continue"
@@ -969,7 +969,7 @@ fi
     psql -X -v ON_ERROR_STOP=1 -c \
     "ALTER DATABASE \"$PGDATABASE\" WITH ALLOW_CONNECTIONS true;"
   fence_closed=0
-  reopened="$(PGDATABASE=postgres psql -X -At -v ON_ERROR_STOP=1 -c "SELECT datallowconn FROM pg_database WHERE datname = '''$PGDATABASE''';")"
+  reopened="$(PGDATABASE=postgres psql -X -At -v ON_ERROR_STOP=1 -c "SELECT datallowconn FROM pg_database WHERE datname = \$arenzyra\$$PGDATABASE\$arenzyra\$;")"
   [ "$reopened" = t ] || exit 75
   trap - EXIT HUP INT TERM
   cleanup_fence_files
