@@ -438,12 +438,12 @@ test("failed candidate recovery preserves volumes and rebuilds forward from depe
   );
   assert.match(
     recovery,
-    /production-deploy-preflight\.sh --allow-cutover-failed-candidate[\s\S]*validate-release-image-manifest\.cjs[\s\S]*actual_image[\s\S]*docker stop --time 60[\s\S]*docker rm "\$\{candidate_containers\[@\]\}"[\s\S]*production-deploy-preflight\.sh --allow-cutover-dependency-recovery/,
+    /production-deploy-preflight\.sh --allow-cutover-failed-candidate[\s\S]*validate-release-image-manifest\.cjs[\s\S]*actual_image[\s\S]*expected_proxy_image[\s\S]*docker stop --time 60[\s\S]*docker rm "\$\{removable_containers\[@\]\}"[\s\S]*production-deploy-preflight\.sh --allow-cutover-dependency-recovery/,
   );
   assert.doesNotMatch(recovery, /--volumes|docker\s+volume\s+(?:rm|prune)|docker\s+system\s+prune/);
   assert.match(
     preflight,
-    /ALLOW_CUTOVER_FAILED_CANDIDATE[\s\S]*failed-candidate recovery requires exactly postgres, redis, api, and media-ai/,
+    /ALLOW_CUTOVER_FAILED_CANDIDATE[\s\S]*failed-candidate recovery requires exactly postgres, redis, api, media-ai, and never-started proxy\/web/,
   );
   assert.match(
     deploy,

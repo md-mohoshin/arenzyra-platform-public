@@ -47,7 +47,8 @@ compose_project="$(node scripts/read-dotenv-value.cjs infra/.env.publish ARENZYR
 [[ "$compose_project" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || \
   block "compose project is invalid"
 
-candidate_containers=()
+running_candidate_containers=()
+removable_containers=()
 for service in api media-ai; do
   manifest="$ARCHIVE_ROOT/$release_id.${service}-image.json"
   if [ -L "$manifest" ] || [ ! -f "$manifest" ] || \
@@ -73,17 +74,51 @@ for service in api media-ai; do
   actual_image="$(docker inspect --format '{{.Image}}' "$container_id")"
   [ "$actual_image" = "$expected_image" ] || \
     block "$service container is not the reviewed failed candidate"
-  candidate_containers+=("$container_id")
+  running_candidate_containers+=("$container_id")
+  removable_containers+=("$container_id")
 done
+
+web_manifest="$ARCHIVE_ROOT/$release_id.web-image.json"
+if [ -L "$web_manifest" ] || [ ! -f "$web_manifest" ] || \
+  [ "$(stat -c '%u:%g:%a:%h' -- "$web_manifest" 2>/dev/null || true)" != "0:0:600:1" ]; then
+  block "web image manifest is unsafe"
+fi
+web_image="$(
+  node scripts/validate-release-image-manifest.cjs \
+    --file "$web_manifest" --release-env "$release_env" \
+    --expected-release "$release_id" --service web --print-image-id
+)"
+mapfile -t web_containers < <(
+  docker ps -a \
+    --filter "label=com.docker.compose.project=$compose_project" \
+    --filter "label=com.docker.compose.service=web" \
+    --format '{{.ID}}'
+)
+[ "${#web_containers[@]}" -eq 1 ] || block "web container count differs"
+[ "$(docker inspect --format '{{.Image}}' "${web_containers[0]}")" = "$web_image" ] || \
+  block "web container is not the reviewed failed candidate"
+removable_containers+=("${web_containers[0]}")
+
+mapfile -t proxy_containers < <(
+  docker ps -a \
+    --filter "label=com.docker.compose.project=$compose_project" \
+    --filter "label=com.docker.compose.service=proxy" \
+    --format '{{.ID}}'
+)
+[ "${#proxy_containers[@]}" -eq 1 ] || block "proxy container count differs"
+expected_proxy_image="caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648"
+[ "$(docker inspect --format '{{.Config.Image}}' "${proxy_containers[0]}")" = "$expected_proxy_image" ] || \
+  block "proxy container is not the reviewed pinned dependency"
+removable_containers+=("${proxy_containers[0]}")
 
 # These exact immutable candidate containers are the only application writers
 # present. Volumes are neither selected nor removed by either operation.
-docker stop --time 60 "${candidate_containers[@]}" >/dev/null
-for container_id in "${candidate_containers[@]}"; do
+docker stop --time 60 "${running_candidate_containers[@]}" >/dev/null
+for container_id in "${running_candidate_containers[@]}"; do
   [ "$(docker inspect --format '{{.State.Status}}' "$container_id")" = "exited" ] || \
     block "candidate did not stop cleanly"
 done
-docker rm "${candidate_containers[@]}" >/dev/null
+docker rm "${removable_containers[@]}" >/dev/null
 
 bash scripts/production-deploy-preflight.sh --allow-cutover-dependency-recovery
-printf 'FAILED CANDIDATE SAFELY REMOVED release=%s containers=2 volumes=preserved\n' "$release_id"
+printf 'FAILED CANDIDATE SAFELY REMOVED release=%s containers=4 volumes=preserved\n' "$release_id"

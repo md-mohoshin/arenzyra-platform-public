@@ -414,9 +414,12 @@ production_entry failed-candidate-remove <release-id>
 ```
 
 This recovery accepts exactly healthy PostgreSQL and Redis plus one running,
-non-ready API and media container. It verifies both container image IDs against
-the root-owned archived manifests, stops them with a bounded grace period, and
-removes only the two containers. It never selects or removes a named volume.
+non-ready API and media container and the never-started proxy/web dependents
+that Compose may have created before its dependency failure. It verifies all
+three application image IDs against the root-owned archived manifests and the
+proxy against its exact digest, stops the two running candidates with a bounded
+grace period, and removes only those four container shells. It never selects or
+removes a named volume.
 The command must finish by proving the exact database/cache-only dependency
 transition state.
 

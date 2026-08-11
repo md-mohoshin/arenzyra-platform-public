@@ -395,6 +395,11 @@ else
             unhealthy+=("${name#/}: failed candidate must be running and non-ready, observed=${status}/${health}")
           fi
           ;;
+        proxy|web)
+          if [ "$status" != "created" ] && [ "$status" != "exited" ]; then
+            unhealthy+=("${name#/}: failed candidate dependent must never have started, observed=${status}/${health}")
+          fi
+          ;;
         *) unhealthy+=("${name#/}: unexpected failed-candidate service=${service}") ;;
       esac
       continue
@@ -497,9 +502,9 @@ else
   if [ "$ALLOW_CUTOVER_FAILED_CANDIDATE" -eq 1 ]; then
     if [ "$postgres_count" -ne 1 ] || [ "$redis_count" -ne 1 ] || \
       [ "$api_count" -ne 1 ] || [ "$media_ai_count" -ne 1 ] || \
-      [ "$proxy_count" -ne 0 ] || [ "$web_count" -ne 0 ] || \
-      [ "$discord_bot_count" -ne 0 ] || [ "${#containers[@]}" -ne 4 ]; then
-      unhealthy+=("failed-candidate recovery requires exactly postgres, redis, api, and media-ai")
+      [ "$proxy_count" -ne 1 ] || [ "$web_count" -ne 1 ] || \
+      [ "$discord_bot_count" -ne 0 ] || [ "${#containers[@]}" -ne 6 ]; then
+      unhealthy+=("failed-candidate recovery requires exactly postgres, redis, api, media-ai, and never-started proxy/web")
     fi
   fi
 
@@ -532,7 +537,7 @@ else
     printf '[deploy-preflight] cutover_dependency_recovery=pass postgres=healthy redis=recoverable data_volumes=verified\n'
   fi
   if [ "$ALLOW_CUTOVER_FAILED_CANDIDATE" -eq 1 ]; then
-    printf '[deploy-preflight] cutover_failed_candidate=pass dependencies=healthy candidates=non_ready data_volumes=verified\n'
+    printf '[deploy-preflight] cutover_failed_candidate=pass dependencies=healthy candidates=non_ready dependents=never_started data_volumes=verified\n'
   fi
   printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi
