@@ -119,13 +119,14 @@ run_role_transition() {
       -v expected_login="$expected_login" \
       -v role_action="$action" <<'"'"'SQL'"'"'
 BEGIN;
-SELECT CASE
-  WHEN count(*) = 2 THEN true
-  ELSE false
-END AS runtime_roles_present
+SELECT count(*) AS runtime_role_count,
+  count(*) FILTER (WHERE rolname = :'"'"'api_runtime_role'"'"') AS api_runtime_role_count,
+  count(*) FILTER (WHERE rolname = :'"'"'studio_runtime_role'"'"') AS studio_runtime_role_count
 FROM pg_roles
 WHERE rolname IN (:'"'"'api_runtime_role'"'"', :'"'"'studio_runtime_role'"'"')
 \gset
+\echo DATABASE_WRITER_FENCE_PREDICATE name=runtime_role_count value=:runtime_role_count api=:api_runtime_role_count studio=:studio_runtime_role_count
+SELECT :'"'"'runtime_role_count'"'"'::integer = 2 AS runtime_roles_present \gset
 \if :runtime_roles_present
 \else
   \echo DATABASE_WRITER_FENCE_SQL_BLOCKED predicate=runtime_roles_present

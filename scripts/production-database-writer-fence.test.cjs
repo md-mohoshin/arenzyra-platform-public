@@ -29,6 +29,10 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
   assert.match(script, /--engage\|--engage-or-verify\|--release/);
   assert.match(script, /verify_engaged_marker/);
   assert.match(script, /count\(\*\) = 2[\s\S]*rolbypassrls/);
+  assert.match(
+    script,
+    /DATABASE_WRITER_FENCE_PREDICATE name=runtime_role_count value=:runtime_role_count api=:api_runtime_role_count studio=:studio_runtime_role_count/,
+  );
   assert.doesNotMatch(script, /\\quit\s+75/);
   assert.ok(
     script.indexOf("write_marker_state engaging") <
