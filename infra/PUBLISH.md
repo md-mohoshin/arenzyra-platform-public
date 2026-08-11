@@ -325,9 +325,10 @@ production_entry legacy-cutover-resume-interrupted-verified-backup \
 This path remains limited to the exact stopped interrupted-cutover topology. It
 accepts only a backup completed and off-site verified within the last two hours,
 requires its archived clean-Git release to have the same reviewed API and Web
-commits, requires its Root commit to be an ancestor of the current Root, and
-permits only `scripts/` or this runbook to differ in Root. Any application
-source change, missing/unsafe artifact, or incompatible lineage fails closed.
+commits, requires both reviewed Root revisions to be locally available, and
+permits only `scripts/` or this runbook to differ between their exact trees.
+Any application source change, missing/unsafe artifact, or incompatible source
+tree fails closed.
 
 It requires exactly one healthy legacy PostgreSQL and Redis container, no
 running application or maintenance writer, no duplicate application container,

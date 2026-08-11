@@ -271,7 +271,7 @@ test("interrupted resume may reuse only a recent compatible reviewed off-site ba
   assert.match(deploy, /marker is older than two hours/);
   assert.match(
     deploy,
-    /ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*merge-base --is-ancestor/,
+    /ARENZYRA_API_GIT_COMMIT[\s\S]*ARENZYRA_WEB_GIT_COMMIT[\s\S]*Root revision is unavailable/,
   );
   assert.match(
     deploy,

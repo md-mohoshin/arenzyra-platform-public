@@ -1164,13 +1164,12 @@ reuse_verified_pre_migration_backup() {
       return 75
     }
   backup_root_commit="$("${bootstrap_git[@]}" -C "$resolved_root" rev-parse --verify "${backup_root_revision}^{commit}" 2>/dev/null || true)"
-  [ -n "$backup_root_commit" ] && \
-    "${bootstrap_git[@]}" -C "$resolved_root" merge-base --is-ancestor "$backup_root_commit" "$ARENZYRA_REVIEWED_ROOT_COMMIT" || {
-      printf '%s\n' 'Verified backup reuse Root lineage differs from the reviewed deployment.' >&2
+  [ -n "$backup_root_commit" ] || {
+      printf '%s\n' 'Verified backup reuse Root revision is unavailable in the reviewed repository.' >&2
       return 75
     }
   if ! root_changes="$("${bootstrap_git[@]}" -C "$resolved_root" diff --name-only "$backup_root_commit" "$ARENZYRA_REVIEWED_ROOT_COMMIT")"; then
-    printf '%s\n' 'Verified backup reuse could not compare Root source changes.' >&2
+    printf '%s\n' 'Verified backup reuse could not compare reviewed Root source trees.' >&2
     return 75
   fi
   while IFS= read -r changed_path; do
