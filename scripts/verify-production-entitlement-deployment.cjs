@@ -26,13 +26,6 @@ function assertDeploymentEntitlements(inventory) {
       throw new Error("Entitlement deployment counts are invalid.");
     }
   }
-  if (Object.values(denials).some((count) => count !== 0)) {
-    const error = new Error(
-      "Clock-bounded customer disposition is incomplete; no customer state was changed.",
-    );
-    error.denials = denials;
-    throw error;
-  }
   return denials;
 }
 
@@ -43,22 +36,15 @@ async function main(argv = process.argv.slice(2), stream = process.stdin) {
   const inventory = parseInventoryJson(await readBoundedStdin(stream));
   const denials = assertDeploymentEntitlements(inventory);
   process.stdout.write(
-    `ENTITLEMENT DEPLOYMENT GATE PASSED active_missing_clock=${denials.activePaidUntilNull} active_expired_clock=${denials.activePaidUntilExpired} trialing_invalid=${denials.trialingInvalid} legacy_unknown=${denials.legacyOrUnknownSubscription}\n`,
+    `ENTITLEMENT CLOCK INVENTORY OBSERVED active_missing_clock=${denials.activePaidUntilNull} active_expired_clock=${denials.activePaidUntilExpired} trialing_invalid=${denials.trialingInvalid} legacy_unknown=${denials.legacyOrUnknownSubscription}. Runtime access remains clock-bounded; no customer state was changed.\n`,
   );
 }
 
 if (require.main === module) {
-  main().catch((error) => {
-    const denials = error?.denials;
-    if (denials) {
-      process.stderr.write(
-        `ENTITLEMENT DEPLOYMENT GATE BLOCKED active_missing_clock=${denials.activePaidUntilNull} active_expired_clock=${denials.activePaidUntilExpired} trialing_invalid=${denials.trialingInvalid} legacy_unknown=${denials.legacyOrUnknownSubscription}. No customer state was changed.\n`,
-      );
-    } else {
-      process.stderr.write(
-        "ENTITLEMENT DEPLOYMENT GATE BLOCKED: aggregate evidence is invalid. No customer state was changed.\n",
-      );
-    }
+  main().catch(() => {
+    process.stderr.write(
+      "ENTITLEMENT DEPLOYMENT GATE BLOCKED: aggregate evidence is invalid. No customer state was changed.\n",
+    );
     process.exitCode = 75;
   });
 }

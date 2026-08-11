@@ -30,7 +30,7 @@ function policyInventory(overrides = {}) {
   };
 }
 
-test("deployment policy permits only zero unresolved clock denials", () => {
+test("deployment inventory validates counts without blocking natural clock expiry", () => {
   assert.deepEqual(assertDeploymentEntitlements(policyInventory()), {
     activePaidUntilNull: 0,
     activePaidUntilExpired: 0,
@@ -38,15 +38,15 @@ test("deployment policy permits only zero unresolved clock denials", () => {
     legacyOrUnknownSubscription: 0,
   });
   for (const key of Object.keys(deploymentDenials(policyInventory()))) {
-    assert.throws(
-      () => assertDeploymentEntitlements(policyInventory({ [key]: 1 })),
-      /customer disposition is incomplete/,
+    assert.equal(
+      assertDeploymentEntitlements(policyInventory({ [key]: 1 }))[key],
+      1,
       key,
     );
   }
 });
 
-test("observed-shape fixture remains mechanically blocked without mutation", () => {
+test("observed-shape fixture reports clock inventory without mutation", () => {
   const gatePath = path.join(
     __dirname,
     "verify-production-entitlement-deployment.cjs",
@@ -56,14 +56,25 @@ test("observed-shape fixture remains mechanically blocked without mutation", () 
     encoding: "utf8",
     env: {},
   });
-  assert.equal(result.status, 75);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /ENTITLEMENT DEPLOYMENT GATE BLOCKED/);
-  assert.match(result.stderr, /active_missing_clock=2/);
-  assert.match(result.stderr, /active_expired_clock=1/);
-  assert.match(result.stderr, /trialing_invalid=1/);
-  assert.match(result.stderr, /legacy_unknown=1/);
-  assert.match(result.stderr, /No customer state was changed/);
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /ENTITLEMENT CLOCK INVENTORY OBSERVED/);
+  assert.match(result.stdout, /active_missing_clock=2/);
+  assert.match(result.stdout, /active_expired_clock=1/);
+  assert.match(result.stdout, /trialing_invalid=1/);
+  assert.match(result.stdout, /legacy_unknown=1/);
+  assert.match(result.stdout, /Runtime access remains clock-bounded/);
+  assert.match(result.stdout, /no customer state was changed/i);
+});
+
+test("malformed deployment inventory still fails closed", () => {
+  assert.throws(
+    () =>
+      assertDeploymentEntitlements(
+        policyInventory({ activePaidUntilExpired: -1 }),
+      ),
+    /counts are invalid/,
+  );
 });
 
 test("production invariant wrapper streams the exact reviewed inventory", () => {

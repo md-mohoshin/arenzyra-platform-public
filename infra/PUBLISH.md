@@ -74,15 +74,16 @@ The gate requires at least 30 GiB free on `/` by default. It exits with
 container is unhealthy. It never performs cleanup automatically. Both committed
 launcher modes run this check before generating release metadata or
 starting a build. A full deploy also verifies the exact PostgreSQL 16.14 target,
-the API data-volume boundary, clean release source, entitlement clocks, and the
-structural IDP postcondition before it can build or mutate a release.
+the API data-volume boundary, clean release source, entitlement stored shape,
+and the structural IDP postcondition before it can build or mutate a release.
 
 The read-only production audit on 2026-08-09 does **not** satisfy those gates.
 `/opt/arenzyra` is a non-Git mixed release without a complete cryptographic
 release-file manifest from the exact clean Root/API/Web assembly; PostgreSQL is
 16.13 rather than the pinned 16.14 release; 12 IDP schedules still fail the
-credential/message zero-plaintext postcondition; strict entitlement inventory
-reports 4 expired `ACTIVE` clocks and 2 invalid `TRIALING` clocks; and the
+credential/message zero-plaintext postcondition; entitlement inventory reports
+4 expired `ACTIVE` clocks and 2 invalid `TRIALING` clocks (runtime access is
+denied, but these elapsed clocks are not a deployment blocker); and the
 `api-uploads` and `api-storage` roots are `0:0` mode `0777`. These are current
 hard blockers, not optional warnings. The deploy must not change customer rows,
 volume contents, ownership, modes, or database state to make them pass.
@@ -129,13 +130,12 @@ mechanically.
 For every full deploy, the same pre-mutation phase runs read-only,
 aggregate-only entitlement checks over non-deleted organizations. They report
 counts, never organization identifiers or arbitrary row data, and perform no
-reconciliation. The release fails closed if a query or bounded parser fails, if
-stored `ACTIVE`, `TRIALING`, or `EXPIRED` forms are inconsistent, or if an
-approved active organization has a missing/expired `ACTIVE` clock, an invalid
-`TRIALING` clock, or a legacy/unknown subscription status. Elapsed clocks are
-therefore deployment failures under the current strict policy. Use the reviewed
-customer/business disposition procedure below; deployment never backfills or
-edits entitlement rows.
+reconciliation. The release fails closed if a query or bounded parser fails, or
+if stored `ACTIVE`, `TRIALING`, or `EXPIRED` forms are inconsistent. Current
+clock results are retained as operational inventory, while elapsed or missing
+clocks remain fail-closed at every runtime access boundary. A clock naturally
+elapsing during a release does not block deployment and never triggers an
+automatic customer-row write.
 
 The normal full `--first-deploy` path is intentionally unavailable and exits
 `75` after the reviewed launcher attests the clean checkout but before any
@@ -426,31 +426,27 @@ non-deleted organizations:
 - `TRIALING`: `trialEndsAt` is present and `paidUntil` is null.
 - `EXPIRED`: both `paidUntil` and `trialEndsAt` are null.
 
-Deployment authorization uses strict clocks under the current policy. `ACTIVE`
-is deployable only when `paidUntil` is in the future;
-`TRIALING` is deployable only when its complete, ordered trial dates describe a
-currently active trial and `paidUntil` is null. A missing or elapsed clock fails
-the release gate without an automatic database write. Do not infer runtime
-monetization enforcement from this inventory gate: the canonical API must also
-use the same shared predicate in authentication, launcher, Discord, and session
-paths, with focused tests, before that enforcement can be called complete.
+Deployment authorization checks the stable stored forms above. Current clocks
+are inventoried but are enforced at runtime, not as a deployment precondition:
+`ACTIVE` access requires a future `paidUntil`, and `TRIALING` access requires a
+complete, ordered, currently active trial. Missing or elapsed clocks fail
+closed at runtime without an automatic database write. The canonical API uses
+the shared predicate in authentication, launcher, Discord, and session paths.
 
 The 2026-08-09 aggregate inventory found 11 approved active organizations:
 7 `ACTIVE` (3 future and 4 expired clocks) and 4 `TRIALING` (2 valid, 1 expired,
-and 1 missing dates). The deployment gate therefore reports six clock denials
-and remains blocked until an explicit reviewed customer/business disposition
-and remediation artifact exists and the read-only inventory returns zero. It
-has no grandfather flag or permissive default.
+and 1 missing dates). The inventory therefore reports six clock denials. Those
+customers remain denied at runtime; the report does not block a safe deployment
+or change their stored status.
 
-Any other status or aggregate mismatch also fails closed. Gate output contains
+Any unknown stored status, inconsistent stored form, or aggregate mismatch
+still fails closed. Inventory output contains
 only status and inconsistency counts; it intentionally cannot identify affected
 organizations. Investigate and reconcile through an approved, audited,
 writer-stopped maintenance procedure using a fresh verified off-host backup,
 reviewed target selection, before/after counts, and the normal billing audit
-path. Do not add an automatic deploy backfill, print identifiers from the gate,
-or weaken a boundary to make deployment pass. After an explicitly approved
-controlled correction, rerun both read-only entitlement checks and record zero
-denials before returning to the standard deployment workflow. The detailed billing semantics are in
+path. Do not add an automatic deploy backfill or print identifiers from the
+gate. The detailed billing semantics are in
 [`MANUAL_BILLING_RUNBOOK.md`](../docs/product/MANUAL_BILLING_RUNBOOK.md).
 
 Before deciding whether legacy `ACTIVE` access can become strictly

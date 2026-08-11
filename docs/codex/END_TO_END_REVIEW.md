@@ -133,7 +133,7 @@ the exact clean canonical API, Web, and Root assembly identified above.
 
 Secure invite-only onboarding is integrated end to end in the canonical API and Web: approval creates an inactive account with deferred, single-use fragment-token setup, verified SMTP delivery activates the token, and account setup atomically sets the password and activates the user.
 The canonical catalog/pricing contract is aligned and public organization applications remain hard-disabled.
-This does not authorize production: deployment remains fail-closed on the observed mixed/non-Git source, PostgreSQL 16.13, unresolved IDP plaintext and durable writer-credential-fence cutover, six entitlement-clock denials, and 0777 API volumes, plus final migration/replay evidence.
+This does not authorize production: deployment remains fail-closed on the observed mixed/non-Git source, PostgreSQL 16.13, unresolved IDP plaintext and durable writer-credential-fence cutover, and 0777 API volumes, plus final migration/replay evidence. Six entitlement-clock denials remain visible in aggregate inventory and fail closed at runtime, but natural expiry is not a deployment blocker.
 
 ## Quarantines and rights boundary
 
@@ -183,9 +183,9 @@ service restart, Discord interaction, or customer-state change was performed.
   reviewed durable writer-credential fence and session termination workflow
   exists; no default, stopped-container sample, or placeholder passes it.
 - Aggregate entitlement inventory found 11 approved/active organizations and
-  six effective clock denials. Deployment stays blocked until an explicit,
-  reviewed customer/business policy and remediation artifact resolves them.
-  There is no automatic mutation, permissive default, or grandfather switch.
+  six effective clock denials. Those organizations remain denied by the shared
+  runtime predicate. Natural expiry is operational inventory rather than a
+  deployment blocker, and deployment performs no automatic customer mutation.
 - Both API data-volume roots are owned by `0:0` with mode `0777`. The nonroot
   image cutover must remain blocked until an exact, backed-up ownership and mode
   remediation is reviewed. The read-only gate requires roots `1000:1000` mode

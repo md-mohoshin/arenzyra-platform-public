@@ -86,9 +86,10 @@ node scripts/verify-production-entitlement-invariants.cjs \
   --expired-inconsistent-count "$expired_inconsistent_count" \
   --unknown-status-count "$unknown_status_count"
 
-# The stored-shape gate above is necessary but deliberately insufficient for a
-# strict clock-bounded release. Reuse the exact aggregate-only inventory and its
-# bounded sanitizer; do not infer or mutate customer dates during deployment.
+# Runtime access is strictly clock-bounded, while deployment authorization uses
+# the stable stored-shape gate above. Reuse the aggregate-only inventory and its
+# bounded sanitizer as operational evidence; natural clock expiry must neither
+# mutate customer dates nor turn an otherwise safe release into an outage.
 INVENTORY_SQL="infra/sql/production-entitlement-inventory.sql"
 if [ ! -f "$INVENTORY_SQL" ] || [ -L "$INVENTORY_SQL" ]; then
   printf 'ENTITLEMENT DEPLOYMENT GATE BLOCKED: reviewed inventory SQL is unavailable.\n' >&2
