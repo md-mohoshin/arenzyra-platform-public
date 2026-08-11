@@ -354,6 +354,110 @@ verify_adoption_writers_stopped() {
   }
 }
 
+remediate_legacy_host_authentication() {
+  local result
+  [ "$MODE" = apply ] && [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ] && \
+    [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ] || return 75
+  verify_adoption_writers_stopped
+  if ! result="$({
+    printf '%s\n' \
+      "$postgres_admin_role" "$postgres_database" "$schema_name" "$postgres_port"
+  } | docker exec -i "$postgres_container" sh -ceu '
+    IFS= read -r PGUSER
+    IFS= read -r PGDATABASE
+    IFS= read -r expected_schema
+    IFS= read -r PGPORT
+    [ "$PGUSER" = "${POSTGRES_USER:-}" ] || exit 75
+    case "$PGUSER" in ""|*[!A-Za-z0-9_]*) exit 75 ;; esac
+    case "$PGDATABASE" in ""|*[!A-Za-z0-9_-]*) exit 75 ;; esac
+    unset PGPASSWORD PGSERVICE PGSERVICEFILE
+    export PGUSER PGDATABASE PGPORT PGHOST=/var/run/postgresql PGCONNECT_TIMEOUT=5
+    export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000 -c search_path=$expected_schema -c arenzyra.expected_role=$PGUSER -c arenzyra.expected_database=$PGDATABASE -c arenzyra.expected_schema=$expected_schema -c arenzyra.expected_port=$PGPORT"
+    state="$(psql -X -v ON_ERROR_STOP=1 -At -F "|" -c "SELECT CASE WHEN current_user = session_user AND current_user::text = current_setting('"'"'arenzyra.expected_role'"'"') AND current_database() = current_setting('"'"'arenzyra.expected_database'"'"') AND COALESCE(current_schema(), '"'"''"'"') = current_setting('"'"'arenzyra.expected_schema'"'"') AND current_setting('"'"'port'"'"') = current_setting('"'"'arenzyra.expected_port'"'"') AND inet_client_addr() IS NULL AND current_setting('"'"'password_encryption'"'"') = '"'"'scram-sha-256'"'"' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolcanlogin AND rolsuper) THEN '"'"'verified'"'"' ELSE '"'"'blocked'"'"' END, (SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL), (SELECT count(*) FROM pg_hba_file_rules WHERE type LIKE '"'"'host%'"'"' AND auth_method IS DISTINCT FROM '"'"'scram-sha-256'"'"'), (SELECT count(*) FROM pg_hba_file_rules WHERE type LIKE '"'"'host%'"'"' AND auth_method = '"'"'trust'"'"')" 2>/dev/null)" || exit 75
+    case "$state" in
+      verified\|0\|0\|0) printf already-compliant; exit 0 ;;
+      verified\|0\|4\|4) ;;
+      *) exit 75 ;;
+    esac
+    hba_file="$(psql -X -v ON_ERROR_STOP=1 -At -c "SHOW hba_file" 2>/dev/null)" || exit 75
+    [ "$hba_file" = /var/lib/postgresql/data/pg_hba.conf ] && \
+      [ -f "$hba_file" ] && [ ! -L "$hba_file" ] || exit 75
+    hba_owner="$(stat -c %u:%g -- "$hba_file")" || exit 75
+    hba_mode="$(stat -c %a -- "$hba_file")" || exit 75
+    hba_links="$(stat -c %h -- "$hba_file")" || exit 75
+    [ "$hba_links" = 1 ] && [ "$hba_owner" = "$(id -u postgres):$(id -g postgres)" ] && \
+      case "$hba_mode" in 600|640) true ;; *) false ;; esac || exit 75
+    source_sha="$(sha256sum -- "$hba_file" | awk '"'"'{print $1}'"'"')" || exit 75
+    case "$source_sha" in ""|*[!0-9a-f]*) exit 75 ;; esac
+    [ "${#source_sha}" -eq 64 ] || exit 75
+    backup_file="${hba_file}.arenzyra-pre-host-scram-${source_sha}.bak"
+    candidate_file="${hba_file}.arenzyra-host-scram.$$"
+    rollback_file="${hba_file}.arenzyra-host-rollback.$$"
+    if [ -e "$backup_file" ]; then
+      [ -f "$backup_file" ] && [ ! -L "$backup_file" ] && \
+        [ "$(stat -c %h -- "$backup_file")" = 1 ] && \
+        [ "$(stat -c %u:%g -- "$backup_file")" = "$hba_owner" ] && \
+        [ "$(stat -c %a -- "$backup_file")" = "$hba_mode" ] && \
+        [ "$(sha256sum -- "$backup_file" | awk '"'"'{print $1}'"'"')" = "$source_sha" ] || exit 75
+    else
+      cp -p -- "$hba_file" "$backup_file"
+    fi
+    installed=0
+    rollback() {
+      status="$?"
+      if [ "$installed" -eq 1 ]; then
+        cp -p -- "$backup_file" "$rollback_file" || true
+        mv -f -- "$rollback_file" "$hba_file" || true
+        psql -X -v ON_ERROR_STOP=1 -At -c "SELECT pg_reload_conf()" >/dev/null 2>&1 || true
+      fi
+      rm -f -- "$candidate_file" "$rollback_file"
+      exit "$status"
+    }
+    trap rollback EXIT
+    trap '"'"'exit 75'"'"' HUP INT TERM
+    awk '"'"'
+      BEGIN { changed = 0; invalid = 0 }
+      /^[[:space:]]*($|#)/ { print; next }
+      $1 ~ /^host/ && $5 != "scram-sha-256" {
+        if ($1 == "host" && ($2 == "all" || $2 == "replication") &&
+            $3 == "all" && ($4 == "127.0.0.1/32" || $4 == "::1/128") &&
+            $5 == "trust" && NF == 5) {
+          print $1, $2, $3, $4, "scram-sha-256"
+          changed++
+          next
+        }
+        invalid = 1
+      }
+      { print }
+      END { if (changed != 4 || invalid != 0) exit 75 }
+    '"'"' "$hba_file" >"$candidate_file"
+    [ -s "$candidate_file" ] && [ "$(sha256sum -- "$candidate_file" | awk '"'"'{print $1}'"'"')" != "$source_sha" ] || exit 75
+    chown "$hba_owner" -- "$candidate_file"
+    chmod "$hba_mode" -- "$candidate_file"
+    installed=1
+    mv -f -- "$candidate_file" "$hba_file"
+    post_state="$(psql -X -v ON_ERROR_STOP=1 -At -F "|" -c "SELECT (SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL), (SELECT count(*) FROM pg_hba_file_rules WHERE type LIKE '"'"'host%'"'"' AND auth_method IS DISTINCT FROM '"'"'scram-sha-256'"'"')" 2>/dev/null)" || exit 75
+    [ "$post_state" = "0|0" ] || exit 75
+    [ "$(psql -X -v ON_ERROR_STOP=1 -At -c "SELECT pg_reload_conf()" 2>/dev/null)" = t ] || exit 75
+    installed=0
+    trap - EXIT HUP INT TERM
+    rm -f -- "$candidate_file" "$rollback_file"
+    printf remediated
+  ' 2>/dev/null)"; then
+    printf '%s\n' 'Legacy PostgreSQL host-authentication remediation failed; the original HBA file was retained or restored.' >&2
+    return 75
+  fi
+  case "$result" in
+    already-compliant)
+      printf '%s\n' 'Legacy PostgreSQL host authentication is already SCRAM-only.'
+      ;;
+    remediated)
+      printf '%s\n' 'Legacy PostgreSQL loopback host authentication upgraded to SCRAM with the verified source file retained as a backup.'
+      ;;
+    *) return 75 ;;
+  esac
+}
+
 adopt_legacy_administrator_credential() {
   local result
   [ "$MODE" = apply ] && [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ] && \
@@ -488,6 +592,9 @@ configured_role_exists() {
 # reviewed administrator password through an attested local socket. Every
 # ordinary path, and the resulting credential in that exception, must still
 # authenticate over bounded TCP before any role/ownership reconciliation.
+if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
+  remediate_legacy_host_authentication
+fi
 if ! verify_tcp_identity administrator "$postgres_admin_role" "$postgres_admin_password"; then
   if [ "$LEGACY_CUTOVER_PARTIAL" -ne 1 ]; then
     exit 75

@@ -101,6 +101,9 @@ test("ordinary role reconciliation does not activate ownership adoption", () => 
 });
 
 test("stopped legacy cutover may adopt only the reviewed administrator credential", () => {
+  const hbaRemediation = provisioner.indexOf(
+    "remediate_legacy_host_authentication",
+  );
   const failedTcp = provisioner.indexOf(
     'if ! verify_tcp_identity administrator "$postgres_admin_role"',
   );
@@ -112,7 +115,20 @@ test("stopped legacy cutover may adopt only the reviewed administrator credentia
     'verify_tcp_identity administrator "$postgres_admin_role"',
     adoption,
   );
-  assert.ok(failedTcp >= 0 && adoption > failedTcp && repeatedTcp > adoption);
+  assert.ok(
+    hbaRemediation >= 0 &&
+      failedTcp > hbaRemediation &&
+      adoption > failedTcp &&
+      repeatedTcp > adoption,
+  );
+  assert.match(
+    provisioner,
+    /remediate_legacy_host_authentication\(\)[\s\S]*verified\\\|0\\\|4\\\|4[\s\S]*arenzyra-pre-host-scram-[\s\S]*changed != 4 \|\| invalid != 0[\s\S]*pg_reload_conf\(\)/,
+  );
+  assert.match(
+    provisioner,
+    /remediate_legacy_host_authentication\(\)[\s\S]*cp -p -- "\$backup_file" "\$rollback_file"[\s\S]*mv -f -- "\$rollback_file" "\$hba_file"[\s\S]*trap rollback EXIT/,
+  );
   assert.match(
     provisioner,
     /adopt_legacy_administrator_credential\(\)[\s\S]*\[ "\$MODE" = apply \][\s\S]*\[ "\$LEGACY_CUTOVER_PARTIAL" -eq 1 \][\s\S]*verify_adoption_writers_stopped/,
