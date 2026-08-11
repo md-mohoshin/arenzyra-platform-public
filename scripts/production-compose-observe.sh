@@ -5,7 +5,7 @@ SAFE_COMMAND_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH="$SAFE_COMMAND_PATH"
 
 usage() {
-  printf 'Usage: scripts/production-compose-observe.sh {ps|logs}\n' >&2
+  printf 'Usage: scripts/production-compose-observe.sh {ps|logs|network}\n' >&2
 }
 
 if [ "$#" -ne 1 ]; then
@@ -14,7 +14,7 @@ if [ "$#" -ne 1 ]; then
 fi
 operation="$1"
 case "$operation" in
-  ps|logs) ;;
+  ps|logs|network) ;;
   *) usage; exit 2 ;;
 esac
 
@@ -74,7 +74,23 @@ fi
 compose+=(-f infra/docker-compose.publish.yml --profile discord-bot)
 
 if [ "$operation" = "ps" ]; then
-  "${compose[@]}" ps
-else
+  "${compose[@]}" ps --all
+elif [ "$operation" = "logs" ]; then
   "${compose[@]}" logs --follow
+else
+  network_name="${compose_project}_default"
+  mapfile -t network_ids < <(
+    docker network ls --filter "name=^${network_name}$" --format '{{.ID}}'
+  )
+  [ "${#network_ids[@]}" -eq 1 ] || {
+    printf 'PRODUCTION OBSERVATION BLOCKED: reviewed network count differs.\n' >&2
+    exit 75
+  }
+  [ "$(docker network inspect --format '{{.Name}}' "${network_ids[0]}")" = "$network_name" ] || {
+    printf 'PRODUCTION OBSERVATION BLOCKED: reviewed network identity differs.\n' >&2
+    exit 75
+  }
+  printf 'NETWORK ENDPOINTS name=%s\n' "$network_name"
+  docker network inspect --format '{{range .Containers}}{{println .Name .IPv4Address}}{{end}}' \
+    "${network_ids[0]}"
 fi

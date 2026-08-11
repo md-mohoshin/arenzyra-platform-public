@@ -1075,10 +1075,12 @@ If those services run on the same server outside Docker, `host.docker.internal` 
 ```bash
 production_entry observe ps
 production_entry observe logs
+production_entry observe network
 ```
 
 These read-only helpers resolve the reviewed Compose project from
-`infra/.env.publish`. Do not use an unguarded `docker compose down`, restart,
+`infra/.env.publish`. `ps` includes stopped containers, and `network` prints
+only the reviewed private-network endpoint names and addresses. Do not use an unguarded `docker compose down`, restart,
 recreate, or `up` on production; use the guarded deployment/recovery workflow.
 
 ### Existing web-container recovery

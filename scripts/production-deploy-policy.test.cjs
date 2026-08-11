@@ -1343,6 +1343,20 @@ test("one reviewed production entrypoint exposes only the closed command allowli
   assert.match(launcher, /require_nested_assembly/);
   assert.doesNotMatch(launcher, /\beval\b|bash\s+-c/);
   assert.doesNotMatch(launcher, /idp-credentials (?:apply|validate)/);
+  assert.match(
+    launcher,
+    /observe accepts exactly ps, logs, or network/,
+  );
+});
+
+test("production observation exposes bounded stopped-state and network diagnostics", () => {
+  const observe = read("scripts/production-compose-observe.sh");
+  assert.match(observe, /ps --all/);
+  assert.match(
+    observe,
+    /network_name="\$\{compose_project\}_default"[\s\S]*docker network ls --filter "name=\^\$\{network_name\}\$"[\s\S]*docker network inspect --format '\{\{range \.Containers\}\}\{\{println \.Name \.IPv4Address\}\}\{\{end\}\}'/,
+  );
+  assert.doesNotMatch(observe, /docker network (?:connect|disconnect|create|rm|prune)/);
 });
 
 test("reviewed web recovery starts only one existing container after the dedicated preflight", () => {

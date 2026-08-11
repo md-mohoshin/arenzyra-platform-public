@@ -278,8 +278,8 @@ case "$command_id" in
     block "host-maintenance accepts only optional --check-only, --builder-cache, or --unused-images."
     ;;
   observe)
-    [ "$#" -eq 1 ] && { [ "$1" = "ps" ] || [ "$1" = "logs" ]; } || \
-      block "observe accepts exactly ps or logs."
+    [ "$#" -eq 1 ] && { [ "$1" = "ps" ] || [ "$1" = "logs" ] || [ "$1" = "network" ]; } || \
+      block "observe accepts exactly ps, logs, or network."
     exec /bin/bash scripts/production-compose-observe.sh "$1"
     ;;
   verify)
