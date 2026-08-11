@@ -51,6 +51,12 @@ function validCompose(env = validEnv()) {
       "api-maintenance-idp-dry-run": {
         environment: { DATABASE_URL: env.MAINTENANCE_READ_DATABASE_URL },
       },
+      "api-maintenance-idp-apply": {
+        environment: { DATABASE_URL: env.IDP_MAINTENANCE_DATABASE_URL },
+      },
+      "api-maintenance-idp-validate": {
+        environment: { DATABASE_URL: env.MIGRATION_DATABASE_URL },
+      },
       web: {
         environment: { STUDIO_DATABASE_URL: env.STUDIO_DATABASE_URL },
         extra_hosts: ["host.docker.internal:host-gateway"],
@@ -211,6 +217,8 @@ test("resolved Compose binds only the exact IDP maintenance role closure", () =>
   const env = validEnv();
   const expected = [
     ["api-maintenance-idp-dry-run", "MAINTENANCE_READ_DATABASE_URL"],
+    ["api-maintenance-idp-apply", "IDP_MAINTENANCE_DATABASE_URL"],
+    ["api-maintenance-idp-validate", "MIGRATION_DATABASE_URL"],
   ];
   for (const [serviceName, envKey] of expected) {
     const wrong = validCompose(env);

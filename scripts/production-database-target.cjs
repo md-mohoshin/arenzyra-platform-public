@@ -342,6 +342,18 @@ function assertResolvedComposeTargets(compose, env) {
       "MAINTENANCE_READ_DATABASE_URL",
       false,
     ],
+    [
+      "api-maintenance-idp-apply",
+      "DATABASE_URL",
+      "IDP_MAINTENANCE_DATABASE_URL",
+      false,
+    ],
+    [
+      "api-maintenance-idp-validate",
+      "DATABASE_URL",
+      "MIGRATION_DATABASE_URL",
+      false,
+    ],
     ["web", "STUDIO_DATABASE_URL", "STUDIO_DATABASE_URL", true],
     [
       "studio-migrate",
