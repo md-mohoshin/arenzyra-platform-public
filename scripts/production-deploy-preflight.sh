@@ -389,10 +389,16 @@ else
             unhealthy+=("${name#/}: failed-candidate database/cache must be running/healthy, observed=${status}/${health}")
           fi
           ;;
-        api|media-ai)
+        api)
           if [ "$status" != "running" ] || \
             { [ "$health" != "unhealthy" ] && [ "$health" != "starting" ]; }; then
             unhealthy+=("${name#/}: failed candidate must be running and non-ready, observed=${status}/${health}")
+          fi
+          ;;
+        media-ai)
+          if [ "$status" != "running" ] || \
+            { [ "$health" != "healthy" ] && [ "$health" != "unhealthy" ] && [ "$health" != "starting" ]; }; then
+            unhealthy+=("${name#/}: failed candidate media service must be running, observed=${status}/${health}")
           fi
           ;;
         proxy|web)
@@ -537,7 +543,7 @@ else
     printf '[deploy-preflight] cutover_dependency_recovery=pass postgres=healthy redis=recoverable data_volumes=verified\n'
   fi
   if [ "$ALLOW_CUTOVER_FAILED_CANDIDATE" -eq 1 ]; then
-    printf '[deploy-preflight] cutover_failed_candidate=pass dependencies=healthy candidates=non_ready dependents=never_started data_volumes=verified\n'
+    printf '[deploy-preflight] cutover_failed_candidate=pass dependencies=healthy api=non_ready media=attested_running dependents=never_started data_volumes=verified\n'
   fi
   printf '[deploy-preflight] existing_services=%s health=pass\n' "${#containers[@]}"
 fi

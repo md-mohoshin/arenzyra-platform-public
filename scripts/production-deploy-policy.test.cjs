@@ -1305,6 +1305,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-resume-interrupted-candidate",
       "legacy-cutover-resume-transition-candidate",
       "failed-candidate-remove",
+      "redis-capacity-transition",
       "legacy-cutover-resume-transition-rebuild",
       "legacy-cutover-resume-transition-candidate-fresh-backup",
       "deploy-discord",

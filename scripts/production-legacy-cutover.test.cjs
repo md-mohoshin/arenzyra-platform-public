@@ -424,6 +424,10 @@ test("dependency-transition resume repairs only Redis startup and rejoins the fe
 
 test("failed candidate recovery preserves volumes and rebuilds forward from dependency transition", () => {
   const recovery = read("scripts/recover-production-failed-candidate.sh");
+  const capacityRecovery = read(
+    "scripts/recover-production-redis-capacity.sh",
+  );
+  const capacityUpdate = read("scripts/set-production-redis-capacity.cjs");
   const preflight = read("scripts/production-deploy-preflight.sh");
   const deploy = read("scripts/deploy-production.sh");
   const launcher = read("scripts/production-reviewed-entrypoint.sh");
@@ -442,8 +446,24 @@ test("failed candidate recovery preserves volumes and rebuilds forward from depe
   );
   assert.doesNotMatch(recovery, /--volumes|docker\s+volume\s+(?:rm|prune)|docker\s+system\s+prune/);
   assert.match(
+    launcher,
+    /redis-capacity-transition\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*recover-production-redis-capacity\.sh/,
+  );
+  assert.match(
+    capacityRecovery,
+    /production-deploy-preflight\.sh --allow-cutover-dependency-recovery[\s\S]*CONFIG GET maxmemory[\s\S]*CONFIG GET maxmemory-policy[\s\S]*used_memory[\s\S]*NEW_MAX_MEMORY_BYTES \* 85 \/ 100[\s\S]*MIN_HOST_MEMORY_BYTES[\s\S]*MIN_AVAILABLE_MEMORY_BYTES[\s\S]*set-production-redis-capacity\.cjs[\s\S]*production-deploy-preflight\.sh --allow-cutover-dependency-recovery/,
+  );
+  assert.doesNotMatch(
+    capacityRecovery,
+    /docker\s+(?:stop|restart|rm)|docker\s+volume|--volumes|system\s+prune/,
+  );
+  assert.match(
+    capacityUpdate,
+    /current Redis capacity settings differ[\s\S]*\.replace\(\/\^REDIS_MAXMEMORY=768mb\$\/m, "REDIS_MAXMEMORY=3gb"\)[\s\S]*fs\.fsyncSync[\s\S]*fs\.renameSync/,
+  );
+  assert.match(
     preflight,
-    /ALLOW_CUTOVER_FAILED_CANDIDATE[\s\S]*failed-candidate recovery requires exactly postgres, redis, api, media-ai, and never-started proxy\/web/,
+    /ALLOW_CUTOVER_FAILED_CANDIDATE[\s\S]*api\|media-ai[\s\S]*media service must be running[\s\S]*failed-candidate recovery requires exactly postgres, redis, api, media-ai, and never-started proxy\/web/,
   );
   assert.match(
     deploy,

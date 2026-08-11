@@ -405,16 +405,17 @@ read-only PostgreSQL dump and volume archives, requires immutable off-site
 upload verification, and only then recreates Redis and rejoins the same fenced
 cutover. It does not start an application writer or remove a named volume.
 
-If an immutable candidate reaches the API and media startup step but both
-services remain non-ready before web, proxy, or Discord starts, first remove
-only those two attested failed containers:
+If an immutable candidate reaches the API and media startup step but the API
+remains non-ready before web, proxy, or Discord starts, first remove only the
+two attested candidate containers (the independent media readiness probe may
+already be healthy):
 
 ```bash
 production_entry failed-candidate-remove <release-id>
 ```
 
 This recovery accepts exactly healthy PostgreSQL and Redis plus one running,
-non-ready API and media container and the never-started proxy/web dependents
+non-ready API, one attested running media container, and the never-started proxy/web dependents
 that Compose may have created before its dependency failure. It verifies all
 three application image IDs against the root-owned archived manifests and the
 proxy against its exact digest, stops the two running candidates with a bounded
@@ -422,6 +423,25 @@ grace period, and removes only those four container shells. It never selects or
 removes a named volume.
 The command must finish by proving the exact database/cache-only dependency
 transition state.
+
+When the failed API readiness result is specifically caused by a restored Redis
+dataset crossing the historical 768 MiB capacity ceiling, apply the closed,
+stopped-writer capacity transition before resuming the immutable candidate:
+
+```bash
+production_entry redis-capacity-transition
+production_entry legacy-cutover-resume-transition-candidate \
+  <release-id> <backup-id>
+```
+
+The transition accepts only healthy PostgreSQL and Redis with no application
+containers, verifies the pinned Redis image, proves the live used-memory value
+has crossed the old 85% readiness threshold but remains below the reviewed
+3 GiB ceiling, requires at least 8 GiB host memory and 3 GiB currently
+available, and atomically changes only `REDIS_MAXMEMORY=768mb` to `3gb` in the
+root-owned `0600` production environment. It does not restart a service or
+select, modify, or remove a volume. The standard continuation repeats preflight
+immediately before recreating Redis with the preserved persistent volume.
 
 When the failure needs a new application commit, continue forward with:
 

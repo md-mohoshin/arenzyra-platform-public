@@ -122,6 +122,11 @@ case "$command_id" in
     require_nested_assembly
     exec bash scripts/recover-production-failed-candidate.sh "$1"
     ;;
+  redis-capacity-transition)
+    [ "$#" -eq 0 ] || block "redis-capacity-transition accepts no arguments."
+    require_nested_assembly
+    exec bash scripts/recover-production-redis-capacity.sh
+    ;;
   legacy-cutover-resume-transition-rebuild)
     [ "$#" -eq 0 ] || block "legacy-cutover-resume-transition-rebuild accepts no arguments."
     require_nested_assembly
