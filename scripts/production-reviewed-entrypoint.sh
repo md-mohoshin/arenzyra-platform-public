@@ -163,6 +163,11 @@ case "$command_id" in
     exec /bin/bash scripts/provision-production-database-roles.sh \
       --env /opt/arenzyra/infra/.env.publish --dry-run
     ;;
+  legacy-admin-diagnose)
+    [ "$#" -eq 0 ] || block "legacy-admin-diagnose accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/diagnose-production-legacy-database-admin.sh
+    ;;
   host-maintenance)
     if [ "$#" -eq 0 ]; then
       exec /bin/bash scripts/production-maintenance.sh

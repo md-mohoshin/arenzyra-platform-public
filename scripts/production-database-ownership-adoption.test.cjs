@@ -143,3 +143,42 @@ test("stopped legacy cutover may adopt only the reviewed administrator credentia
   assert.doesNotMatch(adoptionBody, /inet_server_port\(\)/);
   assert.doesNotMatch(adoptionBody, /"\$postgres_admin_password"/);
 });
+
+test("legacy administrator diagnostic is allowlisted, bounded, and read-only", () => {
+  const repositoryRoot = path.resolve(__dirname, "..");
+  const diagnostic = fs.readFileSync(
+    path.join(
+      repositoryRoot,
+      "scripts",
+      "diagnose-production-legacy-database-admin.sh",
+    ),
+    "utf8",
+  );
+  const launcher = fs.readFileSync(
+    path.join(repositoryRoot, "scripts", "production-reviewed-entrypoint.sh"),
+    "utf8",
+  );
+  assert.match(
+    launcher,
+    /legacy-admin-diagnose\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*diagnose-production-legacy-database-admin\.sh/,
+  );
+  assert.match(
+    diagnostic,
+    /production-deploy-preflight\.sh --allow-legacy-cutover-interrupted/,
+  );
+  assert.match(diagnostic, /default_transaction_read_only=on/);
+  assert.match(diagnostic, /PGHOST=\/var\/run\/postgresql/);
+  assert.match(diagnostic, /tcp_reviewed_password/);
+  assert.match(diagnostic, /hba_non_scram/);
+  assert.doesNotMatch(
+    diagnostic,
+    /\b(?:ALTER|CREATE|DROP|TRUNCATE|UPDATE|DELETE|INSERT)\b/,
+  );
+  const publicOutputBoundary = diagnostic.slice(
+    diagnostic.indexOf('case "$diagnostic" in'),
+  );
+  assert.doesNotMatch(
+    publicOutputBoundary,
+    /\$(?:postgres_admin_password|reviewed_password)/,
+  );
+});

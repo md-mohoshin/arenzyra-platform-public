@@ -717,6 +717,14 @@ provisioning preview. It does not create roles or grants:
 production_entry roles-dry-run
 ```
 
+During only the exact stopped interrupted-cutover boundary, the argument-free
+read-only administrator diagnostic reports bounded policy flags without names,
+passwords, database contents, or customer identifiers:
+
+```bash
+production_entry legacy-admin-diagnose
+```
+
 The preview shares or verifies the deployment lock, reruns the production
 preflight, binds to the reviewed database/schema/container, and reports the
 closed role/ownership plan without applying it. Role creation or grant changes

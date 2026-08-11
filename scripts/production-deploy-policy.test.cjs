@@ -1314,6 +1314,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "backup-resume-legacy",
       "restore-drill",
       "roles-dry-run",
+      "legacy-admin-diagnose",
       "host-maintenance",
       "observe",
       "verify",
