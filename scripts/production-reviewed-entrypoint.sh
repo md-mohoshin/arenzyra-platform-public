@@ -227,6 +227,15 @@ case "$command_id" in
         --legacy-cutover-partial --legacy-cutover-interrupted \
         --legacy-auxiliary-acl-only
     ;;
+  legacy-cutover-database-reopen)
+    [ "$#" -eq 1 ] || block "legacy-cutover-database-reopen requires one immutable release ID."
+    [[ "$1" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || \
+      block "legacy-cutover-database-reopen release ID is invalid."
+    require_nested_assembly
+    source scripts/acquire-production-deploy-lock.sh
+    exec /bin/bash scripts/production-database-writer-fence.sh \
+      --recover-closed --release-id "$1"
+    ;;
   host-maintenance)
     if [ "$#" -eq 0 ]; then
       exec /bin/bash scripts/production-maintenance.sh

@@ -20,8 +20,11 @@ fi
 EXPECTED_POSTGRES_IMAGE="postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 EXPECTED_POSTGRES_VERSION_NUM="160014"
 ALLOW_RUNNING_LEGACY_BACKUP=0
+ALLOW_DATABASE_CLOSED=0
 if [ "${1:-}" = "--allow-running-legacy-backup" ] && [ "$#" -eq 1 ]; then
   ALLOW_RUNNING_LEGACY_BACKUP=1
+elif [ "${1:-}" = "--allow-database-closed" ] && [ "$#" -eq 1 ]; then
+  ALLOW_DATABASE_CLOSED=1
 elif [ "$#" -ne 0 ]; then
   printf 'DATABASE IDENTITY GATE BLOCKED: unsupported argument.\n' >&2
   exit 75
@@ -206,6 +209,34 @@ if [ "${#alias_endpoint_ids[@]}" -ne 1 ] ||
   [ "${alias_endpoint_ids[0]}" != "$selected_container_full_id" ]; then
   printf 'DATABASE IDENTITY GATE BLOCKED: PostgreSQL DNS alias is ambiguous or points elsewhere.\n' >&2
   exit 75
+fi
+
+if [ "$ALLOW_DATABASE_CLOSED" -eq 1 ]; then
+  if ! closed_identity="$(
+    docker exec "$container_id" sh -ceu '
+      expected_database="$1"
+      expected_port="$2"
+      [ "${POSTGRES_DB:-}" = "$expected_database" ]
+      export PGCONNECT_TIMEOUT=10
+      export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=5000 -c arenzyra.expected_database=$expected_database"
+      exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -At -F "|" -c \
+        "SELECT database.datname, current_setting('"'"'port'"'"'), current_setting('"'"'server_version_num'"'"'), database.datallowconn, database.oid, control.system_identifier
+           FROM pg_database database CROSS JOIN pg_control_system() control
+          WHERE database.datname = current_setting('"'"'arenzyra.expected_database'"'"');"
+    ' sh "$database" "$port"
+  )"; then
+    printf 'DATABASE IDENTITY GATE BLOCKED: closed-target attestation failed.\n' >&2
+    exit 75
+  fi
+  if ! [[ "$closed_identity" =~ ^([^|]+)\|([0-9]{1,5})\|([0-9]{6})\|f\|([1-9][0-9]{0,9})\|([0-9]{10,24})$ ]] || \
+    [ "${BASH_REMATCH[1]}" != "$database" ] || \
+    [ "${BASH_REMATCH[2]}" != "$port" ] || \
+    [ "${BASH_REMATCH[3]}" != "$expected_runtime_version_num" ]; then
+    printf 'DATABASE IDENTITY GATE BLOCKED: closed target does not match the reviewed database.\n' >&2
+    exit 75
+  fi
+  printf '%s\n%s\n%s\n%s\n%s\n' "$container_id" "$host" "$port" "$database" "$schema"
+  exit 0
 fi
 
 if ! actual_identity="$(

@@ -40,7 +40,7 @@ test("ownership adoption holds a database fence around the exact transaction", (
   const prepared = provisioner.indexOf("pg_prepared_xacts");
   const release = provisioner.indexOf(': > "$fence_continue"');
   const workerWait = provisioner.indexOf('if ! wait "$worker_pid"', release);
-  const reopen = provisioner.indexOf("ALLOW_CONNECTIONS true");
+  const reopen = provisioner.indexOf("ALLOW_CONNECTIONS true", workerWait);
   const lock = sql.indexOf("LOCK TABLE %I.%I IN ACCESS EXCLUSIVE MODE");
   const alter = sql.indexOf("ALTER TABLE %I.%I OWNER TO %I");
   assert.ok(workerConnect > 0 && workerConnect < close);
@@ -54,6 +54,10 @@ test("ownership adoption holds a database fence around the exact transaction", (
   assert.doesNotMatch(sql, /ELSE\s+1\s*\/\s*0/);
   assert.match(provisioner, /\[ "\$fence_state" = "f\|1\|0\|0" \]/);
   assert.match(provisioner, /if ! wait "\$worker_pid"; then[\s\S]*exit 75/);
+  assert.match(
+    provisioner,
+    /cleanup_fence_files\(\)[\s\S]*trap - EXIT HUP INT TERM[\s\S]*fence_closed[\s\S]*ALLOW_CONNECTIONS true[\s\S]*database connections could not be restored/,
+  );
   assert.match(
     provisioner,
     /exec 9<&0[\s\S]*cat <&9[\s\S]*> "\$fence_fifo" &[\s\S]*feed_pid="\$!"[\s\S]*exec 9<&-/,

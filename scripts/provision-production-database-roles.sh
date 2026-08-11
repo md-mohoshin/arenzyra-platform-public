@@ -1058,10 +1058,23 @@ SQL
 
   cleanup_fence_files() {
     status="$?"
+    trap - EXIT HUP INT TERM
     [ -z "$feed_pid" ] || kill "$feed_pid" 2>/dev/null || true
     [ -z "$worker_pid" ] || kill "$worker_pid" 2>/dev/null || true
     wait "$feed_pid" 2>/dev/null || true
     wait "$worker_pid" 2>/dev/null || true
+    if [ "$fence_closed" -eq 1 ]; then
+      if PGDATABASE=postgres PGAPPNAME=arenzyra_ownership_fence_cleanup \
+          psql -X -v ON_ERROR_STOP=1 -c \
+          "ALTER DATABASE \"$PGDATABASE\" WITH ALLOW_CONNECTIONS true;" \
+          >/dev/null 2>&1 && \
+        [ "$(PGDATABASE=postgres psql -X -At -v ON_ERROR_STOP=1 -c "SELECT datallowconn FROM pg_database WHERE datname = \$arenzyra\$$PGDATABASE\$arenzyra\$;" 2>/dev/null)" = t ]; then
+        fence_closed=0
+      else
+        printf '%s\n' 'DATABASE ROLE PROVISIONING CLEANUP BLOCKED: target database connections could not be restored.' >&2
+        status=75
+      fi
+    fi
     rm -f -- "$fence_fifo" "$fence_output" "$fence_error" \
       "$fence_connected" "$fence_continue" "$fence_backend_pid"
     rmdir -- "$fence_directory" 2>/dev/null || true

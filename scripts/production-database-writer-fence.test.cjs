@@ -26,7 +26,10 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
   assert.match(script, /pg_terminate_backend/);
   assert.match(script, /pg_prepared_xacts/);
   assert.match(script, /writer-fence\.released/);
-  assert.match(script, /--engage\|--engage-or-verify\|--release/);
+  assert.match(
+    script,
+    /--engage\|--engage-or-verify\|--release\|--recover-closed/,
+  );
   assert.match(script, /verify_engaged_marker/);
   assert.match(script, /count\(\*\) = 2[\s\S]*rolbypassrls/);
   assert.match(
@@ -39,7 +42,31 @@ test("writer fence is durable, locked, physical-target-bound, and session termin
       script.indexOf("run_role_transition engage"),
   );
   assert.match(script, /state=engaged[\s\S]*state=engaging/);
-  assert.doesNotMatch(script, /REASSIGN OWNED|DROP OWNED|ALTER DATABASE/);
+  assert.doesNotMatch(script, /REASSIGN OWNED|DROP OWNED/);
+});
+
+test("closed database recovery is exact, marker-bound, and session empty", () => {
+  const launcher = fs.readFileSync(
+    path.join(__dirname, "production-reviewed-entrypoint.sh"),
+    "utf8",
+  );
+  const containerGate = fs.readFileSync(
+    path.join(__dirname, "verify-production-database-container.sh"),
+    "utf8",
+  );
+  assert.match(
+    launcher,
+    /legacy-cutover-database-reopen\)[\s\S]*requires one immutable release ID[\s\S]*require_nested_assembly[\s\S]*acquire-production-deploy-lock\.sh[\s\S]*--recover-closed/,
+  );
+  assert.match(script, /recover-closed[\s\S]*--allow-database-closed/);
+  assert.match(
+    script,
+    /recover-closed[\s\S]*verify_engaged_marker[\s\S]*production-deploy-preflight\.sh --allow-cutover-transition[\s\S]*f\|0\|0[\s\S]*ALLOW_CONNECTIONS true/,
+  );
+  assert.match(
+    containerGate,
+    /--allow-database-closed[\s\S]*-d postgres[\s\S]*database\.datallowconn/,
+  );
 });
 
 test("fence release requires the clean IDP and entitlement postconditions", () => {

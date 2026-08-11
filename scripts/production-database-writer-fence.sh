@@ -10,7 +10,7 @@ RELEASE_ID=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --engage|--engage-or-verify|--release)
+    --engage|--engage-or-verify|--release|--recover-closed)
       [ -z "$MODE" ] || exit 2
       MODE="${1#--}"
       ;;
@@ -58,7 +58,13 @@ unexpected_running="$(
 )"
 [ -z "$unexpected_running" ] || block "an application or maintenance writer is still running."
 
-mapfile -t database_binding < <(bash scripts/verify-production-database-container.sh)
+database_verifier_args=()
+if [ "$MODE" = recover-closed ]; then
+  database_verifier_args+=(--allow-database-closed)
+fi
+mapfile -t database_binding < <(
+  bash scripts/verify-production-database-container.sh "${database_verifier_args[@]}"
+)
 [ "${#database_binding[@]}" -eq 5 ] && \
   [ "${database_binding[3]}" = "$postgres_database" ] || \
   block "the reviewed PostgreSQL 16.14 target is not exact."
@@ -69,11 +75,19 @@ physical_identity="$(
     database="$1"
     export PGCONNECT_TIMEOUT=10
     export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=5000"
+    if [ "$2" = recover-closed ]; then
+      export PGOPTIONS="$PGOPTIONS -c arenzyra.expected_database=$database"
+      exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres -At -F "|" -c \
+        "SELECT database_record.datname, database_record.oid, control_record.system_identifier
+           FROM pg_database database_record CROSS JOIN pg_control_system() control_record
+          WHERE database_record.datname = current_setting('"'"'arenzyra.expected_database'"'"')
+            AND NOT database_record.datallowconn;"
+    fi
     exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$database" -At -F "|" -c \
       "SELECT database_record.datname, database_record.oid, control_record.system_identifier
          FROM pg_database database_record CROSS JOIN pg_control_system() control_record
         WHERE database_record.datname = current_database();"
-  ' sh "$postgres_database"
+  ' sh "$postgres_database" "$MODE"
 )" || block "physical database identity could not be read."
 IFS='|' read -r physical_database physical_oid physical_system_identifier \
   <<<"$physical_identity"
@@ -202,6 +216,37 @@ verify_engaged_marker() {
       [ "${marker_lines[7]}" = state=engaging ]; } || \
     block "the fence marker does not match this database and release."
 }
+
+if [ "$MODE" = recover-closed ]; then
+  verify_engaged_marker
+  # The preflight is deliberately operation-adjacent. This mode changes only
+  # the target database connection flag after proving the exact physical marker
+  # and an empty stopped-writer transaction boundary.
+  bash scripts/production-deploy-preflight.sh --allow-cutover-transition
+  {
+    printf '%s\n' "$postgres_admin_role" "$postgres_admin_password" \
+      "$postgres_database"
+  } | docker exec -i "$postgres_container" sh -ceu '
+    IFS= read -r PGUSER
+    IFS= read -r PGPASSWORD
+    IFS= read -r target_database
+    [ "$PGUSER" = "${POSTGRES_USER:-}" ] || exit 75
+    case "$target_database" in ""|*[!A-Za-z0-9_]*) exit 75 ;; esac
+    export PGUSER PGPASSWORD PGHOST=127.0.0.1 PGCONNECT_TIMEOUT=5
+    export PGAPPNAME=arenzyra-production-closed-database-recovery
+    export PGOPTIONS="-c statement_timeout=30000 -c lock_timeout=5000 -c arenzyra.target_database=$target_database"
+    state="$(PGDATABASE=postgres psql -X -At -F "|" -v ON_ERROR_STOP=1 -c \
+      "SELECT database.datallowconn, (SELECT count(*) FROM pg_stat_activity activity WHERE activity.datname = current_setting('"'"'arenzyra.target_database'"'"') AND activity.backend_type = '"'"'client backend'"'"'), (SELECT count(*) FROM pg_prepared_xacts prepared WHERE prepared.database::text = current_setting('"'"'arenzyra.target_database'"'"')) FROM pg_database database WHERE database.datname = current_setting('"'"'arenzyra.target_database'"'"');")"
+    [ "$state" = "f|0|0" ] || exit 75
+    PGDATABASE=postgres psql -X -v ON_ERROR_STOP=1 -c \
+      "ALTER DATABASE \"$target_database\" WITH ALLOW_CONNECTIONS true;" >/dev/null
+    reopened="$(PGDATABASE=postgres psql -X -At -v ON_ERROR_STOP=1 -c \
+      "SELECT datallowconn FROM pg_database WHERE datname = current_setting('"'"'arenzyra.target_database'"'"');")"
+    [ "$reopened" = t ] || exit 75
+  ' || block "the exact fenced database could not be reopened."
+  printf 'DATABASE WRITER FENCE RECOVERY COMPLETE release=%s database_connections=enabled\n' "$RELEASE_ID"
+  exit 0
+fi
 
 if [ "$MODE" = engage ] || { [ "$MODE" = engage-or-verify ] && \
   [ ! -e "$marker" ] && [ ! -L "$marker" ]; }; then

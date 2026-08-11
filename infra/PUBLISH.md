@@ -395,6 +395,21 @@ read-only PostgreSQL dump and volume archives, requires immutable off-site
 upload verification, and only then recreates Redis and rejoins the same fenced
 cutover. It does not start an application writer or remove a named volume.
 
+If an interrupted ownership-fence worker leaves the exact target database with
+connections disabled, first run the narrow marker-bound recovery and then retry
+the applicable transition continuation:
+
+```bash
+production_entry legacy-cutover-database-reopen <release-id>
+```
+
+This recovery requires the physical database OID and system identifier to match
+the existing root-only writer-fence marker, all application writers to remain
+stopped, and the target to have zero client sessions and prepared transactions.
+It changes only `ALLOW_CONNECTIONS` from false to true and verifies the result.
+The ownership worker also performs this reopen automatically on every later
+failure, so an SQL predicate cannot leave the database inaccessible again.
+
 It requires exactly one healthy legacy PostgreSQL and Redis container, no
 running application or maintenance writer, no duplicate application container,
 and at least one absent stopped application container. It also requires the
