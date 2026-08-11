@@ -265,6 +265,129 @@ SELECT 1 / CASE WHEN EXISTS (
     )
 ) THEN 1 ELSE 0 END AS schema_owner_attested;
 
+-- The one-time legacy path permits candidate objects to be absent before
+-- migrations, but every object already present must be classified and have an
+-- explicitly accepted predecessor owner. Run this before extension, role, ACL,
+-- or ownership mutation so a legacy-shape mismatch fails without persistent
+-- database changes.
+\if :object_policy_partial_preflight
+WITH present_relation AS (
+  SELECT relation.oid, relation.relname, relation.relkind, relation.relowner
+  FROM pg_class relation
+  JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+  WHERE namespace.nspname = :'schema_name'
+    AND relation.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_depend dependency
+      WHERE dependency.classid = 'pg_class'::regclass
+        AND dependency.objid = relation.oid
+        AND dependency.deptype = 'e'
+    )
+), relation_violation AS (
+  SELECT relation.oid
+  FROM present_relation relation
+  LEFT JOIN arenzyra_object_policy policy
+    ON policy.relation_name = relation.relname
+   AND policy.relation_kind = relation.relkind
+  WHERE policy.relation_name IS NULL
+     OR pg_get_userbyid(relation.relowner) NOT IN (
+       current_user,
+       'postgres',
+       CASE policy.owner_profile
+         WHEN 'api' THEN :'api_migration_role'
+         WHEN 'studio' THEN :'studio_migration_role'
+         ELSE ''
+       END
+     )
+), present_type AS (
+  SELECT type.oid, type.typname, type.typtype, type.typowner
+  FROM pg_type type
+  JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+  WHERE namespace.nspname = :'schema_name'
+    AND NOT (
+      type.typrelid <> 0 AND EXISTS (
+        SELECT 1 FROM pg_class typed_relation
+        WHERE typed_relation.oid = type.typrelid
+          AND typed_relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+      )
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_type element_type WHERE element_type.typarray = type.oid
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_depend dependency
+      WHERE dependency.classid = 'pg_type'::regclass
+        AND dependency.objid = type.oid
+        AND dependency.deptype = 'e'
+    )
+), type_violation AS (
+  SELECT type.oid
+  FROM present_type type
+  LEFT JOIN arenzyra_enum_policy policy ON policy.type_name = type.typname
+  WHERE policy.type_name IS NULL
+     OR type.typtype <> 'e'
+     OR pg_get_userbyid(type.typowner) NOT IN (
+       current_user, 'postgres', :'api_migration_role'
+     )
+), present_function AS (
+  SELECT routine.oid, routine.proname, routine.prokind, routine.proowner,
+    pg_get_function_identity_arguments(routine.oid) AS identity_arguments
+  FROM pg_proc routine
+  JOIN pg_namespace namespace ON namespace.oid = routine.pronamespace
+  WHERE namespace.nspname = :'schema_name'
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_depend dependency
+      WHERE dependency.classid = 'pg_proc'::regclass
+        AND dependency.objid = routine.oid
+        AND dependency.deptype = 'e'
+    )
+), function_violation AS (
+  SELECT routine.oid
+  FROM present_function routine
+  LEFT JOIN arenzyra_function_policy policy
+    ON policy.function_name = routine.proname
+   AND policy.identity_arguments = routine.identity_arguments
+  WHERE policy.function_name IS NULL
+     OR routine.prokind <> policy.function_kind
+     OR pg_get_userbyid(routine.proowner) NOT IN (
+       current_user, 'postgres', :'api_migration_role'
+     )
+), present_trigger AS (
+  SELECT trigger.oid, trigger.tgname, relation.relname AS table_name,
+    routine.proname AS function_name,
+    pg_get_function_identity_arguments(routine.oid) AS identity_arguments
+  FROM pg_trigger trigger
+  JOIN pg_class relation ON relation.oid = trigger.tgrelid
+  JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+  JOIN pg_proc routine ON routine.oid = trigger.tgfoid
+  WHERE namespace.nspname = :'schema_name'
+    AND NOT trigger.tgisinternal
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_depend dependency
+      WHERE dependency.classid = 'pg_trigger'::regclass
+        AND dependency.objid = trigger.oid
+        AND dependency.deptype = 'e'
+    )
+), trigger_violation AS (
+  SELECT trigger.oid
+  FROM present_trigger trigger
+  LEFT JOIN arenzyra_trigger_policy policy
+    ON policy.table_name = trigger.table_name
+   AND policy.trigger_name = trigger.tgname
+  WHERE policy.trigger_name IS NULL
+     OR trigger.function_name <> policy.function_name
+     OR trigger.identity_arguments <> policy.function_identity_arguments
+), violation AS (
+  SELECT oid FROM relation_violation
+  UNION ALL SELECT oid FROM type_violation
+  UNION ALL SELECT oid FROM function_violation
+  UNION ALL SELECT oid FROM trigger_violation
+)
+SELECT 1 / CASE WHEN count(*) = 0 THEN 1 ELSE 0 END
+  AS legacy_partial_object_boundary_attested
+FROM violation;
+\endif
+
 -- The administrator installs the trusted extension required by the initial
 -- Prisma migration. Dedicated migrators intentionally have no database CREATE.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA :"schema_name";

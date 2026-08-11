@@ -1206,7 +1206,6 @@ else
   "${compose[@]}" --profile discord-bot stop -t 60 \
     proxy web api media-ai discord-bot
   bash scripts/production-deploy-preflight.sh --allow-legacy-cutover-stopped
-  schema_change_possible=1
 
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/provision-production-database-roles.sh \
@@ -1226,6 +1225,9 @@ else
   bash scripts/production-deploy-preflight.sh --allow-cutover-transition
   bash scripts/verify-production-database-container.sh >/dev/null
 
+  # From this point a durable database-login fence or a forward schema change
+  # may exist. Failure must never restart an older application writer.
+  schema_change_possible=1
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/production-database-writer-fence.sh \
       --engage --release-id "$new_release_id"

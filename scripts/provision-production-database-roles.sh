@@ -511,11 +511,13 @@ trap role_change_failed ERR
 role_change_possible=1
 object_policy_require_complete=true
 object_policy_adopt_ownership=false
+object_policy_partial_preflight=false
 if [ "$FIRST_DEPLOY_CREATE_ONLY" -eq 1 ]; then
   object_policy_require_complete=false
 fi
 if [ "$LEGACY_CUTOVER_PARTIAL" -eq 1 ]; then
   object_policy_require_complete=false
+  object_policy_partial_preflight=true
 fi
 if [ "$ADOPT_REVIEWED_OWNERSHIP" -eq 1 ]; then
   object_policy_adopt_ownership=true
@@ -541,6 +543,7 @@ fi
   printf '\\set object_policy_base64 '\''%s'\''\n' "$object_policy_base64"
   printf '\\set object_policy_require_complete '\''%s'\''\n' "$object_policy_require_complete"
   printf '\\set object_policy_adopt_ownership '\''%s'\''\n' "$object_policy_adopt_ownership"
+  printf '\\set object_policy_partial_preflight '\''%s'\''\n' "$object_policy_partial_preflight"
   cat "$SQL_FILE"
 } | docker exec -i "$postgres_container" sh -ceu '
   IFS= read -r PGUSER

@@ -118,10 +118,8 @@ test("cutover failure refuses to restart incompatible old writers", () => {
     deploy,
     /if \[ "\$schema_change_possible" -eq 1 \]; then[\s\S]*Do not start an older API image[\s\S]*Keep incompatible old writers stopped/,
   );
-  assert.ok(
-    deploy.indexOf(
-      "schema_change_possible=1",
-      deploy.indexOf("legacy-cutover"),
-    ) < deploy.indexOf("--legacy-cutover-partial"),
-  );
+  const partial = deploy.indexOf("--legacy-cutover-partial");
+  const schemaBoundary = deploy.indexOf("schema_change_possible=1", partial);
+  const engage = deploy.indexOf("--engage --release-id", schemaBoundary);
+  assert.ok(partial < schemaBoundary && schemaBoundary < engage);
 });

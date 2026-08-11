@@ -68,6 +68,12 @@ test("ownership targets come only from the closed object policy", () => {
 test("legacy partial adoption permits missing candidate objects but no unclassified present object", () => {
   assert.match(provisioner, /--legacy-cutover-partial/);
   assert.match(provisioner, /object_policy_require_complete=false/);
+  assert.match(provisioner, /object_policy_partial_preflight=true/);
+  assert.match(sql, /legacy_partial_object_boundary_attested/);
+  assert.ok(
+    sql.indexOf("legacy_partial_object_boundary_attested") <
+      sql.indexOf('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'),
+  );
   for (const relation of [
     "policy.relation_name IS NULL",
     "type.policy_name IS NULL",
