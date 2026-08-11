@@ -8,7 +8,7 @@ const { execFileSync, spawnSync } = require('child_process');
 
 const args = new Set(process.argv.slice(2));
 if (args.has('-h') || args.has('--help')) {
-  console.log(`Usage: node scripts/production-maintenance.cjs [--check-only|--builder-cache] [--dry-run]
+  console.log(`Usage: node scripts/production-maintenance.cjs [--check-only|--builder-cache|--unused-images] [--dry-run]
 
 Environment:
   ARENZYRA_DISK_PATH=/                         Disk mount to monitor.
@@ -22,7 +22,12 @@ Environment:
 }
 
 for (const arg of args) {
-  if (arg !== '--check-only' && arg !== '--builder-cache' && arg !== '--dry-run') {
+  if (
+    arg !== '--check-only' &&
+    arg !== '--builder-cache' &&
+    arg !== '--unused-images' &&
+    arg !== '--dry-run'
+  ) {
     console.error(`Unknown option: ${arg}`);
     process.exit(2);
   }
@@ -30,9 +35,13 @@ for (const arg of args) {
 
 const checkOnly = args.has('--check-only');
 const builderCacheOnly = args.has('--builder-cache');
+const unusedImagesOnly = args.has('--unused-images');
 const dryRun = args.has('--dry-run');
-if (builderCacheOnly && (checkOnly || dryRun)) {
-  console.error('--builder-cache cannot be combined with another mode.');
+if (
+  (builderCacheOnly && (checkOnly || unusedImagesOnly || dryRun)) ||
+  (unusedImagesOnly && (checkOnly || dryRun))
+) {
+  console.error('maintenance-only modes cannot be combined.');
   process.exit(2);
 }
 const logTag = process.env.ARENZYRA_MAINTENANCE_LOG_TAG || 'arenzyra-maintenance';
@@ -183,6 +192,19 @@ function pruneDockerBuilder() {
   }
 }
 
+function pruneUnusedDockerImages() {
+  if (!commandExists('docker')) {
+    log('docker unavailable; skipped unused-image prune');
+    return;
+  }
+  log('pruning only Docker images unreferenced by every running or stopped container');
+  if (runCommand('docker', ['image', 'prune', '-af'])) {
+    log('unused Docker image prune completed');
+  } else {
+    log('unused Docker image prune failed');
+  }
+}
+
 function pruneOldBackups() {
   const explicitBackupDir = Boolean(process.env.ARENZYRA_BACKUP_DIR);
   if (process.platform === 'win32' && !explicitBackupDir) {
@@ -276,9 +298,11 @@ async function checkDisk(percent = diskPercent(), alert = sendAlert) {
 async function runMaintenance({
   inspectDisk = diskPercent,
   pruneBuilder = pruneDockerBuilder,
+  pruneImages = pruneUnusedDockerImages,
   pruneBackups = pruneOldBackups,
   alert = sendAlert,
   builderCacheOnlyMode = builderCacheOnly,
+  unusedImagesOnlyMode = unusedImagesOnly,
 } = {}) {
   const configurationErrors = validateMaintenanceConfiguration();
   if (configurationErrors.length > 0) {
@@ -294,8 +318,12 @@ async function runMaintenance({
     return beforeStatus;
   }
   if (!checkOnly) {
-    pruneBuilder();
-    if (!builderCacheOnlyMode) pruneBackups();
+    if (unusedImagesOnlyMode) {
+      pruneImages();
+    } else {
+      pruneBuilder();
+      if (!builderCacheOnlyMode) pruneBackups();
+    }
   }
   const after = checkOnly ? before : inspectDisk();
   const diskStatus = await checkDisk(after, alert);

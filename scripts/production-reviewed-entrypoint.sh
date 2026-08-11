@@ -175,8 +175,10 @@ case "$command_id" in
       exec /bin/bash scripts/production-maintenance.sh --check-only
     elif [ "$#" -eq 1 ] && [ "$1" = "--builder-cache" ]; then
       exec /bin/bash scripts/production-maintenance.sh --builder-cache
+    elif [ "$#" -eq 1 ] && [ "$1" = "--unused-images" ]; then
+      exec /bin/bash scripts/production-maintenance.sh --unused-images
     fi
-    block "host-maintenance accepts only optional --check-only or --builder-cache."
+    block "host-maintenance accepts only optional --check-only, --builder-cache, or --unused-images."
     ;;
   observe)
     [ "$#" -eq 1 ] && { [ "$1" = "ps" ] || [ "$1" = "logs" ]; } || \

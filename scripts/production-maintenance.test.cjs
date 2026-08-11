@@ -52,6 +52,31 @@ test("explicit builder-cache mode never invokes backup retention", async () => {
   assert.equal(backupPrunes, 0);
 });
 
+test("explicit unused-image mode invokes only unreferenced-image pruning", async () => {
+  let builderPrunes = 0;
+  let imagePrunes = 0;
+  let backupPrunes = 0;
+  const status = await runMaintenance({
+    inspectDisk: () => 50,
+    pruneBuilder: () => {
+      builderPrunes += 1;
+    },
+    pruneImages: () => {
+      imagePrunes += 1;
+    },
+    pruneBackups: () => {
+      backupPrunes += 1;
+    },
+    alert: async () => {},
+    unusedImagesOnlyMode: true,
+  });
+
+  assert.equal(status, 0);
+  assert.equal(builderPrunes, 0);
+  assert.equal(imagePrunes, 1);
+  assert.equal(backupPrunes, 0);
+});
+
 test("retention always preserves the newest verified recovery point", () => {
   const entries = [
     { entryPath: "/backups/old-verified", mtimeMs: 10, verified: true },
@@ -126,11 +151,16 @@ test("maintenance is reachable only through the reviewed dispatcher", () => {
     launcher,
     /host-maintenance\)[\s\S]*--builder-cache[\s\S]*production-maintenance\.sh --builder-cache/,
   );
+  assert.match(
+    launcher,
+    /host-maintenance\)[\s\S]*--unused-images[\s\S]*production-maintenance\.sh --unused-images/,
+  );
   const maintenance = fs.readFileSync(
     path.join(repositoryRoot, "scripts", "production-maintenance.cjs"),
     "utf8",
   );
   assert.match(maintenance, /if \(!builderCacheOnlyMode\) pruneBackups\(\)/);
   assert.match(maintenance, /docker', \['builder', 'prune', '-af'/);
+  assert.match(maintenance, /docker', \['image', 'prune', '-af'\]/);
   assert.doesNotMatch(maintenance, /docker\s+(?:system\s+prune|volume\s+(?:prune|rm))/);
 });
