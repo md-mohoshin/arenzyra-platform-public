@@ -312,6 +312,7 @@ test -f scripts/production-api-data-volume-remediation.sh
 test -f scripts/production-database-writer-fence.sh
 test -f scripts/verify-production-live-match-quiescence.sh
 test -f scripts/production-live-match-deployment-lock.sh
+test -f scripts/prepare-production-deploy-capacity.sh
 test -f scripts/validate-publish-release-env.cjs
 test -f scripts/validate-release-image-manifest.cjs
 test -f scripts/production-pinned-image-override.cjs
@@ -322,7 +323,7 @@ source scripts/production-live-match-deployment-lock.sh
 production_live_match_quiescence_args=()
 production_activation_interlock_required=0
 case "$MODE" in
-  full|discord-bot|web-candidate)
+  full|discord-bot)
     production_activation_interlock_required=1
     ;;
   legacy-cutover)
@@ -1151,6 +1152,14 @@ bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
 if [ "$production_activation_interlock_required" -eq 1 ] || \
   [ "$MODE" = "legacy-cutover" ]; then
   verify_production_live_match_quiescence
+fi
+if [ "$MODE" = "full" ] || [ "$MODE" = "discord-bot" ]; then
+  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+    bash scripts/prepare-production-deploy-capacity.sh
+  # Capacity preparation is the only automatic cleanup in the deployment
+  # path. Repeat both the ordinary preflight and the match boundary after it.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  verify_production_activation_boundary
 fi
 if [ "$MODE" = "full" ]; then
   bash scripts/production-release-safety-gate.sh

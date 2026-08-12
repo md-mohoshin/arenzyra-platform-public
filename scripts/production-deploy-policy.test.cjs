@@ -708,6 +708,14 @@ test("web-candidate activation is immutable, dependency-isolated, and preserves 
     /production-deploy-preflight\.sh[\s\S]*production-deploy-preflight\.sh[\s\S]*attest_pinned_compose_override[\s\S]*up --no-build -d --pull never --no-deps --force-recreate web/,
   );
   assert.match(branch, /non_web_runtime_fingerprint/);
+  assert.match(
+    deploy,
+    /case "\$MODE" in\s+full\|discord-bot\)\s+production_activation_interlock_required=1/,
+  );
+  assert.doesNotMatch(
+    deploy,
+    /full\|discord-bot\|web-candidate\)\s+production_activation_interlock_required=1/,
+  );
   assert.doesNotMatch(
     branch,
     /"\$\{compose\[@\]\}" build|"\$\{compose\[@\]\}" pull|api-migrate|studio-migrate|create_pre_migration_backup|provision-production-database-roles/,

@@ -71,9 +71,11 @@ same session.
 
 The gate requires at least 30 GiB free on `/` by default. It exits with
 `DEPLOYMENT BLOCKED` when space is below the threshold or an existing production
-container is unhealthy. It never performs cleanup automatically. Both committed
-launcher modes run this check before generating release metadata or
-starting a build. A full deploy also verifies the exact PostgreSQL 16.14 target,
+container is unhealthy. The only automatic cleanup is the separately bounded
+old dangling build-cache preparation documented below, and it can run only
+after this gate already passes. Both committed launcher modes run this check
+before generating release metadata or starting a build. A full deploy also
+verifies the exact PostgreSQL 16.14 target,
 the API data-volume boundary, clean release source, entitlement stored shape,
 and the structural IDP postcondition before it can build or mutate a release.
 
@@ -197,6 +199,22 @@ recreate. Do not run a routine release during a live match. True live-match
 blue/green requires a separate multi-instance audit of Socket.IO fan-out,
 in-memory match state, background workers, and singleton processing before a
 second API instance is safe.
+
+An already-built, archived, immutable `web-candidate` is the only live-match
+activation exception. It recreates only the stateless Web container with
+`--no-deps`, fingerprints every non-Web container before and after activation,
+does not build, migrate, back up, restart the API/media/proxy/Discord services,
+or advance the full-release pointer. Browser connections may reload, but match
+control and telemetry writers remain untouched. Full, API-affecting, media,
+proxy, and Discord activation continue to wait for match quiescence.
+
+Before a routine full or Discord build, disk use at or above 80% triggers one
+reviewed proactive cleanup under the shared deployment lock. It can remove only
+dangling Docker build cache older than seven days and then repeats the ordinary
+preflight. It never automatically removes backups, images, containers, volumes,
+logs, PostgreSQL, Redis, uploads, source archives, or customer files. The
+30-GiB absolute floor remains in force; if cache cleanup is insufficient, the
+deployment stops for explicit reviewed retention rather than broadening scope.
 
 The first release that introduces this boundary is a bootstrap exception: the
 older running API does not yet request the shared lock. Schedule that first
