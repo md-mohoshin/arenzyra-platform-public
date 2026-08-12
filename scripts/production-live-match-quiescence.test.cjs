@@ -106,6 +106,10 @@ test("production quiescence query is read-only, aggregate-only, and bounded", ()
   assert.match(sql, /LEFT JOIN "MatchControlState"/);
   assert.match(sql, /FROM "MatchRound"/);
   assert.match(sql, /interval '2 minutes'/);
+  assert.match(
+    sql,
+    /"pcobLastSeenAt" IS NOT NULL[\s\S]*"pcobLastSeenAt" >=/,
+  );
   assert.doesNotMatch(sql, /\b(?:INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)\b/i);
   assert.doesNotMatch(sql, /json_build_object\([\s\S]*?"(?:id|name|email|slug)"/i);
 

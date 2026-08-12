@@ -13,8 +13,10 @@ WITH match_snapshot AS MATERIALIZED (
     match_row.status::text AS business_status,
     match_row."liveState"::text AS live_state,
     control_row.state::text AS control_state,
-    match_row."pcobLastSeenAt" >= transaction_timestamp() - interval '2 minutes'
-      AS recent_telemetry,
+    (
+      match_row."pcobLastSeenAt" IS NOT NULL
+      AND match_row."pcobLastSeenAt" >= transaction_timestamp() - interval '2 minutes'
+    ) AS recent_telemetry,
     EXISTS (
       SELECT 1
       FROM "MatchRound" AS round_row
