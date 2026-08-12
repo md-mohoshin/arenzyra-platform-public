@@ -122,4 +122,12 @@ test("candidate history must contain all deployed Root, API, and Web fixes", () 
   for (const component of ["ROOT", "API", "WEB"]) {
     assert.match(deploy, new RegExp(`--candidate-${component.toLowerCase()} "\\$ARENZYRA_REVIEWED_${component}_COMMIT"`));
   }
+  assert.match(
+    deploy,
+    /if \[ -z "\$prior_release_id" \][\s\S]*A VERIFIED MANAGED RELEASE BASELINE IS REQUIRED[\s\S]*Use the separately reviewed legacy\/adoption workflow/,
+  );
+  assert.match(
+    deploy,
+    /\[ "\$MODE" = "legacy-cutover" \][\s\S]*\[ "\$MODE" = "discord-bot" \][\s\S]*\[ "\$FIRST_DEPLOY" -eq 1 \]/,
+  );
 });

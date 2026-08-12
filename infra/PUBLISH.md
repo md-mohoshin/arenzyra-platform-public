@@ -211,6 +211,14 @@ This forward-history rule prevents a later patch deployment from silently
 dropping an earlier deployed fix; reconcile history with a reviewed merge
 instead of bypassing the check.
 
+A routine full release or non-bootstrap Discord release also requires that
+verified managed baseline. If neither a valid `CURRENT` archive pointer nor the
+last valid `infra/.env.release` can establish it, deployment stops. Absence of a
+baseline is not treated as permission to replace unknown live code. Only the
+separately reviewed legacy/adoption path, or the zero-container Discord
+`--first-deploy` exception, can begin without one; never manufacture a pointer
+to make this gate pass.
+
 The off-site backup still performs one complete immutable checksum comparison
 for every encrypted artifact. After uploading `OFFSITE_VERIFIED`, its second
 comparison is intentionally filtered to that newly-created marker only. This

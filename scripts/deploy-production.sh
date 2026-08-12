@@ -1189,6 +1189,16 @@ elif [ -f infra/.env.release ]; then
   fi
 fi
 
+if [ -z "$prior_release_id" ] && \
+  ! { [ "$MODE" = "legacy-cutover" ] || \
+      { [ "$MODE" = "discord-bot" ] && [ "$FIRST_DEPLOY" -eq 1 ]; }; }; then
+  printf '%s\n' \
+    'DEPLOYMENT BLOCKED: A VERIFIED MANAGED RELEASE BASELINE IS REQUIRED.' \
+    'Routine deployment cannot prove that the candidate contains every currently deployed fix.' \
+    'Use the separately reviewed legacy/adoption workflow; do not invent a CURRENT pointer.' >&2
+  exit 75
+fi
+
 if [ -n "$prior_release_id" ]; then
   "${sanitized_environment[@]}" \
     node scripts/verify-production-forward-release.cjs \
