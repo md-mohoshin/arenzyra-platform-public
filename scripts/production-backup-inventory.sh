@@ -22,7 +22,17 @@ cd "$REPOSITORY_ROOT"
 source scripts/require-local-production-docker.sh
 # shellcheck source=scripts/acquire-production-deploy-lock.sh
 source scripts/acquire-production-deploy-lock.sh
-bash scripts/production-deploy-preflight.sh --allow-read-only-legacy-backup
+case "${ARENZYRA_BACKUP_INVENTORY_PROFILE:-legacy}" in
+  legacy)
+    bash scripts/production-deploy-preflight.sh --allow-read-only-legacy-backup
+    ;;
+  current)
+    bash scripts/production-deploy-preflight.sh --allow-low-disk-backup-inventory
+    ;;
+  *)
+    block "inventory profile is invalid."
+    ;;
+esac
 
 for required_command in realpath stat; do
   command -v "$required_command" >/dev/null 2>&1 || \

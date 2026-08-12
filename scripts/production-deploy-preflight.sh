@@ -18,11 +18,12 @@ ALLOW_CUTOVER_DEPENDENCY_RECOVERY=0
 ALLOW_CUTOVER_FAILED_CANDIDATE=0
 ALLOW_CUTOVER_PROXY_COLLISION=0
 ALLOW_LOW_DISK_BACKUP_RELEASE=0
+ALLOW_LOW_DISK_BACKUP_INVENTORY=0
 ALLOW_LOW_DISK_SOURCE_RELEASE=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery | --allow-cutover-failed-candidate | --allow-cutover-proxy-collision | --allow-low-disk-backup-release | --allow-low-disk-source-release]
+Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery | --allow-cutover-failed-candidate | --allow-cutover-proxy-collision | --allow-low-disk-backup-release | --allow-low-disk-backup-inventory | --allow-low-disk-source-release]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -100,6 +101,12 @@ while [ "$#" -gt 0 ]; do
       ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1
       ALLOW_LOW_DISK_BACKUP_RELEASE=1
       ;;
+    --allow-low-disk-backup-inventory)
+      # Read-only inventory still requires the ordinary healthy modern stack
+      # and strict data-volume policy. It waives only the disk threshold so an
+      # operator can identify a verified local duplicate to release safely.
+      ALLOW_LOW_DISK_BACKUP_INVENTORY=1
+      ;;
     --allow-low-disk-source-release)
       # Source retention is confined to superseded reviewed checkout copies;
       # it preserves the active and explicitly retained prior checkout.
@@ -165,6 +172,14 @@ cutover_mode_count=$((
   ALLOW_CUTOVER_TRANSITION + ALLOW_CUTOVER_DEPENDENCY_RECOVERY +
   ALLOW_CUTOVER_FAILED_CANDIDATE + ALLOW_CUTOVER_PROXY_COLLISION
 ))
+if [ "$ALLOW_LOW_DISK_BACKUP_INVENTORY" -eq 1 ] && \
+  { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || \
+    [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ] || [ "$cutover_mode_count" -ne 0 ] || \
+    [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -eq 1 ] || \
+    [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -eq 1 ]; }; then
+  block "INCOMPATIBLE PREFLIGHT MODES" \
+    "--allow-low-disk-backup-inventory must be the only preflight exception."
+fi
 if [ "$cutover_mode_count" -gt 1 ] || \
   { [ "$cutover_mode_count" -eq 1 ] && \
     { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || \
@@ -230,11 +245,16 @@ printf '[deploy-preflight] disk=%s mounted_on=%s used=%s free=%sGiB required=%sG
 
 if [ "$available_kib" -lt "$required_kib" ] && \
   [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -ne 1 ] && \
+  [ "$ALLOW_LOW_DISK_BACKUP_INVENTORY" -ne 1 ] && \
   [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -ne 1 ]; then
   block "LOW DISK SPACE" \
     "Available: ${available_gib} GiB" \
     "Required:  ${MIN_FREE_GIB} GiB" \
     "Free space must be reviewed safely before deployment."
+fi
+if [ "$available_kib" -lt "$required_kib" ] && \
+  [ "$ALLOW_LOW_DISK_BACKUP_INVENTORY" -eq 1 ]; then
+  printf '[deploy-preflight] low_disk_backup_inventory=pass deployment_remains_blocked=true\n'
 fi
 if [ "$available_kib" -lt "$required_kib" ] && \
   [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -eq 1 ]; then

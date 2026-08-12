@@ -194,6 +194,12 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/production-backup-inventory.sh
     ;;
+  backup-inventory-current)
+    [ "$#" -eq 0 ] || block "backup-inventory-current accepts no arguments."
+    require_nested_assembly
+    exec /usr/bin/env ARENZYRA_BACKUP_INVENTORY_PROFILE=current \
+      /bin/bash scripts/production-backup-inventory.sh
+    ;;
   backup-export)
     [ "$#" -eq 1 ] || block "backup-export requires one backup ID."
     require_nested_assembly

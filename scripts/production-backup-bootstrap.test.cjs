@@ -108,6 +108,10 @@ test("backup inventory is bounded, sanitized, read-only, and lock aware", () => 
     "production-deploy-preflight.sh --allow-read-only-legacy-backup",
   );
   assert.ok(lock >= 0 && lock < preflight);
+  assert.match(
+    inventory,
+    /ARENZYRA_BACKUP_INVENTORY_PROFILE:-legacy[\s\S]*current\)[\s\S]*production-deploy-preflight\.sh --allow-low-disk-backup-inventory/,
+  );
   assert.match(inventory, /BACKUP_ROOT="\/opt\/arenzyra-backups"/);
   assert.match(inventory, /BACKUP_CONFIG_INVENTORY recipient=%s remote=%s root=%s/);
   assert.match(inventory, /MANAGED_RECOVERY_INVENTORY recipient=%s remote=%s root=%s/);
@@ -131,6 +135,10 @@ test("backup inventory is bounded, sanitized, read-only, and lock aware", () => 
   assert.match(
     launcher,
     /backup-inventory\)[\s\S]*backup-inventory accepts no arguments[\s\S]*production-backup-inventory\.sh/,
+  );
+  assert.match(
+    launcher,
+    /backup-inventory-current\)[\s\S]*backup-inventory-current accepts no arguments[\s\S]*ARENZYRA_BACKUP_INVENTORY_PROFILE=current[\s\S]*production-backup-inventory\.sh/,
   );
 });
 
@@ -272,5 +280,9 @@ test("local backup release preserves B2 and one newer verified local recovery se
   assert.match(
     preflight,
     /--allow-low-disk-backup-release[\s\S]*ALLOW_LOW_DISK_BACKUP_RELEASE=1[\s\S]*low_disk_backup_release=pass deployment_remains_blocked=true/,
+  );
+  assert.match(
+    preflight,
+    /--allow-low-disk-backup-inventory[\s\S]*ALLOW_LOW_DISK_BACKUP_INVENTORY=1[\s\S]*low_disk_backup_inventory=pass deployment_remains_blocked=true/,
   );
 });

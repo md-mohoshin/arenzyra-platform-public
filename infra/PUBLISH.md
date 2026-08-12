@@ -228,6 +228,7 @@ closed command IDs:
 # inherited descriptor 3; the secret must not be an argument or environment value.
 production_entry backup-configure
 production_entry backup-inventory
+production_entry backup-inventory-current
 production_entry backup-export 20260810T205616Z-a1e31ee3 > encrypted-backup.tar
 production_entry backup-legacy
 # Resume an interrupted immutable upload from one already-complete encrypted
@@ -292,6 +293,12 @@ labels such as `empty`, `legacy-placeholder`, `reviewed`, or `other`.
 It also reports the private Docker subnet used by the database network so an
 exact legacy read-only backup profile can be reviewed without changing that
 network.
+
+`backup-inventory-current` reports the same bounded inventory for the healthy
+modern non-root production profile. It retains strict service and data-volume
+checks and permits only the root disk threshold to be below 30 GiB so an
+operator can identify the exact verified local duplicate required by the
+reviewed low-disk release command. It never deletes or uploads an artifact.
 
 When the reviewed API or Web commit changes between source activations, source
 retention uses `production_entry source-retention --nested` followed by one
