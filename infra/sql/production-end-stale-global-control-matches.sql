@@ -1,6 +1,6 @@
--- One-time, fail-closed recovery for the exact stale Global Control state
--- observed on 2026-08-12. This deliberately ends the abandoned control
--- sessions without calculating or publishing match results.
+-- One-time, fail-closed recovery for the exact remaining Global Control state
+-- observed on 2026-08-12: two stale COUNTDOWN rows. This ends the abandoned
+-- control sessions without calculating or publishing match results.
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 SET LOCAL statement_timeout = '30s';
 SET LOCAL lock_timeout = '5s';
@@ -14,6 +14,7 @@ DECLARE
   countdown_count integer;
   live_count integer;
   protected_count integer;
+  aggregate_protected_count integer;
   updated_count integer;
   parent_id text;
   parent_total integer;
@@ -105,10 +106,54 @@ BEGIN
           AND round_row.status::text = 'LIVE'
      );
 
-  IF target_count <> 3 OR countdown_count <> 2 OR live_count <> 1 THEN
+  IF target_count <> 2 OR countdown_count <> 2 OR live_count <> 0 THEN
     RAISE EXCEPTION
       'STALE MATCH RECOVERY BLOCKED: exact stale pattern changed (total %, countdown %, live %)',
       target_count, countdown_count, live_count;
+  END IF;
+
+  -- Refuse the one-time organization repair if any other organization became
+  -- deployment-protected while the off-site backup was running.
+  SELECT count(*)
+    INTO aggregate_protected_count
+    FROM "Match" AS match_row
+    LEFT JOIN "MatchControlState" AS control_row
+      ON control_row."matchId" = match_row.id
+   WHERE match_row."deletedAt" IS NULL
+     AND (
+       match_row.status IS NULL
+       OR match_row.status::text NOT IN (
+         'DRAFT', 'LIVE', 'ENDED', 'FINISH_PENDING', 'FINISHED'
+       )
+       OR match_row."liveState" IS NULL
+       OR match_row."liveState"::text NOT IN ('UPCOMING', 'LIVE', 'ENDED')
+       OR (
+         control_row.state IS NOT NULL
+         AND control_row.state::text NOT IN (
+           'READY', 'COUNTDOWN', 'LIVE', 'PAUSED', 'ENDED', 'CONFIRMED',
+           'FINISH_PENDING'
+         )
+       )
+       OR match_row.status::text IN ('LIVE', 'FINISH_PENDING')
+       OR match_row."liveState"::text = 'LIVE'
+       OR control_row.state::text IN (
+         'COUNTDOWN', 'LIVE', 'PAUSED', 'FINISH_PENDING'
+       )
+       OR (
+         match_row."pcobLastSeenAt" IS NOT NULL
+         AND match_row."pcobLastSeenAt" >= operation_time - interval '2 minutes'
+       )
+       OR EXISTS (
+         SELECT 1
+           FROM "MatchRound" AS round_row
+          WHERE round_row."matchId" = match_row.id
+            AND round_row.status::text = 'LIVE'
+       )
+     );
+  IF aggregate_protected_count <> 2 THEN
+    RAISE EXCEPTION
+      'STALE MATCH RECOVERY BLOCKED: aggregate protected inventory changed (count %)',
+      aggregate_protected_count;
   END IF;
 
   SELECT count(*)
@@ -149,7 +194,7 @@ BEGIN
        )
      );
 
-  IF protected_count <> 3 THEN
+  IF protected_count <> 2 THEN
     RAISE EXCEPTION
       'STALE MATCH RECOVERY BLOCKED: protected inventory changed (count %)',
       protected_count;
@@ -165,7 +210,7 @@ BEGIN
      AND "organizationId" = organization_id
      AND "deletedAt" IS NULL;
   GET DIAGNOSTICS updated_count = ROW_COUNT;
-  IF updated_count <> 3 THEN
+  IF updated_count <> 2 THEN
     RAISE EXCEPTION 'STALE MATCH RECOVERY BLOCKED: match update count was %', updated_count;
   END IF;
 
@@ -178,7 +223,7 @@ BEGIN
      AND "organizationId" = organization_id
      AND state::text IN ('COUNTDOWN', 'LIVE');
   GET DIAGNOSTICS updated_count = ROW_COUNT;
-  IF updated_count <> 3 THEN
+  IF updated_count <> 2 THEN
     RAISE EXCEPTION 'STALE MATCH RECOVERY BLOCKED: control update count was %', updated_count;
   END IF;
 
@@ -223,6 +268,48 @@ BEGIN
     RAISE EXCEPTION
       'STALE MATCH RECOVERY BLOCKED: transactional quiescence postcondition failed (count %)',
       protected_count;
+  END IF;
+
+  SELECT count(*)
+    INTO aggregate_protected_count
+    FROM "Match" AS match_row
+    LEFT JOIN "MatchControlState" AS control_row
+      ON control_row."matchId" = match_row.id
+   WHERE match_row."deletedAt" IS NULL
+     AND (
+       match_row.status IS NULL
+       OR match_row.status::text NOT IN (
+         'DRAFT', 'LIVE', 'ENDED', 'FINISH_PENDING', 'FINISHED'
+       )
+       OR match_row."liveState" IS NULL
+       OR match_row."liveState"::text NOT IN ('UPCOMING', 'LIVE', 'ENDED')
+       OR (
+         control_row.state IS NOT NULL
+         AND control_row.state::text NOT IN (
+           'READY', 'COUNTDOWN', 'LIVE', 'PAUSED', 'ENDED', 'CONFIRMED',
+           'FINISH_PENDING'
+         )
+       )
+       OR match_row.status::text IN ('LIVE', 'FINISH_PENDING')
+       OR match_row."liveState"::text = 'LIVE'
+       OR control_row.state::text IN (
+         'COUNTDOWN', 'LIVE', 'PAUSED', 'FINISH_PENDING'
+       )
+       OR (
+         match_row."pcobLastSeenAt" IS NOT NULL
+         AND match_row."pcobLastSeenAt" >= operation_time - interval '2 minutes'
+       )
+       OR EXISTS (
+         SELECT 1
+           FROM "MatchRound" AS round_row
+          WHERE round_row."matchId" = match_row.id
+            AND round_row.status::text = 'LIVE'
+       )
+     );
+  IF aggregate_protected_count <> 0 THEN
+    RAISE EXCEPTION
+      'STALE MATCH RECOVERY BLOCKED: aggregate quiescence postcondition failed (count %)',
+      aggregate_protected_count;
   END IF;
 
   -- Recompute the affected hierarchy using the same control-state mapping as
@@ -442,7 +529,7 @@ $arenzyra$;
 SELECT json_build_object(
   'schemaVersion', 1,
   'organizationName', 'Global Control',
-  'endedMatches', 3,
+  'endedMatches', 2,
   'resultFinalizationPerformed', FALSE
 );
 

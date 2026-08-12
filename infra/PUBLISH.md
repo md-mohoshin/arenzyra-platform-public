@@ -306,8 +306,8 @@ production_entry protected-match-organizations
 ```
 
 The following one-time recovery is deliberately restricted to the exact stale
-`Global Control` inventory observed on 2026-08-12: exactly two old `COUNTDOWN`
-matches and one old `LIVE` match, with no fresh telemetry or live round. It
+`Global Control` inventory remaining on 2026-08-12: exactly two old `COUNTDOWN`
+matches, with no fresh telemetry or live round. It
 takes and verifies a new encrypted off-site backup, repeats the production
 preflight, locks and rechecks the inventory, and ends the stale sessions without
 calculating or publishing results. Any state drift fails closed before writes:

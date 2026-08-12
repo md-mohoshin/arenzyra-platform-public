@@ -14,12 +14,12 @@ test("result parser accepts only the exact identifier-free recovery proof", () =
   const expected = {
     schemaVersion: 1,
     organizationName: "Global Control",
-    endedMatches: 3,
+    endedMatches: 2,
     resultFinalizationPerformed: false,
   };
   assert.deepEqual(parseResult(JSON.stringify(expected)), expected);
   assert.throws(
-    () => parseResult(JSON.stringify({ ...expected, endedMatches: 2 })),
+    () => parseResult(JSON.stringify({ ...expected, endedMatches: 3 })),
     /did not prove/,
   );
   assert.throws(
@@ -32,10 +32,12 @@ test("recovery is exact, stale, transactional, and result-preserving", () => {
   const sql = read("infra/sql/production-end-stale-global-control-matches.sql");
   assert.match(sql, /BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE/);
   assert.match(sql, /organization_row\.name = 'Global Control'/);
-  assert.match(sql, /target_count <> 3 OR countdown_count <> 2 OR live_count <> 1/);
+  assert.match(sql, /target_count <> 2 OR countdown_count <> 2 OR live_count <> 0/);
   assert.match(sql, /interval '15 minutes'/);
-  assert.match(sql, /protected_count <> 3/);
+  assert.match(sql, /protected_count <> 2/);
   assert.match(sql, /protected_count <> 0/);
+  assert.match(sql, /aggregate_protected_count <> 2/);
+  assert.match(sql, /aggregate_protected_count <> 0/);
   assert.match(sql, /FOR UPDATE/);
   assert.match(sql, /status = 'ENDED'::"MatchStatus"/);
   assert.match(sql, /state = 'ENDED'::"ControlState"/);

@@ -35,7 +35,7 @@ function parseResult(input) {
     !expectedKeys.every((key) => Object.hasOwn(parsed, key)) ||
     parsed.schemaVersion !== 1 ||
     parsed.organizationName !== "Global Control" ||
-    parsed.endedMatches !== 3 ||
+    parsed.endedMatches !== 2 ||
     parsed.resultFinalizationPerformed !== false
   ) {
     fail("Stale-match recovery result did not prove the reviewed postcondition.");
