@@ -167,6 +167,56 @@ backup, then immediately repeats `production-deploy-preflight.sh` before the API
 migration. This catches root-disk capacity consumed by the backup itself. A
 failed repeated preflight stops before schema mutation.
 
+### Live-match activation boundary
+
+Routine full and Discord-only releases are deliberately match-safe rather than
+advertised as zero-downtime. Before release metadata or a build, the wrapper
+runs a read-only, aggregate-only inventory. It blocks on business `LIVE` or
+`FINISH_PENDING`, live-state `LIVE`, control `COUNTDOWN`, `LIVE`, `PAUSED`, or
+`FINISH_PENDING`, a live round, telemetry seen in the last two minutes, or an
+unknown lifecycle value. The inventory reports counts only and never emits a
+match, organization, session, player, or operator identifier.
+
+After the candidate Compose assembly is verified, the deploy opens one
+persistent PostgreSQL session and takes the exclusive advisory lock named
+`arenzyra.production.activation.v1`. The canonical API countdown/live writers
+must take the conflicting shared transaction lock inside the exact transaction
+that changes lifecycle state. A new match start therefore fails temporarily
+with `503` while activation is in progress; a start transaction that won the
+race completes before the deploy can lock, after which the repeated aggregate
+gate sees the protected match and blocks the release. The wrapper revalidates
+both the session lock and aggregate inventory before builds, backup, migrations,
+Compose activation, after health convergence, and before updating `CURRENT`.
+Closing or losing the deploy session releases the PostgreSQL session lock.
+
+The routine Compose activation uses `--no-deps` with the explicit `api`,
+`media-ai`, `web`, and `proxy` services. It does not recreate PostgreSQL or
+Redis. API and web are still single active instances, so this is not blue/green:
+ordinary HTTP/WebSocket connections may reconnect during their controlled
+recreate. Do not run a routine release during a live match. True live-match
+blue/green requires a separate multi-instance audit of Socket.IO fan-out,
+in-memory match state, background workers, and singleton processing before a
+second API instance is safe.
+
+The first release that introduces this boundary is a bootstrap exception: the
+older running API does not yet request the shared lock. Schedule that first
+rollout, and any legacy cutover, in a confirmed quiescent maintenance window.
+The repeated aggregate checks remain mandatory, but they cannot make an old
+writer honor a lock it does not implement.
+
+Before generating new release metadata, the wrapper also proves that each
+candidate Root, API, and Web commit contains the corresponding commit recorded
+by the deployed `CURRENT` release. A divergent or older branch fails closed.
+This forward-history rule prevents a later patch deployment from silently
+dropping an earlier deployed fix; reconcile history with a reviewed merge
+instead of bypassing the check.
+
+The off-site backup still performs one complete immutable checksum comparison
+for every encrypted artifact. After uploading `OFFSITE_VERIFIED`, its second
+comparison is intentionally filtered to that newly-created marker only. This
+removes the former duplicate full remote rehash without weakening verification
+of either the encrypted backup or its completion evidence.
+
 Use the single reviewed production entrypoint below. Raw production npm aliases,
 checkout scripts, and Compose commands execute untrusted checkout bytes before
 the source gate and intentionally fail closed or are unsupported. Replace all

@@ -41,6 +41,7 @@ const defaultIncludedPaths = Object.freeze([
   "infra/production-database-object-policy.json",
   "infra/sql/bootstrap-production-roles.sql",
   "infra/sql/production-entitlement-inventory.sql",
+  "infra/sql/production-live-match-quiescence.sql",
   "scripts",
 ]);
 
@@ -193,7 +194,8 @@ function isReviewedSqlSource(filePath, rootDir = repoRoot) {
       relativePath,
     ) ||
     relativePath === "infra/sql/bootstrap-production-roles.sql" ||
-    relativePath === "infra/sql/production-entitlement-inventory.sql"
+    relativePath === "infra/sql/production-entitlement-inventory.sql" ||
+    relativePath === "infra/sql/production-live-match-quiescence.sql"
   );
 }
 

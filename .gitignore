@@ -59,6 +59,7 @@ infra/.env.release
 *.sql
 !infra/sql/bootstrap-production-roles.sql
 !infra/sql/production-entitlement-inventory.sql
+!infra/sql/production-live-match-quiescence.sql
 *.sqlite
 *.sqlite3
 *.bak

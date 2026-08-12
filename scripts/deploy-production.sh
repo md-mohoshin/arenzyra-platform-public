@@ -39,6 +39,9 @@ schema_change_possible=0
 non_web_fingerprint_before=""
 
 cleanup_runtime_files() {
+  if declare -F release_production_activation_lock >/dev/null 2>&1; then
+    release_production_activation_lock >/dev/null 2>&1 || true
+  fi
   if [ "$idp_verification_override_fd_open" -eq 1 ]; then
     exec 10<&- 2>/dev/null || true
     idp_verification_override_fd_open=0
@@ -307,10 +310,40 @@ test -f scripts/verify-production-database-roles.sh
 test -f scripts/provision-production-database-roles.sh
 test -f scripts/production-api-data-volume-remediation.sh
 test -f scripts/production-database-writer-fence.sh
+test -f scripts/verify-production-live-match-quiescence.sh
+test -f scripts/production-live-match-deployment-lock.sh
 test -f scripts/validate-publish-release-env.cjs
 test -f scripts/validate-release-image-manifest.cjs
 test -f scripts/production-pinned-image-override.cjs
 test -f scripts/verify-production-release-source.cjs
+test -f scripts/verify-production-forward-release.cjs
+source scripts/production-live-match-deployment-lock.sh
+
+production_live_match_quiescence_args=()
+production_activation_interlock_required=0
+case "$MODE" in
+  full|discord-bot|web-candidate)
+    production_activation_interlock_required=1
+    ;;
+  legacy-cutover)
+    production_live_match_quiescence_args+=(--allow-running-legacy-cutover)
+    ;;
+esac
+
+verify_production_live_match_quiescence() {
+  bash scripts/verify-production-live-match-quiescence.sh \
+    "${production_live_match_quiescence_args[@]}"
+}
+
+verify_production_activation_boundary() {
+  if [ "$production_activation_interlock_required" -eq 1 ]; then
+    verify_production_activation_lock
+  fi
+  if [ "$production_activation_interlock_required" -eq 1 ] || \
+    [ "$MODE" = "legacy-cutover" ]; then
+    verify_production_live_match_quiescence
+  fi
+}
 
 reviewed_env_file="$resolved_root/infra/.env.publish"
 if [ -n "${ARENZYRA_DEPLOY_ENV_FILE:-}" ]; then
@@ -1115,6 +1148,10 @@ fi
 # bootstrap that is intentionally outside this entrypoint. Discord-only mode
 # still runs this pre-metadata guard; its first-deploy form skips only health.
 bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+if [ "$production_activation_interlock_required" -eq 1 ] || \
+  [ "$MODE" = "legacy-cutover" ]; then
+  verify_production_live_match_quiescence
+fi
 if [ "$MODE" = "full" ]; then
   bash scripts/production-release-safety-gate.sh
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
@@ -1152,6 +1189,15 @@ elif [ -f infra/.env.release ]; then
   fi
 fi
 
+if [ -n "$prior_release_id" ]; then
+  "${sanitized_environment[@]}" \
+    node scripts/verify-production-forward-release.cjs \
+      --previous-release-env "$RELEASE_ARCHIVE_ROOT/$prior_release_id.env" \
+      --candidate-root "$ARENZYRA_REVIEWED_ROOT_COMMIT" \
+      --candidate-api "$ARENZYRA_REVIEWED_API_COMMIT" \
+      --candidate-web "$ARENZYRA_REVIEWED_WEB_COMMIT"
+fi
+
 trap deploy_failed ERR
 # This fails closed for dirty, missing, or unavailable root/API/web Git
 # provenance. The emergency override is intentionally not exposed here.
@@ -1187,6 +1233,10 @@ if ! "${compose[@]}" --profile migration --profile maintenance config --format j
   printf 'DEPLOYMENT BLOCKED: resolved Compose database bindings differ from the reviewed environment.\n' >&2
   exit 75
 fi
+if [ "$production_activation_interlock_required" -eq 1 ]; then
+  acquire_production_activation_lock
+fi
+verify_production_activation_boundary
 wait_for_health() {
   local services=("$@")
   local deadline=$((SECONDS + 10#$HEALTH_TIMEOUT_SECONDS))
@@ -1429,17 +1479,20 @@ create_pre_migration_backup() {
 }
 
 if [ "$MODE" = "discord-bot" ]; then
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" --profile discord-bot build discord-bot
   verify_clean_release_source
   archive_built_image_manifest discord-bot
   discord_bot_image_id="$(read_archived_release_image_id discord-bot)"
   create_pinned_compose_override discord-bot
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   attest_pinned_compose_override
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot
   services=(discord-bot)
 elif [ "$MODE" = "full" ]; then
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" build api media-ai web
   verify_clean_release_source
@@ -1454,26 +1507,32 @@ elif [ "$MODE" = "full" ]; then
   # The candidate image is now immutable and archived. Before backup, schema,
   # or service mutation, authenticate every envelope and inspect persisted
   # message storage through its exact compiled read-only utility.
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   verify_compiled_idp_storage
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   create_pre_migration_backup
   # Backup creation can consume enough root-disk capacity to invalidate the
   # preceding guard, so the mandatory preflight is repeated immediately before
   # the first schema mutation.
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   bash scripts/verify-production-entitlement-invariants.sh
   # The entitlement query is read-only but can take time; repeat the required
   # disk/service preflight literally immediately before schema mutation.
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   schema_change_possible=1
   attest_pinned_compose_override
-  "${compose[@]}" --profile migration run --rm --no-deps --pull never api-migrate
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" --profile migration run --rm --no-deps --pull never api-migrate
   attest_pinned_compose_override
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" --profile migration run --rm --no-deps --pull never studio-migrate
   # Reconcile explicit runtime grants only after both migration owners have
   # created their objects. Ownership drift and runtime ledger access fail shut.
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     ARENZYRA_DEPLOY_VERIFIED_BACKUP_ID="$verified_backup_id" \
@@ -1486,16 +1545,17 @@ elif [ "$MODE" = "full" ]; then
   bash scripts/verify-production-entitlement-invariants.sh
   # Preserve the literal immediate-operation guard after all grant and
   # entitlement checks.
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   attest_pinned_compose_override
-  "${compose[@]}" up --no-build -d --pull never
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" up --no-build -d --pull never --no-deps \
+    api media-ai web proxy
   services=(proxy postgres redis api media-ai web)
 elif [ "$MODE" = "web-candidate" ]; then
   # This path reuses one already-built, archived immutable web image. It never
   # builds, pulls, migrates, changes a database role, touches a volume, or
   # recreates a dependency. The running non-web container/image identities are
   # captured before the final guard and must remain byte-for-byte unchanged.
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   web_image_id="$(read_archived_release_image_id web)"
   [[ "$web_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] && \
     docker image inspect "$web_image_id" >/dev/null || {
@@ -1508,12 +1568,13 @@ elif [ "$MODE" = "web-candidate" ]; then
     printf '%s\n' 'Production non-web container inventory is empty.' >&2
     exit 75
   }
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   attest_pinned_compose_override
   [ "$(non_web_runtime_fingerprint)" = "$non_web_fingerprint_before" ] || {
     printf '%s\n' 'A non-web production container changed after the final preflight.' >&2
     exit 75
   }
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate web
   services=(web)
 else
@@ -1525,7 +1586,6 @@ else
   # fenced.
   if [ "$MODE" != "legacy-cutover-resume-transition" ]; then
   if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
-    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
     api_image_id="$(read_archived_release_image_id api)"
     web_image_id="$(read_archived_release_image_id web)"
     media_ai_image_id="$(read_archived_release_image_id media-ai)"
@@ -1540,8 +1600,10 @@ else
     done
     printf 'REVIEWED CANDIDATE IMAGES VERIFIED release=%s services=4\n' "$new_release_id"
   else
+    verify_production_activation_boundary
     bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
     "${compose[@]}" build api media-ai web
+    verify_production_activation_boundary
     bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
     "${compose[@]}" --profile discord-bot build discord-bot
     verify_clean_release_source
@@ -1556,9 +1618,11 @@ else
   create_pinned_compose_override legacy-cutover
   create_idp_verification_override
 
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   attest_pinned_compose_override
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" pull postgres redis proxy
+  verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   create_pre_migration_backup
 
@@ -1568,8 +1632,9 @@ else
   if [ "$MODE" = "legacy-cutover" ]; then
     bash scripts/verify-production-entitlement-invariants.sh \
       --allow-running-legacy-cutover
-    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
     attest_pinned_compose_override
+    verify_production_activation_boundary
+    bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
     "${compose[@]}" --profile discord-bot stop -t 60 \
       proxy web api media-ai discord-bot
   fi
@@ -1725,6 +1790,7 @@ fi
 
 verify_running_release_images
 wait_for_health "${services[@]}"
+verify_production_activation_boundary
 
 "${compose[@]}" --profile discord-bot ps
 if [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \

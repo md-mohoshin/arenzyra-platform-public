@@ -171,10 +171,10 @@ test("legacy entitlement and zero-step ledger reconciliation is exact, fenced, a
 test("every legacy Compose mutation has a same-session preflight and pinned-image attestation", () => {
   const branch = legacyBranch();
   const operations = [
-    /production-deploy-preflight\.sh[^\n]*\n\s*"\$\{compose\[@\]\}" build api media-ai web/,
-    /production-deploy-preflight\.sh[^\n]*\n\s*"\$\{compose\[@\]\}" --profile discord-bot build discord-bot/,
-    /production-deploy-preflight\.sh[^\n]*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" pull postgres redis proxy/,
-    /production-deploy-preflight\.sh[^\n]*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile discord-bot stop/,
+    /verify_production_activation_boundary\s*\n\s*bash scripts\/production-deploy-preflight\.sh[^\n]*\n\s*"\$\{compose\[@\]\}" build api media-ai web/,
+    /verify_production_activation_boundary\s*\n\s*bash scripts\/production-deploy-preflight\.sh[^\n]*\n\s*"\$\{compose\[@\]\}" --profile discord-bot build discord-bot/,
+    /attest_pinned_compose_override\s*\n\s*verify_production_activation_boundary\s*\n\s*bash scripts\/production-deploy-preflight\.sh[^\n]*\n\s*"\$\{compose\[@\]\}" pull postgres redis proxy/,
+    /attest_pinned_compose_override\s*\n\s*verify_production_activation_boundary\s*\n\s*bash scripts\/production-deploy-preflight\.sh[^\n]*\n\s*"\$\{compose\[@\]\}" --profile discord-bot stop/,
     /production-deploy-preflight\.sh \\\s*\n\s*"\$\{post_remediation_preflight\[@\]\}"\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile discord-bot down/,
     /production-deploy-preflight\.sh --allow-cutover-transition\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" up --no-build -d --pull never postgres redis/,
     /production-deploy-preflight\.sh --allow-cutover-transition\s*\n\s*attest_pinned_compose_override\s*\n\s*"\$\{compose\[@\]\}" --profile migration run[^\n]*api-migrate/,

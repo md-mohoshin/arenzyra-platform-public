@@ -1299,6 +1299,28 @@ test("backup result is emitted only after immutable off-host checksum verificati
   assert.match(backup, /age --encrypt --recipient/);
 });
 
+test("off-host backup rechecks only the marker after the full immutable checksum pass", () => {
+  const backup = read("scripts/production-backup.sh");
+  const checks = [
+    ...backup.matchAll(
+      /rclone check "\$final_dir" "\$remote_target" --checksum --one-way/g,
+    ),
+  ];
+  const markerCopy = backup.indexOf(
+    'rclone copyto "$final_dir/OFFSITE_VERIFIED"',
+  );
+  const markerOnlyCheck = backup.indexOf("--include '/OFFSITE_VERIFIED'");
+
+  assert.equal(checks.length, 2);
+  assert.ok(checks[0].index < markerCopy);
+  assert.ok(checks[1].index > markerCopy);
+  assert.ok(markerOnlyCheck > checks[1].index);
+  assert.doesNotMatch(
+    backup.slice(checks[0].index, markerCopy),
+    /--include '\/OFFSITE_VERIFIED'/,
+  );
+});
+
 test("production runtime cannot receive bootstrap or seed credentials", () => {
   const compose = read("infra/docker-compose.publish.yml");
   const example = read("infra/.env.publish.example");

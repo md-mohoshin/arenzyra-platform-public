@@ -280,7 +280,11 @@ if [ -n "$RCLONE_REMOTE" ]; then
   printf 'verified_at=%s\nremote=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$remote_target" \
     > "$final_dir/OFFSITE_VERIFIED"
   rclone copyto "$final_dir/OFFSITE_VERIFIED" "$remote_target/OFFSITE_VERIFIED" --immutable
-  rclone check "$final_dir" "$remote_target" --checksum --one-way
+  # The complete encrypted backup was checksum-verified immediately above.
+  # Only the subsequently-created completion evidence needs another check;
+  # rehashing every large archive here doubled remote verification time.
+  rclone check "$final_dir" "$remote_target" --checksum --one-way \
+    --include '/OFFSITE_VERIFIED'
   printf 'Encrypted backup uploaded and checked: %s\n' "$remote_target"
 else
   printf 'WARNING: the reviewed off-host backup destination is not configured.\n' >&2
