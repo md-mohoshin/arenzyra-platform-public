@@ -1445,6 +1445,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "host-maintenance",
       "observe",
       "protected-match-organizations",
+      "end-stale-global-control-matches",
       "verify",
       "studio-qa",
     ],

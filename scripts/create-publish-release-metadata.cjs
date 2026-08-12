@@ -43,6 +43,7 @@ const defaultIncludedPaths = Object.freeze([
   "infra/sql/production-entitlement-inventory.sql",
   "infra/sql/production-live-match-quiescence.sql",
   "infra/sql/production-protected-match-organizations.sql",
+  "infra/sql/production-end-stale-global-control-matches.sql",
   "scripts",
 ]);
 
@@ -198,6 +199,7 @@ function isReviewedSqlSource(filePath, rootDir = repoRoot) {
     relativePath === "infra/sql/production-entitlement-inventory.sql" ||
     relativePath === "infra/sql/production-live-match-quiescence.sql"
     || relativePath === "infra/sql/production-protected-match-organizations.sql"
+    || relativePath === "infra/sql/production-end-stale-global-control-matches.sql"
   );
 }
 

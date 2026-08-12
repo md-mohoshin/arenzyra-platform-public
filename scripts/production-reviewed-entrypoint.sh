@@ -313,6 +313,11 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/inspect-production-protected-match-organizations.sh
     ;;
+  end-stale-global-control-matches)
+    [ "$#" -eq 0 ] || block "end-stale-global-control-matches accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/end-production-stale-global-control-matches.sh
+    ;;
   verify)
     [ "$#" -eq 0 ] || block "verify accepts no arguments."
     require_nested_assembly
