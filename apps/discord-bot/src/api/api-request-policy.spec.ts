@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { retryDelayMs, shouldRetryApiRequest } from "./api-request-policy";
+import {
+  retryDelayMs,
+  screenshotApiRequestTimeoutMs,
+  shouldRetryApiRequest,
+} from "./api-request-policy";
+
+test("screenshot API requests allow OCR to finish without lowering larger timeouts", () => {
+  assert.equal(screenshotApiRequestTimeoutMs(10_000), 120_000);
+  assert.equal(screenshotApiRequestTimeoutMs(180_000), 180_000);
+});
 
 test("only transient idempotent API requests are retried", () => {
   assert.equal(shouldRetryApiRequest({ method: "get", status: 503 }), true);

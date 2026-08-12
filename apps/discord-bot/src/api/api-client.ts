@@ -10,6 +10,7 @@ import { BotApiAuthService } from "../services/api-auth.service";
 import {
   delay,
   retryDelayMs,
+  screenshotApiRequestTimeoutMs,
   shouldRetryApiRequest,
 } from "./api-request-policy";
 
@@ -3190,6 +3191,7 @@ export class ArenzyraApiClient {
         method: "post",
         url: "/ingest/screenshot",
         data: payload,
+        timeout: screenshotApiRequestTimeoutMs(botConfig.apiRequestTimeoutMs),
       });
       return response.data;
     } catch (error) {
@@ -3205,6 +3207,7 @@ export class ArenzyraApiClient {
         method: "post",
         url: "/ingest/screenshot/slot-map",
         data: payload,
+        timeout: screenshotApiRequestTimeoutMs(botConfig.apiRequestTimeoutMs),
       });
       return response.data;
     } catch (error) {

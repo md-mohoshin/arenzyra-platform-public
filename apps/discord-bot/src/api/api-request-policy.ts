@@ -11,6 +11,12 @@ const RETRYABLE_CODES = new Set([
   "ETIMEDOUT",
 ]);
 
+const MIN_SCREENSHOT_API_REQUEST_TIMEOUT_MS = 120_000;
+
+export function screenshotApiRequestTimeoutMs(defaultTimeoutMs: number) {
+  return Math.max(defaultTimeoutMs, MIN_SCREENSHOT_API_REQUEST_TIMEOUT_MS);
+}
+
 export function shouldRetryApiRequest(input: {
   method?: string;
   status?: number | null;
