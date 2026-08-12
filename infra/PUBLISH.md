@@ -245,6 +245,8 @@ set:
 ```bash
 production_entry backup-local-release \
   <superseded-backup-id> <newer-replacement-backup-id>
+production_entry backup-local-release-current \
+  <superseded-backup-id> <newer-replacement-backup-id>
 ```
 
 This maintenance command accepts only the exact low-disk dependency-recovery
@@ -254,6 +256,12 @@ against the fixed private B2 destination, repeats the topology gate, deletes
 only the superseded local files and now-empty exact directory, and performs no
 remote deletion. The ordinary 30 GiB gate remains mandatory before deployment
 can resume.
+
+Use `backup-local-release-current` when the complete modern application stack
+is healthy. It applies the same local/remote artifact checks and exact deletion
+boundary while retaining the ordinary strict service and non-root API-volume
+policy. The original command remains limited to its stopped cutover dependency
+topology.
 
 `backup-configure` accepts only the fixed hash-pinned incoming `age`/`rclone`
 binaries, the private EU Central B2 endpoint, bucket

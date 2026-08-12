@@ -211,6 +211,13 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/release-local-production-backup.sh "$1" "$2"
     ;;
+  backup-local-release-current)
+    [ "$#" -eq 2 ] || \
+      block "backup-local-release-current requires superseded and replacement backup IDs."
+    require_nested_assembly
+    exec /usr/bin/env ARENZYRA_BACKUP_RELEASE_PROFILE=current \
+      /bin/bash scripts/release-local-production-backup.sh "$1" "$2"
+    ;;
   source-retention)
     if [ "${1:-}" = "--nested" ]; then
       [ "$#" -ge 9 ] && [ "$#" -le 37 ] && [ $(( ($# - 1) % 4 )) -eq 0 ] || \

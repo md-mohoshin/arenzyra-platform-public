@@ -30,7 +30,18 @@ cd "$REPOSITORY_ROOT"
 source scripts/require-local-production-docker.sh
 # shellcheck source=scripts/acquire-production-deploy-lock.sh
 source scripts/acquire-production-deploy-lock.sh
-bash scripts/production-deploy-preflight.sh --allow-low-disk-backup-release
+case "${ARENZYRA_BACKUP_RELEASE_PROFILE:-dependency}" in
+  dependency)
+    preflight_mode="--allow-low-disk-backup-release"
+    ;;
+  current)
+    preflight_mode="--allow-low-disk-backup-release-current"
+    ;;
+  *)
+    block "backup release profile is invalid."
+    ;;
+esac
+bash scripts/production-deploy-preflight.sh "$preflight_mode"
 
 for command in find flock grep node rclone realpath rmdir stat; do
   command -v "$command" >/dev/null 2>&1 || block "a required command is unavailable."
@@ -104,7 +115,7 @@ rclone check "$replacement_dir" "$EXPECTED_REMOTE/$replacement_id" --checksum --
 # Repeat the exact topology/disk-maintenance guard immediately before releasing
 # only the superseded local encrypted duplicate. Remote Object Lock data is not
 # modified, and the newer verified local recovery set remains present.
-bash scripts/production-deploy-preflight.sh --allow-low-disk-backup-release
+bash scripts/production-deploy-preflight.sh "$preflight_mode"
 find "$superseded_dir" -mindepth 1 -maxdepth 1 -type f -delete
 rmdir -- "$superseded_dir"
 printf 'LOCAL BACKUP COPY RELEASED id=%s replacement_local=%s remote_preserved=true\n' \

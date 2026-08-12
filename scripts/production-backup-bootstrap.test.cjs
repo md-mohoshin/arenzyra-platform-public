@@ -261,10 +261,18 @@ test("local backup release preserves B2 and one newer verified local recovery se
     launcher,
     /backup-local-release\)[\s\S]*requires superseded and replacement backup IDs[\s\S]*require_nested_assembly[\s\S]*release-local-production-backup\.sh "\$1" "\$2"/,
   );
+  assert.match(
+    launcher,
+    /backup-local-release-current\)[\s\S]*requires superseded and replacement backup IDs[\s\S]*ARENZYRA_BACKUP_RELEASE_PROFILE=current[\s\S]*release-local-production-backup\.sh "\$1" "\$2"/,
+  );
+  assert.match(
+    release,
+    /ARENZYRA_BACKUP_RELEASE_PROFILE:-dependency[\s\S]*current\)[\s\S]*--allow-low-disk-backup-release-current/,
+  );
   assert.match(release, /replacement backup must be a newer distinct set/);
   assert.match(
     release,
-    /acquire-production-deploy-lock\.sh[\s\S]*production-deploy-preflight\.sh --allow-low-disk-backup-release/,
+    /acquire-production-deploy-lock\.sh[\s\S]*preflight_mode="--allow-low-disk-backup-release"[\s\S]*production-deploy-preflight\.sh "\$preflight_mode"/,
   );
   assert.match(release, /exec 9>"\$resolved_root\/\.backup\.lock"[\s\S]*flock -n 9/);
   assert.match(release, /safe_file\(\)[\s\S]*0:0:700/);
@@ -274,7 +282,7 @@ test("local backup release preserves B2 and one newer verified local recovery se
   assert.match(release, /rclone check "\$superseded_dir"[\s\S]*rclone check "\$replacement_dir"/);
   assert.match(
     release,
-    /production-deploy-preflight\.sh --allow-low-disk-backup-release[\s\S]*find "\$superseded_dir" -mindepth 1 -maxdepth 1 -type f -delete[\s\S]*rmdir -- "\$superseded_dir"/,
+    /production-deploy-preflight\.sh "\$preflight_mode"[\s\S]*find "\$superseded_dir" -mindepth 1 -maxdepth 1 -type f -delete[\s\S]*rmdir -- "\$superseded_dir"/,
   );
   assert.doesNotMatch(release, /rclone\s+(?:delete|purge|rmdir)|docker\s+(?:compose|volume|system)|rm\s+-rf/);
   assert.match(
@@ -284,5 +292,9 @@ test("local backup release preserves B2 and one newer verified local recovery se
   assert.match(
     preflight,
     /--allow-low-disk-backup-inventory[\s\S]*ALLOW_LOW_DISK_BACKUP_INVENTORY=1[\s\S]*low_disk_backup_inventory=pass deployment_remains_blocked=true/,
+  );
+  assert.match(
+    preflight,
+    /--allow-low-disk-backup-release-current[\s\S]*ALLOW_LOW_DISK_BACKUP_RELEASE_CURRENT=1[\s\S]*low_disk_backup_release_current=pass deployment_remains_blocked=true/,
   );
 });
