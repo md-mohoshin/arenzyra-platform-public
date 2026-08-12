@@ -39,9 +39,6 @@ schema_change_possible=0
 non_web_fingerprint_before=""
 
 cleanup_runtime_files() {
-  if declare -F release_production_activation_lock >/dev/null 2>&1; then
-    release_production_activation_lock >/dev/null 2>&1 || true
-  fi
   if [ "$idp_verification_override_fd_open" -eq 1 ]; then
     exec 10<&- 2>/dev/null || true
     idp_verification_override_fd_open=0
@@ -311,20 +308,18 @@ test -f scripts/provision-production-database-roles.sh
 test -f scripts/production-api-data-volume-remediation.sh
 test -f scripts/production-database-writer-fence.sh
 test -f scripts/verify-production-live-match-quiescence.sh
-test -f scripts/production-live-match-deployment-lock.sh
 test -f scripts/prepare-production-deploy-capacity.sh
 test -f scripts/validate-publish-release-env.cjs
 test -f scripts/validate-release-image-manifest.cjs
 test -f scripts/production-pinned-image-override.cjs
 test -f scripts/verify-production-release-source.cjs
 test -f scripts/verify-production-forward-release.cjs
-source scripts/production-live-match-deployment-lock.sh
 
 production_live_match_quiescence_args=()
-production_activation_interlock_required=0
+production_live_match_warning_required=0
 case "$MODE" in
   full|discord-bot)
-    production_activation_interlock_required=1
+    production_live_match_warning_required=1
     ;;
   legacy-cutover)
     production_live_match_quiescence_args+=(--allow-running-legacy-cutover)
@@ -336,12 +331,22 @@ verify_production_live_match_quiescence() {
     "${production_live_match_quiescence_args[@]}"
 }
 
-verify_production_activation_boundary() {
-  if [ "$production_activation_interlock_required" -eq 1 ]; then
-    verify_production_activation_lock
+warn_production_live_match_deployment() {
+  printf '%s\n' \
+    'LIVE MATCH DEPLOYMENT WARNING: routine deployment is allowed while matches are active.' \
+    'The live-match quiescence gate and activation advisory lock are disabled for this routine mode.' >&2
+  if [ "$MODE" = "full" ]; then
+    printf '%s\n' \
+      'This single-instance activation recreates API, media, Web, and proxy containers.' \
+      'HTTP and WebSocket clients may reconnect, and in-memory match work is not guaranteed to survive the recreate.' >&2
+  else
+    printf '%s\n' \
+      'Discord-only activation does not recreate the API, media, Web, proxy, PostgreSQL, or Redis containers.' >&2
   fi
-  if [ "$production_activation_interlock_required" -eq 1 ] || \
-    [ "$MODE" = "legacy-cutover" ]; then
+}
+
+verify_production_activation_boundary() {
+  if [ "$MODE" = "legacy-cutover" ]; then
     verify_production_live_match_quiescence
   fi
 }
@@ -1149,8 +1154,9 @@ fi
 # bootstrap that is intentionally outside this entrypoint. Discord-only mode
 # still runs this pre-metadata guard; its first-deploy form skips only health.
 bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-if [ "$production_activation_interlock_required" -eq 1 ] || \
-  [ "$MODE" = "legacy-cutover" ]; then
+if [ "$production_live_match_warning_required" -eq 1 ]; then
+  warn_production_live_match_deployment
+elif [ "$MODE" = "legacy-cutover" ]; then
   verify_production_live_match_quiescence
 fi
 if [ "$MODE" = "full" ] || [ "$MODE" = "discord-bot" ]; then
@@ -1254,9 +1260,6 @@ if ! "${compose[@]}" --profile migration --profile maintenance config --format j
       --env infra/.env.publish --assert-compose-json; then
   printf 'DEPLOYMENT BLOCKED: resolved Compose database bindings differ from the reviewed environment.\n' >&2
   exit 75
-fi
-if [ "$production_activation_interlock_required" -eq 1 ]; then
-  acquire_production_activation_lock
 fi
 verify_production_activation_boundary
 wait_for_health() {

@@ -9,8 +9,9 @@ const repositoryRoot = path.resolve(__dirname, "..");
 const read = (relativePath) =>
   fs.readFileSync(path.join(repositoryRoot, relativePath), "utf8");
 
-test("deploy and API use one conflicting advisory-lock key and scope", () => {
+test("stale recovery and API use one conflicting advisory-lock key and scope", () => {
   const helper = read("scripts/production-live-match-deployment-lock.sh");
+  const recovery = read("scripts/end-production-stale-global-control-matches.sh");
   const apiBoundary = read(
     "apps/api/src/common/db/production-deployment-activation-lock.util.ts",
   );
@@ -21,6 +22,7 @@ test("deploy and API use one conflicting advisory-lock key and scope", () => {
 
   assert.match(helper, /pg_advisory_lock\(/);
   assert.match(helper, /pg_advisory_unlock\(/);
+  assert.match(recovery, /source scripts\/production-live-match-deployment-lock\.sh/);
   assert.match(apiBoundary, /pg_try_advisory_xact_lock_shared\(/);
   assert.equal((helper.match(new RegExp(lockName, "g")) ?? []).length, 1);
   assert.equal((apiBoundary.match(new RegExp(lockName, "g")) ?? []).length, 1);
@@ -34,43 +36,35 @@ test("deploy and API use one conflicting advisory-lock key and scope", () => {
   );
 });
 
-test("reviewed deploy holds and revalidates the activation boundary through release", () => {
+test("routine deploy warns without taking the activation advisory lock", () => {
   const deploy = read("scripts/deploy-production.sh");
   const initialPreflight = deploy.indexOf(
     'bash scripts/production-deploy-preflight.sh "${guard_args[@]}"',
   );
-  const initialQuiescence = deploy.indexOf(
-    "verify_production_live_match_quiescence",
+  const initialWarning = deploy.indexOf(
+    "warn_production_live_match_deployment",
     initialPreflight,
   );
   const releaseArchive = deploy.indexOf("\nverify_release_archive_root\n");
-  const acquire = deploy.indexOf("acquire_production_activation_lock");
-  const firstRoutineBuild = deploy.indexOf(
-    '"${compose[@]}" build api media-ai web',
-  );
-  const healthWait = deploy.lastIndexOf('wait_for_health "${services[@]}"');
-  const finalBoundary = deploy.indexOf(
-    "verify_production_activation_boundary",
-    healthWait,
-  );
-  const currentPointer = deploy.indexOf(
-    'write_release_pointer CURRENT "$new_release_id"',
-  );
-  const cleanup = deploy.indexOf("cleanup_runtime_files", currentPointer);
 
   assert.ok(initialPreflight >= 0);
-  assert.ok(initialQuiescence > initialPreflight);
-  assert.ok(releaseArchive > initialQuiescence);
-  assert.ok(acquire > releaseArchive && acquire < firstRoutineBuild);
-  assert.ok(finalBoundary > healthWait && finalBoundary < currentPointer);
-  assert.ok(cleanup > currentPointer);
+  assert.ok(initialWarning > initialPreflight);
+  assert.ok(releaseArchive > initialWarning);
   assert.match(
     deploy,
-    /cleanup_runtime_files\(\) \{[\s\S]*release_production_activation_lock/,
+    /LIVE MATCH DEPLOYMENT WARNING: routine deployment is allowed while matches are active/,
   );
   assert.match(
     deploy,
-    /verify_production_activation_boundary\s+bash scripts\/production-deploy-preflight\.sh "\$\{guard_args\[@\]\}"\s+"\$\{compose\[@\]\}" build api media-ai web/,
+    /verify_production_activation_boundary\(\) \{\s+if \[ "\$MODE" = "legacy-cutover" \]; then\s+verify_production_live_match_quiescence/,
+  );
+  assert.doesNotMatch(
+    deploy,
+    /acquire_production_activation_lock|verify_production_activation_lock|release_production_activation_lock/,
+  );
+  assert.doesNotMatch(
+    deploy,
+    /source scripts\/production-live-match-deployment-lock\.sh/,
   );
 });
 

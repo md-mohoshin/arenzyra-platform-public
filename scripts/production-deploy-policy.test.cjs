@@ -710,11 +710,11 @@ test("web-candidate activation is immutable, dependency-isolated, and preserves 
   assert.match(branch, /non_web_runtime_fingerprint/);
   assert.match(
     deploy,
-    /case "\$MODE" in\s+full\|discord-bot\)\s+production_activation_interlock_required=1/,
+    /case "\$MODE" in\s+full\|discord-bot\)\s+production_live_match_warning_required=1/,
   );
   assert.doesNotMatch(
     deploy,
-    /full\|discord-bot\|web-candidate\)\s+production_activation_interlock_required=1/,
+    /full\|discord-bot\|web-candidate\)\s+production_live_match_warning_required=1/,
   );
   assert.doesNotMatch(
     branch,

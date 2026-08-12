@@ -169,44 +169,31 @@ backup, then immediately repeats `production-deploy-preflight.sh` before the API
 migration. This catches root-disk capacity consumed by the backup itself. A
 failed repeated preflight stops before schema mutation.
 
-### Live-match activation boundary
+### Live-match deployment warning
 
-Routine full and Discord-only releases are deliberately match-safe rather than
-advertised as zero-downtime. Before release metadata or a build, the wrapper
-runs a read-only, aggregate-only inventory. It blocks on business `LIVE` or
-`FINISH_PENDING`, live-state `LIVE`, control `COUNTDOWN`, `LIVE`, `PAUSED`, or
-`FINISH_PENDING`, a live round, telemetry seen in the last two minutes, or an
-unknown lifecycle value. The inventory reports counts only and never emits a
-match, organization, session, player, or operator identifier.
-
-After the candidate Compose assembly is verified, the deploy opens one
-persistent PostgreSQL session and takes the exclusive advisory lock named
-`arenzyra.production.activation.v1`. The canonical API countdown/live writers
-must take the conflicting shared transaction lock inside the exact transaction
-that changes lifecycle state. A new match start therefore fails temporarily
-with `503` while activation is in progress; a start transaction that won the
-race completes before the deploy can lock, after which the repeated aggregate
-gate sees the protected match and blocks the release. The wrapper revalidates
-both the session lock and aggregate inventory before builds, backup, migrations,
-Compose activation, after health convergence, and before updating `CURRENT`.
-Closing or losing the deploy session releases the PostgreSQL session lock.
+Routine full and Discord-only releases are allowed while matches are active.
+The wrapper prints a prominent warning, but it does not run the aggregate
+quiescence gate and does not take the exclusive PostgreSQL activation advisory
+lock. Match countdown/live transactions therefore are not rejected with `503`
+merely because a routine deployment is running.
 
 The routine Compose activation uses `--no-deps` with the explicit `api`,
 `media-ai`, `web`, and `proxy` services. It does not recreate PostgreSQL or
 Redis. API and web are still single active instances, so this is not blue/green:
 ordinary HTTP/WebSocket connections may reconnect during their controlled
-recreate. Do not run a routine release during a live match. True live-match
-blue/green requires a separate multi-instance audit of Socket.IO fan-out,
-in-memory match state, background workers, and singleton processing before a
-second API instance is safe.
+recreate, and in-memory match work is not guaranteed to survive. This policy
+change removes the deployment block; it does not make the current topology
+zero-impact. True live-match blue/green requires a separate multi-instance audit
+of Socket.IO fan-out, in-memory match state, background workers, and singleton
+processing before a second API instance is safe.
 
-An already-built, archived, immutable `web-candidate` is the only live-match
-activation exception. It recreates only the stateless Web container with
-`--no-deps`, fingerprints every non-Web container before and after activation,
-does not build, migrate, back up, restart the API/media/proxy/Discord services,
-or advance the full-release pointer. Browser connections may reload, but match
-control and telemetry writers remain untouched. Full, API-affecting, media,
-proxy, and Discord activation continue to wait for match quiescence.
+An already-built, archived, immutable `web-candidate` remains the least
+disruptive live-match activation. It recreates only the stateless Web container
+with `--no-deps`, fingerprints every non-Web container before and after
+activation, does not build, migrate, back up, restart the
+API/media/proxy/Discord services, or advance the full-release pointer. Browser
+connections may reload, but match control and telemetry writers remain
+untouched.
 
 Before a routine full or Discord build, disk use at or above 80% triggers one
 reviewed proactive cleanup under the shared deployment lock. It can remove only
@@ -216,11 +203,10 @@ logs, PostgreSQL, Redis, uploads, source archives, or customer files. The
 30-GiB absolute floor remains in force; if cache cleanup is insufficient, the
 deployment stops for explicit reviewed retention rather than broadening scope.
 
-The first release that introduces this boundary is a bootstrap exception: the
-older running API does not yet request the shared lock. Schedule that first
-rollout, and any legacy cutover, in a confirmed quiescent maintenance window.
-The repeated aggregate checks remain mandatory, but they cannot make an old
-writer honor a lock it does not implement.
+The one-time legacy database cutover remains subject to the aggregate
+live-match quiescence gate because it stops writers and changes the database
+topology. Stale-match recovery also retains its exact, backup-backed inventory
+guards. Neither restriction is part of a routine full or Discord deployment.
 
 Before generating new release metadata, the wrapper also proves that each
 candidate Root, API, and Web commit contains the corresponding commit recorded
@@ -296,7 +282,7 @@ production_entry() {
 production_entry deploy
 ```
 
-For an operator-requested diagnosis of a blocked live-match gate, use the
+For an operator-requested view of current protected match activity, use the
 separate bounded read-only summary. It returns organization names and protected
 state counts only; it does not return match, player, or session identifiers and
 does not change customer state:

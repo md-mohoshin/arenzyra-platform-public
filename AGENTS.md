@@ -41,12 +41,15 @@ deploy, IDP inspection, role checks, verification, and Studio QA.
    preflight explicitly before the custom command; leave the action blocked if
    it cannot be expressed by the reviewed allowlist.
 6. After deployment, verify container health and the public HTTPS endpoint.
-7. Live-match deployment policy is service-aware. Full, API-affecting, media,
-   proxy, and Discord deployments remain blocked until the aggregate live-match
-   gate is quiescent. The sole exception is activation of an already-built,
-   archived, immutable Web candidate through the reviewed web-candidate command;
-   it must use `--no-deps`, preserve every non-Web container identity, perform no
-   build/migration/backup, and leave the full-release pointer unchanged.
+7. Routine full and Discord deployments are allowed while matches are live.
+   They must print the reviewed live-match warning and must not take the
+   PostgreSQL activation advisory lock or require aggregate match quiescence.
+   Do not describe a full deployment as zero-impact: the current single-instance
+   activation recreates API, media, Web, and proxy containers, so clients may
+   reconnect and in-memory match work is not guaranteed to survive. The
+   one-time legacy database cutover remains quiescence-gated. The immutable
+   Web-candidate path remains the least disruptive option and must preserve its
+   existing `--no-deps`, non-Web identity, and pointer protections.
 8. At or above 80% root-disk usage, a routine build may automatically release
    only dangling Docker build cache older than seven days under the inherited
    production deployment lock. It must preflight before and after that action.

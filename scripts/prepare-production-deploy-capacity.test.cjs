@@ -39,15 +39,19 @@ test("automatic capacity preparation runs only for build-producing routine modes
   assert.ok(preparation >= 0 && preparation < releaseArchive);
 });
 
-test("live-match exception is confined to immutable web-only activation", () => {
+test("routine deployment warns but does not require live-match quiescence", () => {
   const deploy = read("scripts/deploy-production.sh");
   assert.match(
     deploy,
-    /case "\$MODE" in\s+full\|discord-bot\)\s+production_activation_interlock_required=1/,
+    /case "\$MODE" in\s+full\|discord-bot\)\s+production_live_match_warning_required=1/,
   );
   assert.doesNotMatch(
     deploy,
-    /full\|discord-bot\|web-candidate\)\s+production_activation_interlock_required=1/,
+    /production_activation_interlock_required|acquire_production_activation_lock/,
+  );
+  assert.match(
+    deploy,
+    /LIVE MATCH DEPLOYMENT WARNING: routine deployment is allowed while matches are active/,
   );
   const webBranch = deploy.slice(
     deploy.indexOf('elif [ "$MODE" = "web-candidate" ]; then'),
