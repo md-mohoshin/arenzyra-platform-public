@@ -31,10 +31,16 @@ WITH match_snapshot AS MATERIALIZED (
 classified AS MATERIALIZED (
   SELECT
     *,
-    business_status NOT IN (
-      'DRAFT', 'LIVE', 'ENDED', 'FINISH_PENDING', 'FINISHED'
+    (
+      business_status IS NULL
+      OR business_status NOT IN (
+        'DRAFT', 'LIVE', 'ENDED', 'FINISH_PENDING', 'FINISHED'
+      )
     ) AS unknown_business_status,
-    live_state NOT IN ('UPCOMING', 'LIVE', 'ENDED') AS unknown_live_state,
+    (
+      live_state IS NULL
+      OR live_state NOT IN ('UPCOMING', 'LIVE', 'ENDED')
+    ) AS unknown_live_state,
     control_state IS NOT NULL
       AND control_state NOT IN (
         'READY', 'COUNTDOWN', 'LIVE', 'PAUSED', 'ENDED', 'CONFIRMED',
