@@ -323,6 +323,31 @@ production_entry backup-resume 20260810T205616Z-a1e31ee3
 production_entry backup-resume-legacy 20260810T205616Z-a1e31ee3
 ```
 
+Screenshot OCR reads `OPENAI_API_KEY` only in the API service. Restore or rotate
+that server-side credential without exposing it in arguments or logs by passing
+exactly one key line on descriptor 3. The reviewed action validates the key,
+runs production preflight, atomically updates the publish environment, recreates
+only the API, waits for health, and runs public verification:
+
+```bash
+production_entry openai-key-configure 3<<<"$OPENAI_API_KEY"
+```
+
+The one-time Fix Esports Training Series 20:00 and 23:00 recoveries are closed
+to their separately reviewed screenshot result tables. Each `check` is
+read-only and requires one exact session, one match for each game number, the
+expected active-team counts, and a unique roster/team mapping. Each `apply`
+repeats its series check, takes a fresh immutable off-site backup, applies only
+that series' four full result tables, and posts or refreshes its overall result
+in the configured final-result channel:
+
+```bash
+production_entry recover-fix-esports-training-results 20-check
+production_entry recover-fix-esports-training-results 20-apply
+production_entry recover-fix-esports-training-results 23-check
+production_entry recover-fix-esports-training-results 23-apply
+```
+
 If a newly completed and off-site-verified encrypted recovery set makes the
 root filesystem fail the 30 GiB deployment gate, release only one older local
 duplicate while retaining both its Object-Locked B2 copy and the newer local

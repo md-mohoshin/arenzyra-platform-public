@@ -1435,6 +1435,8 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "idp-dry-run",
       "backup",
       "backup-configure",
+      "openai-key-configure",
+      "recover-fix-esports-training-results",
       "backup-inventory",
       "backup-inventory-current",
       "backup-export",
@@ -1473,6 +1475,56 @@ test("one reviewed production entrypoint exposes only the closed command allowli
     launcher,
     /observe accepts exactly ps, logs, or network/,
   );
+});
+
+test("OpenAI key restoration is secret-safe, transactional, and API-only", () => {
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const script = read("scripts/configure-production-openai-key.sh");
+  const template = read("infra/.env.publish.example");
+
+  assert.match(launcher, /openai-key-configure\)/);
+  assert.match(launcher, /configure-production-openai-key\.sh/);
+  assert.match(script, /read -r openai_key <&3/);
+  assert.match(script, /curl --config - --request GET/);
+  assert.doesNotMatch(script, /curl[^\n]*(?:--header|-H)[^\n]*openai_key/i);
+  assert.doesNotMatch(script, /set -x|echo [^\n]*openai_key/);
+  assert.match(script, /openai-key-original/);
+  assert.match(script, /env_updated.*recreate_started/s);
+  assert.match(script, /up -d --no-deps --force-recreate api/);
+  assert.doesNotMatch(script, /force-recreate (?:discord-bot|web|postgres|redis)/);
+
+  const firstPreflight = script.indexOf("bash scripts/production-deploy-preflight.sh");
+  const secondPreflight = script.indexOf(
+    "bash scripts/production-deploy-preflight.sh",
+    firstPreflight + 1,
+  );
+  const recreate = script.indexOf('"${compose[@]}" up -d --no-deps --force-recreate api');
+  assert.ok(firstPreflight >= 0 && secondPreflight > firstPreflight);
+  assert.ok(secondPreflight < recreate);
+  assert.match(template, /^OPENAI_API_KEY=$/m);
+  assert.match(template, /^OPENAI_VISION_MODEL=gpt-4\.1-mini$/m);
+});
+
+test("Fix Esports result recovery checks before backup and writes", () => {
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const wrapper = read(
+    "scripts/recover-production-fix-esports-training-20-results.sh",
+  );
+  const recovery = read(
+    "apps/discord-bot/src/scripts/recover-fix-esports-training-20-results.ts",
+  );
+  assert.match(launcher, /recover-fix-esports-training-results\)/);
+  assert.match(launcher, /20-check, 20-apply, 23-check, or 23-apply/);
+  const check = wrapper.indexOf('run_recovery "$series-check"');
+  const backup = wrapper.indexOf("scripts/production-backup.sh");
+  const apply = wrapper.indexOf('run_recovery "$mode"');
+  assert.ok(check >= 0 && check < backup && backup < apply);
+  assert.match(wrapper, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
+  assert.match(recovery, /Fix Esports Training Series 20:00/);
+  assert.match(recovery, /Fix Esports Training Series 23:00/);
+  assert.match(recovery, /target\.length !== 1/);
+  assert.match(recovery, /configured final result channel is missing/);
+  assert.match(recovery, /rememberFinalResultPost/);
 });
 
 test("production observation exposes bounded stopped-state and network diagnostics", () => {

@@ -189,6 +189,19 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/configure-production-backup.sh
     ;;
+  openai-key-configure)
+    [ "$#" -eq 0 ] || block "openai-key-configure accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/configure-production-openai-key.sh
+    ;;
+  recover-fix-esports-training-results)
+    [ "$#" -eq 1 ] && case "$1" in
+      20-check|20-apply|23-check|23-apply) true ;;
+      *) false ;;
+    esac || block "recover-fix-esports-training-results accepts exactly 20-check, 20-apply, 23-check, or 23-apply."
+    require_nested_assembly
+    exec /bin/bash scripts/recover-production-fix-esports-training-20-results.sh "$1"
+    ;;
   backup-inventory)
     [ "$#" -eq 0 ] || block "backup-inventory accepts no arguments."
     require_nested_assembly
