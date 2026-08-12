@@ -1485,7 +1485,7 @@ test("OpenAI key restoration is secret-safe, transactional, and API-only", () =>
   assert.match(launcher, /openai-key-configure\)/);
   assert.match(launcher, /configure-production-openai-key\.sh/);
   assert.match(script, /read -r openai_key <&3/);
-  assert.match(script, /curl --config - --request GET/);
+  assert.match(script, /curl --disable --config - --ipv4 --request GET/);
   assert.doesNotMatch(script, /curl[^\n]*(?:--header|-H)[^\n]*openai_key/i);
   assert.doesNotMatch(script, /set -x|echo [^\n]*openai_key/);
   assert.match(script, /openai-key-original/);

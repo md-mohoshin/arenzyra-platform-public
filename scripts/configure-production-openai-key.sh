@@ -74,8 +74,13 @@ key_count="$(grep -Ec '^OPENAI_API_KEY=' "$ENV_FILE" || true)"
 http_status="$({
   printf 'header = "Authorization: Bearer %s"\n' "$openai_key"
   printf 'silent\nshow-error\noutput = "/dev/null"\nwrite-out = "%%{http_code}"\n'
-} | curl --config - --request GET --max-time 20 https://api.openai.com/v1/models 2>/dev/null || true)"
-[ "$http_status" = "200" ] || block "OpenAI rejected the supplied key or could not be reached."
+} | curl --disable --config - --ipv4 --request GET --max-time 20 \
+  https://api.openai.com/v1/models 2>/dev/null || true)"
+case "$http_status" in
+  200) ;;
+  ''|000) block "OpenAI validation endpoint could not be reached." ;;
+  *) block "OpenAI rejected the supplied key with HTTP $http_status." ;;
+esac
 
 # The first guard validates capacity and the current environment. The second
 # guard below runs after the atomic credential write, immediately before the
