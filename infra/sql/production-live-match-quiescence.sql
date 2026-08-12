@@ -52,9 +52,12 @@ protected AS MATERIALIZED (
   SELECT
     *,
     (
-      business_status IN ('LIVE', 'FINISH_PENDING')
-      OR live_state = 'LIVE'
-      OR control_state IN ('COUNTDOWN', 'LIVE', 'PAUSED', 'FINISH_PENDING')
+      COALESCE(business_status IN ('LIVE', 'FINISH_PENDING'), FALSE)
+      OR COALESCE(live_state = 'LIVE', FALSE)
+      OR COALESCE(
+        control_state IN ('COUNTDOWN', 'LIVE', 'PAUSED', 'FINISH_PENDING'),
+        FALSE
+      )
       OR recent_telemetry
       OR live_round
       OR unknown_business_status

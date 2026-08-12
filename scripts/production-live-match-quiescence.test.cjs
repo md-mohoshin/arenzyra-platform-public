@@ -112,6 +112,10 @@ test("production quiescence query is read-only, aggregate-only, and bounded", ()
   );
   assert.match(sql, /business_status IS NULL[\s\S]*business_status NOT IN/);
   assert.match(sql, /live_state IS NULL[\s\S]*live_state NOT IN/);
+  assert.match(
+    sql,
+    /COALESCE\([\s\S]*control_state IN \('COUNTDOWN', 'LIVE', 'PAUSED', 'FINISH_PENDING'\)[\s\S]*FALSE/,
+  );
   assert.doesNotMatch(sql, /\b(?:INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP)\b/i);
   assert.doesNotMatch(sql, /json_build_object\([\s\S]*?"(?:id|name|email|slug)"/i);
 
