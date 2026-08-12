@@ -308,6 +308,11 @@ case "$command_id" in
       block "observe accepts exactly ps, logs, or network."
     exec /bin/bash scripts/production-compose-observe.sh "$1"
     ;;
+  protected-match-organizations)
+    [ "$#" -eq 0 ] || block "protected-match-organizations accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/inspect-production-protected-match-organizations.sh
+    ;;
   verify)
     [ "$#" -eq 0 ] || block "verify accepts no arguments."
     require_nested_assembly

@@ -1444,6 +1444,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-database-reopen",
       "host-maintenance",
       "observe",
+      "protected-match-organizations",
       "verify",
       "studio-qa",
     ],

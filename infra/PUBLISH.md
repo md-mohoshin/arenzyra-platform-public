@@ -278,6 +278,15 @@ production_entry() {
 production_entry deploy
 ```
 
+For an operator-requested diagnosis of a blocked live-match gate, use the
+separate bounded read-only summary. It returns organization names and protected
+state counts only; it does not return match, player, or session identifiers and
+does not change customer state:
+
+```bash
+production_entry protected-match-organizations
+```
+
 The reviewed backup bootstrap and one-time pre-remediation backup are also
 closed command IDs:
 
