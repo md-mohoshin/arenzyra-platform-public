@@ -318,6 +318,13 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/end-production-stale-global-control-matches.sh
     ;;
+  end-stale-global-control-matches-verified-backup)
+    [ "$#" -eq 1 ] && [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]] || \
+      block "end-stale-global-control-matches-verified-backup requires one backup ID."
+    require_nested_assembly
+    exec /bin/bash scripts/end-production-stale-global-control-matches.sh \
+      --reuse-verified-backup "$1"
+    ;;
   verify)
     [ "$#" -eq 0 ] || block "verify accepts no arguments."
     require_nested_assembly

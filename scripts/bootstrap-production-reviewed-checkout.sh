@@ -22,8 +22,28 @@ require_clean_parent() {
   while IFS='=' read -r name _; do
     case "$name" in GIT_*) block "ambient Git variables are set." ;; esac
   done < <(/usr/bin/env)
-  [ -x /usr/bin/git ] && [ -x /usr/bin/sha256sum ] && [ -x /usr/bin/tar ] || \
+  [ -x /usr/bin/flock ] && [ -x /usr/bin/git ] && [ -x /usr/bin/sha256sum ] && \
+    [ -x /usr/bin/tar ] || \
     block "reviewed system tools are unavailable."
+}
+
+require_inherited_deployment_lock() {
+  local lock_file='/run/arenzyra-production-deploy.lock'
+  local target owner mode file_identity descriptor_identity
+  [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" = '1' ] || \
+    block "the shared production deployment lock was not inherited."
+  [ -f "$lock_file" ] && [ ! -L "$lock_file" ] || \
+    block "the shared production deployment lock path is unsafe."
+  target="$(readlink -f /proc/$$/fd/8 2>/dev/null || true)"
+  owner="$(stat -Lc %u /proc/$$/fd/8 2>/dev/null || true)"
+  mode="$(stat -Lc %a /proc/$$/fd/8 2>/dev/null || true)"
+  file_identity="$(stat -Lc '%d:%i:%h' "$lock_file" 2>/dev/null || true)"
+  descriptor_identity="$(stat -Lc '%d:%i:%h' /proc/$$/fd/8 2>/dev/null || true)"
+  [ "$target" = "$lock_file" ] && [ "$owner" = '0' ] && \
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]] && (( (8#$mode & 8#022) == 0 )) && \
+    [ "$file_identity" = "$descriptor_identity" ] && \
+    [ "${file_identity##*:}" = '1' ] && /usr/bin/flock -n 8 || \
+    block "the inherited production deployment lock could not be verified."
 }
 
 require_release_inputs() {
@@ -153,6 +173,7 @@ activate() {
 
 require_clean_parent
 require_release_inputs
+require_inherited_deployment_lock
 case "${1:-}" in
   prepare) [ "$#" -eq 1 ] || block "prepare accepts no extra arguments."; prepare ;;
   activate) [ "$#" -eq 1 ] || block "activate accepts no extra arguments."; activate ;;

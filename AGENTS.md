@@ -53,6 +53,11 @@ deploy, IDP inspection, role checks, verification, and Studio QA.
    Do not automatically remove backups, images, containers, volumes, logs,
    source archives, or customer data. Keep the 30-GiB absolute deployment floor;
    if regenerable cache cleanup is insufficient, stop for explicit review.
+9. Preparing or activating a reviewed production source checkout must inherit
+   and verify the same shared production deployment lock on descriptor 8. Keep
+   that lock continuously from current-source verification through prepare,
+   atomic activation, and new-source verification. A raw bootstrap invocation
+   without the inherited lock must fail closed.
 
 # Local ignored-data safety
 

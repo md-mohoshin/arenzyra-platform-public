@@ -314,6 +314,10 @@ calculating or publishing results. Any state drift fails closed before writes:
 
 ```bash
 production_entry end-stale-global-control-matches
+# If the operation failed after producing its verified backup but before its
+# transaction, reuse that exact recovery point for at most two hours.
+production_entry end-stale-global-control-matches-verified-backup \
+  <verified-backup-id>
 ```
 
 The reviewed backup bootstrap and one-time pre-remediation backup are also

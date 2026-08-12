@@ -52,6 +52,9 @@ test("wrapper verifies off-site backup and repeats preflight before mutation", (
   assert.match(wrapper, /source scripts\/acquire-production-deploy-lock\.sh/);
   assert.match(wrapper, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
   assert.match(wrapper, /BACKUP_COMPLETE OFFSITE_VERIFIED/);
+  assert.match(wrapper, /--reuse-verified-backup/);
+  assert.match(wrapper, /now_epoch - marker_epoch \)\) -le 7200/);
+  assert.match(wrapper, /reason=operator-end-stale-global-control-matches/);
   assert.match(
     wrapper,
     /acquire_production_activation_lock\s+bash scripts\/production-deploy-preflight\.sh\s+verify_production_activation_lock[\s\S]*docker exec -i/,
@@ -65,5 +68,9 @@ test("reviewed entrypoint exposes the recovery with no arguments", () => {
   assert.match(
     launcher,
     /end-stale-global-control-matches\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*end-production-stale-global-control-matches\.sh/,
+  );
+  assert.match(
+    launcher,
+    /end-stale-global-control-matches-verified-backup\)[\s\S]*requires one backup ID[\s\S]*--reuse-verified-backup/,
   );
 });

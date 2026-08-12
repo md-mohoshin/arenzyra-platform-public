@@ -15,6 +15,14 @@ test("bootstrap uses fixed production roots and two explicit phases", () => {
   assert.doesNotMatch(source, /rm\s+-rf|docker|compose|systemctl/);
 });
 
+test("bootstrap requires the inherited shared deployment lock", () => {
+  assert.match(source, /ARENZYRA_DEPLOY_LOCK_INHERITED/);
+  assert.match(source, /\/run\/arenzyra-production-deploy\.lock/);
+  assert.match(source, /\/proc\/\$\$\/fd\/8/);
+  assert.match(source, /file_identity.*descriptor_identity/s);
+  assert.match(source, /flock -n 8/);
+});
+
 test("bootstrap authenticates bounded archives before extraction", () => {
   assert.match(source, /require_regular_single_link_root_file/);
   assert.match(source, /1073741824/);
