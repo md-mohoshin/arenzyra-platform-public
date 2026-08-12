@@ -804,6 +804,30 @@ test("media AI image carries the same immutable release labels as other built im
   }
 });
 
+test("every verified runtime service receives the release identity labels", () => {
+  const compose = read("infra/docker-compose.publish.yml");
+  const serviceNames = ["api", "media-ai", "web", "discord-bot"];
+  for (const [index, service] of serviceNames.entries()) {
+    const start = compose.indexOf(`  ${service}:`);
+    const next = index + 1 < serviceNames.length
+      ? compose.indexOf(`  ${serviceNames[index + 1]}:`, start)
+      : compose.length;
+    assert.ok(start >= 0 && next > start, `${service} service block must exist`);
+    const block = compose.slice(start, next);
+    for (const label of [
+      "com.arenzyra.release-id",
+      "com.arenzyra.source-digest",
+      "com.arenzyra.release-source",
+    ]) {
+      assert.match(
+        block,
+        new RegExp(label.replaceAll(".", "\\.")),
+        `${service} must receive ${label}`,
+      );
+    }
+  }
+});
+
 test("production Docker commands are local-socket and ambient-env bound", () => {
   const dockerTarget = read("scripts/require-local-production-docker.sh");
   const processEnvironment = read(

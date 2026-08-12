@@ -99,6 +99,10 @@ services:
         ARENZYRA_GIT_COMMIT: "${ARENZYRA_GIT_COMMIT:-}"
         ARENZYRA_BUILD_AT: "${ARENZYRA_BUILD_AT:-}"
         ARENZYRA_BUILD_SOURCE: "${ARENZYRA_BUILD_SOURCE:-publish}"
+    labels:
+      com.arenzyra.release-id: "${ARENZYRA_RELEASE_ID:-unknown}"
+      com.arenzyra.source-digest: "${ARENZYRA_SOURCE_DIGEST:-unknown}"
+      com.arenzyra.release-source: "${ARENZYRA_BUILD_SOURCE:-publish}"
     stop_grace_period: 45s
     environment:
       NODE_ENV: production
@@ -376,6 +380,10 @@ services:
         ARENZYRA_GIT_COMMIT: "${ARENZYRA_GIT_COMMIT:-}"
         ARENZYRA_BUILD_AT: "${ARENZYRA_BUILD_AT:-}"
         ARENZYRA_BUILD_SOURCE: "${ARENZYRA_BUILD_SOURCE:-publish}"
+    labels:
+      com.arenzyra.release-id: "${ARENZYRA_RELEASE_ID:-unknown}"
+      com.arenzyra.source-digest: "${ARENZYRA_SOURCE_DIGEST:-unknown}"
+      com.arenzyra.release-source: "${ARENZYRA_BUILD_SOURCE:-publish}"
     environment:
       U2NET_HOME: /models
       MEDIA_AI_REQUIRE_PRELOADED_MODELS: "true"
