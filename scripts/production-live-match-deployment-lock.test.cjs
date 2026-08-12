@@ -130,4 +130,11 @@ test("candidate history must contain all deployed Root, API, and Web fixes", () 
     deploy,
     /\[ "\$MODE" = "legacy-cutover" \][\s\S]*\[ "\$MODE" = "discord-bot" \][\s\S]*\[ "\$FIRST_DEPLOY" -eq 1 \]/,
   );
+  for (const recoveryMode of [
+    "legacy-cutover-resume",
+    "legacy-cutover-resume-interrupted",
+    "legacy-cutover-resume-transition",
+  ]) {
+    assert.match(deploy, new RegExp(`\\[ "\\$MODE" = "${recoveryMode}" \\]`));
+  }
 });

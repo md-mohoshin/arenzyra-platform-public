@@ -1191,6 +1191,9 @@ fi
 
 if [ -z "$prior_release_id" ] && \
   ! { [ "$MODE" = "legacy-cutover" ] || \
+      [ "$MODE" = "legacy-cutover-resume" ] || \
+      [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
+      [ "$MODE" = "legacy-cutover-resume-transition" ] || \
       { [ "$MODE" = "discord-bot" ] && [ "$FIRST_DEPLOY" -eq 1 ]; }; }; then
   printf '%s\n' \
     'DEPLOYMENT BLOCKED: A VERIFIED MANAGED RELEASE BASELINE IS REQUIRED.' \
@@ -1566,6 +1569,7 @@ elif [ "$MODE" = "web-candidate" ]; then
   # builds, pulls, migrates, changes a database role, touches a volume, or
   # recreates a dependency. The running non-web container/image identities are
   # captured before the final guard and must remain byte-for-byte unchanged.
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   web_image_id="$(read_archived_release_image_id web)"
   [[ "$web_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] && \
     docker image inspect "$web_image_id" >/dev/null || {
@@ -1578,13 +1582,13 @@ elif [ "$MODE" = "web-candidate" ]; then
     printf '%s\n' 'Production non-web container inventory is empty.' >&2
     exit 75
   }
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   attest_pinned_compose_override
   [ "$(non_web_runtime_fingerprint)" = "$non_web_fingerprint_before" ] || {
     printf '%s\n' 'A non-web production container changed after the final preflight.' >&2
     exit 75
   }
-  verify_production_activation_boundary
-  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate web
   services=(web)
 else

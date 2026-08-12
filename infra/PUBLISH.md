@@ -215,7 +215,7 @@ A routine full release or non-bootstrap Discord release also requires that
 verified managed baseline. If neither a valid `CURRENT` archive pointer nor the
 last valid `infra/.env.release` can establish it, deployment stops. Absence of a
 baseline is not treated as permission to replace unknown live code. Only the
-separately reviewed legacy/adoption path, or the zero-container Discord
+separately reviewed legacy/adoption and recovery paths, or the zero-container Discord
 `--first-deploy` exception, can begin without one; never manufacture a pointer
 to make this gate pass.
 
