@@ -7,6 +7,7 @@ import {
   mapRecoveryRows,
   recoveryTeamScore,
   selectRecoveryGuild,
+  selectRecoverySession,
   type RecoveryTeamKey,
 } from "./recover-fix-esports-training-20-results";
 
@@ -130,5 +131,25 @@ test("recovery resolves exactly one normalized Fix Esports guild", () => {
       { id: "fix-2", name: "Fix-Esports" },
     ]),
     /guild count is 2/,
+  );
+});
+
+test("recovery resolves only one exact or tightly related training session", () => {
+  const exact = { name: "Fix Esports Traning Series 20:00", status: "ENDED" };
+  assert.equal(
+    selectRecoverySession([exact], ["Fix Esports Traning Series 20:00"], "20"),
+    exact,
+  );
+  const related = { name: "Training Series - 20:00 PM", status: "ENDED" };
+  assert.equal(
+    selectRecoverySession([related], ["missing"], "20"),
+    related,
+  );
+  assert.throws(
+    () => selectRecoverySession([
+      related,
+      { name: "Older Training Series 20:00", status: "ARCHIVED" },
+    ], ["missing"], "20"),
+    /session count is 2/,
   );
 });

@@ -276,6 +276,41 @@ export function selectRecoveryGuild(
   return targets[0];
 }
 
+export function selectRecoverySession<
+  T extends { name: string; status?: string | null; startsAt?: string | null },
+>(sessions: T[], sessionNames: readonly string[], series: "20" | "23") {
+  const normalizedSessionNames = new Set(sessionNames.map(normalizeRecoveryText));
+  const exact = sessions.filter(
+    (session) => normalizedSessionNames.has(normalizeRecoveryText(session.name)),
+  );
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) {
+    throw new Error(`target ${series}:00 session count is ${exact.length}, expected exactly 1`);
+  }
+
+  const related = sessions.filter((session) => {
+    const words = new Set(normalizeRecoveryText(session.name).split(/\s+/g));
+    return words.has(series) && words.has("series") &&
+      (words.has("training") || words.has("traning"));
+  });
+  if (related.length === 1) return related[0];
+
+  const inventory = sessions
+    .filter((session) => {
+      const words = new Set(normalizeRecoveryText(session.name).split(/\s+/g));
+      return words.has(series) || words.has("training") || words.has("traning");
+    })
+    .slice(0, 12)
+    .map((session) => ({
+      name: session.name,
+      status: session.status ?? null,
+      startsAt: session.startsAt ?? null,
+    }));
+  throw new Error(
+    `target ${series}:00 session count is ${related.length}, expected exactly 1; related=${JSON.stringify(inventory)}`,
+  );
+}
+
 function compact(value: string | null | undefined) {
   return normalizeRecoveryText(value).replace(/\s+/g, "");
 }
@@ -342,7 +377,6 @@ async function run() {
   const apply = parsed[2] === "apply";
   const sessionNames = TARGET_SESSION_NAMES[series];
   const expectedGames = series === "20" ? RECOVERY_GAMES : RECOVERY_GAMES_23;
-  const normalizedSessionNames = new Set(sessionNames.map(normalizeRecoveryText));
   const api = new ArenzyraApiClient();
   const rest = new REST({ version: "10" }).setToken(botConfig.discordToken);
   const guilds = await rest.get(Routes.userGuilds()) as Array<{ id: string; name: string }>;
@@ -351,13 +385,7 @@ async function run() {
 
   await api.withOrganization(resolvedGuild.organizationId, async () => {
     const sessions = await api.listSessions();
-    const target = sessions.filter(
-      (session) => normalizedSessionNames.has(normalizeRecoveryText(session.name)),
-    );
-    if (target.length !== 1) {
-      throw new Error(`target ${series}:00 session count is ${target.length}, expected exactly 1`);
-    }
-    const session = target[0];
+    const session = selectRecoverySession(sessions, sessionNames, series);
     if (session.status === "LIVE") throw new Error("target session is still LIVE");
 
     const matches = await api.listSessionMatches(session.id);

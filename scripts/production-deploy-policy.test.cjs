@@ -1527,7 +1527,9 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(recovery, /Routes\.userGuilds\(\)/);
   assert.match(recovery, /api\.resolveDiscordGuild\(guild\.id\)/);
   assert.match(recovery, /api\.withOrganization\(resolvedGuild\.organizationId/);
-  assert.match(recovery, /target\.length !== 1/);
+  assert.match(recovery, /related=\$\{JSON\.stringify\(inventory\)\}/);
+  assert.match(recovery, /exact\.length > 1/);
+  assert.match(recovery, /related\.length === 1/);
   assert.match(recovery, /configured final result channel is missing/);
   assert.match(recovery, /rememberFinalResultPost/);
 });
