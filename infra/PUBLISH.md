@@ -282,6 +282,15 @@ production_entry() {
 production_entry deploy
 ```
 
+For a reviewed API source-only recovery with no schema change, use the narrow
+API activation. It builds and recreates only the API, fingerprints every other
+Compose container before and after activation, and still runs the mandatory
+production preflight immediately before both build and recreate:
+
+```bash
+production_entry deploy-api-recovery
+```
+
 For an operator-requested view of current protected match activity, use the
 separate bounded read-only summary. It returns organization names and protected
 state counts only; it does not return match, player, or session identifiers and

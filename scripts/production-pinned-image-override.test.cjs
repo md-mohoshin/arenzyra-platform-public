@@ -59,6 +59,18 @@ test("web candidate override pins only the stateless web service", () => {
   );
 });
 
+test("API recovery override pins only the API runtime service", () => {
+  const apiIds = { api: ids.api };
+  const text = canonicalPinnedOverride("api-recovery", apiIds);
+  assert.deepEqual(validatePinnedOverride(text, "api-recovery", apiIds), {
+    services: { api: { image: ids.api } },
+  });
+  assert.doesNotMatch(text, /api-migrate|postgres|redis|web|media-ai|discord-bot/);
+  assert.throws(() =>
+    createPinnedOverride("api-recovery", { ...apiIds, web: ids.web }),
+  );
+});
+
 test("legacy cutover pins every runtime, migrator, and IDP maintenance image", () => {
   const text = canonicalPinnedOverride("legacy-cutover", ids);
   const override = validatePinnedOverride(text, "legacy-cutover", ids);

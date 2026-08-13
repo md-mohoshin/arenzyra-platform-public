@@ -19,6 +19,9 @@ const MODE_BINDINGS = Object.freeze({
   "discord-bot": Object.freeze({
     "discord-bot": "discord-bot",
   }),
+  "api-recovery": Object.freeze({
+    api: "api",
+  }),
   "legacy-cutover": Object.freeze({
     api: "api",
     "api-migrate": "api",

@@ -710,7 +710,7 @@ test("web-candidate activation is immutable, dependency-isolated, and preserves 
   assert.match(branch, /non_web_runtime_fingerprint/);
   assert.match(
     deploy,
-    /case "\$MODE" in\s+full\|discord-bot\)\s+production_live_match_warning_required=1/,
+    /case "\$MODE" in\s+full\|discord-bot\|api-recovery\)\s+production_live_match_warning_required=1/,
   );
   assert.doesNotMatch(
     deploy,
@@ -722,7 +722,33 @@ test("web-candidate activation is immutable, dependency-isolated, and preserves 
   );
   assert.match(
     deploy,
-    /if \[ "\$MODE" = "web-candidate" \]; then[\s\S]*non_web_runtime_fingerprint[\s\S]*else[\s\S]*write_release_pointer CURRENT/,
+    /if \[ "\$MODE" = "web-candidate" \]; then[\s\S]*non_web_runtime_fingerprint[\s\S]*elif \[ "\$MODE" = "api-recovery" \]; then[\s\S]*write_release_pointer CURRENT/,
+  );
+});
+
+test("API recovery activation is immutable, dependency-isolated, and preserves non-API containers", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const entrypoint = read("scripts/production-reviewed-entrypoint.sh");
+  const branch = deploy.slice(
+    deploy.indexOf('elif [ "$MODE" = "api-recovery" ]; then'),
+    deploy.indexOf('elif [ "$MODE" = "full" ]; then'),
+  );
+
+  assert.match(
+    entrypoint,
+    /deploy-api-recovery\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*--api-recovery/,
+  );
+  assert.match(branch, /build api/);
+  assert.match(branch, /archive_built_image_manifest api/);
+  assert.match(branch, /create_pinned_compose_override api-recovery/);
+  assert.match(branch, /non_api_runtime_fingerprint/);
+  assert.match(
+    branch,
+    /production-deploy-preflight\.sh[\s\S]*build api[\s\S]*production-deploy-preflight\.sh[\s\S]*--no-deps --force-recreate api/,
+  );
+  assert.doesNotMatch(
+    branch,
+    /api-migrate|studio-migrate|create_pre_migration_backup|provision-production-database-roles|up[^\n]*(?:web|media-ai|discord-bot|postgres|redis)/,
   );
 });
 
@@ -745,7 +771,7 @@ test("post-build source provenance is recomputed exactly from a root-only checko
     checkoutSafety < metadataGeneration,
     "checkout ownership and mode safety must be established before Git is invoked",
   );
-  assert.equal(verificationCalls.length, 6);
+  assert.equal(verificationCalls.length, 7);
   assert.ok(
     verificationCalls.some(
       (index) =>
@@ -755,9 +781,13 @@ test("post-build source provenance is recomputed exactly from a root-only checko
   );
   assert.ok(
     verificationCalls.some(
-      (index) =>
-        index > deploy.indexOf("build api media-ai web") &&
-        index < deploy.indexOf("archive_built_image_manifest api"),
+      (index) => {
+        const fullBuild = deploy.indexOf("build api media-ai web");
+        return (
+          index > fullBuild &&
+          index < deploy.indexOf("archive_built_image_manifest api", fullBuild)
+        );
+      },
     ),
   );
   assert.match(sourceVerifier, /EXPECTED_PRODUCTION_ROOT = "\/opt\/arenzyra"/);
@@ -1429,6 +1459,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-resume-transition-rebuild",
       "legacy-cutover-resume-transition-candidate-fresh-backup",
       "deploy-discord",
+      "deploy-api-recovery",
       "deploy-web-candidate",
       "rollback-discord",
       "recover-web",

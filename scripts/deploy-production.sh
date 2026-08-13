@@ -37,6 +37,7 @@ media_ai_image_id=""
 discord_bot_image_id=""
 schema_change_possible=0
 non_web_fingerprint_before=""
+non_api_fingerprint_before=""
 
 cleanup_runtime_files() {
   if [ "$idp_verification_override_fd_open" -eq 1 ]; then
@@ -76,7 +77,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--web-candidate|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--api-recovery|--web-candidate|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -94,6 +95,7 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --discord-bot) MODE="discord-bot" ;;
+    --api-recovery) MODE="api-recovery" ;;
     --web-candidate) MODE="web-candidate" ;;
     --legacy-cutover) MODE="legacy-cutover" ;;
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
@@ -164,7 +166,8 @@ if [ "$MODE" = "web-candidate" ] && [ -z "$REUSE_CANDIDATE_RELEASE_ID" ]; then
   exit 2
 fi
 
-if { [ "$MODE" = "full" ] || [ "$MODE" = "legacy-cutover" ] || \
+if { [ "$MODE" = "full" ] || [ "$MODE" = "api-recovery" ] || \
+  [ "$MODE" = "legacy-cutover" ] || \
   [ "$MODE" = "legacy-cutover-resume" ] || \
   [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
   [ "$MODE" = "legacy-cutover-resume-transition" ] || \
@@ -318,7 +321,7 @@ test -f scripts/verify-production-forward-release.cjs
 production_live_match_quiescence_args=()
 production_live_match_warning_required=0
 case "$MODE" in
-  full|discord-bot)
+  full|discord-bot|api-recovery)
     production_live_match_warning_required=1
     ;;
   legacy-cutover)
@@ -339,9 +342,12 @@ warn_production_live_match_deployment() {
     printf '%s\n' \
       'This single-instance activation recreates API, media, Web, and proxy containers.' \
       'HTTP and WebSocket clients may reconnect, and in-memory match work is not guaranteed to survive the recreate.' >&2
-  else
+  elif [ "$MODE" = "discord-bot" ]; then
     printf '%s\n' \
       'Discord-only activation does not recreate the API, media, Web, proxy, PostgreSQL, or Redis containers.' >&2
+  else
+    printf '%s\n' \
+      'API-only recovery activation does not recreate media, Web, proxy, Discord, PostgreSQL, or Redis containers.' >&2
   fi
 }
 
@@ -801,6 +807,12 @@ create_pinned_compose_override() {
         --discord-bot-image-id "$discord_bot_image_id"
       )
       ;;
+    api-recovery)
+      pinned_override_validator_args=(
+        --mode api-recovery
+        --api-image-id "$api_image_id"
+      )
+      ;;
     web-candidate)
       pinned_override_validator_args=(
         --mode web-candidate
@@ -1028,6 +1040,7 @@ verify_running_release_images() {
   local -a runtime_services
   case "$pinned_override_mode" in
     full) runtime_services=(api web media-ai) ;;
+    api-recovery) runtime_services=(api) ;;
     web-candidate) runtime_services=(web) ;;
     discord-bot) runtime_services=(discord-bot) ;;
     legacy-cutover) runtime_services=(api web media-ai discord-bot) ;;
@@ -1081,6 +1094,21 @@ non_web_runtime_fingerprint() {
   ) | LC_ALL=C sort
 }
 
+non_api_runtime_fingerprint() {
+  local container_id service
+  while IFS= read -r container_id; do
+    [ -n "$container_id" ] || continue
+    service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container_id")"
+    [ "$service" = "api" ] && continue
+    docker inspect --format \
+      '{{.Id}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "com.docker.compose.oneoff"}}' \
+      "$container_id"
+  done < <(
+    docker ps -aq --no-trunc \
+      --filter "label=com.docker.compose.project=${compose_project}" | LC_ALL=C sort
+  ) | LC_ALL=C sort
+}
+
 read_release_pointer() {
   local pointer_name="$1"
   local pointer_file="$RELEASE_ARCHIVE_ROOT/$pointer_name"
@@ -1123,9 +1151,10 @@ deploy_failed() {
   if [ "$schema_change_possible" -eq 1 ]; then
     printf 'Schema changes may have committed. Do not start an older API image or perform an image-only rollback.\n' >&2
     printf 'Keep incompatible old writers stopped and use a reviewed forward-recovery plan.\n' >&2
-  elif [ "$MODE" = "discord-bot" ] && [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-    printf 'Discord-bot-only rollback candidate release=%q. Use the reviewed-current-Root committed rollback launcher in infra/PUBLISH.md.\n' \
-      "$prior_release_id" >&2
+  elif { [ "$MODE" = "discord-bot" ] || [ "$MODE" = "api-recovery" ]; } && \
+    [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    printf '%s rollback candidate release=%q. Use a reviewed forward recovery before changing production again.\n' \
+      "$MODE" "$prior_release_id" >&2
   else
     printf 'The API schema was not entered by this run; inspect current service state before any recovery action.\n' >&2
   fi
@@ -1159,7 +1188,8 @@ if [ "$production_live_match_warning_required" -eq 1 ]; then
 elif [ "$MODE" = "legacy-cutover" ]; then
   verify_production_live_match_quiescence
 fi
-if [ "$MODE" = "full" ] || [ "$MODE" = "discord-bot" ]; then
+if [ "$MODE" = "full" ] || [ "$MODE" = "discord-bot" ] || \
+  [ "$MODE" = "api-recovery" ]; then
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/prepare-production-deploy-capacity.sh
   # Capacity preparation is the only automatic cleanup in the deployment
@@ -1516,6 +1546,29 @@ if [ "$MODE" = "discord-bot" ]; then
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   "${compose[@]}" --profile discord-bot up --no-build -d --pull never --no-deps discord-bot
   services=(discord-bot)
+elif [ "$MODE" = "api-recovery" ]; then
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" build api
+  verify_clean_release_source
+  archive_built_image_manifest api
+  api_image_id="$(read_archived_release_image_id api)"
+  create_pinned_compose_override api-recovery
+  non_api_fingerprint_before="$(non_api_runtime_fingerprint)"
+  [ -n "$non_api_fingerprint_before" ] || {
+    printf '%s\n' 'Production non-API container inventory is empty.' >&2
+    exit 75
+  }
+  attest_pinned_compose_override
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  [ "$(non_api_runtime_fingerprint)" = "$non_api_fingerprint_before" ] || {
+    printf '%s\n' 'A non-API production container changed after the final preflight.' >&2
+    exit 75
+  }
+  "${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate api
+  services=(api)
 elif [ "$MODE" = "full" ]; then
   verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
@@ -1836,6 +1889,15 @@ if [ "$MODE" = "web-candidate" ]; then
     printf '%s\n' 'A non-web production container changed during web candidate activation.' >&2
     exit 75
   }
+elif [ "$MODE" = "api-recovery" ]; then
+  [ "$(non_api_runtime_fingerprint)" = "$non_api_fingerprint_before" ] || {
+    printf '%s\n' 'A non-API production container changed during API recovery activation.' >&2
+    exit 75
+  }
+  if [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "$prior_release_id" != "$new_release_id" ]; then
+    write_release_pointer PREVIOUS "$prior_release_id"
+  fi
+  write_release_pointer CURRENT "$new_release_id"
 else
   if [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "$prior_release_id" != "$new_release_id" ]; then
     write_release_pointer PREVIOUS "$prior_release_id"
