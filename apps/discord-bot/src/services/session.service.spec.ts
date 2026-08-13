@@ -12,6 +12,7 @@ import type {
   TeamMemberSummary,
   TeamSummary,
 } from "../api/api-client";
+import { ArenzyraApiError } from "../api/api-client";
 import { DiscordSessionService } from "./session.service";
 import {
   parseAutoRegistrationGrants,
@@ -17702,4 +17703,46 @@ test("conditional finalization keeps a ban role added while cleanup waits on the
   assert.equal(result.removedBanRoles, 0);
   assert.equal(result.keptProtectedManagers, 1);
   assert.equal(memberRoleCache.has(banRole.id), true);
+});
+
+test("Final treats only the exact missing conditional snapshot endpoint as disabled", async () => {
+  const routeMessage =
+    "Cannot POST /sessions/session-1/conditional-ban-enrollments/final-snapshot";
+  const service = new DiscordSessionService({
+    prepareConditionalBanFinalSnapshot: async () => {
+      throw new ArenzyraApiError(routeMessage, 404, routeMessage);
+    },
+  } as any);
+
+  const result = await service.prepareConditionalBanFinalSnapshot(
+    "session-1",
+    { id: "guild-1" } as Guild,
+    { sessionId: "session-1", guildId: "guild-1" } as any,
+    "match-1",
+  );
+
+  assert.deepEqual(result, { required: false });
+});
+
+test("Final preserves resource 404 errors from the conditional snapshot API", async () => {
+  const resourceError = new ArenzyraApiError(
+    "Session not found",
+    404,
+    "Session not found",
+  );
+  const service = new DiscordSessionService({
+    prepareConditionalBanFinalSnapshot: async () => {
+      throw resourceError;
+    },
+  } as any);
+
+  await assert.rejects(
+    service.prepareConditionalBanFinalSnapshot(
+      "session-1",
+      { id: "guild-1" } as Guild,
+      { sessionId: "session-1", guildId: "guild-1" } as any,
+      "match-1",
+    ),
+    (error) => error === resourceError,
+  );
 });

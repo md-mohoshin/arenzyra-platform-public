@@ -57,6 +57,7 @@ import {
   type TeamMemberSummary,
   type TeamSummary,
   type DiscordManagedTeamResponse,
+  ArenzyraApiError,
   ArenzyraApiClient,
   toFriendlyApiError,
 } from "../api/api-client";
@@ -2222,10 +2223,34 @@ export class DiscordSessionService {
         "Conditional ban final snapshot requires an applied source match.",
       );
     }
-    return this.apiClient.prepareConditionalBanFinalSnapshot(sessionId, {
-      guildId: guild.id,
-      sourceMatchId: cleanSourceMatchId,
-    });
+    try {
+      return await this.apiClient.prepareConditionalBanFinalSnapshot(sessionId, {
+        guildId: guild.id,
+        sourceMatchId: cleanSourceMatchId,
+      });
+    } catch (error) {
+      const rawMessage =
+        error instanceof ArenzyraApiError
+          ? Array.isArray(error.rawMessage)
+            ? error.rawMessage.join(", ")
+            : error.rawMessage
+          : undefined;
+      const missingRoute =
+        error instanceof ArenzyraApiError &&
+        error.status === 404 &&
+        typeof rawMessage === "string" &&
+        /^Cannot POST \/sessions\/[^/]+\/conditional-ban-enrollments\/final-snapshot$/i.test(
+          rawMessage.trim(),
+        );
+      if (!missingRoute) {
+        throw error;
+      }
+
+      console.warn(
+        `Conditional ban final snapshot API is unavailable for session=${sessionId}; continuing Final with conditional-ban finalization disabled.`,
+      );
+      return { required: false };
+    }
   }
 
   async sealConditionalBanFinalSnapshot(
