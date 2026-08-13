@@ -4617,25 +4617,22 @@ export class DiscordSessionService {
     if (!renderCards.length) {
       return [];
     }
-    const settled = await Promise.allSettled(
-      renderCards.map(async (card) => ({
-        name: card.name,
-        buffer: await this.apiClient.getMatchRenderImage(matchId, card.kind),
-      })),
-    );
-
-    return settled.flatMap((result, index) => {
-      if (result.status === "fulfilled") {
-        return [result.value];
+    const files: Array<{ name: string; buffer: Buffer }> = [];
+    for (const card of renderCards) {
+      try {
+        files.push({
+          name: card.name,
+          buffer: await this.apiClient.getMatchRenderImage(matchId, card.kind),
+        });
+      } catch (error) {
+        console.warn(
+          `Render image fetch failed for match ${matchId} (${card.kind}): ${toFriendlyApiError(
+            error,
+          )}`,
+        );
       }
-      const card = renderCards[index];
-      console.warn(
-        `Render image fetch failed for match ${matchId} (${card.kind}): ${toFriendlyApiError(
-          result.reason,
-        )}`,
-      );
-      return [];
-    });
+    }
+    return files;
   }
 
   private selectedResultRenderCards(

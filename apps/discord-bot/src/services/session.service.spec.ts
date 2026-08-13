@@ -643,6 +643,8 @@ test("reviewed result apply payload allows manually skipped placement gaps", asy
 
 test("reviewed result post uses custom match message template and selected images", async () => {
   const renderedKinds: string[] = [];
+  let activeRenders = 0;
+  let maxConcurrentRenders = 0;
   const api = createApi({
     applyScreenshotResults: async () => ({
       ok: true,
@@ -670,7 +672,14 @@ test("reviewed result post uses custom match message template and selected image
     }),
     getMatchRenderImage: async (_matchId: string, kind: string) => {
       renderedKinds.push(kind);
-      return Buffer.from(kind);
+      activeRenders += 1;
+      maxConcurrentRenders = Math.max(maxConcurrentRenders, activeRenders);
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        return Buffer.from(kind);
+      } finally {
+        activeRenders -= 1;
+      }
     },
   });
   const service = new DiscordSessionService(api as any);
@@ -726,6 +735,7 @@ test("reviewed result post uses custom match message template and selected image
     ].join("\n"),
   );
   assert.deepEqual(renderedKinds, ["match-result", "top-fraggers"]);
+  assert.equal(maxConcurrentRenders, 1);
   assert.deepEqual(
     result.imageFiles?.map((file) => file.name),
     ["match-result.png", "top-fraggers.png"],

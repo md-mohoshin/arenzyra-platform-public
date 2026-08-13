@@ -9,6 +9,7 @@ import { botConfig } from "../config";
 import { BotApiAuthService } from "../services/api-auth.service";
 import {
   delay,
+  renderApiRequestTimeoutMs,
   retryDelayMs,
   screenshotApiRequestTimeoutMs,
   shouldRetryApiRequest,
@@ -3359,6 +3360,7 @@ export class ArenzyraApiClient {
           ? `/render/match/${matchId}/discord/${kind}`
           : `/render/match/${matchId}`,
         responseType: "arraybuffer",
+        timeout: renderApiRequestTimeoutMs(botConfig.apiRequestTimeoutMs),
       });
       return Buffer.from(response.data);
     } catch (error) {
@@ -3377,6 +3379,7 @@ export class ArenzyraApiClient {
           backupId,
         )}/discord/${kind}`,
         responseType: "arraybuffer",
+        timeout: renderApiRequestTimeoutMs(botConfig.apiRequestTimeoutMs),
       });
       return Buffer.from(response.data);
     } catch (error) {

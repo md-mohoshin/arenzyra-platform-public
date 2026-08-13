@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  renderApiRequestTimeoutMs,
   retryDelayMs,
   screenshotApiRequestTimeoutMs,
   shouldRetryApiRequest,
 } from "./api-request-policy";
+
+test("render API requests have a bounded minimum without lowering larger timeouts", () => {
+  assert.equal(renderApiRequestTimeoutMs(10_000), 30_000);
+  assert.equal(renderApiRequestTimeoutMs(45_000), 45_000);
+});
 
 test("screenshot API requests allow OCR to finish without lowering larger timeouts", () => {
   assert.equal(screenshotApiRequestTimeoutMs(10_000), 120_000);
