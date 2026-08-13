@@ -651,7 +651,41 @@ async function run() {
     const matches = await api.listSessionMatches(session.id);
     let reconstructed = false;
     let reconstructedTeamIdsByKey: ReadonlyMap<RecoveryTeamKey, string> = new Map();
-    if (matches.length === 0) {
+    let resumeInterruptedRebuild = false;
+    if (matches.length > 0 && matches.length < 4) {
+      const ordered = [...matches].sort(
+        (left, right) => (left.matchNumber ?? 0) - (right.matchNumber ?? 0),
+      );
+      for (const [index, match] of ordered.entries()) {
+        const game = index + 1;
+        if (
+          match.matchNumber !== game || match.name !== `Game ${game}` ||
+          match.map?.trim().toUpperCase() !== "ERANGEL" ||
+          match.dataMode !== "MANUAL" || match.dataSource !== "MANUAL" ||
+          !["DRAFT", "LIVE"].includes(match.status)
+        ) {
+          throw new Error(`interrupted rebuild game ${game} metadata differs`);
+        }
+        const [slots, results] = await Promise.all([
+          api.listMatchSlots(match.id),
+          api.getMatchResults(match.id),
+        ]);
+        const activeResults = (results.results ?? results.data ?? [])
+          .filter((row) => row.wasPresentInMatch !== false);
+        if (
+          results.locked || activeResults.some((row) =>
+            row.placement !== null || row.kills !== 0
+          ) || slots.some((slot) => slot.teamId && slot.slotNumber < 1)
+        ) {
+          throw new Error(`interrupted rebuild game ${game} is not empty and recoverable`);
+        }
+      }
+      resumeInterruptedRebuild = true;
+      console.log(
+        `RESULT_RECOVERY_REBUILD_RESUME_CHECK series=${series}:00 games=${matches.length} status=pass`,
+      );
+    }
+    if (matches.length === 0 || resumeInterruptedRebuild) {
       const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
       const activeTeams = await api.searchTeams("");
       const playerNamesByTeamId = new Map<string, readonly string[]>();
@@ -742,7 +776,13 @@ async function run() {
       for (const game of [1, 2, 3, 4]) {
         const expected = expectedGames[game].filter((entry) => mappedByKey.has(entry.team));
         if (!expected.length) throw new Error(`game ${game} has no resolved teams`);
-        const match = await api.createSessionMatch(session.id, {
+        const expectedTeamIds = expected.map((entry) => {
+          const team = mappedByKey.get(entry.team);
+          if (!team) throw new Error(`game ${game} team ${entry.team} is unmapped`);
+          return team.teamId;
+        });
+        const existingMatch = matches.find((candidate) => candidate.matchNumber === game);
+        const match = existingMatch ?? await api.createSessionMatch(session.id, {
           name: `Game ${game}`,
           matchNumber: game,
           gameKey: "PUBG_MOBILE",
@@ -755,11 +795,28 @@ async function run() {
         });
         if (
           match.sessionId !== session.id || match.matchNumber !== game ||
-          match.name !== `Game ${game}` || match.status !== "DRAFT"
+          match.name !== `Game ${game}` ||
+          !["DRAFT", "LIVE"].includes(match.status)
         ) {
-          throw new Error(`game ${game} creation postcondition failed`);
+          throw new Error(`game ${game} creation/resume postcondition failed`);
         }
-        created.push(match);
+        if (!existingMatch) created.push(match);
+
+        const currentSlots = await api.listMatchSlots(match.id);
+        for (const slot of currentSlots.filter((entry) => Boolean(entry.teamId))) {
+          const expectedIndex = expectedTeamIds.indexOf(slot.teamId as string);
+          if (expectedIndex < 0 || slot.slotNumber !== expectedIndex + 1) {
+            throw new Error(`game ${game} interrupted slot inventory differs`);
+          }
+        }
+        const matchTeams = await api.setMatchTeams(match.id, expectedTeamIds);
+        if (
+          matchTeams.length !== expectedTeamIds.length ||
+          new Set(matchTeams.map((entry) => entry.teamId)).size !== expectedTeamIds.length ||
+          matchTeams.some((entry) => !expectedTeamIds.includes(entry.teamId))
+        ) {
+          throw new Error(`game ${game} match-team assignment postcondition failed`);
+        }
 
         for (const [index, entry] of expected.entries()) {
           const team = mappedByKey.get(entry.team);
@@ -778,8 +835,10 @@ async function run() {
           throw new Error(`game ${game} slot assignment postcondition failed`);
         }
 
-        const live = await api.updateMatchStatus(match.id, "LIVE");
-        if (live.status !== "LIVE") throw new Error(`game ${game} LIVE transition failed`);
+        if (match.status === "DRAFT") {
+          const live = await api.updateMatchStatus(match.id, "LIVE");
+          if (live.status !== "LIVE") throw new Error(`game ${game} LIVE transition failed`);
+        }
         console.log(`RESULT_RECOVERY_REBUILD_APPLY series=${series}:00 game=${game} teams=${expected.length} status=prepared`);
       }
       matches.push(...created);

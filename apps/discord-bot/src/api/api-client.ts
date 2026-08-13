@@ -671,6 +671,11 @@ export type MatchSlotResponse = {
   } | null;
 };
 
+export type MatchTeamCandidateResponse = {
+  teamId: string;
+  slot?: number | null;
+};
+
 export type MatchResultPlayerResponse = {
   id: string;
   playerId: string;
@@ -2725,6 +2730,22 @@ export class ArenzyraApiClient {
       const response = await this.request<MatchSlotResponse[]>({
         method: "get",
         url: `/me/matches/${matchId}/slots`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async setMatchTeams(
+    matchId: string,
+    teamIds: string[],
+  ): Promise<MatchTeamCandidateResponse[]> {
+    try {
+      const response = await this.request<MatchTeamCandidateResponse[]>({
+        method: "post",
+        url: `/me/matches/${matchId}/teams`,
+        data: { teamIds },
       });
       return response.data;
     } catch (error) {
