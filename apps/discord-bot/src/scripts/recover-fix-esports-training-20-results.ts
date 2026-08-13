@@ -3,6 +3,7 @@ import {
   ArenzyraApiClient,
   type MatchResultRowResponse,
   type SessionMatchResponse,
+  type SessionRegistrationResponse,
 } from "../api/api-client";
 import { botConfig } from "../config";
 import { DiscordSessionService } from "../services/session.service";
@@ -333,6 +334,56 @@ export function recoveryTeamScore(row: MatchResultRowResponse, key: RecoveryTeam
   return score;
 }
 
+export function recoveryRegistrationTeamScore(
+  registration: SessionRegistrationResponse,
+  key: RecoveryTeamKey,
+) {
+  return recoveryTeamScore({
+    id: registration.id,
+    matchId: "recovery-registration",
+    teamId: registration.teamId,
+    slot: registration.slotNumber,
+    kills: 0,
+    placement: null,
+    placementPoints: 0,
+    totalPoints: 0,
+    team: registration.team,
+    players: [],
+  }, key);
+}
+
+export function mapRecoveryRegistrations(
+  registrations: SessionRegistrationResponse[],
+  keys: readonly RecoveryTeamKey[],
+) {
+  const unique = new Map<string, SessionRegistrationResponse>();
+  for (const registration of registrations) {
+    if (registration.team) unique.set(registration.teamId, registration);
+  }
+  const candidates = Array.from(unique.values());
+  const used = new Set<string>();
+  return keys.map((key) => {
+    const scored = candidates
+      .filter((registration) => !used.has(registration.teamId))
+      .map((registration) => ({
+        registration,
+        score: recoveryRegistrationTeamScore(registration, key),
+      }))
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score);
+    if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) {
+      throw new Error(`deleted registration team ${key} did not resolve uniquely`);
+    }
+    used.add(scored[0].registration.teamId);
+    return {
+      key,
+      teamId: scored[0].registration.teamId,
+      label: scored[0].registration.team?.tag?.trim() ||
+        scored[0].registration.team?.name?.trim() || key,
+    };
+  });
+}
+
 export function mapRecoveryRows(
   rows: MatchResultRowResponse[],
   expected: readonly RecoveryResult[],
@@ -399,6 +450,21 @@ async function run() {
     if (session.status === "LIVE") throw new Error("target session is still LIVE");
 
     const matches = await api.listSessionMatches(session.id);
+    if (matches.length === 0) {
+      const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
+      const requiredKeys = Array.from(new Set(
+        Object.values(expectedGames).flat().map((entry) => entry.team),
+      ));
+      const mapped = mapRecoveryRegistrations(registrations, requiredKeys);
+      console.log(
+        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} teams=${mapped.length} mapping=pass`,
+      );
+      if (!apply) {
+        console.log(`RESULT_RECOVERY_CHECK session=${session.name} games=0 rebuild=required status=pass`);
+        return;
+      }
+      throw new Error("match reconstruction apply is not enabled until the deleted-registration check is reviewed");
+    }
     const prepared: Array<{
       game: number;
       match: SessionMatchResponse;

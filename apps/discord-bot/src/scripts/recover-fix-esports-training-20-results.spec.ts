@@ -5,6 +5,7 @@ import {
   RECOVERY_GAMES,
   RECOVERY_GAMES_23,
   mapRecoveryRows,
+  mapRecoveryRegistrations,
   recoveryTeamScore,
   selectRecoveryGuild,
   selectRecoverySession,
@@ -151,5 +152,33 @@ test("recovery resolves only one exact or tightly related training session", () 
       { name: "Older Training Series 20:00", status: "ARCHIVED" },
     ], ["missing"], "20"),
     /session count is 2/,
+  );
+});
+
+test("recovery maps unique deleted registrations without restoring slots", () => {
+  const registrations = ["SGE", "FPS", "NOVEX"].map((team, index) => ({
+    id: `registration-${index}`,
+    teamId: `team-${team}`,
+    leaderDiscordUserId: null,
+    managerDiscordUserIds: [],
+    status: "REMOVED" as const,
+    slotNumber: null,
+    waitlistPosition: null,
+    checkedInAt: null,
+    confirmedAt: null,
+    removedAt: "2026-08-13T00:00:00.000Z",
+    removalReason: "cleared",
+    note: null,
+    createdAt: "2026-08-12T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    team: { id: `team-${team}`, name: team, tag: team, logoUrl: null, countryCode: null, region: null },
+  }));
+  assert.deepEqual(
+    mapRecoveryRegistrations(registrations, ["NOVEX", "SGE", "FPS"]),
+    [
+      { key: "NOVEX", teamId: "team-NOVEX", label: "NOVEX" },
+      { key: "SGE", teamId: "team-SGE", label: "SGE" },
+      { key: "FPS", teamId: "team-FPS", label: "FPS" },
+    ],
   );
 });
