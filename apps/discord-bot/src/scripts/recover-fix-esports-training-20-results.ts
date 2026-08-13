@@ -607,12 +607,22 @@ async function run() {
       const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
       const activeTeams = await api.searchTeams("");
       const playerNamesByTeamId = new Map<string, readonly string[]>();
+      const activeMemberIdsByTeamId = new Map<string, readonly string[]>();
       for (const team of activeTeams) {
-        const players = await api.listTeamPlayers(team.id);
+        const [players, members] = await Promise.all([
+          api.listTeamPlayers(team.id),
+          api.listTeamMembers(team.id),
+        ]);
         playerNamesByTeamId.set(
           team.id,
           players.flatMap((player) => [player.ign, player.realName, player.name])
             .filter((name): name is string => Boolean(name?.trim())),
+        );
+        activeMemberIdsByTeamId.set(
+          team.id,
+          members
+            .filter((member) => member.deletedAt === null && member.leftAt === null)
+            .map((member) => member.discordUserId),
         );
       }
       const requiredKeys = Array.from(new Set(
@@ -640,10 +650,17 @@ async function run() {
       ));
       const managedTeams = await api.listDiscordManagedTeams(recoveryManagerIds, 1000);
       const managerIdsByTeamId = new Map<string, readonly string[]>();
+      for (const [teamId, memberIds] of activeMemberIdsByTeamId) {
+        managerIdsByTeamId.set(teamId, memberIds);
+      }
       for (const managed of managedTeams) {
+        const existing = managerIdsByTeamId.get(managed.team.id) ?? [];
         managerIdsByTeamId.set(
           managed.team.id,
-          managed.managers.map((manager) => manager.discordUserId),
+          Array.from(new Set([
+            ...existing,
+            ...managed.managers.map((manager) => manager.discordUserId),
+          ])),
         );
       }
       const mapped = mapRecoveryActiveTeams(
@@ -656,7 +673,7 @@ async function run() {
       const tiedRegistrationKeys = Array.from(registrationCandidatesByKey.values())
         .filter((candidates) => candidates.length > 1).length;
       console.log(
-        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} tiedRegistrationKeys=${tiedRegistrationKeys} activePool=${activeTeams.length} managerPool=${managedTeams.length} teams=${mapped.length} mapping=pass`,
+        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} tiedRegistrationKeys=${tiedRegistrationKeys} activePool=${activeTeams.length} memberPool=${activeMemberIdsByTeamId.size} managerPool=${managedTeams.length} teams=${mapped.length} mapping=pass`,
       );
       if (!apply) {
         console.log(`RESULT_RECOVERY_CHECK session=${session.name} games=0 rebuild=required status=pass`);
