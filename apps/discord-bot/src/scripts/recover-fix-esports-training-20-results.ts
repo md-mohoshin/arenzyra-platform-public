@@ -503,6 +503,11 @@ export function mapRecoveryActiveTeams(
             if (team.id === registration.teamId) {
               return 100_000 + identityScore;
             }
+            const activeLogo = team.logoUrl?.trim() || null;
+            const registeredLogo = registration.team?.logoUrl?.trim() || null;
+            const brandingScore = activeLogo && registeredLogo && activeLogo === registeredLogo
+              ? 500
+              : 0;
             const expectedManagers = new Set([
               registration.leaderDiscordUserId,
               ...registration.managerDiscordUserIds,
@@ -515,7 +520,7 @@ export function mapRecoveryActiveTeams(
               .map(compact)
               .filter((name, index, names) => Boolean(name) && names.indexOf(name) === index)
               .filter((name) => activePlayerKeys.has(name)).length;
-            return managerMatches * 1000 + rosterOverlap * 100 +
+            return managerMatches * 1000 + brandingScore + rosterOverlap * 100 +
               managedPresenceScore + identityScore;
           }));
         })(),

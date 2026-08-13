@@ -385,3 +385,39 @@ test("reconstruction prefers the only actively managed duplicate label", () => {
     [{ key: "OG", teamId: "team-managed", label: "OG" }],
   );
 });
+
+test("reconstruction uses retained branding to distinguish managed duplicates", () => {
+  const registration = {
+    id: "registration-out",
+    teamId: "deleted-out",
+    leaderDiscordUserId: null,
+    managerDiscordUserIds: [],
+    status: "REMOVED" as const,
+    slotNumber: null,
+    waitlistPosition: null,
+    checkedInAt: null,
+    confirmedAt: null,
+    removedAt: "2026-08-13T00:00:00.000Z",
+    removalReason: "cleanup",
+    note: null,
+    createdAt: "2026-08-13T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    team: { id: "deleted-out", name: "OUT", tag: "OUT", logoUrl: "https://assets.example/out.png", countryCode: null, region: null },
+  };
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-other", name: "OUT", tag: "OUT", logoUrl: "https://assets.example/other.png" },
+        { id: "team-out", name: "OUT", tag: "OUT", logoUrl: "https://assets.example/out.png" },
+      ],
+      ["OUT"],
+      new Map(),
+      new Map([["OUT", registration]]),
+      new Map([
+        ["team-other", ["111111111111111"]],
+        ["team-out", ["222222222222222"]],
+      ]),
+    ),
+    [{ key: "OUT", teamId: "team-out", label: "OUT" }],
+  );
+});
