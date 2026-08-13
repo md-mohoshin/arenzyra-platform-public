@@ -882,11 +882,16 @@ enabled on the server:
 ```bash
 production_entry host-maintenance --check-only
 production_entry host-maintenance
+# After explicit operator review and approval, prune only Docker builder cache
+# while preserving the configured 15 GB cache target. This never prunes volumes.
+production_entry host-maintenance --prune-builder-cache
 ```
 
 The maintenance script defaults are conservative:
 
 - Docker builder cache is pruned with a `15GB` reserved cache target.
+- Builder-cache pruning is disabled by default and is enabled only by the
+  explicit reviewed `--prune-builder-cache` command after operator approval.
 - Only local backup sets with both `OFFSITE_VERIFIED` and
   `RESTORE_DRILL_VERIFIED` markers are eligible for age-based deletion; every
   unverified set and the newest verified set are preserved.

@@ -89,6 +89,11 @@ test("maintenance is reachable only through the reviewed dispatcher", () => {
 
   assert.match(wrapper, /EXPECTED_ROOT="\/opt\/arenzyra"/);
   assert.match(wrapper, /require-local-production-docker\.sh/);
+  assert.match(wrapper, /--prune-builder-cache/);
+  assert.match(
+    wrapper,
+    /export ARENZYRA_MAINTENANCE_ALLOW_GLOBAL_BUILDER_PRUNE=1/,
+  );
   assert.match(wrapper, /exec node scripts\/production-maintenance\.cjs/);
   assert.doesNotMatch(wrapper, /\brm\s+-rf\b|docker builder prune/);
   assert.match(cron, /INTENTIONALLY NON-EXECUTABLE TEMPLATE/);

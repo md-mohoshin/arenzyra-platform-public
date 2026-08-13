@@ -30,4 +30,16 @@ fi
 
 cd "$REPOSITORY_ROOT"
 source scripts/require-local-production-docker.sh
-exec node scripts/production-maintenance.cjs "$@"
+case "${1:-}" in
+  --prune-builder-cache)
+    [ "$#" -eq 1 ] || {
+      printf 'PRODUCTION MAINTENANCE BLOCKED: --prune-builder-cache accepts no extra arguments.\n' >&2
+      exit 75
+    }
+    export ARENZYRA_MAINTENANCE_ALLOW_GLOBAL_BUILDER_PRUNE=1
+    exec node scripts/production-maintenance.cjs
+    ;;
+  *)
+    exec node scripts/production-maintenance.cjs "$@"
+    ;;
+esac

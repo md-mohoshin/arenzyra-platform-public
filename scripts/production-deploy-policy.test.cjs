@@ -1323,6 +1323,10 @@ test("one reviewed production entrypoint exposes only the closed command allowli
   assert.match(launcher.slice(0, dispatch), /GIT_NO_REPLACE_OBJECTS=1/);
   assert.match(launcher.slice(0, dispatch), /--porcelain=v1 --untracked-files=all/);
   assert.match(launcher, /require_nested_assembly/);
+  assert.match(
+    launcher,
+    /host-maintenance\)[\s\S]*--prune-builder-cache[\s\S]*production-maintenance\.sh --prune-builder-cache/,
+  );
   assert.doesNotMatch(launcher, /\beval\b|bash\s+-c/);
   assert.doesNotMatch(launcher, /idp-credentials (?:apply|validate)/);
 });
