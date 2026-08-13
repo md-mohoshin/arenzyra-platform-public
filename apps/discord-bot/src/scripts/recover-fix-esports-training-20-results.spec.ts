@@ -6,6 +6,7 @@ import {
   RECOVERY_GAMES_23,
   mapRecoveryRows,
   recoveryTeamScore,
+  selectRecoveryGuild,
   type RecoveryTeamKey,
 } from "./recover-fix-esports-training-20-results";
 
@@ -112,4 +113,22 @@ test("player anchors recover a team when its stored tag and name are missing", (
   });
   assert.ok(recoveryTeamScore(row, "N1") > 0);
   assert.equal(recoveryTeamScore(row, "SGE"), 0);
+});
+
+test("recovery resolves exactly one normalized Fix Esports guild", () => {
+  assert.deepEqual(
+    selectRecoveryGuild([
+      { id: "other", name: "Another Guild" },
+      { id: "fix", name: "FIX ESPORTS" },
+    ]),
+    { id: "fix", name: "FIX ESPORTS" },
+  );
+  assert.throws(() => selectRecoveryGuild([]), /guild count is 0/);
+  assert.throws(
+    () => selectRecoveryGuild([
+      { id: "fix-1", name: "Fix Esports" },
+      { id: "fix-2", name: "Fix-Esports" },
+    ]),
+    /guild count is 2/,
+  );
 });

@@ -1524,6 +1524,9 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(recovery, /Fix Esports Training Series 20:00/);
   assert.match(recovery, /Fix Esports Traning Series 20:00/);
   assert.match(recovery, /Fix Esports Training Series 23:00/);
+  assert.match(recovery, /Routes\.userGuilds\(\)/);
+  assert.match(recovery, /api\.resolveDiscordGuild\(guild\.id\)/);
+  assert.match(recovery, /api\.withOrganization\(resolvedGuild\.organizationId/);
   assert.match(recovery, /target\.length !== 1/);
   assert.match(recovery, /configured final result channel is missing/);
   assert.match(recovery, /rememberFinalResultPost/);

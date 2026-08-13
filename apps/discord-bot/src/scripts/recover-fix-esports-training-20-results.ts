@@ -8,6 +8,7 @@ import { botConfig } from "../config";
 import { DiscordSessionService } from "../services/session.service";
 
 export const TARGET_SESSION_NAME = "Fix Esports Training Series 20:00";
+export const TARGET_GUILD_NAME = "Fix Esports";
 export const TARGET_SESSION_NAMES = {
   "20": [
     TARGET_SESSION_NAME,
@@ -260,6 +261,21 @@ export function normalizeRecoveryText(value: string | null | undefined) {
     .trim();
 }
 
+export function selectRecoveryGuild(
+  guilds: Array<{ id: string; name: string }>,
+) {
+  const targetName = normalizeRecoveryText(TARGET_GUILD_NAME);
+  const targets = guilds.filter(
+    (guild) => normalizeRecoveryText(guild.name) === targetName,
+  );
+  if (targets.length !== 1) {
+    throw new Error(
+      `Fix Esports Discord guild count is ${targets.length}, expected exactly 1`,
+    );
+  }
+  return targets[0];
+}
+
 function compact(value: string | null | undefined) {
   return normalizeRecoveryText(value).replace(/\s+/g, "");
 }
@@ -328,17 +344,22 @@ async function run() {
   const expectedGames = series === "20" ? RECOVERY_GAMES : RECOVERY_GAMES_23;
   const normalizedSessionNames = new Set(sessionNames.map(normalizeRecoveryText));
   const api = new ArenzyraApiClient();
-  const sessions = await api.listSessions();
-  const target = sessions.filter(
-    (session) => normalizedSessionNames.has(normalizeRecoveryText(session.name)),
-  );
-  if (target.length !== 1) {
-    throw new Error(`target ${series}:00 session count is ${target.length}, expected exactly 1`);
-  }
-  const session = target[0];
-  if (session.status === "LIVE") throw new Error("target session is still LIVE");
+  const rest = new REST({ version: "10" }).setToken(botConfig.discordToken);
+  const guilds = await rest.get(Routes.userGuilds()) as Array<{ id: string; name: string }>;
+  const guild = selectRecoveryGuild(guilds);
+  const resolvedGuild = await api.resolveDiscordGuild(guild.id);
 
-  await api.withOrganization(botConfig.apiOrganizationId, async () => {
+  await api.withOrganization(resolvedGuild.organizationId, async () => {
+    const sessions = await api.listSessions();
+    const target = sessions.filter(
+      (session) => normalizedSessionNames.has(normalizeRecoveryText(session.name)),
+    );
+    if (target.length !== 1) {
+      throw new Error(`target ${series}:00 session count is ${target.length}, expected exactly 1`);
+    }
+    const session = target[0];
+    if (session.status === "LIVE") throw new Error("target session is still LIVE");
+
     const matches = await api.listSessionMatches(session.id);
     const prepared: Array<{
       game: number;
@@ -393,7 +414,6 @@ async function run() {
       allowed_mentions: { parse: [] as string[] },
       attachments: files.map((file, index) => ({ id: String(index), filename: file.name })),
     };
-    const rest = new REST({ version: "10" }).setToken(botConfig.discordToken);
     const storedChannelId = config.emojis?.finalResultPostChannelId?.trim();
     const storedMessageId = config.emojis?.finalResultPostMessageId?.trim();
     let sent: RESTPostAPIChannelMessageResult | null = null;
