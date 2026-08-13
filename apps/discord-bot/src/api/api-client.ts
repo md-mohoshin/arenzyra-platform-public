@@ -2725,11 +2725,17 @@ export class ArenzyraApiClient {
     }
   }
 
-  async listMatchSlots(matchId: string): Promise<MatchSlotResponse[]> {
+  async listMatchSlots(
+    matchId: string,
+    organizationId?: string,
+  ): Promise<MatchSlotResponse[]> {
     try {
+      const scope = organizationId
+        ? `/org/${encodeURIComponent(organizationId)}`
+        : "/me";
       const response = await this.request<MatchSlotResponse[]>({
         method: "get",
-        url: `/me/matches/${matchId}/slots`,
+        url: `${scope}/matches/${matchId}/slots`,
       });
       return response.data;
     } catch (error) {
@@ -2740,11 +2746,15 @@ export class ArenzyraApiClient {
   async setMatchTeams(
     matchId: string,
     teamIds: string[],
+    organizationId?: string,
   ): Promise<MatchTeamCandidateResponse[]> {
     try {
+      const scope = organizationId
+        ? `/org/${encodeURIComponent(organizationId)}`
+        : "/me";
       const response = await this.request<MatchTeamCandidateResponse[]>({
         method: "post",
-        url: `/me/matches/${matchId}/teams`,
+        url: `${scope}/matches/${matchId}/teams`,
         data: { teamIds },
       });
       return response.data;
@@ -2756,11 +2766,15 @@ export class ArenzyraApiClient {
   async setMatchSlot(
     matchId: string,
     payload: { slotNumber: number; teamId: string },
+    organizationId?: string,
   ): Promise<unknown> {
     try {
+      const scope = organizationId
+        ? `/org/${encodeURIComponent(organizationId)}`
+        : "/me";
       const response = await this.request({
         method: "post",
-        url: `/me/matches/${matchId}/slots`,
+        url: `${scope}/matches/${matchId}/slots`,
         data: payload,
       });
       return response.data;
@@ -2772,11 +2786,15 @@ export class ArenzyraApiClient {
   async updateMatchStatus(
     matchId: string,
     status: "DRAFT" | "LIVE" | "ENDED",
+    organizationId?: string,
   ): Promise<SessionMatchResponse> {
     try {
+      const scope = organizationId
+        ? `/org/${encodeURIComponent(organizationId)}`
+        : "/me";
       const response = await this.request<SessionMatchResponse>({
         method: "patch",
-        url: `/me/matches/${matchId}`,
+        url: `${scope}/matches/${matchId}`,
         data: { status },
       });
       return response.data;
@@ -2785,11 +2803,17 @@ export class ArenzyraApiClient {
     }
   }
 
-  async getMatchResults(matchId: string): Promise<MatchResultsResponse> {
+  async getMatchResults(
+    matchId: string,
+    organizationId?: string,
+  ): Promise<MatchResultsResponse> {
     try {
+      const scope = organizationId
+        ? `/org/${encodeURIComponent(organizationId)}`
+        : "/me";
       const response = await this.request<MatchResultsResponse>({
         method: "get",
-        url: `/me/matches/${matchId}/results`,
+        url: `${scope}/matches/${matchId}/results`,
       });
       return response.data;
     } catch (error) {
@@ -2817,11 +2841,15 @@ export class ArenzyraApiClient {
   async updateManualMatchResults(
     matchId: string,
     payload: ManualMatchResultsPayload,
+    organizationId?: string,
   ): Promise<ManualMatchResultsResponse> {
     try {
+      const scope = organizationId
+        ? `/org/${encodeURIComponent(organizationId)}`
+        : "/me";
       const response = await this.request<ManualMatchResultsResponse>({
         method: "patch",
-        url: `/me/matches/${matchId}/results/manual`,
+        url: `${scope}/matches/${matchId}/results/manual`,
         data: payload,
       });
       return response.data;

@@ -667,8 +667,8 @@ async function run() {
           throw new Error(`interrupted rebuild game ${game} metadata differs`);
         }
         const [slots, results] = await Promise.all([
-          api.listMatchSlots(match.id),
-          api.getMatchResults(match.id),
+          api.listMatchSlots(match.id, resolvedGuild.organizationId),
+          api.getMatchResults(match.id, resolvedGuild.organizationId),
         ]);
         const activeResults = (results.results ?? results.data ?? [])
           .filter((row) => row.wasPresentInMatch !== false);
@@ -802,14 +802,21 @@ async function run() {
         }
         if (!existingMatch) created.push(match);
 
-        const currentSlots = await api.listMatchSlots(match.id);
+        const currentSlots = await api.listMatchSlots(
+          match.id,
+          resolvedGuild.organizationId,
+        );
         for (const slot of currentSlots.filter((entry) => Boolean(entry.teamId))) {
           const expectedIndex = expectedTeamIds.indexOf(slot.teamId as string);
           if (expectedIndex < 0 || slot.slotNumber !== expectedIndex + 1) {
             throw new Error(`game ${game} interrupted slot inventory differs`);
           }
         }
-        const matchTeams = await api.setMatchTeams(match.id, expectedTeamIds);
+        const matchTeams = await api.setMatchTeams(
+          match.id,
+          expectedTeamIds,
+          resolvedGuild.organizationId,
+        );
         if (
           matchTeams.length !== expectedTeamIds.length ||
           new Set(matchTeams.map((entry) => entry.teamId)).size !== expectedTeamIds.length ||
@@ -824,9 +831,12 @@ async function run() {
           await api.setMatchSlot(match.id, {
             slotNumber: index + 1,
             teamId: team.teamId,
-          });
+          }, resolvedGuild.organizationId);
         }
-        const assignedSlots = (await api.listMatchSlots(match.id))
+        const assignedSlots = (await api.listMatchSlots(
+          match.id,
+          resolvedGuild.organizationId,
+        ))
           .filter((slot) => Boolean(slot.teamId));
         if (
           assignedSlots.length !== expected.length ||
@@ -836,7 +846,11 @@ async function run() {
         }
 
         if (match.status === "DRAFT") {
-          const live = await api.updateMatchStatus(match.id, "LIVE");
+          const live = await api.updateMatchStatus(
+            match.id,
+            "LIVE",
+            resolvedGuild.organizationId,
+          );
           if (live.status !== "LIVE") throw new Error(`game ${game} LIVE transition failed`);
         }
         console.log(`RESULT_RECOVERY_REBUILD_APPLY series=${series}:00 game=${game} teams=${expected.length} status=prepared`);
@@ -855,7 +869,10 @@ async function run() {
       if (!reconstructed && (match.status === "LIVE" || match.liveState === "LIVE")) {
         throw new Error(`game ${game} is still LIVE`);
       }
-      const current = await api.getMatchResults(match.id);
+      const current = await api.getMatchResults(
+        match.id,
+        resolvedGuild.organizationId,
+      );
       if (current.locked) {
         throw new Error(`game ${game} results are locked (${current.lockReason ?? current.lockState ?? "unknown reason"})`);
       }
@@ -879,11 +896,14 @@ async function run() {
       const updated = await api.updateManualMatchResults(item.match.id, {
         expectedVersion: item.version,
         results: item.rows.map(({ teamId, placement, kills }) => ({ teamId, placement, kills })),
-      });
+      }, resolvedGuild.organizationId);
       if (updated.updatedCount !== item.rows.length) {
         throw new Error(`game ${item.game} updated ${updated.updatedCount ?? 0} rows, expected ${item.rows.length}`);
       }
-      const verifiedResults = await api.getMatchResults(item.match.id);
+      const verifiedResults = await api.getMatchResults(
+        item.match.id,
+        resolvedGuild.organizationId,
+      );
       const verifiedRows = verifiedResults.results ?? verifiedResults.data ?? [];
       for (const expectedRow of item.rows) {
         const actual = verifiedRows.find((row) => row.teamId === expectedRow.teamId);
@@ -899,7 +919,11 @@ async function run() {
 
     if (reconstructed) {
       for (const item of prepared) {
-        const ended = await api.updateMatchStatus(item.match.id, "ENDED");
+        const ended = await api.updateMatchStatus(
+          item.match.id,
+          "ENDED",
+          resolvedGuild.organizationId,
+        );
         if (ended.status !== "ENDED") {
           throw new Error(`game ${item.game} ENDED transition failed`);
         }

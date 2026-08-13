@@ -1543,10 +1543,11 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(recovery, /loadTeamsFromEvent: false/);
   assert.match(recovery, /map: "ERANGEL"/);
   assert.match(recovery, /api\.setMatchSlot\(match\.id/);
-  assert.match(recovery, /api\.setMatchTeams\(match\.id, expectedTeamIds\)/);
+  assert.match(recovery, /api\.setMatchTeams\([\s\S]*expectedTeamIds,[\s\S]*resolvedGuild\.organizationId/);
+  assert.match(recovery, /resolvedGuild\.organizationId/);
   assert.match(recovery, /RESULT_RECOVERY_REBUILD_RESUME_CHECK/);
-  assert.match(recovery, /api\.updateMatchStatus\(match\.id, "LIVE"\)/);
-  assert.match(recovery, /api\.updateMatchStatus\(item\.match\.id, "ENDED"\)/);
+  assert.match(recovery, /api\.updateMatchStatus\([\s\S]*match\.id,[\s\S]*"LIVE",[\s\S]*resolvedGuild\.organizationId/);
+  assert.match(recovery, /api\.updateMatchStatus\([\s\S]*item\.match\.id,[\s\S]*"ENDED",[\s\S]*resolvedGuild\.organizationId/);
   assert.match(recovery, /result postcondition failed/);
   assert.match(wrapper, /production-backup\.sh[\s\S]*production-deploy-preflight\.sh[\s\S]*run_recovery "\$mode"/);
   assert.match(recovery, /exact\.length > 1/);
