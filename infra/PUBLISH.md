@@ -1284,8 +1284,15 @@ If those services run on the same server outside Docker, `host.docker.internal` 
 production_entry observe ps
 production_entry observe logs
 production_entry observe network
+production_entry current-release-inventory
 production_entry verify-api-render-runtime
 ```
+
+`current-release-inventory` is a lock-coordinated, read-only inspection of the
+validated `CURRENT` release metadata. It reports only the release ID and the
+Root/API/Web commit identifiers needed to reconcile forward history; it does
+not inspect services, databases, backups, volumes, credentials, or customer
+data.
 
 `verify-api-render-runtime` launches the deployed API image's bundled Chrome
 through the same isolated writable runtime helper used by result widgets,

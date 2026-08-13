@@ -1508,6 +1508,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "backup-export",
       "backup-local-release",
       "backup-local-release-current",
+      "current-release-inventory",
       "source-inventory",
       "source-retention",
       "backup-legacy",
@@ -1561,6 +1562,26 @@ test("API render runtime verification is bounded and read-only", () => {
   assert.match(runtime, /XDG_CACHE_HOME/);
   assert.match(runtime, /userDataDir/);
   assert.match(runtime, /rm\(runtimeDirectory, \{ recursive: true, force: true \}\)/);
+});
+
+test("current release inventory is lock-coordinated and metadata-only", () => {
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const inventory = read("scripts/production-current-release-inventory.sh");
+
+  assert.match(launcher, /current-release-inventory\)/);
+  assert.match(
+    launcher,
+    /current-release-inventory accepts no arguments[\s\S]*require_nested_assembly[\s\S]*acquire-production-deploy-lock\.sh/,
+  );
+  assert.match(inventory, /ARENZYRA_DEPLOY_LOCK_INHERITED/);
+  assert.match(inventory, /\/opt\/arenzyra-release-metadata/);
+  assert.match(inventory, /validate-publish-release-env\.cjs/);
+  assert.match(inventory, /ARENZYRA_API_GIT_COMMIT/);
+  assert.match(inventory, /CURRENT_RELEASE_INVENTORY/);
+  assert.doesNotMatch(
+    inventory,
+    /\b(?:docker|psql|rm|mv|cp|install|truncate|unlink)\b/,
+  );
 });
 
 test("OpenAI key restoration is secret-safe, transactional, and API-only", () => {
