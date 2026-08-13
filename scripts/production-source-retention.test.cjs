@@ -8,6 +8,7 @@ const read = (name) => fs.readFileSync(path.join(root, name), "utf8");
 
 test("source retention is allowlisted, exact, recoverable, and data-volume isolated", () => {
   const entrypoint = read("scripts/production-reviewed-entrypoint.sh");
+  const inventory = read("scripts/production-source-inventory.sh");
   const retention = read("scripts/release-production-source-archives.sh");
   const preflight = read("scripts/production-deploy-preflight.sh");
 
@@ -18,6 +19,18 @@ test("source retention is allowlisted, exact, recoverable, and data-volume isola
   assert.match(
     entrypoint,
     /source-retention --nested requires retained and superseded release\/Root\/API\/Web groups/,
+  );
+  assert.match(
+    entrypoint,
+    /source-inventory\)[\s\S]*one to eight explicit release IDs[\s\S]*production-source-inventory\.sh/,
+  );
+  assert.match(inventory, /\[ "\$#" -ge 1 \] && \[ "\$#" -le 8 \]/);
+  assert.match(inventory, /checkout_commit[\s\S]*HEAD\^\{commit\}/);
+  assert.match(inventory, /verify_no_mounts/);
+  assert.match(inventory, /SOURCE_INVENTORY release=%s root=%s api=%s web=%s archive_mib=%s transfer=%s/);
+  assert.doesNotMatch(
+    inventory,
+    /rm\s+-|docker|compose|arenzyra-backups|\/var\/lib\/docker|uploads/,
   );
   assert.match(
     retention,

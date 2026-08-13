@@ -231,6 +231,12 @@ case "$command_id" in
     exec /usr/bin/env ARENZYRA_BACKUP_RELEASE_PROFILE=current \
       /bin/bash scripts/release-local-production-backup.sh "$1" "$2"
     ;;
+  source-inventory)
+    [ "$#" -ge 1 ] && [ "$#" -le 8 ] || \
+      block "source-inventory requires one to eight explicit release IDs."
+    require_nested_assembly
+    exec /bin/bash scripts/production-source-inventory.sh "$@"
+    ;;
   source-retention)
     if [ "${1:-}" = "--nested" ]; then
       [ "$#" -ge 9 ] && [ "$#" -le 37 ] && [ $(( ($# - 1) % 4 )) -eq 0 ] || \

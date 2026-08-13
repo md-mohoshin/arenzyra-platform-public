@@ -427,6 +427,14 @@ the explicitly superseded source archive, staging copy, and incoming transfer
 are released. Runtime volumes, release metadata, and backups are outside its
 fixed roots.
 
+Use `production_entry source-inventory RELEASE...` with one to eight explicit
+release IDs before retention when the archived commit identities need to be
+re-established. It is read-only and reports only each verified clean archived
+Root/API/Web commit, bounded archive size, and whether the exact completed
+incoming and staging transfer pair is present. It rejects unsafe, partial, or
+mounted source sets and does not inspect or mutate services, volumes, backups,
+or application data.
+
 Use `production_entry deploy-discord` for the supported bot-only mode and append
 `--first-deploy` only for its documented bot health exception. Do not use the
 full first-deploy form. The outer `git show` makes the dispatcher bytes come from

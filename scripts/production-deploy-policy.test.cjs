@@ -1442,6 +1442,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "backup-export",
       "backup-local-release",
       "backup-local-release-current",
+      "source-inventory",
       "source-retention",
       "backup-legacy",
       "backup-resume",
