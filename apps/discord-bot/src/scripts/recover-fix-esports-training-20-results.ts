@@ -420,11 +420,49 @@ export function mapRecoveryRegistrations(
   });
 }
 
+export function recoveryRegistrationCandidates(
+  registrations: SessionRegistrationResponse[],
+  keys: readonly RecoveryTeamKey[],
+  playerNamesByTeamId: ReadonlyMap<string, readonly string[]> = new Map(),
+) {
+  const unique = new Map<string, SessionRegistrationResponse>();
+  for (const registration of registrations) {
+    unique.set(registration.teamId, registration);
+  }
+  const candidates = Array.from(unique.values());
+  return new Map(keys.map((key) => {
+    const scored = candidates
+      .map((registration) => ({
+        registration,
+        score: recoveryRegistrationTeamScore(
+          registration,
+          key,
+          playerNamesByTeamId.get(registration.teamId) ?? [],
+        ),
+      }))
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score);
+    if (!scored.length) {
+      throw new Error(`deleted registration team ${key} has no identity evidence`);
+    }
+    const topScore = scored[0].score;
+    return [
+      key,
+      scored
+        .filter((candidate) => candidate.score === topScore)
+        .map((candidate) => candidate.registration),
+    ] as const;
+  }));
+}
+
 export function mapRecoveryActiveTeams(
   teams: TeamSummary[],
   keys: readonly RecoveryTeamKey[],
   playerNamesByTeamId: ReadonlyMap<string, readonly string[]>,
-  registrationByKey: ReadonlyMap<RecoveryTeamKey, SessionRegistrationResponse> = new Map(),
+  registrationByKey: ReadonlyMap<
+    RecoveryTeamKey,
+    SessionRegistrationResponse | readonly SessionRegistrationResponse[]
+  > = new Map(),
   managerIdsByTeamId: ReadonlyMap<string, readonly string[]> = new Map(),
 ) {
   const used = new Set<string>();
@@ -434,24 +472,8 @@ export function mapRecoveryActiveTeams(
       .map((team) => ({
         team,
         score: (() => {
-          const registration = registrationByKey.get(key);
-          const expectedManagers = new Set([
-            registration?.leaderDiscordUserId,
-            ...(registration?.managerDiscordUserIds ?? []),
-          ].filter((id): id is string => Boolean(id?.trim())));
-          const managerMatches = (managerIdsByTeamId.get(team.id) ?? [])
-            .filter((id) => expectedManagers.has(id)).length;
-          if (registration && managerMatches === 0) return 0;
-
           const activePlayers = playerNamesByTeamId.get(team.id) ?? [];
           const activePlayerKeys = new Set(activePlayers.map(compact).filter(Boolean));
-          const registrationPlayers = registration
-            ? recoveryRegistrationPlayerNames(registration)
-            : [];
-          const rosterOverlap = registrationPlayers
-            .map(compact)
-            .filter((name, index, names) => Boolean(name) && names.indexOf(name) === index)
-            .filter((name) => activePlayerKeys.has(name)).length;
           const identityScore = recoveryTeamScore({
             id: `recovery-team-${team.id}`,
             matchId: "recovery-active-team",
@@ -469,7 +491,27 @@ export function mapRecoveryActiveTeams(
               kills: 0,
             })),
           }, key);
-          return managerMatches * 1000 + rosterOverlap * 100 + identityScore;
+          const configured = registrationByKey.get(key);
+          const registrations = configured
+            ? (Array.isArray(configured) ? configured : [configured])
+            : [];
+          if (!registrations.length) return identityScore;
+          return Math.max(...registrations.map((registration) => {
+            const expectedManagers = new Set([
+              registration.leaderDiscordUserId,
+              ...registration.managerDiscordUserIds,
+            ].filter((id): id is string => Boolean(id?.trim())));
+            const managerMatches = (managerIdsByTeamId.get(team.id) ?? [])
+              .filter((id) => expectedManagers.has(id)).length;
+            if (expectedManagers.size > 0 && managerMatches === 0) return 0;
+
+            const registrationPlayers = recoveryRegistrationPlayerNames(registration);
+            const rosterOverlap = registrationPlayers
+              .map(compact)
+              .filter((name, index, names) => Boolean(name) && names.indexOf(name) === index)
+              .filter((name) => activePlayerKeys.has(name)).length;
+            return managerMatches * 1000 + rosterOverlap * 100 + identityScore;
+          }));
         })(),
       }))
       .filter((candidate) => candidate.score > 0)
@@ -575,20 +617,18 @@ async function run() {
           recoveryRegistrationPlayerNames(registration),
         );
       }
-      const mappedRegistrations = mapRecoveryRegistrations(
+      const registrationCandidatesByKey = recoveryRegistrationCandidates(
         registrations,
         requiredKeys,
         registrationPlayerNames,
       );
-      const registrationByKey = new Map(mappedRegistrations.map((entry) => [
-        entry.key,
-        registrations.find((registration) => registration.teamId === entry.teamId)!,
-      ]));
       const recoveryManagerIds = Array.from(new Set(
-        Array.from(registrationByKey.values()).flatMap((registration) => [
-          registration.leaderDiscordUserId,
-          ...registration.managerDiscordUserIds,
-        ]).filter((id): id is string => Boolean(id?.trim())),
+        Array.from(registrationCandidatesByKey.values()).flatMap((candidates) =>
+          candidates.flatMap((registration) => [
+            registration.leaderDiscordUserId,
+            ...registration.managerDiscordUserIds,
+          ])
+        ).filter((id): id is string => Boolean(id?.trim())),
       ));
       const managedTeams = await api.listDiscordManagedTeams(recoveryManagerIds, 1000);
       const managerIdsByTeamId = new Map<string, readonly string[]>();
@@ -602,11 +642,13 @@ async function run() {
         activeTeams,
         requiredKeys,
         playerNamesByTeamId,
-        registrationByKey,
+        registrationCandidatesByKey,
         managerIdsByTeamId,
       );
+      const tiedRegistrationKeys = Array.from(registrationCandidatesByKey.values())
+        .filter((candidates) => candidates.length > 1).length;
       console.log(
-        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} activePool=${activeTeams.length} managerPool=${managedTeams.length} teams=${mapped.length} mapping=pass`,
+        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} tiedRegistrationKeys=${tiedRegistrationKeys} activePool=${activeTeams.length} managerPool=${managedTeams.length} teams=${mapped.length} mapping=pass`,
       );
       if (!apply) {
         console.log(`RESULT_RECOVERY_CHECK session=${session.name} games=0 rebuild=required status=pass`);

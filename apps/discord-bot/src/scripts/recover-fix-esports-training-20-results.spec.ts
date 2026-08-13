@@ -8,6 +8,7 @@ import {
   mapRecoveryRegistrations,
   mapRecoveryActiveTeams,
   recoveryTeamScore,
+  recoveryRegistrationCandidates,
   recoveryRegistrationPlayerNames,
   selectRecoveryGuild,
   selectRecoverySession,
@@ -255,6 +256,47 @@ test("reconstruction uses retained managers to disambiguate duplicate active tag
       new Map([
         ["team-wrong", ["222222222222222"]],
         ["team-right", ["111111111111111"]],
+      ]),
+    ),
+    [{ key: "SGE", teamId: "team-right", label: "SGE" }],
+  );
+});
+
+test("reconstruction carries tied deleted tags into active manager disambiguation", () => {
+  const registration = (id: string, manager: string) => ({
+    id,
+    teamId: `deleted-${id}`,
+    leaderDiscordUserId: manager,
+    managerDiscordUserIds: [manager],
+    status: "REMOVED" as const,
+    slotNumber: null,
+    waitlistPosition: null,
+    checkedInAt: null,
+    confirmedAt: null,
+    removedAt: "2026-08-13T00:00:00.000Z",
+    removalReason: "cleanup",
+    note: null,
+    createdAt: "2026-08-13T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    team: { id: `deleted-${id}`, name: "SGE", tag: "SGE", logoUrl: null, countryCode: null, region: null },
+  });
+  const tied = recoveryRegistrationCandidates(
+    [registration("old", "111111111111111"), registration("current", "222222222222222")],
+    ["SGE"],
+  );
+  assert.equal(tied.get("SGE")?.length, 2);
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-wrong", name: "SGE Academy", tag: "SGE" },
+        { id: "team-right", name: "SGE Main", tag: "SGE" },
+      ],
+      ["SGE"],
+      new Map(),
+      tied,
+      new Map([
+        ["team-wrong", ["333333333333333"]],
+        ["team-right", ["222222222222222"]],
       ]),
     ),
     [{ key: "SGE", teamId: "team-right", label: "SGE" }],
