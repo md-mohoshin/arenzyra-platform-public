@@ -560,6 +560,7 @@ export function mapRecoveryRows(
   rows: MatchResultRowResponse[],
   expected: readonly RecoveryResult[],
   allowUnresolved = false,
+  exactTeamIdsByKey: ReadonlyMap<RecoveryTeamKey, string> = new Map(),
 ) {
   const active = rows.filter((row) => row.wasPresentInMatch !== false);
   if ((!allowUnresolved && active.length !== expected.length) || active.length > expected.length) {
@@ -567,6 +568,26 @@ export function mapRecoveryRows(
   }
   const used = new Set<string>();
   const mapped = expected.flatMap((entry) => {
+    const exactTeamId = exactTeamIdsByKey.get(entry.team);
+    if (exactTeamIdsByKey.size > 0 && !exactTeamId) {
+      if (allowUnresolved) return [];
+      throw new Error(`team ${entry.team} has no exact reconstructed identity`);
+    }
+    if (exactTeamId) {
+      const exact = active.filter(
+        (row) => row.teamId === exactTeamId && !used.has(row.teamId),
+      );
+      if (exact.length !== 1) {
+        throw new Error(`team ${entry.team} exact reconstructed identity count is ${exact.length}`);
+      }
+      used.add(exactTeamId);
+      return [{
+        teamId: exactTeamId,
+        placement: entry.placement,
+        kills: entry.kills,
+        label: exact[0].team?.tag?.trim() || exact[0].team?.name?.trim() || entry.team,
+      }];
+    }
     const scored = active
       .filter((row) => !used.has(row.teamId))
       .map((row) => ({ row, score: recoveryTeamScore(row, entry.team) }))
@@ -629,6 +650,7 @@ async function run() {
 
     const matches = await api.listSessionMatches(session.id);
     let reconstructed = false;
+    let reconstructedTeamIdsByKey: ReadonlyMap<RecoveryTeamKey, string> = new Map();
     if (matches.length === 0) {
       const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
       const activeTeams = await api.searchTeams("");
@@ -713,6 +735,9 @@ async function run() {
         return;
       }
       const mappedByKey = new Map(mapped.map((entry) => [entry.key, entry]));
+      reconstructedTeamIdsByKey = new Map(
+        mapped.map((entry) => [entry.key, entry.teamId]),
+      );
       const created: SessionMatchResponse[] = [];
       for (const game of [1, 2, 3, 4]) {
         const expected = expectedGames[game].filter((entry) => mappedByKey.has(entry.team));
@@ -778,6 +803,7 @@ async function run() {
         current.results ?? current.data ?? [],
         expectedGames[game],
         series === "23",
+        reconstructedTeamIdsByKey,
       );
       prepared.push({ game, match, version: current.version, rows });
       console.log(

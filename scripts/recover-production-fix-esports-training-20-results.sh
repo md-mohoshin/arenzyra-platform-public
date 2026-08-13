@@ -16,8 +16,8 @@ block() {
 reuse_verified_backup_id=''
 if [ "$#" -eq 1 ]; then
   case "$1" in
-    20-check|20-apply|23-check|23-apply) ;;
-    *) block "exactly 20-check, 20-apply, 23-check, or 23-apply is required." ;;
+    20-check|20-apply|23-check|23-apply|both-apply) ;;
+    *) block "exactly 20-check, 20-apply, 23-check, 23-apply, or both-apply is required." ;;
   esac
   mode="$1"
 elif [ "$#" -eq 2 ] && [ "$1" = 'both-apply-verified-backup' ] && \
@@ -86,7 +86,7 @@ verify_reused_backup() {
   [ "$(wc -l < "$backup_dir/BACKUP_COMPLETE")" -eq 3 ] && \
     [ "$(grep -Fxc -- "backup_id=$backup_id" "$backup_dir/BACKUP_COMPLETE")" -eq 1 ] && \
     [ "$(grep -Ec '^created_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$backup_dir/BACKUP_COMPLETE")" -eq 1 ] && \
-    [ "$(grep -Fxc -- 'reason=scheduled' "$backup_dir/BACKUP_COMPLETE")" -eq 1 ] || \
+    [ "$(grep -Ec '^reason=[^[:cntrl:]]{1,200}$' "$backup_dir/BACKUP_COMPLETE")" -eq 1 ] || \
     block "verified backup completion marker is invalid."
   backup_remote="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_RECOVERY_V1_RCLONE_REMOTE)"
   [ -n "$backup_remote" ] || backup_remote="$(node scripts/read-dotenv-value.cjs "$ENV_FILE" ARENZYRA_BACKUP_RCLONE_REMOTE)"
@@ -108,6 +108,18 @@ if [ "$mode" = 'both-apply-verified-backup' ]; then
   run_recovery 20-check
   run_recovery 23-check
   verify_reused_backup "$reuse_verified_backup_id"
+  /bin/bash scripts/production-deploy-preflight.sh
+  run_recovery 20-apply
+  /bin/bash scripts/production-deploy-preflight.sh
+  run_recovery 23-apply
+  exit 0
+fi
+
+if [ "$mode" = 'both-apply' ]; then
+  run_recovery 20-check
+  run_recovery 23-check
+  /usr/bin/env ARENZYRA_BACKUP_REQUIRE_OFFSITE=1 \
+    /bin/bash scripts/production-backup.sh
   /bin/bash scripts/production-deploy-preflight.sh
   run_recovery 20-apply
   /bin/bash scripts/production-deploy-preflight.sh

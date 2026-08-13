@@ -197,14 +197,14 @@ case "$command_id" in
   recover-fix-esports-training-results)
     if [ "$#" -eq 1 ]; then
       case "$1" in
-        20-check|20-apply|23-check|23-apply) ;;
+        20-check|20-apply|23-check|23-apply|both-apply) ;;
         *) block "recover-fix-esports-training-results received an unsupported mode." ;;
       esac
     elif [ "$#" -eq 2 ] && [ "$1" = 'both-apply-verified-backup' ] && \
       [[ "$2" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]]; then
       :
     else
-      block "recover-fix-esports-training-results accepts one normal mode or both-apply-verified-backup with one backup ID."
+      block "recover-fix-esports-training-results accepts one normal mode, both-apply, or both-apply-verified-backup with one backup ID."
     fi
     require_nested_assembly
     exec /bin/bash scripts/recover-production-fix-esports-training-20-results.sh "$@"

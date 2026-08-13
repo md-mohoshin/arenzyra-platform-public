@@ -114,6 +114,22 @@ test("23:00 partial recovery maps every present team and omits absent teams", ()
   assert.ok(mapped.every((row) => row.teamId !== "team-PI" && row.teamId !== "team-OUT_MAIN"));
 });
 
+test("reconstructed partial recovery uses exact active team identities", () => {
+  const expected = RECOVERY_GAMES_23[1];
+  const retained = expected.filter((entry) => entry.team !== "PI" && entry.team !== "OUT44");
+  const present = retained.map((entry, index) => resultRow(entry.team, index, {
+    team: { id: `team-${entry.team}`, name: null, tag: null },
+    players: [],
+  }));
+  const exact = new Map(retained.map((entry) => [entry.team, `team-${entry.team}`]));
+  const mapped = mapRecoveryRows(present, expected, true, exact);
+  assert.equal(mapped.length, present.length);
+  assert.deepEqual(
+    mapped.map((row) => row.teamId),
+    retained.map((entry) => `team-${entry.team}`),
+  );
+});
+
 test("player anchors recover a team when its stored tag and name are missing", () => {
   const row = resultRow("N1", 0, {
     team: { id: "team-N1", name: null, tag: null },
