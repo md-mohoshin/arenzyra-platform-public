@@ -491,11 +491,14 @@ export function mapRecoveryActiveTeams(
               kills: 0,
             })),
           }, key);
+          const managedPresenceScore = (managerIdsByTeamId.get(team.id) ?? []).length > 0
+            ? 10
+            : 0;
           const configured = registrationByKey.get(key);
           const registrations = configured
             ? (Array.isArray(configured) ? configured : [configured])
             : [];
-          if (!registrations.length) return identityScore;
+          if (!registrations.length) return managedPresenceScore + identityScore;
           return Math.max(...registrations.map((registration) => {
             if (team.id === registration.teamId) {
               return 100_000 + identityScore;
@@ -512,7 +515,8 @@ export function mapRecoveryActiveTeams(
               .map(compact)
               .filter((name, index, names) => Boolean(name) && names.indexOf(name) === index)
               .filter((name) => activePlayerKeys.has(name)).length;
-            return managerMatches * 1000 + rosterOverlap * 100 + identityScore;
+            return managerMatches * 1000 + rosterOverlap * 100 +
+              managedPresenceScore + identityScore;
           }));
         })(),
       }))

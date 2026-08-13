@@ -369,3 +369,19 @@ test("reconstruction permits roster evidence when retained managers are stale", 
     [{ key: "OG", teamId: "team-roster", label: "OG" }],
   );
 });
+
+test("reconstruction prefers the only actively managed duplicate label", () => {
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-orphan", name: "OG", tag: "OG" },
+        { id: "team-managed", name: "OG", tag: "OG" },
+      ],
+      ["OG"],
+      new Map(),
+      new Map(),
+      new Map([["team-managed", ["111111111111111"]]]),
+    ),
+    [{ key: "OG", teamId: "team-managed", label: "OG" }],
+  );
+});
