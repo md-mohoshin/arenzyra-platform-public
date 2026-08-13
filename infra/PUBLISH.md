@@ -1284,7 +1284,13 @@ If those services run on the same server outside Docker, `host.docker.internal` 
 production_entry observe ps
 production_entry observe logs
 production_entry observe network
+production_entry verify-api-render-runtime
 ```
+
+`verify-api-render-runtime` launches the deployed API image's bundled Chrome
+through the same isolated writable runtime helper used by result widgets,
+renders a local PNG, and cleans its temporary profile. It does not read or
+change match, session, team, or result data.
 
 The bounded Fix Esports team-logo repair inventories unique exact matches from
 configured Discord logo-channel history and Arenzyra-managed guild emojis before

@@ -1521,6 +1521,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-database-reopen",
       "host-maintenance",
       "observe",
+      "verify-api-render-runtime",
       "protected-match-organizations",
       "end-stale-global-control-matches",
       "end-stale-global-control-matches-verified-backup",
@@ -1542,6 +1543,24 @@ test("one reviewed production entrypoint exposes only the closed command allowli
     launcher,
     /observe accepts exactly ps, logs, or network/,
   );
+});
+
+test("API render runtime verification is bounded and read-only", () => {
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const wrapper = read("scripts/verify-production-api-render-runtime.sh");
+  const verifier = read("apps/api/src/scripts/verify-render-runtime.ts");
+  const runtime = read(
+    "apps/api/src/modules/render/render-browser-runtime.ts",
+  );
+
+  assert.match(launcher, /verify-api-render-runtime\)/);
+  assert.match(wrapper, /exec -T api node dist\/scripts\/verify-render-runtime\.js/);
+  assert.doesNotMatch(wrapper, /\b(?:up|restart|rm|down|build|pull)\b/);
+  assert.match(verifier, /API RENDER RUNTIME VERIFIED/);
+  assert.match(runtime, /XDG_CONFIG_HOME/);
+  assert.match(runtime, /XDG_CACHE_HOME/);
+  assert.match(runtime, /userDataDir/);
+  assert.match(runtime, /rm\(runtimeDirectory, \{ recursive: true, force: true \}\)/);
 });
 
 test("OpenAI key restoration is secret-safe, transactional, and API-only", () => {
