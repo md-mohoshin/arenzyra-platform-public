@@ -497,6 +497,9 @@ export function mapRecoveryActiveTeams(
             : [];
           if (!registrations.length) return identityScore;
           return Math.max(...registrations.map((registration) => {
+            if (team.id === registration.teamId) {
+              return 100_000 + identityScore;
+            }
             const expectedManagers = new Set([
               registration.leaderDiscordUserId,
               ...registration.managerDiscordUserIds,
@@ -517,7 +520,13 @@ export function mapRecoveryActiveTeams(
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score);
     if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) {
-      throw new Error(`active organization team ${key} did not resolve uniquely`);
+      const topScore = scored[0]?.score ?? 0;
+      const tied = scored.filter((candidate) => candidate.score === topScore).slice(0, 4);
+      throw new Error(
+        `active organization team ${key} did not resolve uniquely; topScore=${topScore} tied=${tied.length} labels=${tied.map((candidate) =>
+          candidate.team.tag?.trim() || candidate.team.name.trim() || "unlabeled"
+        ).join(",")}`,
+      );
     }
     used.add(scored[0].team.id);
     return {

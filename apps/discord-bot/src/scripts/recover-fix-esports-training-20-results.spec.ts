@@ -302,3 +302,36 @@ test("reconstruction carries tied deleted tags into active manager disambiguatio
     [{ key: "SGE", teamId: "team-right", label: "SGE" }],
   );
 });
+
+test("reconstruction prefers exact registered team identity over duplicate labels", () => {
+  const registration = {
+    id: "registration-og",
+    teamId: "team-exact",
+    leaderDiscordUserId: "111111111111111",
+    managerDiscordUserIds: ["111111111111111"],
+    status: "REMOVED" as const,
+    slotNumber: null,
+    waitlistPosition: null,
+    checkedInAt: null,
+    confirmedAt: null,
+    removedAt: "2026-08-13T00:00:00.000Z",
+    removalReason: "cleanup",
+    note: null,
+    createdAt: "2026-08-13T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    team: { id: "team-exact", name: "OG", tag: "OG", logoUrl: null, countryCode: null, region: null },
+  };
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-duplicate", name: "OG", tag: "OG" },
+        { id: "team-exact", name: "OG", tag: "OG" },
+      ],
+      ["OG"],
+      new Map(),
+      new Map([["OG", registration]]),
+      new Map([["team-duplicate", ["111111111111111"]]]),
+    ),
+    [{ key: "OG", teamId: "team-exact", label: "OG" }],
+  );
+});
