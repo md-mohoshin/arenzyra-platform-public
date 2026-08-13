@@ -9,7 +9,10 @@ import { DiscordSessionService } from "../services/session.service";
 
 export const TARGET_SESSION_NAME = "Fix Esports Training Series 20:00";
 export const TARGET_SESSION_NAMES = {
-  "20": [TARGET_SESSION_NAME],
+  "20": [
+    TARGET_SESSION_NAME,
+    "Fix Esports Traning Series 20:00",
+  ],
   "23": [
     "Fix Esports Training Series 23:00",
     "Fix Esports Traning Series 23:00",

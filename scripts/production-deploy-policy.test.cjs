@@ -1522,6 +1522,7 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(wrapper, /mode="\$1"[\s\S]*set --[\s\S]*source scripts\/acquire-production-deploy-lock\.sh/);
   assert.match(wrapper, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
   assert.match(recovery, /Fix Esports Training Series 20:00/);
+  assert.match(recovery, /Fix Esports Traning Series 20:00/);
   assert.match(recovery, /Fix Esports Training Series 23:00/);
   assert.match(recovery, /target\.length !== 1/);
   assert.match(recovery, /configured final result channel is missing/);
