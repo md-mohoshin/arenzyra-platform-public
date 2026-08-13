@@ -4,6 +4,7 @@ import {
   type MatchResultRowResponse,
   type SessionMatchResponse,
   type SessionRegistrationResponse,
+  type TeamSummary,
 } from "../api/api-client";
 import { botConfig } from "../config";
 import { DiscordSessionService } from "../services/session.service";
@@ -419,6 +420,49 @@ export function mapRecoveryRegistrations(
   });
 }
 
+export function mapRecoveryActiveTeams(
+  teams: TeamSummary[],
+  keys: readonly RecoveryTeamKey[],
+  playerNamesByTeamId: ReadonlyMap<string, readonly string[]>,
+) {
+  const used = new Set<string>();
+  return keys.map((key) => {
+    const scored = teams
+      .filter((team) => !used.has(team.id))
+      .map((team) => ({
+        team,
+        score: recoveryTeamScore({
+          id: `recovery-team-${team.id}`,
+          matchId: "recovery-active-team",
+          teamId: team.id,
+          slot: null,
+          kills: 0,
+          placement: null,
+          placementPoints: 0,
+          totalPoints: 0,
+          team,
+          players: (playerNamesByTeamId.get(team.id) ?? []).map((name, index) => ({
+            id: `recovery-player-${index}`,
+            playerId: `recovery-player-${index}`,
+            name,
+            kills: 0,
+          })),
+        }, key),
+      }))
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score);
+    if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) {
+      throw new Error(`active organization team ${key} did not resolve uniquely`);
+    }
+    used.add(scored[0].team.id);
+    return {
+      key,
+      teamId: scored[0].team.id,
+      label: scored[0].team.tag?.trim() || scored[0].team.name.trim() || key,
+    };
+  });
+}
+
 export function mapRecoveryRows(
   rows: MatchResultRowResponse[],
   expected: readonly RecoveryResult[],
@@ -487,25 +531,22 @@ async function run() {
     const matches = await api.listSessionMatches(session.id);
     if (matches.length === 0) {
       const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
+      const activeTeams = await api.searchTeams("");
       const playerNamesByTeamId = new Map<string, readonly string[]>();
-      for (const registration of registrations) {
-        if (!registration.team) continue;
-        if (playerNamesByTeamId.has(registration.teamId)) continue;
-        const members = await api.listTeamMembers(registration.teamId);
+      for (const team of activeTeams) {
+        const players = await api.listTeamPlayers(team.id);
         playerNamesByTeamId.set(
-          registration.teamId,
-          recoveryRegistrationPlayerNames(
-            registration,
-            members.flatMap((member) => [member.displayName, member.discordUsername]),
-          ),
+          team.id,
+          players.flatMap((player) => [player.ign, player.realName, player.name])
+            .filter((name): name is string => Boolean(name?.trim())),
         );
       }
       const requiredKeys = Array.from(new Set(
         Object.values(expectedGames).flat().map((entry) => entry.team),
       ));
-      const mapped = mapRecoveryRegistrations(registrations, requiredKeys, playerNamesByTeamId);
+      const mapped = mapRecoveryActiveTeams(activeTeams, requiredKeys, playerNamesByTeamId);
       console.log(
-        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} teams=${mapped.length} mapping=pass`,
+        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} activePool=${activeTeams.length} teams=${mapped.length} mapping=pass`,
       );
       if (!apply) {
         console.log(`RESULT_RECOVERY_CHECK session=${session.name} games=0 rebuild=required status=pass`);

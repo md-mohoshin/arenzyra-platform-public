@@ -1532,8 +1532,8 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(recovery, /related=\$\{JSON\.stringify\(inventory\)\}/);
   assert.match(recovery, /matches=\$\{JSON\.stringify\(inventory\)\}/);
   assert.match(recovery, /listRegistrations\(session\.id, \{ includeDeleted: true \}\)/);
-  assert.match(recovery, /api\.listTeamMembers\(registration\.teamId\)/);
-  assert.match(recovery, /if \(!registration\.team\) continue/);
+  assert.match(recovery, /api\.searchTeams\(""\)/);
+  assert.match(recovery, /api\.listTeamPlayers\(team\.id\)/);
   assert.match(recovery, /match reconstruction apply is not enabled/);
   assert.match(recovery, /exact\.length > 1/);
   assert.match(recovery, /related\.length === 1/);

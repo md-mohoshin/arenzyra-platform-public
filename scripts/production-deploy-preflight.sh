@@ -116,8 +116,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-low-disk-source-release)
       # Source retention is confined to superseded reviewed checkout copies;
-      # it preserves the active and explicitly retained prior checkout.
-      ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1
+      # it preserves the active and explicitly retained prior checkout. Keep
+      # the ordinary full-stack health and volume policy: this exception
+      # waives only the disk threshold adjacent to that source-only deletion.
       ALLOW_LOW_DISK_SOURCE_RELEASE=1
       ;;
     --allow-stopped-idp-maintenance)

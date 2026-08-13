@@ -946,6 +946,13 @@ export type TeamMemberSummary = {
   deletedAt: string | null;
 };
 
+export type TeamPlayerSummary = {
+  id: string;
+  ign?: string | null;
+  realName?: string | null;
+  name?: string | null;
+};
+
 export type RegisterDiscordTeamPayload = {
   name: string;
   tag: string;
@@ -3145,6 +3152,18 @@ export class ArenzyraApiClient {
       const response = await this.request<TeamMemberSummary[]>({
         method: "get",
         url: `/organizer/teams/${teamId}/members`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async listTeamPlayers(teamId: string): Promise<TeamPlayerSummary[]> {
+    try {
+      const response = await this.request<TeamPlayerSummary[]>({
+        method: "get",
+        url: `/organizer/teams/${teamId}/players`,
       });
       return response.data;
     } catch (error) {

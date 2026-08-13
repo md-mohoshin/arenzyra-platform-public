@@ -6,6 +6,7 @@ import {
   RECOVERY_GAMES_23,
   mapRecoveryRows,
   mapRecoveryRegistrations,
+  mapRecoveryActiveTeams,
   recoveryTeamScore,
   recoveryRegistrationPlayerNames,
   selectRecoveryGuild,
@@ -209,4 +210,16 @@ test("deleted registration mapping uses retained roster player anchors", () => {
     mapRecoveryRegistrations([registration], ["N1"], new Map([["team-n1", names]])),
     [{ key: "N1", teamId: "team-n1", label: "Unknown" }],
   );
+});
+
+test("reconstruction maps only unique active organization teams", () => {
+  const teams = [
+    { id: "team-sge", name: "Unknown One", tag: null },
+    { id: "team-fps", name: "Unknown Two", tag: "FPS" },
+  ];
+  const names = new Map<string, readonly string[]>([["team-sge", ["SGE VEGABOYYY"]]]);
+  assert.deepEqual(mapRecoveryActiveTeams(teams, ["SGE", "FPS"], names), [
+    { key: "SGE", teamId: "team-sge", label: "Unknown One" },
+    { key: "FPS", teamId: "team-fps", label: "FPS" },
+  ]);
 });

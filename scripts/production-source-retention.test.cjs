@@ -31,6 +31,14 @@ test("source retention is allowlisted, exact, recoverable, and data-volume isola
     /production-deploy-preflight\.sh --allow-low-disk-source-release[\s\S]*rm -rf -- "\$archive" "\$staging" "\$incoming"/,
   );
   assert.match(preflight, /low_disk_source_release=pass deployment_remains_blocked=true/);
+  assert.match(
+    preflight,
+    /--allow-low-disk-source-release\)[\s\S]*ordinary full-stack health and volume policy[\s\S]*ALLOW_LOW_DISK_SOURCE_RELEASE=1/,
+  );
+  assert.doesNotMatch(
+    preflight,
+    /--allow-low-disk-source-release\)[\s\S]{0,500}ALLOW_CUTOVER_DEPENDENCY_RECOVERY=1/,
+  );
   assert.doesNotMatch(
     retention,
     /arenzyra-backups|docker\s+(?:image|volume|system)|\/var\/lib\/docker|uploads/,
