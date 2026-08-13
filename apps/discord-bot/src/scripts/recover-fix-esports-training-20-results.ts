@@ -337,6 +337,7 @@ export function recoveryTeamScore(row: MatchResultRowResponse, key: RecoveryTeam
 export function recoveryRegistrationTeamScore(
   registration: SessionRegistrationResponse,
   key: RecoveryTeamKey,
+  playerNames: readonly string[] = [],
 ) {
   return recoveryTeamScore({
     id: registration.id,
@@ -348,13 +349,43 @@ export function recoveryRegistrationTeamScore(
     placementPoints: 0,
     totalPoints: 0,
     team: registration.team,
-    players: [],
+    players: playerNames.map((name, index) => ({
+      id: `recovery-player-${index}`,
+      playerId: `recovery-player-${index}`,
+      name,
+      kills: 0,
+    })),
   }, key);
+}
+
+export function recoveryRegistrationPlayerNames(
+  registration: SessionRegistrationResponse,
+  memberNames: readonly (string | null | undefined)[] = [],
+) {
+  const names: string[] = [];
+  const visit = (value: unknown, depth: number) => {
+    if (names.length >= 256 || depth > 8 || value === null || value === undefined) return;
+    if (typeof value === "string") {
+      if (value.trim()) names.push(value.trim());
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const item of Object.values(value as Record<string, unknown>)) visit(item, depth + 1);
+    }
+  };
+  visit(registration.tournamentRosterJson, 0);
+  for (const name of memberNames) if (name?.trim()) names.push(name.trim());
+  return Array.from(new Set(names));
 }
 
 export function mapRecoveryRegistrations(
   registrations: SessionRegistrationResponse[],
   keys: readonly RecoveryTeamKey[],
+  playerNamesByTeamId: ReadonlyMap<string, readonly string[]> = new Map(),
 ) {
   const unique = new Map<string, SessionRegistrationResponse>();
   for (const registration of registrations) {
@@ -367,7 +398,11 @@ export function mapRecoveryRegistrations(
       .filter((registration) => !used.has(registration.teamId))
       .map((registration) => ({
         registration,
-        score: recoveryRegistrationTeamScore(registration, key),
+        score: recoveryRegistrationTeamScore(
+          registration,
+          key,
+          playerNamesByTeamId.get(registration.teamId) ?? [],
+        ),
       }))
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score);
@@ -452,10 +487,22 @@ async function run() {
     const matches = await api.listSessionMatches(session.id);
     if (matches.length === 0) {
       const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
+      const playerNamesByTeamId = new Map<string, readonly string[]>();
+      for (const registration of registrations) {
+        if (playerNamesByTeamId.has(registration.teamId)) continue;
+        const members = await api.listTeamMembers(registration.teamId);
+        playerNamesByTeamId.set(
+          registration.teamId,
+          recoveryRegistrationPlayerNames(
+            registration,
+            members.flatMap((member) => [member.displayName, member.discordUsername]),
+          ),
+        );
+      }
       const requiredKeys = Array.from(new Set(
         Object.values(expectedGames).flat().map((entry) => entry.team),
       ));
-      const mapped = mapRecoveryRegistrations(registrations, requiredKeys);
+      const mapped = mapRecoveryRegistrations(registrations, requiredKeys, playerNamesByTeamId);
       console.log(
         `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} teams=${mapped.length} mapping=pass`,
       );

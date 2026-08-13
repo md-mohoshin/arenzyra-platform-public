@@ -7,6 +7,7 @@ import {
   mapRecoveryRows,
   mapRecoveryRegistrations,
   recoveryTeamScore,
+  recoveryRegistrationPlayerNames,
   selectRecoveryGuild,
   selectRecoverySession,
   type RecoveryTeamKey,
@@ -180,5 +181,32 @@ test("recovery maps unique deleted registrations without restoring slots", () =>
       { key: "SGE", teamId: "team-SGE", label: "SGE" },
       { key: "FPS", teamId: "team-FPS", label: "FPS" },
     ],
+  );
+});
+
+test("deleted registration mapping uses retained roster player anchors", () => {
+  const registration = {
+    id: "registration-n1",
+    teamId: "team-n1",
+    leaderDiscordUserId: null,
+    managerDiscordUserIds: [],
+    tournamentRosterJson: { players: [{ ign: "N1 ANDYY" }] },
+    status: "REMOVED" as const,
+    slotNumber: null,
+    waitlistPosition: null,
+    checkedInAt: null,
+    confirmedAt: null,
+    removedAt: "2026-08-13T00:00:00.000Z",
+    removalReason: "cleared",
+    note: null,
+    createdAt: "2026-08-12T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    team: { id: "team-n1", name: "Unknown", tag: null, logoUrl: null, countryCode: null, region: null },
+  };
+  const names = recoveryRegistrationPlayerNames(registration, ["Discord Name"]);
+  assert.deepEqual(names, ["N1 ANDYY", "Discord Name"]);
+  assert.deepEqual(
+    mapRecoveryRegistrations([registration], ["N1"], new Map([["team-n1", names]])),
+    [{ key: "N1", teamId: "team-n1", label: "Unknown" }],
   );
 });
