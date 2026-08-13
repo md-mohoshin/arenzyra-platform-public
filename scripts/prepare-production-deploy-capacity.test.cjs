@@ -30,7 +30,7 @@ test("automatic capacity preparation runs only for build-producing routine modes
   const deploy = read("scripts/deploy-production.sh");
   assert.match(
     deploy,
-    /if \[ "\$MODE" = "full" \] \|\| \[ "\$MODE" = "discord-bot" \]; then\s+ARENZYRA_DEPLOY_LOCK_INHERITED=1 \\\s+bash scripts\/prepare-production-deploy-capacity\.sh/,
+    /if \[ "\$MODE" = "full" \] \|\| \[ "\$MODE" = "discord-bot" \] \|\| \\\s+\[ "\$MODE" = "api-recovery" \]; then\s+ARENZYRA_DEPLOY_LOCK_INHERITED=1 \\\s+bash scripts\/prepare-production-deploy-capacity\.sh/,
   );
   const preparation = deploy.indexOf(
     "bash scripts/prepare-production-deploy-capacity.sh",
@@ -43,7 +43,7 @@ test("routine deployment warns but does not require live-match quiescence", () =
   const deploy = read("scripts/deploy-production.sh");
   assert.match(
     deploy,
-    /case "\$MODE" in\s+full\|discord-bot\)\s+production_live_match_warning_required=1/,
+    /case "\$MODE" in\s+full\|discord-bot\|api-recovery\)\s+production_live_match_warning_required=1/,
   );
   assert.doesNotMatch(
     deploy,
