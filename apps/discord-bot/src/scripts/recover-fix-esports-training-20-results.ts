@@ -522,9 +522,16 @@ export function mapRecoveryActiveTeams(
       const topScore = scored[0]?.score ?? 0;
       const tied = scored.filter((candidate) => candidate.score === topScore).slice(0, 4);
       throw new Error(
-        `active organization team ${key} did not resolve uniquely; topScore=${topScore} tied=${tied.length} labels=${tied.map((candidate) =>
-          candidate.team.tag?.trim() || candidate.team.name.trim() || "unlabeled"
-        ).join(",")}`,
+        `active organization team ${key} did not resolve uniquely; topScore=${topScore} tied=${tied.length} candidates=${tied.map((candidate) => {
+          const teamId = candidate.team.id;
+          const label = candidate.team.tag?.trim() || candidate.team.name.trim() || "unlabeled";
+          const players = (playerNamesByTeamId.get(teamId) ?? [])
+            .map((name) => normalizeRecoveryText(name).slice(0, 40))
+            .filter(Boolean)
+            .slice(0, 12);
+          const members = new Set(managerIdsByTeamId.get(teamId) ?? []).size;
+          return `${label}[players=${players.join("|") || "none"};members=${members}]`;
+        }).join(",")}`,
       );
     }
     used.add(scored[0].team.id);
