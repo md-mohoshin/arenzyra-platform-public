@@ -232,7 +232,7 @@ const PLAYER_ANCHORS: Readonly<Record<RecoveryTeamKey, readonly string[]>> = {
   ELP: ["arrow", "dentex", "giannel", "edison"],
   G7: ["yenni", "akai", "horsemann", "lucyie"],
   OG: ["gill", "sandhu", "dhillon", "raja", "iqoo"],
-  OUT: ["fuego", "spasic", "zeltex", "gagibog"],
+  OUT: ["fuego", "spasic", "zeltex", "gagibog", "dombibog"],
   MERCY: ["mercyyash", "mercygod", "mercysavage", "scout", "mercyjdt"],
   CLY: ["rayder", "nitro", "raven", "zoroboy"],
   "4M": ["slayzy", "midrell", "bingalo", "vagaa"],

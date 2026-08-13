@@ -421,3 +421,26 @@ test("reconstruction uses retained branding to distinguish managed duplicates", 
     [{ key: "OUT", teamId: "team-out", label: "OUT" }],
   );
 });
+
+test("reconstruction uses the reviewed active Discord alias for duplicate OUT teams", () => {
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-out", name: "OUT", tag: "OUT" },
+        { id: "team-other-1", name: "Out", tag: "OUT" },
+        { id: "team-other-2", name: "out", tag: "OUT" },
+        { id: "team-other-3", name: "OUT", tag: "OUT" },
+      ],
+      ["OUT"],
+      new Map([["team-out", ["DOMBIBOGGGGGG"]]]),
+      new Map(),
+      new Map([
+        ["team-out", ["111111111111111"]],
+        ["team-other-1", ["222222222222222"]],
+        ["team-other-2", ["333333333333333"]],
+        ["team-other-3", ["444444444444444", "555555555555555"]],
+      ]),
+    ),
+    [{ key: "OUT", teamId: "team-out", label: "OUT" }],
+  );
+});
