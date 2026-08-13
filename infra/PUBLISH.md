@@ -346,6 +346,11 @@ production_entry recover-fix-esports-training-results 20-check
 production_entry recover-fix-esports-training-results 20-apply
 production_entry recover-fix-esports-training-results 23-check
 production_entry recover-fix-esports-training-results 23-apply
+# Resume both series after an interrupted recovery already produced a complete
+# off-site-verified backup less than two hours ago. Both checks repeat before
+# the backup is accepted, and preflight repeats before each series write.
+production_entry recover-fix-esports-training-results \
+  both-apply-verified-backup 20260813T065123Z-323b3730
 ```
 
 If a newly completed and off-site-verified encrypted recovery set makes the

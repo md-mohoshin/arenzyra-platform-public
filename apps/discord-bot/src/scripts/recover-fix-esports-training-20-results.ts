@@ -464,9 +464,10 @@ export function mapRecoveryActiveTeams(
     SessionRegistrationResponse | readonly SessionRegistrationResponse[]
   > = new Map(),
   managerIdsByTeamId: ReadonlyMap<string, readonly string[]> = new Map(),
+  allowUnresolved = false,
 ) {
   const used = new Set<string>();
-  return keys.map((key) => {
+  return keys.flatMap((key) => {
     const scored = teams
       .filter((team) => !used.has(team.id))
       .map((team) => ({
@@ -530,6 +531,7 @@ export function mapRecoveryActiveTeams(
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score);
     if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) {
+      if (allowUnresolved) return [];
       const topScore = scored[0]?.score ?? 0;
       const tied = scored.filter((candidate) => candidate.score === topScore).slice(0, 4);
       throw new Error(
@@ -546,40 +548,46 @@ export function mapRecoveryActiveTeams(
       );
     }
     used.add(scored[0].team.id);
-    return {
+    return [{
       key,
       teamId: scored[0].team.id,
       label: scored[0].team.tag?.trim() || scored[0].team.name.trim() || key,
-    };
+    }];
   });
 }
 
 export function mapRecoveryRows(
   rows: MatchResultRowResponse[],
   expected: readonly RecoveryResult[],
+  allowUnresolved = false,
 ) {
   const active = rows.filter((row) => row.wasPresentInMatch !== false);
-  if (active.length !== expected.length) {
+  if ((!allowUnresolved && active.length !== expected.length) || active.length > expected.length) {
     throw new Error(`active team count ${active.length} does not match screenshot count ${expected.length}`);
   }
   const used = new Set<string>();
-  return expected.map((entry) => {
+  const mapped = expected.flatMap((entry) => {
     const scored = active
       .filter((row) => !used.has(row.teamId))
       .map((row) => ({ row, score: recoveryTeamScore(row, entry.team) }))
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score);
     if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) {
+      if (allowUnresolved) return [];
       throw new Error(`team ${entry.team} did not resolve uniquely`);
     }
     used.add(scored[0].row.teamId);
-    return {
+    return [{
       teamId: scored[0].row.teamId,
       placement: entry.placement,
       kills: entry.kills,
       label: scored[0].row.team?.tag?.trim() || scored[0].row.team?.name?.trim() || entry.team,
-    };
+    }];
   });
+  if (mapped.length !== active.length) {
+    throw new Error(`mapped team count ${mapped.length} does not match active team count ${active.length}`);
+  }
+  return mapped;
 }
 
 function matchForGame(matches: SessionMatchResponse[], game: number) {
@@ -691,11 +699,14 @@ async function run() {
         playerNamesByTeamId,
         registrationCandidatesByKey,
         managerIdsByTeamId,
+        series === "23",
       );
+      const mappedKeys = new Set(mapped.map((entry) => entry.key));
+      const skippedKeys = requiredKeys.filter((key) => !mappedKeys.has(key));
       const tiedRegistrationKeys = Array.from(registrationCandidatesByKey.values())
         .filter((candidates) => candidates.length > 1).length;
       console.log(
-        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} tiedRegistrationKeys=${tiedRegistrationKeys} activePool=${activeTeams.length} memberPool=${activeMemberIdsByTeamId.size} managerPool=${managedTeams.length} teams=${mapped.length} mapping=pass`,
+        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} tiedRegistrationKeys=${tiedRegistrationKeys} activePool=${activeTeams.length} memberPool=${activeMemberIdsByTeamId.size} managerPool=${managedTeams.length} teams=${mapped.length} skipped=${skippedKeys.join(",") || "none"} mapping=pass`,
       );
       if (!apply) {
         console.log(`RESULT_RECOVERY_CHECK session=${session.name} games=0 rebuild=required status=pass`);
@@ -704,7 +715,8 @@ async function run() {
       const mappedByKey = new Map(mapped.map((entry) => [entry.key, entry]));
       const created: SessionMatchResponse[] = [];
       for (const game of [1, 2, 3, 4]) {
-        const expected = expectedGames[game];
+        const expected = expectedGames[game].filter((entry) => mappedByKey.has(entry.team));
+        if (!expected.length) throw new Error(`game ${game} has no resolved teams`);
         const match = await api.createSessionMatch(session.id, {
           name: `Game ${game}`,
           matchNumber: game,
@@ -762,7 +774,11 @@ async function run() {
       if (current.locked) {
         throw new Error(`game ${game} results are locked (${current.lockReason ?? current.lockState ?? "unknown reason"})`);
       }
-      const rows = mapRecoveryRows(current.results ?? current.data ?? [], expectedGames[game]);
+      const rows = mapRecoveryRows(
+        current.results ?? current.data ?? [],
+        expectedGames[game],
+        series === "23",
+      );
       prepared.push({ game, match, version: current.version, rows });
       console.log(
         `RESULT_RECOVERY_CHECK series=${series}:00 game=${game} match=${match.name ?? `Game ${game}`} teams=${rows.length} mapping=pass`,

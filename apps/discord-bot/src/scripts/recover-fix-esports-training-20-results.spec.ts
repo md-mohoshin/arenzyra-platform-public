@@ -104,6 +104,16 @@ test("recovery rejects cleared or incomplete match snapshots", () => {
   );
 });
 
+test("23:00 partial recovery maps every present team and omits absent teams", () => {
+  const expected = RECOVERY_GAMES_23[1];
+  const present = expected
+    .filter((entry) => entry.team !== "PI" && entry.team !== "OUT_MAIN")
+    .map((entry, index) => resultRow(entry.team, index));
+  const mapped = mapRecoveryRows(present, expected, true);
+  assert.equal(mapped.length, present.length);
+  assert.ok(mapped.every((row) => row.teamId !== "team-PI" && row.teamId !== "team-OUT_MAIN"));
+});
+
 test("player anchors recover a team when its stored tag and name are missing", () => {
   const row = resultRow("N1", 0, {
     team: { id: "team-N1", name: null, tag: null },

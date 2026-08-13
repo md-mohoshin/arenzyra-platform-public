@@ -195,12 +195,19 @@ case "$command_id" in
     exec /bin/bash scripts/configure-production-openai-key.sh
     ;;
   recover-fix-esports-training-results)
-    [ "$#" -eq 1 ] && case "$1" in
-      20-check|20-apply|23-check|23-apply) true ;;
-      *) false ;;
-    esac || block "recover-fix-esports-training-results accepts exactly 20-check, 20-apply, 23-check, or 23-apply."
+    if [ "$#" -eq 1 ]; then
+      case "$1" in
+        20-check|20-apply|23-check|23-apply) ;;
+        *) block "recover-fix-esports-training-results received an unsupported mode." ;;
+      esac
+    elif [ "$#" -eq 2 ] && [ "$1" = 'both-apply-verified-backup' ] && \
+      [[ "$2" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$ ]]; then
+      :
+    else
+      block "recover-fix-esports-training-results accepts one normal mode or both-apply-verified-backup with one backup ID."
+    fi
     require_nested_assembly
-    exec /bin/bash scripts/recover-production-fix-esports-training-20-results.sh "$1"
+    exec /bin/bash scripts/recover-production-fix-esports-training-20-results.sh "$@"
     ;;
   backup-inventory)
     [ "$#" -eq 0 ] || block "backup-inventory accepts no arguments."

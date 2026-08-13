@@ -1515,13 +1515,16 @@ test("Fix Esports result recovery checks before backup and writes", () => {
     "apps/discord-bot/src/scripts/recover-fix-esports-training-20-results.ts",
   );
   assert.match(launcher, /recover-fix-esports-training-results\)/);
-  assert.match(launcher, /20-check, 20-apply, 23-check, or 23-apply/);
+  assert.match(launcher, /both-apply-verified-backup/);
   const check = wrapper.indexOf('run_recovery "$series-check"');
   const backup = wrapper.indexOf("scripts/production-backup.sh");
   const apply = wrapper.indexOf('run_recovery "$mode"');
   assert.ok(check >= 0 && check < backup && backup < apply);
   assert.match(wrapper, /mode="\$1"[\s\S]*set --[\s\S]*source scripts\/acquire-production-deploy-lock\.sh/);
   assert.match(wrapper, /ARENZYRA_BACKUP_REQUIRE_OFFSITE=1/);
+  assert.match(wrapper, /verify_reused_backup/);
+  assert.match(wrapper, /now_epoch - marker_epoch \)\) -le 7200/);
+  assert.match(wrapper, /run_recovery 20-apply[\s\S]*production-deploy-preflight\.sh[\s\S]*run_recovery 23-apply/);
   assert.match(recovery, /Fix Esports Training Series 20:00/);
   assert.match(recovery, /Fix Esports Traning Series 20:00/);
   assert.match(recovery, /FIX ESPORTS \| 20:00/);
