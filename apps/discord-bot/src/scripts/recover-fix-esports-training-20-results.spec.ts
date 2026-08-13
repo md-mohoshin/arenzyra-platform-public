@@ -223,3 +223,40 @@ test("reconstruction maps only unique active organization teams", () => {
     { key: "FPS", teamId: "team-fps", label: "FPS" },
   ]);
 });
+
+test("reconstruction uses retained managers to disambiguate duplicate active tags", () => {
+  const teams = [
+    { id: "team-wrong", name: "SGE Academy", tag: "SGE" },
+    { id: "team-right", name: "SGE Main", tag: "SGE" },
+  ];
+  const registration = {
+    id: "registration-sge",
+    teamId: "deleted-sge",
+    leaderDiscordUserId: "111111111111111",
+    managerDiscordUserIds: ["111111111111111"],
+    status: "REMOVED" as const,
+    slotNumber: null,
+    waitlistPosition: null,
+    checkedInAt: null,
+    confirmedAt: null,
+    removedAt: "2026-08-13T00:00:00.000Z",
+    removalReason: "cleanup",
+    note: null,
+    createdAt: "2026-08-13T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    team: null,
+  };
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      teams,
+      ["SGE"],
+      new Map(),
+      new Map([["SGE", registration]]),
+      new Map([
+        ["team-wrong", ["222222222222222"]],
+        ["team-right", ["111111111111111"]],
+      ]),
+    ),
+    [{ key: "SGE", teamId: "team-right", label: "SGE" }],
+  );
+});

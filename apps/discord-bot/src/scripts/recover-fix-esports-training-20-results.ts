@@ -390,7 +390,7 @@ export function mapRecoveryRegistrations(
 ) {
   const unique = new Map<string, SessionRegistrationResponse>();
   for (const registration of registrations) {
-    if (registration.team) unique.set(registration.teamId, registration);
+    unique.set(registration.teamId, registration);
   }
   const candidates = Array.from(unique.values());
   const used = new Set<string>();
@@ -424,6 +424,8 @@ export function mapRecoveryActiveTeams(
   teams: TeamSummary[],
   keys: readonly RecoveryTeamKey[],
   playerNamesByTeamId: ReadonlyMap<string, readonly string[]>,
+  registrationByKey: ReadonlyMap<RecoveryTeamKey, SessionRegistrationResponse> = new Map(),
+  managerIdsByTeamId: ReadonlyMap<string, readonly string[]> = new Map(),
 ) {
   const used = new Set<string>();
   return keys.map((key) => {
@@ -431,23 +433,44 @@ export function mapRecoveryActiveTeams(
       .filter((team) => !used.has(team.id))
       .map((team) => ({
         team,
-        score: recoveryTeamScore({
-          id: `recovery-team-${team.id}`,
-          matchId: "recovery-active-team",
-          teamId: team.id,
-          slot: null,
-          kills: 0,
-          placement: null,
-          placementPoints: 0,
-          totalPoints: 0,
-          team,
-          players: (playerNamesByTeamId.get(team.id) ?? []).map((name, index) => ({
-            id: `recovery-player-${index}`,
-            playerId: `recovery-player-${index}`,
-            name,
+        score: (() => {
+          const registration = registrationByKey.get(key);
+          const expectedManagers = new Set([
+            registration?.leaderDiscordUserId,
+            ...(registration?.managerDiscordUserIds ?? []),
+          ].filter((id): id is string => Boolean(id?.trim())));
+          const managerMatches = (managerIdsByTeamId.get(team.id) ?? [])
+            .filter((id) => expectedManagers.has(id)).length;
+          if (registration && managerMatches === 0) return 0;
+
+          const activePlayers = playerNamesByTeamId.get(team.id) ?? [];
+          const activePlayerKeys = new Set(activePlayers.map(compact).filter(Boolean));
+          const registrationPlayers = registration
+            ? recoveryRegistrationPlayerNames(registration)
+            : [];
+          const rosterOverlap = registrationPlayers
+            .map(compact)
+            .filter((name, index, names) => Boolean(name) && names.indexOf(name) === index)
+            .filter((name) => activePlayerKeys.has(name)).length;
+          const identityScore = recoveryTeamScore({
+            id: `recovery-team-${team.id}`,
+            matchId: "recovery-active-team",
+            teamId: team.id,
+            slot: null,
             kills: 0,
-          })),
-        }, key),
+            placement: null,
+            placementPoints: 0,
+            totalPoints: 0,
+            team,
+            players: activePlayers.map((name, index) => ({
+              id: `recovery-player-${index}`,
+              playerId: `recovery-player-${index}`,
+              name,
+              kills: 0,
+            })),
+          }, key);
+          return managerMatches * 1000 + rosterOverlap * 100 + identityScore;
+        })(),
       }))
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score);
@@ -529,6 +552,7 @@ async function run() {
     if (session.status === "LIVE") throw new Error("target session is still LIVE");
 
     const matches = await api.listSessionMatches(session.id);
+    let reconstructed = false;
     if (matches.length === 0) {
       const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
       const activeTeams = await api.searchTeams("");
@@ -544,15 +568,95 @@ async function run() {
       const requiredKeys = Array.from(new Set(
         Object.values(expectedGames).flat().map((entry) => entry.team),
       ));
-      const mapped = mapRecoveryActiveTeams(activeTeams, requiredKeys, playerNamesByTeamId);
+      const registrationPlayerNames = new Map<string, readonly string[]>();
+      for (const registration of registrations) {
+        registrationPlayerNames.set(
+          registration.teamId,
+          recoveryRegistrationPlayerNames(registration),
+        );
+      }
+      const mappedRegistrations = mapRecoveryRegistrations(
+        registrations,
+        requiredKeys,
+        registrationPlayerNames,
+      );
+      const registrationByKey = new Map(mappedRegistrations.map((entry) => [
+        entry.key,
+        registrations.find((registration) => registration.teamId === entry.teamId)!,
+      ]));
+      const recoveryManagerIds = Array.from(new Set(
+        Array.from(registrationByKey.values()).flatMap((registration) => [
+          registration.leaderDiscordUserId,
+          ...registration.managerDiscordUserIds,
+        ]).filter((id): id is string => Boolean(id?.trim())),
+      ));
+      const managedTeams = await api.listDiscordManagedTeams(recoveryManagerIds, 1000);
+      const managerIdsByTeamId = new Map<string, readonly string[]>();
+      for (const managed of managedTeams) {
+        managerIdsByTeamId.set(
+          managed.team.id,
+          managed.managers.map((manager) => manager.discordUserId),
+        );
+      }
+      const mapped = mapRecoveryActiveTeams(
+        activeTeams,
+        requiredKeys,
+        playerNamesByTeamId,
+        registrationByKey,
+        managerIdsByTeamId,
+      );
       console.log(
-        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} activePool=${activeTeams.length} teams=${mapped.length} mapping=pass`,
+        `RESULT_RECOVERY_REBUILD_CHECK series=${series}:00 registrations=${registrations.length} activePool=${activeTeams.length} managerPool=${managedTeams.length} teams=${mapped.length} mapping=pass`,
       );
       if (!apply) {
         console.log(`RESULT_RECOVERY_CHECK session=${session.name} games=0 rebuild=required status=pass`);
         return;
       }
-      throw new Error("match reconstruction apply is not enabled until the deleted-registration check is reviewed");
+      const mappedByKey = new Map(mapped.map((entry) => [entry.key, entry]));
+      const created: SessionMatchResponse[] = [];
+      for (const game of [1, 2, 3, 4]) {
+        const expected = expectedGames[game];
+        const match = await api.createSessionMatch(session.id, {
+          name: `Game ${game}`,
+          matchNumber: game,
+          gameKey: "PUBG_MOBILE",
+          slotCount: expected.length,
+          loadTeamsFromEvent: false,
+          dataMode: "MANUAL",
+          dataSource: "MANUAL",
+          status: "DRAFT",
+        });
+        if (
+          match.sessionId !== session.id || match.matchNumber !== game ||
+          match.name !== `Game ${game}` || match.status !== "DRAFT"
+        ) {
+          throw new Error(`game ${game} creation postcondition failed`);
+        }
+        created.push(match);
+
+        for (const [index, entry] of expected.entries()) {
+          const team = mappedByKey.get(entry.team);
+          if (!team) throw new Error(`game ${game} team ${entry.team} is unmapped`);
+          await api.setMatchSlot(match.id, {
+            slotNumber: index + 1,
+            teamId: team.teamId,
+          });
+        }
+        const assignedSlots = (await api.listMatchSlots(match.id))
+          .filter((slot) => Boolean(slot.teamId));
+        if (
+          assignedSlots.length !== expected.length ||
+          new Set(assignedSlots.map((slot) => slot.teamId)).size !== expected.length
+        ) {
+          throw new Error(`game ${game} slot assignment postcondition failed`);
+        }
+
+        const live = await api.updateMatchStatus(match.id, "LIVE");
+        if (live.status !== "LIVE") throw new Error(`game ${game} LIVE transition failed`);
+        console.log(`RESULT_RECOVERY_REBUILD_APPLY series=${series}:00 game=${game} teams=${expected.length} status=prepared`);
+      }
+      matches.push(...created);
+      reconstructed = true;
     }
     const prepared: Array<{
       game: number;
@@ -562,7 +666,7 @@ async function run() {
     }> = [];
     for (const game of [1, 2, 3, 4]) {
       const match = matchForGame(matches, game);
-      if (match.status === "LIVE" || match.liveState === "LIVE") {
+      if (!reconstructed && (match.status === "LIVE" || match.liveState === "LIVE")) {
         throw new Error(`game ${game} is still LIVE`);
       }
       const current = await api.getMatchResults(match.id);
@@ -588,7 +692,34 @@ async function run() {
       if (updated.updatedCount !== item.rows.length) {
         throw new Error(`game ${item.game} updated ${updated.updatedCount ?? 0} rows, expected ${item.rows.length}`);
       }
+      const verifiedResults = await api.getMatchResults(item.match.id);
+      const verifiedRows = verifiedResults.results ?? verifiedResults.data ?? [];
+      for (const expectedRow of item.rows) {
+        const actual = verifiedRows.find((row) => row.teamId === expectedRow.teamId);
+        if (
+          !actual || actual.placement !== expectedRow.placement ||
+          actual.kills !== expectedRow.kills
+        ) {
+          throw new Error(`game ${item.game} result postcondition failed`);
+        }
+      }
       console.log(`RESULT_RECOVERY_APPLY series=${series}:00 game=${item.game} rows=${item.rows.length} status=pass`);
+    }
+
+    if (reconstructed) {
+      for (const item of prepared) {
+        const ended = await api.updateMatchStatus(item.match.id, "ENDED");
+        if (ended.status !== "ENDED") {
+          throw new Error(`game ${item.game} ENDED transition failed`);
+        }
+      }
+      const rebuiltMatches = await api.listSessionMatches(session.id);
+      if (
+        rebuiltMatches.length !== 4 ||
+        rebuiltMatches.some((match, index) => match.matchNumber !== index + 1 || match.status !== "ENDED")
+      ) {
+        throw new Error("rebuilt match inventory postcondition failed");
+      }
     }
 
     const config = await api.getSessionDiscordConfig(session.id);

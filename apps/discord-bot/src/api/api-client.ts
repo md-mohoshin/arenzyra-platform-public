@@ -1264,6 +1264,8 @@ export type CreateSessionMatchPayload = {
   name?: string;
   matchNumber?: number;
   gameKey?: string;
+  slotCount?: number;
+  loadTeamsFromEvent?: boolean;
   map?: string;
   dataMode?: string;
   dataSource?: string;
@@ -2723,6 +2725,38 @@ export class ArenzyraApiClient {
       const response = await this.request<MatchSlotResponse[]>({
         method: "get",
         url: `/me/matches/${matchId}/slots`,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async setMatchSlot(
+    matchId: string,
+    payload: { slotNumber: number; teamId: string },
+  ): Promise<unknown> {
+    try {
+      const response = await this.request({
+        method: "post",
+        url: `/me/matches/${matchId}/slots`,
+        data: payload,
+      });
+      return response.data;
+    } catch (error) {
+      throw normalizeApiError(error);
+    }
+  }
+
+  async updateMatchStatus(
+    matchId: string,
+    status: "DRAFT" | "LIVE" | "ENDED",
+  ): Promise<SessionMatchResponse> {
+    try {
+      const response = await this.request<SessionMatchResponse>({
+        method: "patch",
+        url: `/me/matches/${matchId}`,
+        data: { status },
       });
       return response.data;
     } catch (error) {

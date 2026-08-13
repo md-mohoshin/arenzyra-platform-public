@@ -1534,7 +1534,12 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(recovery, /listRegistrations\(session\.id, \{ includeDeleted: true \}\)/);
   assert.match(recovery, /api\.searchTeams\(""\)/);
   assert.match(recovery, /api\.listTeamPlayers\(team\.id\)/);
-  assert.match(recovery, /match reconstruction apply is not enabled/);
+  assert.match(recovery, /loadTeamsFromEvent: false/);
+  assert.match(recovery, /api\.setMatchSlot\(match\.id/);
+  assert.match(recovery, /api\.updateMatchStatus\(match\.id, "LIVE"\)/);
+  assert.match(recovery, /api\.updateMatchStatus\(item\.match\.id, "ENDED"\)/);
+  assert.match(recovery, /result postcondition failed/);
+  assert.match(wrapper, /production-backup\.sh[\s\S]*production-deploy-preflight\.sh[\s\S]*run_recovery "\$mode"/);
   assert.match(recovery, /exact\.length > 1/);
   assert.match(recovery, /related\.length === 1/);
   assert.match(recovery, /configured final result channel is missing/);

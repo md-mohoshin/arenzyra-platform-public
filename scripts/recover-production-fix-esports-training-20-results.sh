@@ -49,4 +49,7 @@ run_recovery "$series-check"
 # The backup script inherits this operation's production deployment lock.
 /usr/bin/env ARENZYRA_BACKUP_REQUIRE_OFFSITE=1 \
   /bin/bash scripts/production-backup.sh
+# The backup itself consumes local disk. Re-run the ordinary production gate
+# immediately before the recovery write phase in this same locked session.
+/bin/bash scripts/production-deploy-preflight.sh
 run_recovery "$mode"
