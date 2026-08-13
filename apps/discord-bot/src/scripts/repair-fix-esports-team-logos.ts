@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { REST, Routes } from "discord.js";
 import {
   ArenzyraApiClient,
@@ -14,6 +15,7 @@ const TARGET_GUILD_NAME = "Fix Esports";
 const HISTORY_LIMIT = 500;
 const RESULT_CHANNEL_NUMBER = "16";
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const MANAGED_TEAM_LOGO_EMOJI = /^azt_v1_([0-9a-f]{10})_[0-9a-f]{6}$/;
 
 type DiscordAttachment = {
   id?: string | null;
@@ -34,12 +36,19 @@ type DiscordMessage = {
 
 type DiscordChannel = { id: string; name?: string | null };
 
+type DiscordEmoji = {
+  id: string;
+  name?: string | null;
+  animated?: boolean | null;
+  available?: boolean | null;
+};
+
 export type LogoCandidate = {
   team: TeamSummary;
   channelId: string;
   messageId: string;
   attachment: DiscordAttachment & { url: string };
-  source: "command" | "plain-exact";
+  source: "command" | "plain-exact" | "managed-guild-emoji";
 };
 
 type SessionContext = {
@@ -160,6 +169,50 @@ export function newestLogoCandidates(candidates: LogoCandidate[]) {
     }
   }
   return [...newest.values()];
+}
+
+function teamIdHash(teamId: string) {
+  return createHash("sha1").update(teamId).digest("hex").slice(0, 10);
+}
+
+export function managedGuildEmojiCandidates(
+  emojis: DiscordEmoji[],
+  guildId: string,
+  teams: TeamSummary[],
+) {
+  const teamsByHash = new Map<string, TeamSummary[]>();
+  for (const team of teams) {
+    const hash = teamIdHash(team.id);
+    teamsByHash.set(hash, [...(teamsByHash.get(hash) ?? []), team]);
+  }
+
+  return emojis.flatMap((emoji): LogoCandidate[] => {
+    const match = MANAGED_TEAM_LOGO_EMOJI.exec(emoji.name ?? "");
+    if (
+      !match ||
+      emoji.available === false ||
+      emoji.animated ||
+      !/^\d{15,25}$/.test(emoji.id)
+    ) {
+      return [];
+    }
+    const matchedTeams = teamsByHash.get(match[1]) ?? [];
+    if (matchedTeams.length !== 1) return [];
+    return [
+      {
+        team: matchedTeams[0],
+        channelId: guildId,
+        messageId: emoji.id,
+        attachment: {
+          id: emoji.id,
+          url: `https://cdn.discordapp.com/emojis/${emoji.id}.png?size=256&quality=lossless`,
+          filename: `${emoji.name}.png`,
+          content_type: "image/png",
+        },
+        source: "managed-guild-emoji",
+      },
+    ];
+  });
 }
 
 function compareSnowflakes(left: string, right: string) {
@@ -474,6 +527,10 @@ async function run() {
         .catch(() => null)) as DiscordChannel | null;
       if (channel) channelNames.set(channelId, channel.name?.trim() || "unnamed");
     }
+    const guildEmojis = (await rest.get(
+      Routes.guildEmojis(guild.id),
+    )) as DiscordEmoji[];
+    channelNames.set(guild.id, "managed-server-emoji");
 
     const messagesByChannel = await Promise.all(
       logoChannelIds.map(async (channelId) => ({
@@ -481,14 +538,15 @@ async function run() {
         messages: await fetchChannelMessages(rest, channelId),
       })),
     );
-    const candidates = newestLogoCandidates(
-      messagesByChannel.flatMap(({ channelId, messages }) =>
+    const candidates = newestLogoCandidates([
+      ...messagesByChannel.flatMap(({ channelId, messages }) =>
         messages.flatMap((message) => {
           const candidate = logoCandidateForMessage(message, channelId, teams);
           return candidate ? [candidate] : [];
         }),
       ),
-    );
+      ...managedGuildEmojiCandidates(guildEmojis, guild.id, teams),
+    ]);
     const states = await mapWithConcurrency(teams, 6, async (team) => ({
       team,
       usable: await logoIsUsable(team.logoUrl),
@@ -512,10 +570,9 @@ async function run() {
       );
     }
     if (!apply) return;
-    if (!refreshTarget) {
-      throw new Error("Fix Esports channel 16 has no stored final result post to refresh");
+    if (refreshTarget) {
+      await assertStoredResultPostTarget(rest, api, refreshTarget);
     }
-    await assertStoredResultPostTarget(rest, api, refreshTarget);
     if (!repairs.length) {
       console.log("FIX_ESPORTS_LOGO_APPLY teams=0 status=noop");
     } else {
@@ -549,10 +606,14 @@ async function run() {
         throw new Error(`final logo verification failed for ${repair.team.name}`);
       }
     }
-    const refreshed = await refreshStoredResultPost(rest, api, refreshTarget);
-    console.log(
-      `FIX_ESPORTS_RESULT_REFRESH session=${JSON.stringify(refreshTarget.session.name)} channel=${JSON.stringify(channelNames.get(refreshed.channelId) ?? "unnamed")} files=${refreshed.files} content=preserved status=pass`,
-    );
+    if (refreshTarget) {
+      const refreshed = await refreshStoredResultPost(rest, api, refreshTarget);
+      console.log(
+        `FIX_ESPORTS_RESULT_REFRESH session=${JSON.stringify(refreshTarget.session.name)} channel=${JSON.stringify(channelNames.get(refreshed.channelId) ?? "unnamed")} files=${refreshed.files} content=preserved status=pass`,
+      );
+    } else {
+      console.log("FIX_ESPORTS_RESULT_REFRESH target=none status=skipped");
+    }
   });
 }
 

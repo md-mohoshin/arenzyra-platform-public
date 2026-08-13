@@ -1287,10 +1287,13 @@ production_entry observe network
 ```
 
 The bounded Fix Esports team-logo repair inventories unique exact matches from
-configured Discord logo-channel history before any write. Apply mode repeats
-that check, runs the ordinary production preflight immediately before writes,
-updates only missing or broken team logos, and refreshes only the stored
-bot-owned post in the configured `16` result channel while preserving its text:
+configured Discord logo-channel history and Arenzyra-managed guild emojis before
+any write. Managed emojis are linked only by the hash embedded from the exact
+team ID. Apply mode repeats that check, runs the ordinary production preflight
+immediately before writes, updates only missing or broken team logos, and, when
+one is safely stored, refreshes only the bot-owned post in the configured `16`
+result channel while preserving its text. An absent stored post is skipped so a
+historical Discord message is never guessed or replaced:
 
 ```bash
 production_entry repair-fix-esports-team-logos check

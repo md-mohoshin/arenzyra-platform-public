@@ -1638,6 +1638,9 @@ test("Fix Esports logo repair is exact, check-first, and preflight-gated", () =>
   assert.match(repair, /TARGET_GUILD_NAME = "Fix Esports"/);
   assert.match(repair, /RESULT_CHANNEL_NUMBER = "16"/);
   assert.match(repair, /source: "command" \| "plain-exact"/);
+  assert.match(repair, /MANAGED_TEAM_LOGO_EMOJI = \/\^azt_v1_/);
+  assert.match(repair, /createHash\("sha1"\)\.update\(teamId\)/);
+  assert.match(repair, /Routes\.guildEmojis\(guild\.id\)/);
   assert.match(repair, /existing\.author\?\.id !== botConfig\.discordClientId/);
   assert.match(repair, /content: originalContent/);
   assert.match(repair, /result refresh requires completed, non-live matches/);

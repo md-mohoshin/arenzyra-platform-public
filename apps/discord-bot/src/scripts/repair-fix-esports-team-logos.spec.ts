@@ -4,6 +4,7 @@ import {
   configuredLogoChannelIds,
   logoCandidateForMessage,
   logoMessageLabels,
+  managedGuildEmojiCandidates,
   newestLogoCandidates,
   normalizeFixText,
   selectResultRefreshTarget,
@@ -79,6 +80,47 @@ test("keeps the newest exact logo for each team", () => {
   ]);
   assert.equal(selected.length, 1);
   assert.equal(selected[0].messageId, "200");
+});
+
+test("maps only an exact Arenzyra-managed guild emoji to its hashed team id", () => {
+  const managed = managedGuildEmojiCandidates(
+    [
+      { id: "123456789012345678", name: "azt_v1_c4b40f26b2_123abc" },
+      { id: "223456789012345678", name: "aura" },
+    ],
+    "guild-1",
+    [team],
+  );
+  assert.equal(managed.length, 1);
+  assert.equal(managed[0].team.id, team.id);
+  assert.equal(managed[0].source, "managed-guild-emoji");
+  assert.match(managed[0].attachment.url, /123456789012345678\.png/);
+});
+
+test("rejects managed emoji ambiguity and unavailable or animated assets", () => {
+  const hashCollision = { ...team, id: "team-1", name: "Duplicate" };
+  assert.deepEqual(
+    managedGuildEmojiCandidates(
+      [{ id: "123456789012345678", name: "azt_v1_c4b40f26b2_123abc" }],
+      "guild-1",
+      [team, hashCollision],
+    ),
+    [],
+  );
+  assert.deepEqual(
+    managedGuildEmojiCandidates(
+      [
+        {
+          id: "123456789012345678",
+          name: "azt_v1_c4b40f26b2_123abc",
+          animated: true,
+        },
+      ],
+      "guild-1",
+      [team],
+    ),
+    [],
+  );
 });
 
 test("deduplicates configured logo channel IDs", () => {
