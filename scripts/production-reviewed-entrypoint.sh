@@ -219,6 +219,12 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/recover-production-fix-esports-training-20-results.sh "$@"
     ;;
+  repair-fix-esports-team-logos)
+    [ "$#" -eq 1 ] && { [ "$1" = "check" ] || [ "$1" = "apply" ]; } || \
+      block "repair-fix-esports-team-logos accepts exactly check or apply."
+    require_nested_assembly
+    exec /bin/bash scripts/repair-production-fix-esports-team-logos.sh "$1"
+    ;;
   backup-inventory)
     [ "$#" -eq 0 ] || block "backup-inventory accepts no arguments."
     require_nested_assembly

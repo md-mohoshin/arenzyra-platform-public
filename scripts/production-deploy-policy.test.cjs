@@ -1502,6 +1502,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "backup-configure",
       "openai-key-configure",
       "recover-fix-esports-training-results",
+      "repair-fix-esports-team-logos",
       "backup-inventory",
       "backup-inventory-current",
       "backup-export",
@@ -1619,6 +1620,29 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(recovery, /related\.length === 1/);
   assert.match(recovery, /configured final result channel is missing/);
   assert.match(recovery, /rememberFinalResultPost/);
+});
+
+test("Fix Esports logo repair is exact, check-first, and preflight-gated", () => {
+  const launcher = read("scripts/production-reviewed-entrypoint.sh");
+  const wrapper = read("scripts/repair-production-fix-esports-team-logos.sh");
+  const repair = read(
+    "apps/discord-bot/src/scripts/repair-fix-esports-team-logos.ts",
+  );
+  assert.match(launcher, /repair-fix-esports-team-logos\)/);
+  assert.match(launcher, /accepts exactly check or apply/);
+  const check = wrapper.indexOf("run_repair check");
+  const preflight = wrapper.indexOf("scripts/production-deploy-preflight.sh");
+  const apply = wrapper.indexOf("run_repair apply");
+  assert.ok(check >= 0 && check < preflight && preflight < apply);
+  assert.match(wrapper, /source scripts\/acquire-production-deploy-lock\.sh/);
+  assert.match(repair, /TARGET_GUILD_NAME = "Fix Esports"/);
+  assert.match(repair, /RESULT_CHANNEL_NUMBER = "16"/);
+  assert.match(repair, /source: "command" \| "plain-exact"/);
+  assert.match(repair, /existing\.author\?\.id !== botConfig\.discordClientId/);
+  assert.match(repair, /content: originalContent/);
+  assert.match(repair, /result refresh requires completed, non-live matches/);
+  assert.match(repair, /fetchRemoteRasterImage/);
+  assert.doesNotMatch(repair, /updateManualMatchResults|setMatchSlot|setMatchTeams/);
 });
 
 test("production observation exposes bounded stopped-state and network diagnostics", () => {

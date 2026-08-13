@@ -1286,6 +1286,17 @@ production_entry observe logs
 production_entry observe network
 ```
 
+The bounded Fix Esports team-logo repair inventories unique exact matches from
+configured Discord logo-channel history before any write. Apply mode repeats
+that check, runs the ordinary production preflight immediately before writes,
+updates only missing or broken team logos, and refreshes only the stored
+bot-owned post in the configured `16` result channel while preserving its text:
+
+```bash
+production_entry repair-fix-esports-team-logos check
+production_entry repair-fix-esports-team-logos apply
+```
+
 These read-only helpers resolve the reviewed Compose project from
 `infra/.env.publish`. `ps` includes stopped containers, and `network` prints
 only the reviewed private-network endpoint names and addresses. Do not use an unguarded `docker compose down`, restart,
