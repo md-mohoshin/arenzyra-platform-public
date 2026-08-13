@@ -746,6 +746,7 @@ async function run() {
           name: `Game ${game}`,
           matchNumber: game,
           gameKey: "PUBG_MOBILE",
+          map: "ERANGEL",
           slotCount: expected.length,
           loadTeamsFromEvent: false,
           dataMode: "MANUAL",

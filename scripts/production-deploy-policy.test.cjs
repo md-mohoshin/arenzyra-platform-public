@@ -1541,6 +1541,7 @@ test("Fix Esports result recovery checks before backup and writes", () => {
   assert.match(recovery, /api\.searchTeams\(""\)/);
   assert.match(recovery, /api\.listTeamPlayers\(team\.id\)/);
   assert.match(recovery, /loadTeamsFromEvent: false/);
+  assert.match(recovery, /map: "ERANGEL"/);
   assert.match(recovery, /api\.setMatchSlot\(match\.id/);
   assert.match(recovery, /api\.updateMatchStatus\(match\.id, "LIVE"\)/);
   assert.match(recovery, /api\.updateMatchStatus\(item\.match\.id, "ENDED"\)/);
