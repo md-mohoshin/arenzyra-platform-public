@@ -489,6 +489,7 @@ async function run() {
       const registrations = await api.listRegistrations(session.id, { includeDeleted: true });
       const playerNamesByTeamId = new Map<string, readonly string[]>();
       for (const registration of registrations) {
+        if (!registration.team) continue;
         if (playerNamesByTeamId.has(registration.teamId)) continue;
         const members = await api.listTeamMembers(registration.teamId);
         playerNamesByTeamId.set(
