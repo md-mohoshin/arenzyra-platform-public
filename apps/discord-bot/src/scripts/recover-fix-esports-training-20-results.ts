@@ -364,7 +364,15 @@ export function mapRecoveryRows(
 function matchForGame(matches: SessionMatchResponse[], game: number) {
   const candidates = matches.filter((match) => match.matchNumber === game);
   if (candidates.length !== 1) {
-    throw new Error(`game ${game} match count is ${candidates.length}, expected exactly 1`);
+    const inventory = matches.slice(0, 12).map((match) => ({
+      name: match.name ?? null,
+      matchNumber: match.matchNumber ?? null,
+      status: match.status ?? null,
+      liveState: match.liveState ?? null,
+    }));
+    throw new Error(
+      `game ${game} match count is ${candidates.length}, expected exactly 1; matches=${JSON.stringify(inventory)}`,
+    );
   }
   return candidates[0];
 }
