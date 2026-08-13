@@ -443,7 +443,7 @@ export function recoveryRegistrationCandidates(
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score);
     if (!scored.length) {
-      throw new Error(`deleted registration team ${key} has no identity evidence`);
+      return [key, [] as SessionRegistrationResponse[]] as const;
     }
     const topScore = scored[0].score;
     return [

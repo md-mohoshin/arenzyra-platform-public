@@ -303,6 +303,24 @@ test("reconstruction carries tied deleted tags into active manager disambiguatio
   );
 });
 
+test("reconstruction defers missing deleted identity to unique active roster evidence", () => {
+  const candidates = recoveryRegistrationCandidates([], ["OUT_MAIN"]);
+  assert.deepEqual(candidates.get("OUT_MAIN"), []);
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-out-main", name: "OUT", tag: "OUT" },
+        { id: "team-out-other", name: "OUT", tag: "OUT" },
+      ],
+      ["OUT_MAIN"],
+      new Map([["team-out-main", ["OUT XRP"]]]),
+      candidates,
+      new Map(),
+    ),
+    [{ key: "OUT_MAIN", teamId: "team-out-main", label: "OUT" }],
+  );
+});
+
 test("reconstruction prefers exact registered team identity over duplicate labels", () => {
   const registration = {
     id: "registration-og",
