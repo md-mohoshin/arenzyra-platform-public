@@ -22,6 +22,7 @@ series="${mode%%-*}"
 [ "$(id -u)" -eq 0 ] || block "UID 0 is required."
 [ "$(pwd -P)" = "$EXPECTED_ROOT" ] || block "production root is not exact."
 source scripts/require-local-production-docker.sh
+set --
 # shellcheck source=scripts/acquire-production-deploy-lock.sh
 source scripts/acquire-production-deploy-lock.sh
 
