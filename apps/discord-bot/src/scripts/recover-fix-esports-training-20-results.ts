@@ -629,16 +629,20 @@ async function run() {
           api.listTeamPlayers(team.id),
           api.listTeamMembers(team.id),
         ]);
+        const activeMembers = members.filter(
+          (member) => member.deletedAt === null && member.leftAt === null,
+        );
         playerNamesByTeamId.set(
           team.id,
-          players.flatMap((player) => [player.ign, player.realName, player.name])
+          [
+            ...players.flatMap((player) => [player.ign, player.realName, player.name]),
+            ...activeMembers.flatMap((member) => [member.displayName, member.discordUsername]),
+          ]
             .filter((name): name is string => Boolean(name?.trim())),
         );
         activeMemberIdsByTeamId.set(
           team.id,
-          members
-            .filter((member) => member.deletedAt === null && member.leftAt === null)
-            .map((member) => member.discordUserId),
+          activeMembers.map((member) => member.discordUserId),
         );
       }
       const requiredKeys = Array.from(new Set(
