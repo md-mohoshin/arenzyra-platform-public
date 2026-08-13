@@ -321,6 +321,28 @@ test("reconstruction defers missing deleted identity to unique active roster evi
   );
 });
 
+test("reconstruction distinguishes shared 23:00 OUT labels by reviewed rosters", () => {
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-main", name: "OUT", tag: "OUT" },
+        { id: "team-44", name: "OUT", tag: "OUT" },
+      ],
+      ["OUT_MAIN", "OUT44"],
+      new Map([
+        ["team-main", ["OUT XRP"]],
+        ["team-44", ["OUT GOAT 44"]],
+      ]),
+      recoveryRegistrationCandidates([], ["OUT_MAIN", "OUT44"]),
+      new Map(),
+    ),
+    [
+      { key: "OUT_MAIN", teamId: "team-main", label: "OUT" },
+      { key: "OUT44", teamId: "team-44", label: "OUT" },
+    ],
+  );
+});
+
 test("reconstruction prefers exact registered team identity over duplicate labels", () => {
   const registration = {
     id: "registration-og",

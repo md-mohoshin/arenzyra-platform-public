@@ -214,7 +214,7 @@ const TEAM_ALIASES: Readonly<Record<RecoveryTeamKey, readonly string[]>> = {
   PI: ["pi"], TL23: ["tl", "tl23"], C2: ["c2"], C4: ["c4"],
   AG: ["ag"], VCS: ["vcs"], BLX: ["blx"], MPWR: ["mpwr"],
   TI: ["ti"], MAR: ["mar"], TEAM6: ["team6"],
-  OUT_MAIN: ["outmain"], OUT44: ["out44"], TEAM11: ["team11"],
+  OUT_MAIN: ["outmain", "out"], OUT44: ["out44", "out"], TEAM11: ["team11"],
   "2K": ["2k"], HOMIES: ["homies"],
 };
 
@@ -498,7 +498,9 @@ export function mapRecoveryActiveTeams(
           const registrations = configured
             ? (Array.isArray(configured) ? configured : [configured])
             : [];
-          if (!registrations.length) return managedPresenceScore + identityScore;
+          if (!registrations.length) {
+            return identityScore > 0 ? managedPresenceScore + identityScore : 0;
+          }
           return Math.max(...registrations.map((registration) => {
             if (team.id === registration.teamId) {
               return 100_000 + identityScore;
