@@ -335,3 +335,37 @@ test("reconstruction prefers exact registered team identity over duplicate label
     [{ key: "OG", teamId: "team-exact", label: "OG" }],
   );
 });
+
+test("reconstruction permits roster evidence when retained managers are stale", () => {
+  const registration = {
+    id: "registration-og",
+    teamId: "deleted-og",
+    leaderDiscordUserId: "111111111111111",
+    managerDiscordUserIds: ["111111111111111"],
+    tournamentRosterJson: { players: [{ ign: "OG GILL" }] },
+    status: "REMOVED" as const,
+    slotNumber: null,
+    waitlistPosition: null,
+    checkedInAt: null,
+    confirmedAt: null,
+    removedAt: "2026-08-13T00:00:00.000Z",
+    removalReason: "cleanup",
+    note: null,
+    createdAt: "2026-08-13T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+    team: { id: "deleted-og", name: "OG", tag: "OG", logoUrl: null, countryCode: null, region: null },
+  };
+  assert.deepEqual(
+    mapRecoveryActiveTeams(
+      [
+        { id: "team-label-only", name: "OG", tag: "OG" },
+        { id: "team-roster", name: "OG", tag: "OG" },
+      ],
+      ["OG"],
+      new Map([["team-roster", ["OG GILL"]]]),
+      new Map([["OG", registration]]),
+      new Map(),
+    ),
+    [{ key: "OG", teamId: "team-roster", label: "OG" }],
+  );
+});

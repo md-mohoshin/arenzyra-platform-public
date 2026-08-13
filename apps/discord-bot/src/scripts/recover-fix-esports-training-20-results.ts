@@ -506,7 +506,6 @@ export function mapRecoveryActiveTeams(
             ].filter((id): id is string => Boolean(id?.trim())));
             const managerMatches = (managerIdsByTeamId.get(team.id) ?? [])
               .filter((id) => expectedManagers.has(id)).length;
-            if (expectedManagers.size > 0 && managerMatches === 0) return 0;
 
             const registrationPlayers = recoveryRegistrationPlayerNames(registration);
             const rosterOverlap = registrationPlayers
