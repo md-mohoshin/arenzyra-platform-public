@@ -22,6 +22,9 @@ const MODE_BINDINGS = Object.freeze({
   "api-recovery": Object.freeze({
     api: "api",
   }),
+  "web-recovery": Object.freeze({
+    web: "web",
+  }),
   "legacy-cutover": Object.freeze({
     api: "api",
     "api-migrate": "api",

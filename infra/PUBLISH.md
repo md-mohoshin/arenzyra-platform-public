@@ -291,6 +291,17 @@ production preflight immediately before both build and recreate:
 production_entry deploy-api-recovery
 ```
 
+For a reviewed Web source-only recovery, use the symmetric narrow activation.
+It builds and recreates only Web, fingerprints every other Compose container
+before and after activation, and still runs the mandatory production preflight
+immediately before both build and recreate. It does not pull images, run API or
+Studio migrations, change database roles, touch volumes, or recreate a
+dependency:
+
+```bash
+production_entry deploy-web-recovery
+```
+
 For an operator-requested view of current protected match activity, use the
 separate bounded read-only summary. It returns organization names and protected
 state counts only; it does not return match, player, or session identifiers and

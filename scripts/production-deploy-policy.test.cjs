@@ -710,7 +710,7 @@ test("web-candidate activation is immutable, dependency-isolated, and preserves 
   assert.match(branch, /non_web_runtime_fingerprint/);
   assert.match(
     deploy,
-    /case "\$MODE" in\s+full\|discord-bot\|api-recovery\)\s+production_live_match_warning_required=1/,
+    /case "\$MODE" in\s+full\|discord-bot\|api-recovery\|web-recovery\)\s+production_live_match_warning_required=1/,
   );
   assert.doesNotMatch(
     deploy,
@@ -729,9 +729,10 @@ test("web-candidate activation is immutable, dependency-isolated, and preserves 
 test("API recovery activation is immutable, dependency-isolated, and preserves non-API containers", () => {
   const deploy = read("scripts/deploy-production.sh");
   const entrypoint = read("scripts/production-reviewed-entrypoint.sh");
+  const deploymentDispatch = deploy.indexOf('\nif [ "$MODE" = "discord-bot" ]; then');
   const branch = deploy.slice(
-    deploy.indexOf('elif [ "$MODE" = "api-recovery" ]; then'),
-    deploy.indexOf('elif [ "$MODE" = "full" ]; then'),
+    deploy.indexOf('elif [ "$MODE" = "api-recovery" ]; then', deploymentDispatch),
+    deploy.indexOf('elif [ "$MODE" = "web-recovery" ]; then', deploymentDispatch),
   );
 
   assert.match(
@@ -749,6 +750,38 @@ test("API recovery activation is immutable, dependency-isolated, and preserves n
   assert.doesNotMatch(
     branch,
     /api-migrate|studio-migrate|create_pre_migration_backup|provision-production-database-roles|up[^\n]*(?:web|media-ai|discord-bot|postgres|redis)/,
+  );
+});
+
+test("Web recovery activation builds only Web and preserves non-Web containers", () => {
+  const deploy = read("scripts/deploy-production.sh");
+  const entrypoint = read("scripts/production-reviewed-entrypoint.sh");
+  const deploymentDispatch = deploy.indexOf('\nif [ "$MODE" = "discord-bot" ]; then');
+  const branch = deploy.slice(
+    deploy.indexOf('elif [ "$MODE" = "web-recovery" ]; then', deploymentDispatch),
+    deploy.indexOf('elif [ "$MODE" = "full" ]; then', deploymentDispatch),
+  );
+
+  assert.match(
+    entrypoint,
+    /deploy-web-recovery\)[\s\S]*accepts no arguments[\s\S]*require_nested_assembly[\s\S]*--web-recovery/,
+  );
+  assert.match(branch, /build web/);
+  assert.match(branch, /verify_clean_release_source/);
+  assert.match(branch, /archive_built_image_manifest web/);
+  assert.match(branch, /create_pinned_compose_override web-recovery/);
+  assert.match(branch, /non_web_runtime_fingerprint/);
+  assert.match(
+    branch,
+    /production-deploy-preflight\.sh[\s\S]*build web[\s\S]*production-deploy-preflight\.sh[\s\S]*--no-deps --force-recreate web/,
+  );
+  assert.doesNotMatch(
+    branch,
+    /api-migrate|studio-migrate|create_pre_migration_backup|provision-production-database-roles|build[^\n]*(?:api|media-ai|discord-bot)|up[^\n]*(?:api|media-ai|discord-bot|postgres|redis)/,
+  );
+  assert.match(
+    deploy,
+    /elif \[ "\$MODE" = "web-recovery" \]; then[\s\S]*non_web_runtime_fingerprint[\s\S]*write_release_pointer CURRENT/,
   );
 });
 
@@ -771,7 +804,7 @@ test("post-build source provenance is recomputed exactly from a root-only checko
     checkoutSafety < metadataGeneration,
     "checkout ownership and mode safety must be established before Git is invoked",
   );
-  assert.equal(verificationCalls.length, 7);
+  assert.equal(verificationCalls.length, 8);
   assert.ok(
     verificationCalls.some(
       (index) =>
@@ -1460,6 +1493,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-resume-transition-candidate-fresh-backup",
       "deploy-discord",
       "deploy-api-recovery",
+      "deploy-web-recovery",
       "deploy-web-candidate",
       "rollback-discord",
       "recover-web",

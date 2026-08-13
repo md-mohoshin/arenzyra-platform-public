@@ -162,6 +162,11 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/deploy-production.sh --api-recovery
     ;;
+  deploy-web-recovery)
+    [ "$#" -eq 0 ] || block "deploy-web-recovery accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/deploy-production.sh --web-recovery
+    ;;
   deploy-web-candidate)
     [ "$#" -eq 1 ] && \
       [[ "$1" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] || \

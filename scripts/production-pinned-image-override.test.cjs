@@ -71,6 +71,18 @@ test("API recovery override pins only the API runtime service", () => {
   );
 });
 
+test("Web recovery override pins only the Web runtime service", () => {
+  const webIds = { web: ids.web };
+  const text = canonicalPinnedOverride("web-recovery", webIds);
+  assert.deepEqual(validatePinnedOverride(text, "web-recovery", webIds), {
+    services: { web: { image: ids.web } },
+  });
+  assert.doesNotMatch(text, /api|postgres|redis|media-ai|discord-bot/);
+  assert.throws(() =>
+    createPinnedOverride("web-recovery", { ...webIds, api: ids.api }),
+  );
+});
+
 test("legacy cutover pins every runtime, migrator, and IDP maintenance image", () => {
   const text = canonicalPinnedOverride("legacy-cutover", ids);
   const override = validatePinnedOverride(text, "legacy-cutover", ids);

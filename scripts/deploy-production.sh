@@ -77,7 +77,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--api-recovery|--web-candidate|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--api-recovery|--web-recovery|--web-candidate|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -96,6 +96,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --discord-bot) MODE="discord-bot" ;;
     --api-recovery) MODE="api-recovery" ;;
+    --web-recovery) MODE="web-recovery" ;;
     --web-candidate) MODE="web-candidate" ;;
     --legacy-cutover) MODE="legacy-cutover" ;;
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
@@ -167,6 +168,7 @@ if [ "$MODE" = "web-candidate" ] && [ -z "$REUSE_CANDIDATE_RELEASE_ID" ]; then
 fi
 
 if { [ "$MODE" = "full" ] || [ "$MODE" = "api-recovery" ] || \
+  [ "$MODE" = "web-recovery" ] || \
   [ "$MODE" = "legacy-cutover" ] || \
   [ "$MODE" = "legacy-cutover-resume" ] || \
   [ "$MODE" = "legacy-cutover-resume-interrupted" ] || \
@@ -321,7 +323,7 @@ test -f scripts/verify-production-forward-release.cjs
 production_live_match_quiescence_args=()
 production_live_match_warning_required=0
 case "$MODE" in
-  full|discord-bot|api-recovery)
+  full|discord-bot|api-recovery|web-recovery)
     production_live_match_warning_required=1
     ;;
   legacy-cutover)
@@ -345,9 +347,12 @@ warn_production_live_match_deployment() {
   elif [ "$MODE" = "discord-bot" ]; then
     printf '%s\n' \
       'Discord-only activation does not recreate the API, media, Web, proxy, PostgreSQL, or Redis containers.' >&2
-  else
+  elif [ "$MODE" = "api-recovery" ]; then
     printf '%s\n' \
       'API-only recovery activation does not recreate media, Web, proxy, Discord, PostgreSQL, or Redis containers.' >&2
+  else
+    printf '%s\n' \
+      'Web-only recovery activation does not recreate API, media, proxy, Discord, PostgreSQL, or Redis containers.' >&2
   fi
 }
 
@@ -813,6 +818,12 @@ create_pinned_compose_override() {
         --api-image-id "$api_image_id"
       )
       ;;
+    web-recovery)
+      pinned_override_validator_args=(
+        --mode web-recovery
+        --web-image-id "$web_image_id"
+      )
+      ;;
     web-candidate)
       pinned_override_validator_args=(
         --mode web-candidate
@@ -1041,6 +1052,7 @@ verify_running_release_images() {
   case "$pinned_override_mode" in
     full) runtime_services=(api web media-ai) ;;
     api-recovery) runtime_services=(api) ;;
+    web-recovery) runtime_services=(web) ;;
     web-candidate) runtime_services=(web) ;;
     discord-bot) runtime_services=(discord-bot) ;;
     legacy-cutover) runtime_services=(api web media-ai discord-bot) ;;
@@ -1151,7 +1163,8 @@ deploy_failed() {
   if [ "$schema_change_possible" -eq 1 ]; then
     printf 'Schema changes may have committed. Do not start an older API image or perform an image-only rollback.\n' >&2
     printf 'Keep incompatible old writers stopped and use a reviewed forward-recovery plan.\n' >&2
-  elif { [ "$MODE" = "discord-bot" ] || [ "$MODE" = "api-recovery" ]; } && \
+  elif { [ "$MODE" = "discord-bot" ] || [ "$MODE" = "api-recovery" ] || \
+    [ "$MODE" = "web-recovery" ]; } && \
     [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]]; then
     printf '%s rollback candidate release=%q. Use a reviewed forward recovery before changing production again.\n' \
       "$MODE" "$prior_release_id" >&2
@@ -1189,7 +1202,7 @@ elif [ "$MODE" = "legacy-cutover" ]; then
   verify_production_live_match_quiescence
 fi
 if [ "$MODE" = "full" ] || [ "$MODE" = "discord-bot" ] || \
-  [ "$MODE" = "api-recovery" ]; then
+  [ "$MODE" = "api-recovery" ] || [ "$MODE" = "web-recovery" ]; then
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/prepare-production-deploy-capacity.sh
   # Capacity preparation is the only automatic cleanup in the deployment
@@ -1569,6 +1582,29 @@ elif [ "$MODE" = "api-recovery" ]; then
   }
   "${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate api
   services=(api)
+elif [ "$MODE" = "web-recovery" ]; then
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  "${compose[@]}" build web
+  verify_clean_release_source
+  archive_built_image_manifest web
+  web_image_id="$(read_archived_release_image_id web)"
+  create_pinned_compose_override web-recovery
+  non_web_fingerprint_before="$(non_web_runtime_fingerprint)"
+  [ -n "$non_web_fingerprint_before" ] || {
+    printf '%s\n' 'Production non-web container inventory is empty.' >&2
+    exit 75
+  }
+  attest_pinned_compose_override
+  verify_production_activation_boundary
+  bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
+  attest_pinned_compose_override
+  [ "$(non_web_runtime_fingerprint)" = "$non_web_fingerprint_before" ] || {
+    printf '%s\n' 'A non-web production container changed after the final preflight.' >&2
+    exit 75
+  }
+  "${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate web
+  services=(web)
 elif [ "$MODE" = "full" ]; then
   verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
@@ -1892,6 +1928,15 @@ if [ "$MODE" = "web-candidate" ]; then
 elif [ "$MODE" = "api-recovery" ]; then
   [ "$(non_api_runtime_fingerprint)" = "$non_api_fingerprint_before" ] || {
     printf '%s\n' 'A non-API production container changed during API recovery activation.' >&2
+    exit 75
+  }
+  if [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "$prior_release_id" != "$new_release_id" ]; then
+    write_release_pointer PREVIOUS "$prior_release_id"
+  fi
+  write_release_pointer CURRENT "$new_release_id"
+elif [ "$MODE" = "web-recovery" ]; then
+  [ "$(non_web_runtime_fingerprint)" = "$non_web_fingerprint_before" ] || {
+    printf '%s\n' 'A non-web production container changed during Web recovery activation.' >&2
     exit 75
   }
   if [[ "$prior_release_id" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "$prior_release_id" != "$new_release_id" ]; then
