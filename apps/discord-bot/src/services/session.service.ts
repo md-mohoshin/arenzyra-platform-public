@@ -5808,7 +5808,9 @@ export class DiscordSessionService {
     sessionId: string,
     options: AutomaticResultScreenshotOptions = {},
   ): Promise<{ match: SessionMatchResponse; created: boolean }> {
-    const matches = await this.apiClient.listSessionMatches(sessionId);
+    const matches = await this.apiClient.listSessionMatches(sessionId, {
+      resultWorkflow: true,
+    });
     const matchId = options.matchId?.trim() || null;
     if (matchId) {
       const existing = matches.find((match) => match.id === matchId);
@@ -5847,7 +5849,7 @@ export class DiscordSessionService {
         return { match: created, created: true };
       } catch (error) {
         const refreshed = await this.apiClient
-          .listSessionMatches(sessionId)
+          .listSessionMatches(sessionId, { resultWorkflow: true })
           .catch(() => matches);
         const raced = refreshed.find(
           (match) => match.matchNumber === matchNumber,

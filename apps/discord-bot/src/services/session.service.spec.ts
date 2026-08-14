@@ -5117,9 +5117,13 @@ test("waitlist promotion announcement closes tracking when normal slots fill", a
 
 test("previewAutomaticResultScreenshot creates the requested game match from code", async () => {
   const createdPayloads: Array<{ sessionId: string; payload: any }> = [];
+  const matchListCalls: unknown[][] = [];
   let previewPayload: any = null;
   const api = createApi({
-    listSessionMatches: async () => [],
+    listSessionMatches: async (...args: unknown[]) => {
+      matchListCalls.push(args);
+      return [];
+    },
     getSession: async () =>
       createSessionResponse({
         gameId: "game-pubg",
@@ -5171,6 +5175,9 @@ test("previewAutomaticResultScreenshot creates the requested game match from cod
 
   assert.equal(result.matchId, "match-g1");
   assert.equal(result.canApply, true);
+  assert.deepEqual(matchListCalls, [
+    ["session-1", { resultWorkflow: true }],
+  ]);
   assert.deepEqual(
     createdPayloads.map((entry) => entry.sessionId),
     ["session-1"],

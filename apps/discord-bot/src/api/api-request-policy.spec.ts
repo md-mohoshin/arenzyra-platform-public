@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   renderApiRequestTimeoutMs,
+  resultWorkflowApiRequestTimeoutMs,
   retryDelayMs,
   screenshotApiRequestTimeoutMs,
   shouldRetryApiRequest,
@@ -15,6 +16,11 @@ test("render API requests have a bounded minimum without lowering larger timeout
 test("screenshot API requests allow OCR to finish without lowering larger timeouts", () => {
   assert.equal(screenshotApiRequestTimeoutMs(10_000), 120_000);
   assert.equal(screenshotApiRequestTimeoutMs(180_000), 180_000);
+});
+
+test("result workflow API requests allow apply and preparation to finish", () => {
+  assert.equal(resultWorkflowApiRequestTimeoutMs(10_000), 120_000);
+  assert.equal(resultWorkflowApiRequestTimeoutMs(180_000), 180_000);
 });
 
 test("only transient idempotent API requests are retried", () => {

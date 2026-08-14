@@ -10,6 +10,7 @@ import { BotApiAuthService } from "../services/api-auth.service";
 import {
   delay,
   renderApiRequestTimeoutMs,
+  resultWorkflowApiRequestTimeoutMs,
   retryDelayMs,
   screenshotApiRequestTimeoutMs,
   shouldRetryApiRequest,
@@ -1579,6 +1580,13 @@ export function toFriendlyApiError(error: unknown): string {
   const normalized = apiError.message.toLowerCase();
 
   if (
+    normalized.includes("timeout of") &&
+    normalized.includes("ms exceeded")
+  ) {
+    return "Arenzyra took too long to finish this request. Check whether the action completed before trying again.";
+  }
+
+  if (
     apiError.status === 502 ||
     apiError.status === 503 ||
     apiError.status === 504 ||
@@ -2538,6 +2546,9 @@ export class ArenzyraApiClient {
         data: {
           reason: payload.reason ?? "Reset session result system",
         },
+        timeout: resultWorkflowApiRequestTimeoutMs(
+          botConfig.apiRequestTimeoutMs,
+        ),
       });
       return response.data;
     } catch (error) {
@@ -2607,6 +2618,9 @@ export class ArenzyraApiClient {
           method: "post",
           url: `/sessions/${sessionId}/conditional-ban-enrollments/finalize`,
           data: payload,
+          timeout: resultWorkflowApiRequestTimeoutMs(
+            botConfig.apiRequestTimeoutMs,
+          ),
         });
       return response.data;
     } catch (error) {
@@ -2623,6 +2637,9 @@ export class ArenzyraApiClient {
         method: "post",
         url: `/sessions/${sessionId}/conditional-ban-enrollments/final-snapshot`,
         data: payload,
+        timeout: resultWorkflowApiRequestTimeoutMs(
+          botConfig.apiRequestTimeoutMs,
+        ),
       });
       return response.data;
     } catch (error) {
@@ -2640,6 +2657,9 @@ export class ArenzyraApiClient {
           method: "post",
           url: `/sessions/${sessionId}/conditional-ban-enrollments/final-snapshot/seal`,
           data: payload,
+          timeout: resultWorkflowApiRequestTimeoutMs(
+            botConfig.apiRequestTimeoutMs,
+          ),
         });
       return response.data;
     } catch (error) {
@@ -2714,11 +2734,21 @@ export class ArenzyraApiClient {
     }
   }
 
-  async listSessionMatches(sessionId: string): Promise<SessionMatchResponse[]> {
+  async listSessionMatches(
+    sessionId: string,
+    options: { resultWorkflow?: boolean } = {},
+  ): Promise<SessionMatchResponse[]> {
     try {
       const response = await this.request<SessionMatchResponse[]>({
         method: "get",
         url: `/sessions/${sessionId}/matches`,
+        ...(options.resultWorkflow
+          ? {
+              timeout: resultWorkflowApiRequestTimeoutMs(
+                botConfig.apiRequestTimeoutMs,
+              ),
+            }
+          : {}),
       });
       return response.data;
     } catch (error) {
@@ -3326,6 +3356,9 @@ export class ArenzyraApiClient {
         method: "post",
         url: "/ingest/screenshot/apply",
         data: payload,
+        timeout: resultWorkflowApiRequestTimeoutMs(
+          botConfig.apiRequestTimeoutMs,
+        ),
       });
       return response.data;
     } catch (error) {
@@ -3342,6 +3375,9 @@ export class ArenzyraApiClient {
         url: `/api/matches/${encodeURIComponent(
           matchId,
         )}/results/no-show-auto-bans`,
+        timeout: resultWorkflowApiRequestTimeoutMs(
+          botConfig.apiRequestTimeoutMs,
+        ),
       });
       return response.data;
     } catch (error) {
