@@ -20,6 +20,7 @@ const STAFF_ROLE_NAMES = [
   "Production Lead",
   "Tournament Organizer",
 ];
+const DISCORD_MESSAGE_MAX_LENGTH = 2000;
 
 export class DiscordIdpScheduleService {
   private readonly apiClient = new ArenzyraApiClient();
@@ -176,6 +177,33 @@ export class DiscordIdpScheduleService {
     };
   }
 
+  private primaryMessageContent(schedule: DiscordIdpScheduleResponse) {
+    const startsAt = new Date(schedule.startsAt);
+    if (Number.isNaN(startsAt.getTime())) return schedule.primaryMessage;
+
+    const unix = Math.floor(startsAt.getTime() / 1000);
+    const discordTime = `<t:${unix}:t>`;
+    if (!schedule.primaryMessage.includes(discordTime)) {
+      return schedule.primaryMessage;
+    }
+
+    const timeZone = this.configuredTimeZone(schedule.timeZone);
+    const plainTime = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).format(startsAt);
+
+    const content = schedule.primaryMessage.replace(
+      discordTime,
+      `${plainTime} (${timeZone}) · ${discordTime}`,
+    );
+    return content.length <= DISCORD_MESSAGE_MAX_LENGTH
+      ? content
+      : schedule.primaryMessage;
+  }
+
   private async resolveChannelSession(
     interaction: ChatInputCommandInteraction,
   ) {
@@ -199,9 +227,10 @@ export class DiscordIdpScheduleService {
     let message: Message | null = schedule.primaryMessageId
       ? await channel.messages.fetch(schedule.primaryMessageId).catch(() => null)
       : null;
+    const content = this.primaryMessageContent(schedule);
     const payload = {
-      content: schedule.primaryMessage,
-      allowedMentions: this.allowedMentions(schedule.primaryMessage),
+      content,
+      allowedMentions: this.allowedMentions(content),
     };
     if (message?.editable) {
       await message.edit(payload);
