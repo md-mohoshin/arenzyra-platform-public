@@ -45,6 +45,14 @@ const NEXT_ZONE_RADAR_SWEEP_WIDGET_ID = "next_zone_update_radar_sweep";
 const NEXT_ZONE_RADAR_SWEEP_WIDGET_KEY = "next-zone-update-radar-sweep";
 const NEXT_ZONE_FOLD_DOWN_WIDGET_ID = "next_zone_update_fold_down";
 const NEXT_ZONE_FOLD_DOWN_WIDGET_KEY = "next-zone-update-fold-down";
+const NEXT_ZONE_GOLD_RING_WIDGET_ID = "next_zone_update_gold_ring";
+const NEXT_ZONE_GOLD_RING_WIDGET_KEY = "next-zone-update-gold-ring";
+const GOLD_FOCUSED_ROSTER_WIDGET_ID = "gold_broadcast_roster";
+const GOLD_FOCUSED_ROSTER_WIDGET_KEY = "gold-broadcast-focused-roster";
+const GOLD_FINAL_FIVE_WIDGET_ID = "gold_broadcast_final_five";
+const GOLD_FINAL_FIVE_WIDGET_KEY = "final-five-alive";
+const GOLD_PLAYER_STATS_WIDGET_ID = "gold_broadcast_player_stats";
+const GOLD_PLAYER_STATS_WIDGET_KEY = "gold-broadcast-player-stats";
 const NEXT_ZONE_WIDGET_IDS = new Set([
   "next_zone_update",
   NEXT_ZONE_PRO_WIDGET_ID,
@@ -52,6 +60,12 @@ const NEXT_ZONE_WIDGET_IDS = new Set([
   NEXT_ZONE_BLADE_WIDGET_ID,
   NEXT_ZONE_RADAR_SWEEP_WIDGET_ID,
   NEXT_ZONE_FOLD_DOWN_WIDGET_ID,
+]);
+const GOLD_BROADCAST_WIDGET_IDS = new Set([
+  GOLD_FOCUSED_ROSTER_WIDGET_ID,
+  GOLD_FINAL_FIVE_WIDGET_ID,
+  NEXT_ZONE_GOLD_RING_WIDGET_ID,
+  GOLD_PLAYER_STATS_WIDGET_ID,
 ]);
 const HOTKEY_CONTROL_APPROVAL_KEY = "feature.widget-hotkey-control";
 const APPROVAL_ONLY_WIDGET_KEYS = [
@@ -194,6 +208,27 @@ const HOTKEY_WIDGET_OPTIONS: WidgetHotkeyControlSelection[] = [
     direction: "up",
   },
   {
+    id: "gold-broadcast-focused-roster",
+    widgetKey: "gold-broadcast-focused-roster",
+    label: "Gold Focused Team",
+    enabled: false,
+    direction: "left",
+  },
+  {
+    id: "next-zone-update-gold-ring",
+    widgetKey: "next-zone-update-gold-ring",
+    label: "Gold Zone Status",
+    enabled: false,
+    direction: "up",
+  },
+  {
+    id: "gold-broadcast-player-stats",
+    widgetKey: "gold-broadcast-player-stats",
+    label: "Gold Player Stats",
+    enabled: false,
+    direction: "down",
+  },
+  {
     id: "match-results",
     widgetKey: "match-results",
     label: "Match Results",
@@ -259,6 +294,10 @@ type WidgetCatalogEntry =
     }
   | {
       type: "next-zone-group";
+      widgets: ObsWidgetDefinition[];
+    }
+  | {
+      type: "gold-broadcast-group";
       widgets: ObsWidgetDefinition[];
     };
 const DEFAULT_SELECTED_WIDGET_ID =
@@ -407,6 +446,7 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     DEFAULT_SELECTED_WIDGET_ID,
   );
   const [nextZoneGroupOpen, setNextZoneGroupOpen] = useState(true);
+  const [goldBroadcastGroupOpen, setGoldBroadcastGroupOpen] = useState(true);
   const liveMapCatalogState =
     widgetCatalog?.items?.[LIVE_MAP_WIDGET_KEY] ?? null;
   const commentatorDeskCatalogState =
@@ -421,6 +461,14 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     widgetCatalog?.items?.[NEXT_ZONE_RADAR_SWEEP_WIDGET_KEY] ?? null;
   const nextZoneFoldDownCatalogState =
     widgetCatalog?.items?.[NEXT_ZONE_FOLD_DOWN_WIDGET_KEY] ?? null;
+  const nextZoneGoldRingCatalogState =
+    widgetCatalog?.items?.[NEXT_ZONE_GOLD_RING_WIDGET_KEY] ?? null;
+  const goldFocusedRosterCatalogState =
+    widgetCatalog?.items?.[GOLD_FOCUSED_ROSTER_WIDGET_KEY] ?? null;
+  const goldFinalFiveCatalogState =
+    widgetCatalog?.items?.[GOLD_FINAL_FIVE_WIDGET_KEY] ?? null;
+  const goldPlayerStatsCatalogState =
+    widgetCatalog?.items?.[GOLD_PLAYER_STATS_WIDGET_KEY] ?? null;
   const hotkeyControlCatalogState =
     widgetCatalog?.items?.[HOTKEY_CONTROL_APPROVAL_KEY] ?? null;
   const liveMapApproved = liveMapCatalogState?.approved === true;
@@ -434,6 +482,13 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     nextZoneRadarSweepCatalogState?.approved === true;
   const nextZoneFoldDownApproved =
     nextZoneFoldDownCatalogState?.approved === true;
+  const nextZoneGoldRingApproved =
+    nextZoneGoldRingCatalogState?.approved === true;
+  const goldFocusedRosterApproved =
+    goldFocusedRosterCatalogState?.approved === true;
+  const goldFinalFiveApproved = goldFinalFiveCatalogState?.approved === true;
+  const goldPlayerStatsApproved =
+    goldPlayerStatsCatalogState?.approved === true;
   const hotkeyControlApproved = hotkeyControlCatalogState?.approved === true;
   const aiCasterApproved = aiCasterAccess?.approved === true;
   const availableWidgets = useMemo(
@@ -463,15 +518,31 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
         if (widget.id === NEXT_ZONE_FOLD_DOWN_WIDGET_ID) {
           return nextZoneFoldDownApproved;
         }
+        if (widget.id === NEXT_ZONE_GOLD_RING_WIDGET_ID) {
+          return nextZoneGoldRingApproved;
+        }
+        if (widget.id === GOLD_FOCUSED_ROSTER_WIDGET_ID) {
+          return goldFocusedRosterApproved;
+        }
+        if (widget.id === GOLD_FINAL_FIVE_WIDGET_ID) {
+          return goldFinalFiveApproved;
+        }
+        if (widget.id === GOLD_PLAYER_STATS_WIDGET_ID) {
+          return goldPlayerStatsApproved;
+        }
         return true;
       }),
     [
       aiCasterApproved,
       commentatorDeskApproved,
+      goldFinalFiveApproved,
+      goldFocusedRosterApproved,
+      goldPlayerStatsApproved,
       liveMapApproved,
       nextZoneBladeApproved,
       nextZoneFoldDownApproved,
       nextZoneKineticApproved,
+      nextZoneGoldRingApproved,
       nextZoneProApproved,
       nextZoneRadarSweepApproved,
     ],
@@ -479,11 +550,26 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   const catalogEntries = useMemo<WidgetCatalogEntry[]>(() => {
     const entries: WidgetCatalogEntry[] = [];
     let nextZoneGroupAdded = false;
+    let goldBroadcastGroupAdded = false;
     const nextZoneWidgets = availableWidgets.filter((widget) =>
       NEXT_ZONE_WIDGET_IDS.has(widget.id),
     );
+    const goldBroadcastWidgets = availableWidgets.filter((widget) =>
+      GOLD_BROADCAST_WIDGET_IDS.has(widget.id),
+    );
 
     for (const widget of availableWidgets) {
+      if (GOLD_BROADCAST_WIDGET_IDS.has(widget.id)) {
+        if (!goldBroadcastGroupAdded && goldBroadcastWidgets.length > 0) {
+          entries.push({
+            type: "gold-broadcast-group",
+            widgets: goldBroadcastWidgets,
+          });
+          goldBroadcastGroupAdded = true;
+        }
+        continue;
+      }
+
       if (NEXT_ZONE_WIDGET_IDS.has(widget.id)) {
         if (!nextZoneGroupAdded && nextZoneWidgets.length > 0) {
           entries.push({
@@ -513,6 +599,9 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
   useEffect(() => {
     if (NEXT_ZONE_WIDGET_IDS.has(selectedWidgetId)) {
       setNextZoneGroupOpen(true);
+    }
+    if (GOLD_BROADCAST_WIDGET_IDS.has(selectedWidgetId)) {
+      setGoldBroadcastGroupOpen(true);
     }
   }, [selectedWidgetId]);
 
@@ -1256,6 +1345,62 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
           {availableWidgets.length ? (
             <div className="widgets-minimal__list">
               {catalogEntries.map((entry) => {
+                if (entry.type === "gold-broadcast-group") {
+                  const goldBroadcastSelected = entry.widgets.some(
+                    (widget) => widget.id === selectedWidget?.id,
+                  );
+                  return (
+                    <div
+                      className={`widgets-minimal__group${
+                        goldBroadcastSelected ? " is-active" : ""
+                      }${goldBroadcastGroupOpen ? " is-open" : ""}`}
+                      key="gold-broadcast-group"
+                    >
+                      <button
+                        className="widgets-minimal__group-trigger"
+                        onClick={() =>
+                          setGoldBroadcastGroupOpen((current) => !current)
+                        }
+                        type="button"
+                        aria-expanded={goldBroadcastGroupOpen}
+                      >
+                        <span>Gold Broadcast Widgets</span>
+                        <span>
+                          {goldBroadcastGroupOpen ? "Hide" : "Show"}
+                        </span>
+                      </button>
+                      {goldBroadcastGroupOpen ? (
+                        <div className="widgets-minimal__group-list">
+                          {entry.widgets.map((widget) => {
+                            const isSelected = widget.id === selectedWidget?.id;
+                            const displayName = widget.name.replace(
+                              /^Gold Broadcast - /,
+                              "",
+                            );
+                            return (
+                              <button
+                                key={widget.id}
+                                className={`widgets-minimal__item widgets-minimal__item--nested${
+                                  isSelected ? " is-active" : ""
+                                }`}
+                                onClick={() => setSelectedWidgetId(widget.id)}
+                                type="button"
+                              >
+                                <span>{displayName || widget.name}</span>
+                                <small>
+                                  {widget.id === GOLD_FINAL_FIVE_WIDGET_ID
+                                    ? "Live overlay"
+                                    : "Local overlay"}
+                                </small>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                }
+
                 if (entry.type === "next-zone-group") {
                   const nextZoneSelected = entry.widgets.some(
                     (widget) => widget.id === selectedWidget?.id,

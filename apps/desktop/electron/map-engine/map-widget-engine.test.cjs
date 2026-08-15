@@ -338,6 +338,7 @@ test("local runtime normalizes numeric zone modes before broadcasting", () => {
   const waitingZone = engine.applyZoneUpdate({
     mapKey: "erangel",
     phase: 2,
+    aliveTeams: 12,
     mode: "1",
     zoneMode: "1",
     centerX: 200000,
@@ -349,6 +350,7 @@ test("local runtime normalizes numeric zone modes before broadcasting", () => {
   const closingZone = engine.applyZoneUpdate({
     mapKey: "erangel",
     phase: 2,
+    aliveTeams: 11,
     mode: 2,
     zoneMode: 2,
     centerX: 210000,
@@ -362,7 +364,61 @@ test("local runtime normalizes numeric zone modes before broadcasting", () => {
   assert.equal(waitingZone.zoneMode, "waiting");
   assert.equal(closingZone.mode, "closing");
   assert.equal(closingZone.zoneMode, "closing");
+  assert.equal(closingZone.aliveTeams, 11);
   assert.equal(engine.getSnapshot("erangel").zone.mode, "closing");
+  assert.equal(engine.getSnapshot("erangel").zone.aliveTeams, 11);
+});
+
+test("timer-only fast-lane zone updates retain full-snapshot alive teams until runtime reset", () => {
+  const engine = createMapWidgetEngine({
+    registry: createRegistryStub(),
+    broadcast: createBroadcastStub(),
+  });
+  const baseTimestamp = Date.now();
+
+  engine.applyZoneUpdate({
+    mapKey: "erangel",
+    phase: 4,
+    aliveTeams: 12,
+    matchPhase: "combat",
+    mode: "closing",
+    centerX: 200000,
+    centerY: 300000,
+    radius: 50000,
+    timestamp: baseTimestamp,
+    receivedAt: baseTimestamp,
+    source: "direct-observer",
+  });
+  const timerOnlyZone = engine.applyZoneUpdate({
+    mapKey: "erangel",
+    phase: 4,
+    matchPhase: "combat",
+    mode: "closing",
+    centerX: 199000,
+    centerY: 299000,
+    radius: 49000,
+    timestamp: baseTimestamp + 100,
+    receivedAt: baseTimestamp + 100,
+    source: "direct-observer",
+  });
+
+  assert.equal(timerOnlyZone.aliveTeams, 12);
+  assert.equal(engine.getSnapshot("erangel").zone.aliveTeams, 12);
+
+  engine.clearRuntimeState();
+  const nextRuntimeZone = engine.applyZoneUpdate({
+    mapKey: "erangel",
+    phase: 1,
+    matchPhase: "plane",
+    mode: "waiting",
+    centerX: 408000,
+    centerY: 408000,
+    radius: 180000,
+    timestamp: baseTimestamp + 200,
+    receivedAt: baseTimestamp + 200,
+    source: "direct-observer",
+  });
+  assert.equal(nextRuntimeZone.aliveTeams, null);
 });
 
 test("local runtime accepts opening flight path before first zone circle", () => {

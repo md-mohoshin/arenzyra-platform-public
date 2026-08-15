@@ -14,6 +14,13 @@
     transitionMs: 260,
   };
   var reconnectTimer = null;
+  var visibilityInitialized = false;
+  var replayFrame = null;
+  var replaySequence = 0;
+  var obsLifecycleShown = false;
+  var lastObsReplayRequestedAt = 0;
+  var OBS_LIFECYCLE_BURST_MS = 250;
+  var GOLD_OBS_REPLAY_EVENT = "arenzyra:gold-obs-replay";
 
   function normalize(value) {
     return String(value || "").trim().toLowerCase();
@@ -75,6 +82,164 @@
     );
   }
 
+  function prefersReducedMotion() {
+    return Boolean(
+      typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    );
+  }
+
+  function dispatchReplayEvent(detail) {
+    var replayEvent = null;
+    try {
+      if (typeof window.CustomEvent === "function") {
+        replayEvent = new window.CustomEvent(GOLD_OBS_REPLAY_EVENT, {
+          detail: detail,
+        });
+      } else if (typeof document.createEvent === "function") {
+        replayEvent = document.createEvent("CustomEvent");
+        replayEvent.initCustomEvent(GOLD_OBS_REPLAY_EVENT, false, false, detail);
+      }
+    } catch (_) {
+      replayEvent = null;
+    }
+
+    if (replayEvent && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(replayEvent);
+    }
+  }
+
+  function postReplayToRemoteFrames(detail) {
+    if (typeof document.querySelectorAll !== "function") {
+      return;
+    }
+    var frames = document.querySelectorAll("iframe");
+    for (var index = 0; index < frames.length; index += 1) {
+      var frame = frames[index];
+      if (!frame || !frame.contentWindow) {
+        continue;
+      }
+      try {
+        var source = String(
+          frame.src ||
+            (typeof frame.getAttribute === "function" && frame.getAttribute("src")) ||
+            "",
+        ).trim();
+        var target = new URL(source, window.location.href);
+        if (target.protocol !== "http:" && target.protocol !== "https:") {
+          continue;
+        }
+        frame.contentWindow.postMessage(
+          {
+            type: GOLD_OBS_REPLAY_EVENT,
+            reason: detail.reason,
+            widgetKey: detail.widgetKey,
+            reducedMotion: detail.reducedMotion,
+            sequence: detail.sequence,
+          },
+          target.origin,
+        );
+      } catch (_) {
+        // A malformed or unavailable iframe is never a reason to break visibility.
+      }
+    }
+  }
+
+  function emitGoldObsReplay(reason) {
+    replayFrame = null;
+    replaySequence += 1;
+    var detail = {
+      reason: String(reason || "obs-lifecycle"),
+      widgetKey: widgetKey,
+      reducedMotion: prefersReducedMotion(),
+      sequence: replaySequence,
+    };
+    dispatchReplayEvent(detail);
+    postReplayToRemoteFrames(detail);
+  }
+
+  function queueGoldObsReplay(reason) {
+    if (replayFrame !== null) {
+      return;
+    }
+    lastObsReplayRequestedAt = Date.now();
+    if (typeof window.requestAnimationFrame === "function") {
+      replayFrame = window.requestAnimationFrame(function () {
+        emitGoldObsReplay(reason);
+      });
+      return;
+    }
+    replayFrame = window.setTimeout(function () {
+      emitGoldObsReplay(reason);
+    }, 0);
+  }
+
+  function eventFlagIsTrue(event, property) {
+    var detail = event && event.detail;
+    return detail === true || Boolean(detail && detail[property] === true);
+  }
+
+  function eventFlagIsFalse(event, property) {
+    var detail = event && event.detail;
+    return detail === false || Boolean(detail && detail[property] === false);
+  }
+
+  function applyObsLifecycleFlag(event, property, reason) {
+    if (eventFlagIsFalse(event, property)) {
+      obsLifecycleShown = false;
+      lastObsReplayRequestedAt = 0;
+      return;
+    }
+    if (!eventFlagIsTrue(event, property) || obsLifecycleShown) {
+      return;
+    }
+    obsLifecycleShown = true;
+    queueGoldObsReplay(reason);
+  }
+
+  function installObsLifecycleReplay() {
+    if (typeof window.addEventListener === "function") {
+      window.addEventListener("obsSourceVisibleChanged", function (event) {
+        applyObsLifecycleFlag(event, "visible", "obs-source-visible");
+      });
+      window.addEventListener("obsSourceActiveChanged", function (event) {
+        applyObsLifecycleFlag(event, "active", "obs-source-active");
+      });
+      window.addEventListener("obsSceneChanged", function (event) {
+        var detail = event && event.detail;
+        if (detail && (detail.active === false || detail.visible === false)) {
+          obsLifecycleShown = false;
+          lastObsReplayRequestedAt = 0;
+          return;
+        }
+        if (
+          obsLifecycleShown &&
+          Date.now() - lastObsReplayRequestedAt <= OBS_LIFECYCLE_BURST_MS
+        ) {
+          return;
+        }
+        obsLifecycleShown = true;
+        queueGoldObsReplay("obs-scene-changed");
+      });
+    }
+
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", function () {
+        var documentVisible =
+          document.hidden === false || document.visibilityState === "visible";
+        if (!documentVisible) {
+          obsLifecycleShown = false;
+          lastObsReplayRequestedAt = 0;
+          return;
+        }
+        if (!obsLifecycleShown) {
+          obsLifecycleShown = true;
+          queueGoldObsReplay("document-visible");
+        }
+      });
+    }
+  }
+
   function findSelection(payload) {
     var widgets = Array.isArray(payload && payload.widgets) ? payload.widgets : [];
     var normalizedWidgetKey = normalize(widgetKey);
@@ -95,6 +260,7 @@
   }
 
   function applyVisibility(payload) {
+    var wasHidden = visibilityInitialized && state.active === true;
     var selection = findSelection(payload || {});
     var active = Boolean(payload && payload.active && selection);
     var direction = normalizeDirection(selection && selection.direction);
@@ -113,12 +279,13 @@
       return;
     }
 
-    target.style.transition =
-      "transform " +
-      state.transitionMs +
-      "ms cubic-bezier(0.22, 1, 0.36, 1), opacity " +
-      Math.max(140, state.transitionMs - 60) +
-      "ms ease";
+    target.style.transition = prefersReducedMotion()
+      ? "none"
+      : "transform " +
+        state.transitionMs +
+        "ms cubic-bezier(0.22, 1, 0.36, 1), opacity " +
+        Math.max(140, state.transitionMs - 60) +
+        "ms ease";
     target.style.willChange = "transform, opacity";
     target.style.transform = state.active
       ? getTransform(state.direction)
@@ -128,6 +295,14 @@
     document.documentElement.dataset.arenzyraWidgetVisibility = state.active
       ? "hidden"
       : "visible";
+    visibilityInitialized = true;
+
+    if (wasHidden && !state.active) {
+      obsLifecycleShown = true;
+      queueGoldObsReplay("launcher-hotkey-show");
+    } else if (state.active) {
+      obsLifecycleShown = false;
+    }
   }
 
   function buildSocketUrl() {
@@ -180,6 +355,8 @@
       }
     });
   }
+
+  installObsLifecycleReplay();
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", connect, { once: true });

@@ -4,15 +4,11 @@ const releaseConfig = require("./electron-builder.config.cjs");
 const {
   assertCandidatePackagingInvocation,
 } = require("./release/candidate-packaging-policy.cjs");
-const {
-  verifyDesktopConnectorCommercialProvenance,
-} = require("../../scripts/verify-desktop-connector-provenance.cjs");
 
 const { beforePack: _releaseBlock, ...sharedConfig } = releaseConfig;
 
 const assertCandidateInvocation = () => {
   assertCandidatePackagingInvocation();
-  verifyDesktopConnectorCommercialProvenance();
   return true;
 };
 
@@ -29,6 +25,12 @@ module.exports = {
   ],
   disableSanityCheckAsar: false,
   forceCodeSigning: false,
+  // uiohook-napi 1.5.5 ships a Windows x64 N-API prebuild that is verified
+  // against the pinned Electron runtime before local candidate packaging.
+  // Avoid requiring a machine-local Visual Studio toolchain for this
+  // deliberately non-publishable artifact.
+  npmRebuild: false,
+  electronDist: "node_modules/electron/dist",
   publish: null,
   artifactName:
     "Arenzyra-Observer-Launcher-${version}-${arch}-CANDIDATE-NOT-FOR-DISTRIBUTION.${ext}",

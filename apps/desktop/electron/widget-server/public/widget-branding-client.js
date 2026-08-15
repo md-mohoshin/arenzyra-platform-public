@@ -6,6 +6,11 @@
   var refreshInFlight = false;
   var refreshTimer = null;
   var REFRESH_INTERVAL_MS = 15000;
+  var GOLD_SOLID_FALLBACK = "#eedd77";
+  var GOLD_FOCUSED_WIDGET_KEYS = {
+    "gold-broadcast-focused-roster": true,
+    "gold-broadcast-player-stats": true,
+  };
 
   function asString(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -70,9 +75,35 @@
       : null;
   }
 
+  function organizationBrandingFromContext(context) {
+    var organization = parseRecord(context && context.organization);
+    return parseRecord(organization && organization.branding);
+  }
+
+  function resolveGoldSolid(branding) {
+    if (!branding) return GOLD_SOLID_FALLBACK;
+    return (
+      normalizeHex(branding.primaryColor, "") ||
+      normalizeHex(branding.primary, "") ||
+      GOLD_SOLID_FALLBACK
+    );
+  }
+
+  function applyFocusedGoldSolid(context) {
+    if (!GOLD_FOCUSED_WIDGET_KEYS[asString(bootstrap.widgetKey)]) {
+      return false;
+    }
+    root.style.setProperty(
+      "--gold-solid",
+      resolveGoldSolid(organizationBrandingFromContext(context)),
+    );
+    return true;
+  }
+
   function applyBranding(context) {
+    var appliedFocusedGold = applyFocusedGoldSolid(context);
     var branding = brandingFromContext(context);
-    if (!branding) return false;
+    if (!branding) return appliedFocusedGold;
 
     var primary = normalizeHex(branding.primaryColor || branding.primary, "#00e5ff");
     var secondary = normalizeHex(

@@ -649,6 +649,7 @@ test("new next zone style widgets render through the local permanent widget rout
     ["blade-key", "next-zone-update-blade"],
     ["radar-key", "next-zone-update-radar-sweep"],
     ["fold-key", "next-zone-update-fold-down"],
+    ["gold-key", "next-zone-update-gold-ring"],
   ]);
   const api = await startJsonServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -688,6 +689,7 @@ test("new next zone style widgets render through the local permanent widget rout
       ["blade-key", "blade", "obs-next-zone-update-root--blade"],
       ["radar-key", "radar-sweep", "obs-next-zone-update-root--radar-sweep"],
       ["fold-key", "fold-down", "obs-next-zone-update-root--fold-down"],
+      ["gold-key", "gold-ring", "obs-next-zone-update-root--gold-ring"],
     ];
 
     for (const [instanceKey, style, className] of expectedStyles) {
@@ -696,15 +698,179 @@ test("new next zone style widgets render through the local permanent widget rout
       const html = await response.text();
       assert.match(html, new RegExp(`data-style="${style}"`));
       assert.match(html, new RegExp(className));
-      assert.match(html, /next-zone-launcher-v14/);
-      assert.match(html, /widget-branding-bridge\.css\?v=widget-branding-v1/);
-      assert.match(html, /widget-branding-client\.js\?v=widget-branding-v1/);
+      assert.match(html, /next-zone-launcher-v17/);
+      assert.match(html, /widget-branding-bridge\.css\?v=widget-branding-v2/);
+      assert.match(html, /widget-branding-client\.js\?v=widget-branding-v2/);
       assert.match(html, new RegExp(`/obs/widget-context/${instanceKey}`));
       assert.doesNotMatch(html, /widget-host-frame/);
+      if (style === "gold-ring") {
+        assert.match(html, /id="next-zone-update-alive">--<\/strong>/);
+        assert.match(html, /id="next-zone-update-metric-label">ALIVE<\/span>/);
+        assert.match(html, /id="next-zone-update-phase">STAGE --<\/span>/);
+        assert.match(html, /"widgetKey":"next-zone-update-gold-ring"/);
+      }
     }
   } finally {
     await stopServer(instance);
     await api.close();
+  }
+});
+
+test("Gold Broadcast permanent route preserves its explicit panel for the remote leaderboard", async () => {
+  const goldCapability = `wgt_${Buffer.alloc(32, 13).toString("base64url")}`;
+  const webBaseEnvKeys = [
+    "ARENZYRA_WEB_URL",
+    "ARENZYRA_WEB_BASE",
+  ];
+  const originalWebBaseEnv = Object.fromEntries(
+    webBaseEnvKeys.map((key) => [key, process.env[key]]),
+  );
+  for (const key of webBaseEnvKeys) {
+    delete process.env[key];
+  }
+  const instance = await startServer(false, {
+    resolveApiBase: () => "https://api.arenzyra.com",
+    resolveWidgetContext: async () => ({
+      id: "instance-gold",
+      widgetKey: "leaderboard",
+      matchId: "match-gold",
+      organization: {
+        id: "org-1",
+        slug: "test-org",
+        name: "Test Org",
+      },
+    }),
+  });
+
+  try {
+    const response = await fetch(
+      `${instance.baseUrl}/w/${encodeURIComponent(goldCapability)}?style=gold-broadcast&panel=leaderboard`,
+    );
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /\/widgets\/leaderboard\?/);
+    assert.match(html, /orgSlug=test-org/);
+    assert.match(html, /organizationId=org-1/);
+    assert.match(html, /matchId=match-gold/);
+    assert.match(html, /style=gold-broadcast/);
+    assert.match(html, /panel=leaderboard/);
+    assert.doesNotMatch(html, /panel=all/);
+    assert.match(html, /"widgetKey":"leaderboard"/);
+
+    const iframeSource = html
+      .match(/<iframe[\s\S]*?src="([^"]+)"/)?.[1]
+      ?.replace(/&amp;/g, "&");
+    assert.ok(iframeSource, "remote iframe source must be rendered");
+    const target = new URL(iframeSource);
+    assert.equal(target.origin, "https://arenzyra.com");
+    assert.equal(target.hash, `#matchAccessKey=${goldCapability}`);
+    assert.equal(target.searchParams.has("matchAccessKey"), false);
+    assert.equal(target.search.includes(goldCapability), false);
+
+    for (const rejectedWebOrigin of [
+      "https://unrelated.example",
+      "https://user@arenzyra.com",
+    ]) {
+      process.env.ARENZYRA_WEB_URL = rejectedWebOrigin;
+      const rejectedOverrideResponse = await fetch(
+        `${instance.baseUrl}/w/${encodeURIComponent(goldCapability)}?style=gold-broadcast&panel=leaderboard`,
+      );
+      assert.equal(rejectedOverrideResponse.status, 200);
+      const rejectedOverrideHtml = await rejectedOverrideResponse.text();
+      const rejectedOverrideSource = rejectedOverrideHtml
+        .match(/<iframe[\s\S]*?src="([^"]+)"/)?.[1]
+        ?.replace(/&amp;/g, "&");
+      assert.ok(rejectedOverrideSource);
+      const rejectedOverrideTarget = new URL(rejectedOverrideSource);
+      assert.equal(rejectedOverrideTarget.origin, "https://arenzyra.com");
+      assert.equal(
+        rejectedOverrideTarget.hash,
+        `#matchAccessKey=${goldCapability}`,
+      );
+    }
+  } finally {
+    await stopServer(instance);
+    for (const key of webBaseEnvKeys) {
+      const originalValue = originalWebBaseEnv[key];
+      if (originalValue === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originalValue;
+      }
+    }
+  }
+});
+
+test("Final Five capability resolves to the exact live match with fragment-only authorization", async () => {
+  const finalFiveCapability = `wgt_${Buffer.alloc(32, 19).toString("base64url")}`;
+  const webBaseEnvKeys = ["ARENZYRA_WEB_URL", "ARENZYRA_WEB_BASE"];
+  const originalWebBaseEnv = Object.fromEntries(
+    webBaseEnvKeys.map((key) => [key, process.env[key]]),
+  );
+  for (const key of webBaseEnvKeys) {
+    delete process.env[key];
+  }
+
+  const instance = await startServer(false, {
+    resolveApiBase: () => "https://api.arenzyra.com",
+    resolveWidgetContext: async ({ instanceKey }) => {
+      assert.equal(instanceKey, finalFiveCapability);
+      return {
+        id: "instance-final-five",
+        widgetKey: "final-five-alive",
+        match: { id: "match-final-five" },
+        organization: {
+          id: "org-final-five",
+          slug: "gold-broadcast",
+          name: "Gold Broadcast",
+        },
+      };
+    },
+  });
+
+  try {
+    const response = await fetch(
+      `${instance.baseUrl}/w/${encodeURIComponent(finalFiveCapability)}`,
+    );
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /"widgetKey":"final-five-alive"/);
+
+    const iframeSource = html
+      .match(/<iframe[\s\S]*?src="([^"]+)"/)?.[1]
+      ?.replace(/&amp;/g, "&");
+    assert.ok(iframeSource, "Final Five remote iframe source must be rendered");
+
+    const target = new URL(iframeSource);
+    assert.equal(target.origin, "https://arenzyra.com");
+    assert.equal(target.pathname, "/widgets/final-five-alive");
+    assert.deepEqual(
+      [...target.searchParams.entries()].sort(),
+      [
+        ["clean", "1"],
+        ["matchId", "match-final-five"],
+        ["organizationId", "org-final-five"],
+        ["orgSlug", "gold-broadcast"],
+      ].sort(),
+    );
+    assert.deepEqual(
+      [...new URLSearchParams(target.hash.slice(1)).entries()],
+      [["matchAccessKey", finalFiveCapability]],
+    );
+    assert.equal(target.searchParams.has("matchAccessKey"), false);
+    assert.equal(target.searchParams.has("access_token"), false);
+    assert.equal(target.searchParams.has("token"), false);
+    assert.equal(target.href.split("#", 1)[0].includes(finalFiveCapability), false);
+  } finally {
+    await stopServer(instance);
+    for (const key of webBaseEnvKeys) {
+      const originalValue = originalWebBaseEnv[key];
+      if (originalValue === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originalValue;
+      }
+    }
   }
 });
 
@@ -1141,6 +1307,98 @@ test("player photo state prefers local observer focus and keeps uploaded roster 
       payload.observerState.playerCard.avatarUrl,
       "https://api.example.test/media/players/player-alpha/photo?v=2",
     );
+  } finally {
+    await stopServer(instance);
+    await observer.close();
+    await api.close();
+  }
+});
+
+test("player photo uses local map telemetry when backend observer state is unavailable", async () => {
+  const api = await startJsonServer((_req, res) => {
+    sendJson(res, 502, { error: "backend unavailable" });
+  });
+  const observer = await startJsonServer((req, res) => {
+    if (req.url === "/getobservingplayer") {
+      sendJson(res, 200, {
+        observingPlayer: {
+          0: "5574978117",
+        },
+      });
+      return;
+    }
+    sendJson(res, 404, { error: "not-found" });
+  });
+  const instance = await startServer(false, {
+    resolveApiBase: () => api.baseUrl,
+    getObserverBaseUrl: () => observer.baseUrl,
+    getCurrentMatchContext: () => ({
+      matchId: "match-1",
+      workflowState: "MATCH_LIVE",
+    }),
+  });
+
+  try {
+    const timestamp = Date.now();
+    instance.server.engine.syncMapContext({
+      mapKey: "erangel",
+      sourceMapName: "erangel",
+      timestamp,
+    });
+    instance.server.engine.applyZoneUpdate({
+      mapKey: "erangel",
+      phase: 1,
+      centerX: 400000,
+      centerY: 400000,
+      radius: 200000,
+      timeRemaining: 60,
+      timestamp,
+      receivedAt: timestamp,
+      source: "direct-observer",
+      warnings: [],
+    });
+    instance.server.engine.applyPlayerPositionUpdate({
+      mapKey: "erangel",
+      players: [
+        {
+          playerId: "5574978117",
+          playerName: "unoSALIM",
+          teamId: "10",
+          x: 100000,
+          y: 200000,
+          alive: true,
+          knocked: false,
+          kills: 2,
+        },
+      ],
+      timestamp,
+      receivedAt: timestamp,
+      source: "direct-observer",
+      warnings: [],
+    });
+
+    const focusResponse = await fetch(
+      `${instance.baseUrl}/obs/player-photo/focus`,
+    );
+    assert.equal(focusResponse.status, 200);
+    const focusPayload = await focusResponse.json();
+    assert.equal(focusPayload.focus.playerId, "5574978117");
+    assert.equal(focusPayload.focus.playerName, "unoSALIM");
+    assert.equal(focusPayload.focus.teamId, "10");
+
+    const stateResponse = await fetch(
+      `${instance.baseUrl}/obs/player-photo/state`,
+    );
+    assert.equal(stateResponse.status, 200);
+    const statePayload = await stateResponse.json();
+    assert.match(statePayload.reason, /using local observer telemetry/);
+    assert.equal(
+      statePayload.observerState.playerCard.playerId,
+      "5574978117",
+    );
+    assert.equal(statePayload.observerState.playerCard.name, "unoSALIM");
+    assert.equal(statePayload.observerState.playerCard.kills, 2);
+    assert.equal(statePayload.observerState.circle.phase, 1);
   } finally {
     await stopServer(instance);
     await observer.close();

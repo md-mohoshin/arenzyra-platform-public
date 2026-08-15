@@ -657,7 +657,53 @@ function deriveExactTeamPlacementsFromPlayerRanks(rawPlayers) {
   );
 }
 
-function normalizeTransportPlayers(players, map) {
+function normalizeNonNegativeMetric(value, { integer = false } = {}) {
+  const numeric = toNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+  const nonNegative = Math.max(0, numeric);
+  return integer ? Math.trunc(nonNegative) : nonNegative;
+}
+
+function mergeMonotonicPlayerMetrics(cache, aliases, incoming) {
+  if (!(cache instanceof Map) || aliases.length === 0) {
+    return incoming;
+  }
+
+  let existing = null;
+  for (const alias of aliases) {
+    const candidate = cache.get(alias);
+    if (candidate) {
+      existing = candidate;
+      break;
+    }
+  }
+
+  const merged = {
+    damageDealt:
+      incoming.damageDealt === null
+        ? (existing?.damageDealt ?? null)
+        : Math.max(existing?.damageDealt ?? 0, incoming.damageDealt),
+    longestEliminationDistanceM:
+      incoming.longestEliminationDistanceM === null
+        ? (existing?.longestEliminationDistanceM ?? null)
+        : Math.max(
+            existing?.longestEliminationDistanceM ?? 0,
+            incoming.longestEliminationDistanceM,
+          ),
+    airdropLootCount:
+      incoming.airdropLootCount === null
+        ? (existing?.airdropLootCount ?? null)
+        : Math.max(existing?.airdropLootCount ?? 0, incoming.airdropLootCount),
+  };
+  for (const alias of aliases) {
+    cache.set(alias, merged);
+  }
+  return merged;
+}
+
+function normalizeTransportPlayers(players, map, metricCache = null) {
   if (!Array.isArray(players) || players.length === 0) {
     return [];
   }
@@ -703,17 +749,18 @@ function normalizeTransportPlayers(players, map) {
         record.TeamNumber,
     );
     const teamNo = teamSlot === null ? null : Math.trunc(teamSlot);
+    const stablePlayerId = normalizeTextValue(
+      record.uId ??
+        record.uid ??
+        record.UID ??
+        record.playerId ??
+        record.id ??
+        record.playerID ??
+        record.PlayerId ??
+        record.PlayerID,
+    );
     const playerId =
-      normalizeTextValue(
-        record.uId ??
-          record.uid ??
-          record.UID ??
-          record.playerId ??
-          record.id ??
-          record.playerID ??
-          record.PlayerId ??
-          record.PlayerID,
-      ) ??
+      stablePlayerId ??
       externalPlayerId ??
       playerOpenId ??
       playerName;
@@ -725,6 +772,19 @@ function normalizeTransportPlayers(players, map) {
           record.TeamID ??
           record.team_id,
       ) ?? (teamNo === null ? null : String(teamNo));
+
+    const pubgPlayerId = normalizeTextValue(
+      record.uId ??
+        record.UId ??
+        record.uid ??
+        record.UID ??
+        record.pubgPlayerId ??
+        record.inGameId ??
+        record.playerId ??
+        record.playerID ??
+        record.PlayerId ??
+        record.PlayerID,
+    );
 
     const key = playerOpenId ?? externalPlayerId ?? playerId;
     if (!key || seen.has(key)) {
@@ -741,10 +801,43 @@ function normalizeTransportPlayers(players, map) {
         record.currentHealth ??
         record.CurrentHealth,
     );
+    const metricAliases = Array.from(
+      new Set(
+        [playerOpenId, externalPlayerId, pubgPlayerId, stablePlayerId]
+          .filter(Boolean)
+          .map((value) => `id:${String(value).trim().toLowerCase()}`),
+      ),
+    );
+    const metrics = mergeMonotonicPlayerMetrics(
+      metricCache,
+      metricAliases,
+      {
+        damageDealt: normalizeNonNegativeMetric(
+          record.damageDealt ??
+            record.DamageDealt ??
+            record.damage ??
+            record.Damage ??
+            record.totalDamage ??
+            record.TotalDamage,
+        ),
+        longestEliminationDistanceM: normalizeNonNegativeMetric(
+          record.longestEliminationDistanceM ??
+            record.maxKillDistance ??
+            record.MaxKillDistance,
+        ),
+        airdropLootCount: normalizeNonNegativeMetric(
+          record.airdropLootCount ??
+            record.gotAirDropNum ??
+            record.GotAirDropNum,
+          { integer: true },
+        ),
+      },
+    );
     incoming.push({
       id: playerId,
       playerOpenId,
       externalPlayerId,
+      pubgPlayerId,
       playerName,
       teamId,
       teamNo,
@@ -764,6 +857,9 @@ function normalizeTransportPlayers(players, map) {
           ) ?? 0,
         ),
       ),
+      damageDealt: metrics.damageDealt,
+      longestEliminationDistanceM: metrics.longestEliminationDistanceM,
+      airdropLootCount: metrics.airdropLootCount,
       position: extractTransportPosition(record),
     });
   }
@@ -776,6 +872,7 @@ function normalizeTransportPlayers(players, map) {
           id: p.id,
           playerOpenId: p.playerOpenId,
           externalPlayerId: p.externalPlayerId,
+          pubgPlayerId: p.pubgPlayerId,
           playerName: p.playerName,
           teamId: p.teamId,
           teamNo: p.teamNo,
@@ -784,6 +881,9 @@ function normalizeTransportPlayers(players, map) {
           isKnocked: !!p.isKnocked,
           health: p.health,
           kills: p.kills ?? 0,
+          damageDealt: p.damageDealt,
+          longestEliminationDistanceM: p.longestEliminationDistanceM,
+          airdropLootCount: p.airdropLootCount,
           position: null,
         };
       }
@@ -794,6 +894,7 @@ function normalizeTransportPlayers(players, map) {
         id: p.id,
         playerOpenId: p.playerOpenId,
         externalPlayerId: p.externalPlayerId,
+        pubgPlayerId: p.pubgPlayerId,
         playerName: p.playerName,
         teamId: p.teamId,
         teamNo: p.teamNo,
@@ -802,6 +903,9 @@ function normalizeTransportPlayers(players, map) {
         isKnocked: !!p.isKnocked,
         health: p.health,
         kills: p.kills ?? 0,
+        damageDealt: p.damageDealt,
+        longestEliminationDistanceM: p.longestEliminationDistanceM,
+        airdropLootCount: p.airdropLootCount,
         position: {
           x: normalizedX,
           y: normalizedY,
@@ -1195,6 +1299,8 @@ function createTelemetryBridge({
   let lastLoggedShadowErrorAt = 0;
   let backendRetryMode = false;
   let finishTransitionLogged = false;
+  let playerMetricMatchId = "";
+  const playerMetricMaxima = new Map();
 
   let currentShadowBaseUrl = normalizeHttpBaseUrl(
     shadowBaseUrl,
@@ -1805,6 +1911,8 @@ function createTelemetryBridge({
     lastControlStatusCheckAt = 0;
     finishTransitionLogged = false;
     packetTimes = [];
+    playerMetricMatchId = "";
+    playerMetricMaxima.clear();
     lastLoggedShadowError = "";
     lastLoggedShadowErrorAt = 0;
     setState({
@@ -2113,7 +2221,11 @@ function createTelemetryBridge({
     const map = extractTransportMap(snapshot);
     const sequence = nextTransportSequence();
     const timestamp = Date.now();
-    const players = normalizeTransportPlayers(snapshot.players, map);
+    const players = normalizeTransportPlayers(
+      snapshot.players,
+      map,
+      playerMetricMaxima,
+    );
     const teams = normalizeTransportTeams(
       snapshot.teams,
       players,
@@ -2678,6 +2790,11 @@ function createTelemetryBridge({
       throw new Error("matchId is required.");
     }
 
+    if (playerMetricMatchId !== normalizedMatchId) {
+      playerMetricMatchId = normalizedMatchId;
+      playerMetricMaxima.clear();
+    }
+
     if (
       running &&
       backendBaseUrl === normalizedApiBase &&
@@ -2794,6 +2911,7 @@ module.exports = {
     extractTransportMap,
     isTransportPlayerAlive,
     isPendingTelemetryEventFresh,
+    normalizeTransportPlayers,
     normalizePosition,
     resolveTransportMapDefinition,
   }),

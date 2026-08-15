@@ -41,6 +41,85 @@ test("transport treats captured PCOB liveState 1 as alive and 5 as dead", () => 
   );
 });
 
+test("transport preserves nullable PCOB player metrics and monotonic stable-id maxima", () => {
+  const metricCache = new Map();
+  const first = _testing.normalizeTransportPlayers(
+    [
+      {
+        uId: "shadow-uid-7",
+        playerOpenId: "openid-7",
+        TeamID: 12,
+        playerName: "Alpha",
+        damage: "635.25",
+        maxKillDistance: "128.5",
+        gotAirDropNum: "1",
+      },
+      {
+        uId: "shadow-uid-8",
+        playerOpenId: "openid-8",
+        TeamID: 12,
+        playerName: "Bravo",
+      },
+    ],
+    "ERANGEL",
+    metricCache,
+  );
+
+  assert.deepEqual(
+    {
+      damageDealt: first[0].damageDealt,
+      longestEliminationDistanceM: first[0].longestEliminationDistanceM,
+      airdropLootCount: first[0].airdropLootCount,
+    },
+    {
+      damageDealt: 635.25,
+      longestEliminationDistanceM: 128.5,
+      airdropLootCount: 1,
+    },
+  );
+  assert.deepEqual(
+    {
+      damageDealt: first[1].damageDealt,
+      longestEliminationDistanceM: first[1].longestEliminationDistanceM,
+      airdropLootCount: first[1].airdropLootCount,
+    },
+    {
+      damageDealt: null,
+      longestEliminationDistanceM: null,
+      airdropLootCount: null,
+    },
+  );
+
+  const later = _testing.normalizeTransportPlayers(
+    [
+      {
+        uId: "rotated-shadow-uid-7",
+        playerOpenId: "openid-7",
+        TeamID: 12,
+        playerName: "Alpha",
+        damage: 600,
+        maxKillDistance: null,
+        gotAirDropNum: 0,
+      },
+    ],
+    "ERANGEL",
+    metricCache,
+  );
+
+  assert.deepEqual(
+    {
+      damageDealt: later[0].damageDealt,
+      longestEliminationDistanceM: later[0].longestEliminationDistanceM,
+      airdropLootCount: later[0].airdropLootCount,
+    },
+    {
+      damageDealt: 635.25,
+      longestEliminationDistanceM: 128.5,
+      airdropLootCount: 1,
+    },
+  );
+});
+
 test("transport retry queue expires stale snapshots", () => {
   const now = 1_800_000_000_000;
   assert.equal(

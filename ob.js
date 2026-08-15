@@ -1780,6 +1780,8 @@ const shadowState = {
   gameId: null,
   routePayloads: {},
   rawRoutePayloads: {},
+  playerMetricMaxima: new Map(),
+  gameTimeSecondsMax: null,
   matchFlightPath: null,
   conflictingFlightPathCount: 0,
   lastConflictingFlightPath: null,
@@ -2870,6 +2872,60 @@ function extractDirectFireDirection(record) {
   return null;
 }
 
+function normalizeDirectPlayerMetric(value, { integer = false } = {}) {
+  const numeric = numberValue(value);
+  if (numeric === null) {
+    return null;
+  }
+  const nonNegative = Math.max(0, numeric);
+  return integer ? Math.trunc(nonNegative) : nonNegative;
+}
+
+function rememberDirectPlayerMetrics(playerIds, incoming) {
+  const aliases = Array.from(
+    new Set(
+      playerIds
+        .map(textValue)
+        .filter(Boolean)
+        .map((value) => `id:${value.toLowerCase()}`),
+    ),
+  );
+  if (aliases.length === 0) {
+    return incoming;
+  }
+
+  let existing = null;
+  for (const alias of aliases) {
+    const candidate = shadowState.playerMetricMaxima.get(alias);
+    if (candidate) {
+      existing = candidate;
+      break;
+    }
+  }
+
+  const merged = {
+    damageDealt:
+      incoming.damageDealt === null
+        ? (existing?.damageDealt ?? null)
+        : Math.max(existing?.damageDealt ?? 0, incoming.damageDealt),
+    longestEliminationDistanceM:
+      incoming.longestEliminationDistanceM === null
+        ? (existing?.longestEliminationDistanceM ?? null)
+        : Math.max(
+            existing?.longestEliminationDistanceM ?? 0,
+            incoming.longestEliminationDistanceM,
+          ),
+    airdropLootCount:
+      incoming.airdropLootCount === null
+        ? (existing?.airdropLootCount ?? null)
+        : Math.max(existing?.airdropLootCount ?? 0, incoming.airdropLootCount),
+  };
+  for (const alias of aliases) {
+    shadowState.playerMetricMaxima.set(alias, merged);
+  }
+  return merged;
+}
+
 function normalizeDirectPlayers() {
   const normalized = [];
   const seen = new Set();
@@ -2919,6 +2975,32 @@ function normalizeDirectPlayers() {
     const position = extractDirectPosition(record);
     const fireDirection = extractDirectFireDirection(record);
     const fireAngle = fireDirection ? null : extractDirectFireAngle(record);
+    const metrics = rememberDirectPlayerMetrics(
+      [pubgPlayerId, externalPlayerId, playerOpenId],
+      {
+        damageDealt: normalizeDirectPlayerMetric(
+          record.damageDealt ??
+            record.DamageDealt ??
+            record.damage ??
+            record.Damage ??
+            record.totalDamage ??
+            record.TotalDamage ??
+            record.damageValue ??
+            record.DamageValue,
+        ),
+        longestEliminationDistanceM: normalizeDirectPlayerMetric(
+          record.longestEliminationDistanceM ??
+            record.maxKillDistance ??
+            record.MaxKillDistance,
+        ),
+        airdropLootCount: normalizeDirectPlayerMetric(
+          record.airdropLootCount ??
+            record.gotAirDropNum ??
+            record.GotAirDropNum,
+          { integer: true },
+        ),
+      },
+    );
     normalized.push({
       playerId,
       playerIds,
@@ -2959,21 +3041,10 @@ function normalizeDirectPlayers() {
           ]) ?? 0,
         ),
       ),
-      damage: Math.max(
-        0,
-        Math.trunc(
-          firstNumberValue(record, [
-            "damage",
-            "Damage",
-            "damageDealt",
-            "DamageDealt",
-            "totalDamage",
-            "TotalDamage",
-            "damageValue",
-            "DamageValue",
-          ]) ?? 0,
-        ),
-      ),
+      damage: metrics.damageDealt,
+      damageDealt: metrics.damageDealt,
+      longestEliminationDistanceM: metrics.longestEliminationDistanceM,
+      airdropLootCount: metrics.airdropLootCount,
       knockouts: Math.max(
         0,
         Math.trunc(
@@ -4085,6 +4156,9 @@ function normalizeDirectCircle() {
     ) {
       score += 30;
     }
+    if (candidate.GameTime !== undefined || candidate.gameTime !== undefined) {
+      score += 35;
+    }
     if (candidate.Counter !== undefined || candidate.MaxTime !== undefined) {
       score += 50;
     }
@@ -4214,10 +4288,20 @@ function normalizeDirectCircle() {
     (counter !== null && maxTime !== null && maxTime >= counter
       ? toFutureIso(maxTime - counter, shadowState.updatedAt)
       : null);
+  const incomingGameTimeSeconds = normalizeDirectPlayerMetric(
+    source.GameTime ?? source.gameTime ?? source.gameTimeSeconds,
+  );
+  if (incomingGameTimeSeconds !== null) {
+    shadowState.gameTimeSecondsMax = Math.max(
+      shadowState.gameTimeSecondsMax ?? 0,
+      incomingGameTimeSeconds,
+    );
+  }
 
   return {
     phase: phaseIndex,
     status: textValue(source.CircleStatus ?? source.circleStatus) ?? null,
+    gameTimeSeconds: shadowState.gameTimeSecondsMax,
     counterSeconds: counter,
     maxTimeSeconds: maxTime,
     nextShrinkAt,
@@ -4261,6 +4345,13 @@ function buildMergedCircleInfo() {
   const maxTime =
     normalized.maxTimeSeconds ??
     firstNumberValue(selectedCircle, ["MaxTime", "maxTime", "maxTimeSeconds"], null);
+  const gameTimeSeconds =
+    normalized.gameTimeSeconds ??
+    normalizeDirectPlayerMetric(
+      selectedCircle.GameTime ??
+        selectedCircle.gameTime ??
+        selectedCircle.gameTimeSeconds,
+    );
 
   return {
     ...selectedCircle,
@@ -4270,6 +4361,9 @@ function buildMergedCircleInfo() {
     status,
     circleStatus: selectedCircle.circleStatus ?? status,
     CircleStatus: selectedCircle.CircleStatus ?? status,
+    GameTime: selectedCircle.GameTime ?? gameTimeSeconds,
+    gameTime: selectedCircle.gameTime ?? gameTimeSeconds,
+    gameTimeSeconds,
     Counter: selectedCircle.Counter ?? counter,
     counter: selectedCircle.counter ?? counter,
     counterSeconds: counter,
@@ -4437,16 +4531,53 @@ function buildDirectPlayerCard(players, teams) {
         ),
       ),
     alive: matchedPlayer?.alive === true ? true : isDirectPlayerAlive(observer),
-    damage: firstNumberValue(observer, [
-      "damage",
-      "Damage",
-      "damageDealt",
-      "DamageDealt",
-      "totalDamage",
-      "TotalDamage",
-      "damageValue",
-      "DamageValue",
-    ]),
+    damage:
+      numberValue(matchedPlayer?.damageDealt ?? matchedPlayer?.damage) ??
+      normalizeDirectPlayerMetric(
+        firstNumberValue(observer, [
+          "damageDealt",
+          "DamageDealt",
+          "damage",
+          "Damage",
+          "totalDamage",
+          "TotalDamage",
+          "damageValue",
+          "DamageValue",
+        ]),
+      ),
+    damageDealt:
+      numberValue(matchedPlayer?.damageDealt) ??
+      normalizeDirectPlayerMetric(
+        firstNumberValue(observer, [
+          "damageDealt",
+          "DamageDealt",
+          "damage",
+          "Damage",
+          "totalDamage",
+          "TotalDamage",
+          "damageValue",
+          "DamageValue",
+        ]),
+      ),
+    longestEliminationDistanceM:
+      numberValue(matchedPlayer?.longestEliminationDistanceM) ??
+      normalizeDirectPlayerMetric(
+        firstNumberValue(observer, [
+          "longestEliminationDistanceM",
+          "maxKillDistance",
+          "MaxKillDistance",
+        ]),
+      ),
+    airdropLootCount:
+      numberValue(matchedPlayer?.airdropLootCount) ??
+      normalizeDirectPlayerMetric(
+        firstNumberValue(observer, [
+          "airdropLootCount",
+          "gotAirDropNum",
+          "GotAirDropNum",
+        ]),
+        { integer: true },
+      ),
   };
 }
 
@@ -4620,7 +4751,12 @@ function buildDirectLeaderboardPayload(matchIdOverride) {
         avatarUrl: null,
         kills: Math.max(0, Math.trunc(numberValue(player.kills) ?? 0)),
         assists: Math.max(0, Math.trunc(numberValue(player.assists) ?? 0)),
-        damage: Math.max(0, Math.trunc(numberValue(player.damage) ?? 0)),
+        damage: numberValue(player.damageDealt ?? player.damage),
+        damageDealt: numberValue(player.damageDealt),
+        longestEliminationDistanceM: numberValue(
+          player.longestEliminationDistanceM,
+        ),
+        airdropLootCount: numberValue(player.airdropLootCount),
         knockouts: Math.max(0, Math.trunc(numberValue(player.knockouts) ?? 0)),
         alive: player.alive === true,
         knocked: player.alive === true && player.knocked === true,
@@ -6296,6 +6432,8 @@ function hasCircleCoreFields(record) {
     record.circleIndex !== undefined ||
     record.CircleStatus !== undefined ||
     record.circleStatus !== undefined ||
+    record.GameTime !== undefined ||
+    record.gameTime !== undefined ||
     record.Counter !== undefined ||
     record.MaxTime !== undefined
   );
@@ -6345,6 +6483,8 @@ function circleCandidateScore(record) {
   if (
     record.CircleStatus !== undefined ||
     record.circleStatus !== undefined ||
+    record.GameTime !== undefined ||
+    record.gameTime !== undefined ||
     record.Counter !== undefined ||
     record.MaxTime !== undefined
   ) {
@@ -6386,6 +6526,8 @@ const CIRCLE_SNAPSHOT_KEYS = [
   "circleIndex",
   "CircleStatus",
   "circleStatus",
+  "GameTime",
+  "gameTime",
   "Counter",
   "MaxTime",
 ];
@@ -6593,6 +6735,8 @@ function resetShadowState(reason, nextGameId = null) {
   shadowState.gameId = textValue(nextGameId);
   shadowState.routePayloads = {};
   shadowState.rawRoutePayloads = {};
+  shadowState.playerMetricMaxima.clear();
+  shadowState.gameTimeSecondsMax = null;
   shadowState.matchFlightPath = null;
   shadowState.conflictingFlightPathCount = 0;
   shadowState.lastConflictingFlightPath = null;

@@ -946,6 +946,196 @@ body {
   background: linear-gradient(90deg, var(--next-zone-primary), var(--next-zone-accent));
 }
 
+/* Gold Broadcast: native 180x204 top-right canvas geometry. */
+.obs-next-zone-update-root--gold-ring {
+  --gold-broadcast-font: "Bahnschrift Condensed", "Arial Narrow", Impact, Arial, sans-serif;
+  --next-zone-primary: var(--gold-solid, #eedd77);
+  --next-zone-accent: var(--gold-solid, #eedd77);
+  --next-zone-panel: #050505;
+  --next-zone-text: #ffffff;
+  --next-zone-muted: rgba(255, 255, 255, 0.86);
+  --next-zone-border: transparent;
+  --next-zone-glow: rgba(0, 0, 0, 0.4);
+  --next-zone-primary-soft: color-mix(in srgb, var(--gold-solid, #eedd77) 18%, transparent);
+  --next-zone-accent-soft: color-mix(in srgb, var(--gold-solid, #eedd77) 18%, transparent);
+  --next-zone-primary-text: #050505;
+  --next-zone-accent-text: #050505;
+  top: 0;
+  right: 0;
+  left: auto;
+  width: 180px;
+  height: 204px;
+  max-width: none;
+  opacity: 0;
+  background: transparent !important;
+  font-family: var(--gold-broadcast-font);
+  filter: drop-shadow(-9px 12px 20px rgba(0, 0, 0, 0.4));
+  transform: translate3d(0, -18px, 0);
+  transform-origin: top right;
+  transition:
+    opacity 650ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 650ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 160ms ease;
+}
+
+.obs-next-zone-update-root--gold-ring.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+/* Snap back to the true off-canvas start before the two-frame replay. Without
+   this preparation state, removing is-visible would spend those frames easing
+   only a few pixels away from the final pose and the replay would look static. */
+.obs-next-zone-update-root--gold-ring[data-gold-obs-motion="preparing"] {
+  opacity: 0;
+  transform: translate3d(0, -18px, 0);
+  transition: none;
+}
+
+.obs-next-zone-update-root--gold-ring[data-gold-obs-motion="reduced"] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition: none;
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-card {
+  display: block;
+  width: 180px;
+  height: 204px;
+  min-height: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-card::after {
+  content: none;
+}
+
+.next-zone-update-gold-face {
+  position: relative;
+  display: grid;
+  width: 180px;
+  height: 170px;
+  place-items: center;
+  overflow: hidden;
+  color: #050505;
+  background:
+    radial-gradient(circle at 60% 32%, rgba(255, 255, 255, 0.35), transparent 28%),
+    linear-gradient(
+      145deg,
+      var(--gold-solid, #eedd77),
+      color-mix(in srgb, var(--gold-solid, #eedd77) 82%, var(--next-zone-panel))
+    );
+  font-family: var(--gold-broadcast-font);
+}
+
+.next-zone-update-gold-face::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  opacity: 0.14;
+  background-image: radial-gradient(rgba(0, 0, 0, 0.8) 0.8px, transparent 0.8px);
+  background-size: 7px 7px;
+  pointer-events: none;
+}
+
+.next-zone-update-gold-ring {
+  position: absolute;
+  inset: 10px 15px;
+  border-radius: 50%;
+  background: repeating-conic-gradient(#000 0 37deg, transparent 37deg 49deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 55%, #000 56% 76%, transparent 77%);
+  mask: radial-gradient(circle, transparent 0 55%, #000 56% 76%, transparent 77%);
+}
+
+.next-zone-update-gold-metric {
+  position: relative;
+  z-index: 1;
+  margin-top: -7px;
+  font-size: 72px;
+  font-weight: 950;
+  letter-spacing: -0.08em;
+  line-height: 1;
+}
+
+.next-zone-update-gold-metric-label {
+  position: absolute;
+  z-index: 1;
+  bottom: 29px;
+  font-family: var(--gold-broadcast-font);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  line-height: 1;
+}
+
+.next-zone-update-gold-footer {
+  display: flex;
+  width: 160px;
+  height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  background: rgba(13, 13, 13, 0.92);
+  color: rgba(255, 255, 255, 0.86);
+  font-family: var(--gold-broadcast-font);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-countdown {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-phase-block {
+  display: block;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-phase-block span {
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-status {
+  top: 5px;
+  right: auto;
+  left: 5px;
+  min-height: 20px;
+  border: 1px solid #050505;
+  border-radius: 0;
+  background: #fe293d;
+  color: #fff;
+  padding: 2px 5px;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  width: 180px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.obs-next-zone-update-root--gold-ring .next-zone-update-progress span {
+  background: var(--gold-solid, #eedd77);
+}
+
 .zone-timer-mode {
   margin-top: 16px;
   color: var(--zone-accent);
@@ -1144,18 +1334,22 @@ body {
   .obs-next-zone-update-root--blade,
   .obs-next-zone-update-root--radar-sweep,
   .obs-next-zone-update-root--fold-down,
+  .obs-next-zone-update-root--gold-ring,
   .obs-next-zone-update-root--kinetic-hud *,
   .obs-next-zone-update-root--blade *,
   .obs-next-zone-update-root--radar-sweep *,
   .obs-next-zone-update-root--fold-down *,
+  .obs-next-zone-update-root--gold-ring *,
   .obs-next-zone-update-root--kinetic-hud *::before,
   .obs-next-zone-update-root--blade *::before,
   .obs-next-zone-update-root--radar-sweep *::before,
   .obs-next-zone-update-root--fold-down *::before,
+  .obs-next-zone-update-root--gold-ring *::before,
   .obs-next-zone-update-root--kinetic-hud *::after,
   .obs-next-zone-update-root--blade *::after,
   .obs-next-zone-update-root--radar-sweep *::after,
-  .obs-next-zone-update-root--fold-down *::after {
+  .obs-next-zone-update-root--fold-down *::after,
+  .obs-next-zone-update-root--gold-ring *::after {
     animation: none !important;
     transition: none !important;
   }

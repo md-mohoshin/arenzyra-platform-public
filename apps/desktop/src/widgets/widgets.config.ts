@@ -56,6 +56,54 @@ export const widgets: ObsWidgetDefinition[] = [
     routeKind: "raw",
   },
   {
+    id: "gold_broadcast_roster",
+    name: "Gold Broadcast - Focused Team",
+    category: "Desktop Raw Widgets",
+    description:
+      "Launcher-local focused-team roster with live kills, health, knocked, and eliminated states.",
+    path: "/w/:widgetInstanceKey",
+    previewHeight: 540,
+    routeKind: "permanent",
+    widgetKey: "gold-broadcast-focused-roster",
+    requiresWidgetInstanceKey: true,
+  },
+  {
+    id: "gold_broadcast_final_five",
+    name: "Gold Broadcast - Final Five Alive",
+    category: "Desktop Raw Widgets",
+    description:
+      "Live final-five standings with native match telemetry and Rondo recall status.",
+    path: "/w/:widgetInstanceKey",
+    previewHeight: 180,
+    routeKind: "permanent",
+    widgetKey: "final-five-alive",
+    requiresWidgetInstanceKey: true,
+  },
+  {
+    id: "next_zone_update_gold_ring",
+    name: "Gold Broadcast - Zone Status",
+    category: "Desktop Raw Widgets",
+    description:
+      "Gold Broadcast 180x204 top-right ring with live alive-team, stage, and final 20-second zone data.",
+    path: "/w/:widgetInstanceKey",
+    previewHeight: 240,
+    routeKind: "permanent",
+    widgetKey: "next-zone-update-gold-ring",
+    requiresWidgetInstanceKey: true,
+  },
+  {
+    id: "gold_broadcast_player_stats",
+    name: "Gold Broadcast - Player Stats",
+    category: "Desktop Raw Widgets",
+    description:
+      "Launcher-local focused-player damage, longest elimination, and airdrop counters.",
+    path: "/w/:widgetInstanceKey",
+    previewHeight: 540,
+    routeKind: "permanent",
+    widgetKey: "gold-broadcast-player-stats",
+    requiresWidgetInstanceKey: true,
+  },
+  {
     id: "next_zone_update",
     name: "Next Zone Update",
     category: "Desktop Raw Widgets",
@@ -152,12 +200,23 @@ function applyBaseQuery(url: URL, baseUrl: string) {
   });
 }
 
-function appendBaseQuery(url: string, baseUrl: string) {
-  const query = new URL(baseUrl).searchParams.toString();
-  if (!query) {
-    return url;
-  }
-  return `${url}${url.includes("?") ? "&" : "?"}${query}`;
+function appendPermanentQuery(
+  url: string,
+  baseUrl: string,
+  widget: ObsWidgetDefinition,
+) {
+  const params = new URLSearchParams();
+  new URL(baseUrl).searchParams.forEach((value, key) => {
+    params.set(key, value);
+  });
+  Object.entries(widget.query ?? {}).forEach(([key, value]) => {
+    const normalizedValue = String(value || "").trim();
+    if (normalizedValue) {
+      params.set(key, normalizedValue);
+    }
+  });
+  const query = params.toString();
+  return query ? `${url}${url.includes("?") ? "&" : "?"}${query}` : url;
 }
 
 function resolvePermanentWidgetPath(
@@ -184,9 +243,10 @@ export function buildWidgetUrlTemplate(baseUrl: string, widget: ObsWidgetDefinit
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
 
   if (widget.routeKind === "permanent") {
-    return appendBaseQuery(
+    return appendPermanentQuery(
       `${normalizedBaseUrl}${resolvePermanentWidgetPath(widget, "<widget-instance-key>")}`,
       baseUrl,
+      widget,
     );
   }
 
@@ -208,12 +268,13 @@ export function buildWidgetUrl(
     if (!widgetInstanceKey) {
       return buildWidgetUrlTemplate(normalizedBaseUrl, widget);
     }
-    return appendBaseQuery(
+    return appendPermanentQuery(
       `${normalizedBaseUrl}${resolvePermanentWidgetPath(
         widget,
         encodeURIComponent(widgetInstanceKey),
       )}`,
       baseUrl,
+      widget,
     );
   }
 

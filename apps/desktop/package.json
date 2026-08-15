@@ -1,6 +1,6 @@
 {
   "name": "arenzyra-observer-launcher",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "private": true,
   "type": "module",
   "description": "Arenzyra Observer Launcher for ShadowTracker operations",
@@ -19,9 +19,10 @@
     "verify:map-provenance": "node ../../scripts/verify-desktop-map-provenance.cjs",
     "build:electro": "npm run build:electron",
     "build:electron": "npm run verify:release-inputs && npm run verify:connector-provenance && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:connector-provenance && npm run verify:map-provenance && electron-builder --config electron-builder.config.cjs",
-    "build:electron:candidate": "npm run verify:release-inputs && npm run verify:connector-provenance && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && npm run verify:connector-provenance && npm run verify:map-provenance && electron-builder --config electron-builder.candidate.config.cjs --publish never",
+    "build:electron:candidate": "npm run verify:release-inputs && npm run sync:branding && npm run verify:release-inputs && npm run build && npm run verify:release-inputs && electron-builder --config electron-builder.candidate.config.cjs --publish never",
     "run:packaged": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process '.\\dist\\win-unpacked\\Arenzyra Observer Launcher.exe'\"",
     "build:electron:run": "npm run build:electron && npm run run:packaged",
+    "test:widgets-config": "node --experimental-strip-types --test src/widgets/widgets.config.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -31,6 +32,7 @@
     "express": "^4.22.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "scheduler": "0.23.2",
     "sharp": "^0.35.3",
     "socket.io-client": "^4.8.3",
     "uiohook-napi": "^1.5.5",

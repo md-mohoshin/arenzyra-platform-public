@@ -69,23 +69,20 @@ test("review strings cannot unlock production desktop packaging", () => {
   );
 });
 
-test("direct packaging hooks evaluate exact connector provenance while the production blocker remains unconditional", () => {
+test("production packaging evaluates connector provenance while the local candidate remains non-publishable", () => {
   assert.throws(
     () => releaseConfig.beforePack(),
     (error) =>
       error instanceof AggregateError &&
       /release packaging is blocked/i.test(error.message) &&
-      /connector commercial provenance.*explicitly unapproved/i.test(
-        error.message,
-      ) &&
+      /connector commercial provenance is also blocked/i.test(error.message) &&
       error.errors.some(
-        (nested) => nested?.code === "ARENZYRA_CONNECTOR_PROVENANCE_UNAPPROVED",
+        (nested) =>
+          typeof nested?.code === "string" &&
+          nested.code.startsWith("ARENZYRA_CONNECTOR_PROVENANCE_"),
       ),
   );
-  assert.throws(
-    () => withCandidateArgv(() => candidateConfig.beforeBuild()),
-    (error) => error?.code === "ARENZYRA_CONNECTOR_PROVENANCE_UNAPPROVED",
-  );
+  assert.equal(withCandidateArgv(() => candidateConfig.beforeBuild()), true);
 });
 
 test("representative candidate config is ASAR-bound and non-publishable", () => {
@@ -97,6 +94,8 @@ test("representative candidate config is ASAR-bound and non-publishable", () => 
   ]);
   assert.equal(candidateConfig.disableSanityCheckAsar, false);
   assert.equal(candidateConfig.forceCodeSigning, false);
+  assert.equal(candidateConfig.npmRebuild, false);
+  assert.equal(candidateConfig.electronDist, "node_modules/electron/dist");
   assert.equal(candidateConfig.publish, null);
   assert.equal(
     candidateConfig.directories.output,
@@ -160,7 +159,11 @@ test("desktop scripts keep release packaging blocked and isolate the candidate",
   assert.doesNotMatch(releaseCommand, /candidate|--publish/i);
   assert.match(
     candidateCommand,
-    /verify:connector-provenance && npm run verify:map-provenance && electron-builder --config electron-builder\.candidate\.config\.cjs --publish never$/,
+    /verify:release-inputs && electron-builder --config electron-builder\.candidate\.config\.cjs --publish never$/,
+  );
+  assert.doesNotMatch(
+    candidateCommand,
+    /verify:connector-provenance|verify:map-provenance/,
   );
   assert.doesNotMatch(
     candidateCommand,

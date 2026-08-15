@@ -186,6 +186,13 @@ function createZoneStateStore() {
     const current = updatesByMap.get(mapKey);
     const phase = toFiniteNumber(update?.phase);
     const currentPhase = toFiniteNumber(current?.phase);
+    const startsNewRuntime = Boolean(
+      current &&
+        phase !== null &&
+        currentPhase !== null &&
+        phase < currentPhase &&
+        isOpeningMatchPhase(update?.matchPhase),
+    );
     if (
       current &&
       phase !== null &&
@@ -211,6 +218,13 @@ function createZoneStateStore() {
     const nextUpdate = {
       mapKey,
       phase,
+      aliveTeams: (() => {
+        const value = toFiniteNumber(update?.aliveTeams ?? update?.teamsAlive);
+        if (value !== null) {
+          return Math.max(0, Math.trunc(value));
+        }
+        return startsNewRuntime ? null : current?.aliveTeams ?? null;
+      })(),
       matchPhase: normalizeNullableString(update?.matchPhase),
       mode: normalizeZoneMode(update?.mode),
       zoneMode: normalizeZoneMode(update?.zoneMode ?? update?.mode),
