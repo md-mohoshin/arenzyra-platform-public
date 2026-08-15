@@ -281,6 +281,18 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/production-interrupted-deploy-inventory.sh
     ;;
+  interrupted-full-deploy-resume)
+    [ "$#" -eq 0 ] || block "interrupted-full-deploy-resume accepts no arguments."
+    source scripts/acquire-production-deploy-lock.sh
+    production_verify_lock_descriptor || \
+      block "interrupted-full-deploy-resume did not inherit the reviewed deployment lock."
+    # Repeat the exact clean nested assembly only after descriptor 8 is held.
+    # The wrapper retains that descriptor through its evidence snapshots,
+    # sole builder-cache prune, and the in-place full deployment continuation.
+    verify_repository ROOT "$EXPECTED_ROOT" ARENZYRA_REVIEWED_ROOT_COMMIT
+    require_nested_assembly
+    exec /bin/bash scripts/resume-production-interrupted-full-deploy.sh
+    ;;
   source-activate)
     [ "$#" -eq 7 ] && \
       [[ "$1" =~ ^[a-zA-Z0-9._-]{8,128}$ ]] && \

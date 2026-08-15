@@ -14,6 +14,23 @@ FIRST_DEPLOY=0
 REUSE_VERIFIED_BACKUP_ID=""
 REUSE_CANDIDATE_RELEASE_ID=""
 REBUILD_TRANSITION_CANDIDATE=0
+INTERRUPTED_FULL_RESUME=0
+INTERRUPTED_FULL_CANDIDATE_RELEASE="git-20260815-131200234-84099e4622e9"
+INTERRUPTED_FULL_CANDIDATE_ROOT="d6390f2abb37"
+INTERRUPTED_FULL_CANDIDATE_API="88efdad94d65"
+INTERRUPTED_FULL_CANDIDATE_WEB="3d2cca1dd426"
+INTERRUPTED_FULL_API_IMAGE="sha256:a895c29c1398c0398b6a9fccf54a50aad8c62a6804fc154b12eb3f5a2ec55cde"
+INTERRUPTED_FULL_WEB_IMAGE="sha256:1513170fcd1fdf73481474833737ff61884dc64b0e683720f670a3994299dba1"
+INTERRUPTED_FULL_MEDIA_IMAGE="sha256:c918e11e7b0b400dbf4e75092e64408c3c444768c5b7d141bcefa72f5a959b33"
+INTERRUPTED_FULL_ENV_IDENTITY="2049:9839406:0:0:600:1:3624:1786799521"
+INTERRUPTED_FULL_ENV_SHA256="3746d6736a025b9138aab01c0838a6225ded0205175bb2ea979d9e436aa8b47b"
+INTERRUPTED_FULL_API_MANIFEST_IDENTITY="2049:9839407:0:0:600:1:737:1786799712"
+INTERRUPTED_FULL_API_MANIFEST_SHA256="a33ff91db207401f33a4c0339d632129a03452b90d7bd171c5913f9855d6288c"
+INTERRUPTED_FULL_WEB_MANIFEST_IDENTITY="2049:9839408:0:0:600:1:737:1786799712"
+INTERRUPTED_FULL_WEB_MANIFEST_SHA256="a14eb7cd7cd651e9798c9c21308530b7c8cab6e65546bd2ded038f6a2a6bfadd"
+INTERRUPTED_FULL_MEDIA_MANIFEST_IDENTITY="2049:9839409:0:0:600:1:747:1786799713"
+INTERRUPTED_FULL_MEDIA_MANIFEST_SHA256="af744723b8bbc92b89444b1e5b6eaeca2a81652989d23f8c64a720575dd481bb"
+ORIGINAL_ARGUMENT_COUNT="$#"
 LOCK_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_LOCK_TIMEOUT_SECONDS:-10}"
 HEALTH_TIMEOUT_SECONDS="${ARENZYRA_DEPLOY_HEALTH_TIMEOUT_SECONDS:-240}"
 RELEASE_ARCHIVE_ROOT="${ARENZYRA_RELEASE_ARCHIVE_ROOT:-$EXPECTED_RELEASE_ARCHIVE_ROOT}"
@@ -77,7 +94,7 @@ trap cleanup_runtime_files EXIT
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-production.sh [--discord-bot|--api-recovery|--web-recovery|--web-candidate|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
+Usage: scripts/deploy-production.sh [--discord-bot|--api-recovery|--web-recovery|--web-candidate|--interrupted-full-deploy-resume|--legacy-cutover|--legacy-cutover-resume|--legacy-cutover-resume-interrupted|--legacy-cutover-resume-transition|--legacy-cutover-resume-transition-rebuild] [--reuse-verified-backup BACKUP_ID] [--reuse-candidate-release RELEASE_ID] [--first-deploy]
 
 Runs the publish configuration check, fail-closed source provenance and
 old-writer migration-safety gates, mandatory disk/service preflight immediately
@@ -98,6 +115,16 @@ while [ "$#" -gt 0 ]; do
     --api-recovery) MODE="api-recovery" ;;
     --web-recovery) MODE="web-recovery" ;;
     --web-candidate) MODE="web-candidate" ;;
+    --interrupted-full-deploy-resume)
+      [ "$INTERRUPTED_FULL_RESUME" -eq 0 ] && \
+        [ -z "$REUSE_CANDIDATE_RELEASE_ID" ] || {
+        printf '%s\n' '--interrupted-full-deploy-resume is one-time and cannot be combined with candidate arguments.' >&2
+        exit 2
+      }
+      MODE="full"
+      INTERRUPTED_FULL_RESUME=1
+      REUSE_CANDIDATE_RELEASE_ID="$INTERRUPTED_FULL_CANDIDATE_RELEASE"
+      ;;
     --legacy-cutover) MODE="legacy-cutover" ;;
     --legacy-cutover-resume) MODE="legacy-cutover-resume" ;;
     --legacy-cutover-resume-interrupted) MODE="legacy-cutover-resume-interrupted" ;;
@@ -114,6 +141,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --reuse-candidate-release)
       [ "$#" -ge 2 ] || { printf '%s\n' '--reuse-candidate-release requires one release ID.' >&2; exit 2; }
+      [ "$INTERRUPTED_FULL_RESUME" -eq 0 ] || { printf '%s\n' '--reuse-candidate-release is not accepted by the one-time full resume.' >&2; exit 2; }
       [ -z "$REUSE_CANDIDATE_RELEASE_ID" ] || { printf '%s\n' '--reuse-candidate-release may be specified only once.' >&2; exit 2; }
       REUSE_CANDIDATE_RELEASE_ID="$2"
       shift
@@ -147,7 +175,8 @@ if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
       exit 2
     }
   elif [ "$MODE" != "legacy-cutover-resume-transition" ] && \
-    [ "$MODE" != "web-candidate" ]; then
+    [ "$MODE" != "web-candidate" ] && \
+    [ "$INTERRUPTED_FULL_RESUME" -ne 1 ]; then
     printf '%s\n' '--reuse-candidate-release requires web-candidate or an interrupted/dependency-transition resume.' >&2
     exit 2
   fi
@@ -155,6 +184,24 @@ if [ -n "$REUSE_CANDIDATE_RELEASE_ID" ]; then
     printf '%s\n' '--reuse-candidate-release received an invalid release ID.' >&2
     exit 2
   }
+fi
+if [ "$INTERRUPTED_FULL_RESUME" -eq 1 ]; then
+  [ "$MODE" = "full" ] && \
+    [ "$ORIGINAL_ARGUMENT_COUNT" -eq 1 ] && \
+    [ "$REUSE_CANDIDATE_RELEASE_ID" = "$INTERRUPTED_FULL_CANDIDATE_RELEASE" ] && \
+    [ -z "$REUSE_VERIFIED_BACKUP_ID" ] && \
+    [ "$REBUILD_TRANSITION_CANDIDATE" -eq 0 ] && \
+    [ "$FIRST_DEPLOY" -eq 0 ] || {
+    printf '%s\n' 'The one-time interrupted full resume argument state is invalid.' >&2
+    exit 2
+  }
+  [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" = "1" ] || {
+    printf '%s\n' 'The one-time interrupted full resume requires the continuously inherited reviewed deployment lock.' >&2
+    exit 75
+  }
+elif [ "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" != "0" ]; then
+  printf '%s\n' 'The inherited deployment lock is accepted only by the one-time interrupted full resume.' >&2
+  exit 75
 fi
 if [ "$MODE" = "legacy-cutover-resume-transition" ] && \
   [ -z "$REUSE_CANDIDATE_RELEASE_ID" ] && \
@@ -453,6 +500,24 @@ verify_lock_file_safety() {
   fi
 }
 
+verify_inherited_lock_held() {
+  local probe_status
+  verify_lock_file_safety || return $?
+  # flock -n on descriptor 8 would acquire an accidentally unlocked descriptor
+  # and hide a continuity gap. A separately opened description must instead be
+  # unable to acquire the exact lock while inherited descriptor 8 remains held.
+  if ( exec 7<>"$LOCK_FILE" || exit 74; flock -n -E 42 7 ); then
+    printf 'The inherited production deployment lock was not already held continuously.\n' >&2
+    return 75
+  else
+    probe_status=$?
+  fi
+  [ "$probe_status" -eq 42 ] || {
+    printf 'The inherited production deployment lock probe failed.\n' >&2
+    return 75
+  }
+}
+
 verify_lock_directory_safety
 if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
   if [ -L "$LOCK_FILE" ] || [ ! -f "$LOCK_FILE" ] || \
@@ -467,12 +532,31 @@ if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
     exit 75
   fi
 fi
-exec 8>"$LOCK_FILE"
-verify_lock_file_safety
-if ! flock -w "$LOCK_TIMEOUT_SECONDS" 8; then
-  printf 'Another full or Discord production deployment holds the deployment lock.\n' >&2
-  exit 75
-fi
+case "${ARENZYRA_DEPLOY_LOCK_INHERITED:-0}" in
+  0)
+    [ "$INTERRUPTED_FULL_RESUME" -eq 0 ] || {
+      printf 'The one-time interrupted full resume did not inherit its deployment lock.\n' >&2
+      exit 75
+    }
+    exec 8>"$LOCK_FILE"
+    verify_lock_file_safety
+    if ! flock -w "$LOCK_TIMEOUT_SECONDS" 8; then
+      printf 'Another full or Discord production deployment holds the deployment lock.\n' >&2
+      exit 75
+    fi
+    ;;
+  1)
+    [ "$INTERRUPTED_FULL_RESUME" -eq 1 ] || {
+      printf 'The inherited deployment lock is not accepted by this deployment mode.\n' >&2
+      exit 75
+    }
+    verify_inherited_lock_held || exit $?
+    ;;
+  *)
+    printf 'The inherited production deployment lock marker is invalid.\n' >&2
+    exit 75
+    ;;
+esac
 verify_lock_file_safety
 
 validate_release_file() {
@@ -707,6 +791,114 @@ read_archived_release_image_id() {
       --expected-release "$new_release_id" \
       --service "$service" \
       --print-image-id
+}
+
+verify_interrupted_full_evidence_fingerprint() {
+  local file="$1" expected_identity="$2" expected_hash="$3" label="$4"
+  local identity_before identity_after hash extra hash_line
+  if ! identity_before="$(stat -c '%d:%i:%u:%g:%a:%h:%s:%Y' -- "$file" 2>/dev/null)" || \
+    ! hash_line="$(sha256sum -- "$file" 2>/dev/null)" || \
+    ! identity_after="$(stat -c '%d:%i:%u:%g:%a:%h:%s:%Y' -- "$file" 2>/dev/null)"; then
+    printf 'The interrupted full %s fingerprint could not be captured.\n' "$label" >&2
+    return 75
+  fi
+  read -r hash extra <<<"$hash_line"
+  [ "$identity_before" = "$expected_identity" ] && \
+    [ "$identity_after" = "$expected_identity" ] && \
+    [ "$hash" = "$expected_hash" ] && [ "$extra" = "$file" ] || {
+    printf 'The interrupted full %s fingerprint is not the diagnosed immutable evidence.\n' "$label" >&2
+    return 75
+  }
+}
+
+verify_interrupted_full_candidate_source() {
+  local git_commit root_commit api_commit web_commit
+  [ "$INTERRUPTED_FULL_RESUME" -eq 1 ] && \
+    [ "$MODE" = "full" ] && \
+    [ "$new_release_id" = "$INTERRUPTED_FULL_CANDIDATE_RELEASE" ] && \
+    [ "$release_env" = "$RELEASE_ARCHIVE_ROOT/$INTERRUPTED_FULL_CANDIDATE_RELEASE.env" ] || {
+    printf '%s\n' 'The interrupted full candidate selection is not exact.' >&2
+    return 75
+  }
+  verify_interrupted_full_evidence_fingerprint \
+    "$release_env" "$INTERRUPTED_FULL_ENV_IDENTITY" \
+    "$INTERRUPTED_FULL_ENV_SHA256" 'candidate environment'
+  if ! git_commit="$("${sanitized_environment[@]}" node scripts/read-dotenv-value.cjs \
+      "$release_env" ARENZYRA_GIT_COMMIT)" || \
+    ! root_commit="$("${sanitized_environment[@]}" node scripts/read-dotenv-value.cjs \
+      "$release_env" ARENZYRA_ROOT_GIT_COMMIT)" || \
+    ! api_commit="$("${sanitized_environment[@]}" node scripts/read-dotenv-value.cjs \
+      "$release_env" ARENZYRA_API_GIT_COMMIT)" || \
+    ! web_commit="$("${sanitized_environment[@]}" node scripts/read-dotenv-value.cjs \
+      "$release_env" ARENZYRA_WEB_GIT_COMMIT)"; then
+    printf '%s\n' 'The interrupted full candidate provenance could not be read.' >&2
+    return 75
+  fi
+  [ "$git_commit" = "$INTERRUPTED_FULL_CANDIDATE_ROOT" ] && \
+    [ "$root_commit" = "$INTERRUPTED_FULL_CANDIDATE_ROOT" ] && \
+    [ "$api_commit" = "$INTERRUPTED_FULL_CANDIDATE_API" ] && \
+    [ "$web_commit" = "$INTERRUPTED_FULL_CANDIDATE_WEB" ] || {
+    printf '%s\n' 'The interrupted full candidate provenance is not exact.' >&2
+    return 75
+  }
+  verify_interrupted_full_evidence_fingerprint \
+    "$release_env" "$INTERRUPTED_FULL_ENV_IDENTITY" \
+    "$INTERRUPTED_FULL_ENV_SHA256" 'candidate environment'
+}
+
+verify_interrupted_full_candidate_images() {
+  local actual_id expected_id expected_identity expected_hash manifest service
+  verify_interrupted_full_candidate_source
+  if ! api_image_id="$(read_archived_release_image_id api)" || \
+    ! web_image_id="$(read_archived_release_image_id web)" || \
+    ! media_ai_image_id="$(read_archived_release_image_id media-ai)"; then
+    printf '%s\n' 'An interrupted full candidate image ID could not be read.' >&2
+    return 75
+  fi
+  [ "$api_image_id" = "$INTERRUPTED_FULL_API_IMAGE" ] && \
+    [ "$web_image_id" = "$INTERRUPTED_FULL_WEB_IMAGE" ] && \
+    [ "$media_ai_image_id" = "$INTERRUPTED_FULL_MEDIA_IMAGE" ] || {
+    printf '%s\n' 'An interrupted full candidate image ID is not exact.' >&2
+    return 75
+  }
+  for service in api web media-ai; do
+    case "$service" in
+      api)
+        expected_id="$INTERRUPTED_FULL_API_IMAGE"
+        expected_identity="$INTERRUPTED_FULL_API_MANIFEST_IDENTITY"
+        expected_hash="$INTERRUPTED_FULL_API_MANIFEST_SHA256"
+        ;;
+      web)
+        expected_id="$INTERRUPTED_FULL_WEB_IMAGE"
+        expected_identity="$INTERRUPTED_FULL_WEB_MANIFEST_IDENTITY"
+        expected_hash="$INTERRUPTED_FULL_WEB_MANIFEST_SHA256"
+        ;;
+      media-ai)
+        expected_id="$INTERRUPTED_FULL_MEDIA_IMAGE"
+        expected_identity="$INTERRUPTED_FULL_MEDIA_MANIFEST_IDENTITY"
+        expected_hash="$INTERRUPTED_FULL_MEDIA_MANIFEST_SHA256"
+        ;;
+    esac
+    manifest="$RELEASE_ARCHIVE_ROOT/$new_release_id.${service}-image.json"
+    verify_interrupted_full_evidence_fingerprint \
+      "$manifest" "$expected_identity" "$expected_hash" "$service manifest"
+    if ! actual_id="$(docker image inspect --format '{{.Id}}' "$expected_id" 2>/dev/null)" || \
+      [ "$actual_id" != "$expected_id" ]; then
+      printf 'The exact interrupted full candidate image is unavailable: %s.\n' "$service" >&2
+      return 75
+    fi
+    if ! docker image inspect "$expected_id" 2>/dev/null | \
+      "${sanitized_environment[@]}" node scripts/validate-release-image-manifest.cjs \
+        --from-docker-inspect --release-env "$release_env" \
+        --expected-release "$new_release_id" --service "$service" | \
+      cmp -s - "$manifest"; then
+      printf 'The exact interrupted full candidate image differs from its manifest: %s.\n' "$service" >&2
+      return 75
+    fi
+    verify_interrupted_full_evidence_fingerprint \
+      "$manifest" "$expected_identity" "$expected_hash" "$service manifest"
+  done
+  printf 'INTERRUPTED FULL CANDIDATE VERIFIED release=%s images=3\n' "$new_release_id"
 }
 
 verify_clean_release_source() {
@@ -1220,10 +1412,21 @@ fi
 if [ "$MODE" = "full" ] || [ "$MODE" = "discord-bot" ] || \
   [ "$MODE" = "api-recovery" ] || [ "$MODE" = "web-recovery" ]; then
   verify_production_activation_boundary
-  ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
-    bash scripts/prepare-production-deploy-capacity.sh
-  # Capacity preparation is the only automatic cleanup in the deployment
-  # path. Repeat both the ordinary preflight and the match boundary after it.
+  if [ "$INTERRUPTED_FULL_RESUME" -eq 1 ]; then
+    # The continuously locked outer resume already performed the one exact
+    # zero-reserve builder-cache prune. Never invoke the ordinary capacity
+    # helper's second prune, but retain its repeated ordinary preflight and
+    # activation boundary.
+    verify_inherited_lock_held || {
+      printf '%s\n' 'The interrupted full resume lost its inherited deployment lock.' >&2
+      exit 75
+    }
+  else
+    ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
+      bash scripts/prepare-production-deploy-capacity.sh
+  fi
+  # Capacity preparation (or the one-time outer prune) can invalidate the
+  # preceding guard. Repeat both the ordinary preflight and match boundary.
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
   verify_production_activation_boundary
 fi
@@ -1625,14 +1828,21 @@ elif [ "$MODE" = "web-recovery" ]; then
 elif [ "$MODE" = "full" ]; then
   verify_production_activation_boundary
   bash scripts/production-deploy-preflight.sh "${guard_args[@]}"
-  "${compose[@]}" build api media-ai web
-  verify_clean_release_source
-  archive_built_image_manifest api
-  archive_built_image_manifest web
-  archive_built_image_manifest media-ai
-  api_image_id="$(read_archived_release_image_id api)"
-  web_image_id="$(read_archived_release_image_id web)"
-  media_ai_image_id="$(read_archived_release_image_id media-ai)"
+  if [ "$INTERRUPTED_FULL_RESUME" -eq 1 ]; then
+    # The interrupted attempt already completed and archived all three routine
+    # full-deploy images. Revalidate those exact immutable bytes; do not create
+    # metadata, build, pull, tag, or archive anything.
+    verify_interrupted_full_candidate_images
+  else
+    "${compose[@]}" build api media-ai web
+    verify_clean_release_source
+    archive_built_image_manifest api
+    archive_built_image_manifest web
+    archive_built_image_manifest media-ai
+    api_image_id="$(read_archived_release_image_id api)"
+    web_image_id="$(read_archived_release_image_id web)"
+    media_ai_image_id="$(read_archived_release_image_id media-ai)"
+  fi
   create_pinned_compose_override full
   create_idp_verification_override
   # The candidate image is now immutable and archived. Before backup, schema,
@@ -1652,6 +1862,9 @@ elif [ "$MODE" = "full" ]; then
   bash scripts/verify-production-entitlement-invariants.sh
   # The entitlement query is read-only but can take time; repeat the required
   # disk/service preflight literally immediately before schema mutation.
+  if [ "$INTERRUPTED_FULL_RESUME" -eq 1 ]; then
+    verify_interrupted_full_candidate_images
+  fi
   schema_change_possible=1
   attest_pinned_compose_override
   verify_production_activation_boundary

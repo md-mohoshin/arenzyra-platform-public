@@ -298,8 +298,8 @@ The commands below show the reviewed direct-host profile. Replace every commit
 placeholder with a full 40-hex commit and use a new release ID. The `current`
 values are the exact clean Root/API/Web heads already installed under
 `/opt/arenzyra`, not merely abbreviated release-pointer values. The successful
-`source-20260815-widget-latency-07` activation installed Root
-`e082abb1d69a2bf35f8e24c9a072b87d6742d1a8`, API
+`source-20260815-widget-latency-08` activation installed Root
+`5e04ae1791ebb31261feaf460a484f182b4db6d4`, API
 `88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`; the successor descriptor must use
 those exact current values. Do not substitute the separate deployed Web release
@@ -318,19 +318,21 @@ incoming, staging, archive, and source evidence. The successfully activated
 incoming, staging, archive, and source evidence. The successfully activated
 `source-20260815-widget-latency-06` release also remains preserved; preserve its
 incoming, staging, archive, and source evidence. The successfully activated
-`source-20260815-widget-latency-07` release is the current source assembly;
+`source-20260815-widget-latency-07` release also remains preserved; preserve its
+incoming, staging, archive, and source evidence. The successfully activated
+`source-20260815-widget-latency-08` release is the current source assembly;
 preserve its incoming, staging, archive, and source evidence. This reviewed
 successor uses the next unique release ID below.
 
 ```powershell
-$sourceRelease = 'source-20260815-widget-latency-08'
+$sourceRelease = 'source-20260815-widget-latency-09'
 $sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
 $sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
 $targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
 $targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
 $targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
 
-$currentRoot = 'e082abb1d69a2bf35f8e24c9a072b87d6742d1a8'
+$currentRoot = '5e04ae1791ebb31261feaf460a484f182b4db6d4'
 $currentApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
 $currentWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 $targetRoot = '<40-hex-reviewed-target-root>'
@@ -929,9 +931,94 @@ It repeats the complete metadata evidence and runtime snapshot and requires
 both copies to match before emitting a completion line. It reads no logs,
 database rows, customer data, backups, volumes, or environment contents and
 performs no filesystem, Docker, service, database, pointer, or metadata write.
-The resulting `metadata-only`, `incomplete`, or `immutable-build-complete`
-classification is evidence for a separately reviewed continuation; the
-diagnostic does not select or execute one.
+The diagnostic completed successfully and reported root free space
+`25041116` KiB, unchanged `CURRENT` and healthy seven-service runtime, and one
+exact `immutable-build-complete` candidate:
+
+- release `git-20260815-131200234-84099e4622e9`, built from Root
+  `d6390f2abb37`, API `88efdad94d65`, and Web `3d2cca1dd426`;
+- API image
+  `sha256:a895c29c1398c0398b6a9fccf54a50aad8c62a6804fc154b12eb3f5a2ec55cde`;
+- Web image
+  `sha256:1513170fcd1fdf73481474833737ff61884dc64b0e683720f670a3994299dba1`;
+  and
+- media image
+  `sha256:c918e11e7b0b400dbf4e75092e64408c3c444768c5b7d141bcefa72f5a959b33`.
+
+The diagnostic itself did not select or execute a continuation. Preserve its
+source-08 output as read-only evidence.
+
+### One-time interrupted routine-full deployment resume
+
+Activate the fresh `source-20260815-widget-latency-09` descriptor above first,
+redefine `production_entry` with its exact new Root plus API `88efdad...` and
+Web `3d2cca1...`, then invoke only this closed no-argument command:
+
+```bash
+production_entry interrupted-full-deploy-resume
+```
+
+Use a client/SSH wait comfortably longer than one hour and preserve the complete
+remote result. Do not treat a local wait timeout as a deployment failure while
+the remote lock is still held.
+
+The dispatcher acquires descriptor 8 before repeating the clean Root/API/Web
+assembly and passes no release, image, or mode argument from the operator. The
+wrapper retains that descriptor continuously while re-running and parsing the
+exact source-08 inventory. It accepts only the candidate and three immutable
+image IDs printed above, the old exact `CURRENT`, the exact healthy seven-row
+runtime, and unchanged pointer/environment/manifest identities and hashes.
+The one-time parser literal-binds the diagnosed `CURRENT` and `PREVIOUS` rows,
+candidate environment identity/hash, all three manifest identities/hashes,
+seven container and image IDs, four application release labels, dependency
+`release=none` fields, and every restart count. It literal-binds the production
+environment hash while allowing only that file's safe stat identity to change
+when source activation installs the new checkout. Root's source-09 self SHA is
+necessarily new, but the inventory separately requires it to be the clean
+direct child of Root `5e04ae1...` with exact API/Web commits.
+Every inventory is captured again before the cache action, after it, and after
+the ordinary post-cache preflight; any missing, duplicate, extra, unsafe, or
+drifted row blocks the continuation.
+
+Free space must initially and immediately before the cache action remain below
+30 GiB. The wrapper's sole mutation before deployment is exactly
+`docker builder prune -af` with the reviewed help-selected reserve-floor flag
+and an explicit `0B` reserve. It never prunes images, containers, volumes, or
+networks. The same candidate images and complete current runtime must still
+verify afterward, free space must reach at least 30 GiB, and the ordinary
+no-exception production preflight must pass. If prune fails or does not reach
+30 GiB, deployment is not started and no broader cleanup is attempted.
+
+Only after those locked checks does the wrapper replace itself in-place with
+the normal deploy script's hard-coded `--interrupted-full-deploy-resume` path.
+That flag is rejected unless the already-held reviewed descriptor 8 is
+inherited; all ordinary modes reject the inherited marker. The path keeps
+`MODE=full`, selects only
+`git-20260815-131200234-84099e4622e9`, and does not create release metadata,
+build, pull, tag, or archive an image. It regenerates the exact API/Web/media
+manifests from the three immutable Docker image IDs after prune and again
+immediately before the schema boundary. Those inner verifications also require
+the diagnosed candidate environment SHA-256
+`3746d6736a025b9138aab01c0838a6225ded0205175bb2ea979d9e436aa8b47b`
+and API/Web/media manifest SHA-256 values `a33ff91d...`, `a14eb7cd...`, and
+`af744723...`, with their unchanged archived stat identities.
+
+The remaining routine-full workflow is unchanged: forward-release/source and
+live-match compatibility checks, repeated activation-boundary and ordinary
+preflight checks, release/database-role/entitlement/IDP gates, a fresh verified
+pre-migration backup, both migrations, runtime-role reconciliation, exact
+image-pinned service activation, health and public verification, post-health
+role/entitlement/IDP checks, and finally `PREVIOUS`/`CURRENT` pointer writes.
+Before `schema_change_possible=1`, failure reports that this run did not enter
+the API schema. At or after that boundary, failure reports that forward schema
+changes may have committed and forbids starting an older API image. The fixed
+candidate ID and inherited-lock requirement are deliberately not exposed as a
+generic full-candidate reuse interface; a later retry requires a new review.
+If the remote command stops after the builder prune but before deployment, do
+not blindly rerun it or broaden cleanup. Run the reviewed interrupted inventory
+again and review a fresh successor: this wrapper deliberately requires free
+space below 30 GiB before prune, so the already-pruned state normally blocks a
+second invocation before any mutation.
 
 If an immutable candidate reaches the API and media startup step but the API
 remains non-ready before web, proxy, or Discord starts, first remove only the

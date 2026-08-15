@@ -16,7 +16,7 @@ const publishGuide = read("infra/PUBLISH.md");
 
 test("interrupted deploy inventory is one-time, source-bound, and window-bound", () => {
   for (const expected of [
-    'EXPECTED_PREVIOUS_ROOT="e082abb1d69a2bf35f8e24c9a072b87d6742d1a8"',
+    'EXPECTED_PREVIOUS_ROOT="5e04ae1791ebb31261feaf460a484f182b4db6d4"',
     'EXPECTED_API="88efdad94d65c09c6d3bd73e4b874db915629859"',
     'EXPECTED_WEB="3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"',
     'EXPECTED_CURRENT_RELEASE="git-20260814-192205642-e04672c95be2"',
