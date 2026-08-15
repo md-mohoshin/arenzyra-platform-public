@@ -708,6 +708,146 @@ test("new next zone style widgets render through the local permanent widget rout
   }
 });
 
+test("native live widget capabilities use the trusted web origin and fragment-only authorization", async () => {
+  const cases = [
+    {
+      capability: `wgt_${Buffer.alloc(32, 19).toString("base64url")}`,
+      widgetKey: "final-five-alive",
+      matchId: "match-final-five",
+    },
+    {
+      capability: `wgt_${Buffer.alloc(32, 23).toString("base64url")}`,
+      widgetKey: "match-start-notification",
+      matchId: "match-start",
+    },
+  ];
+  const byCapability = new Map(cases.map((item) => [item.capability, item]));
+  const webBaseEnvKeys = ["ARENZYRA_WEB_URL", "ARENZYRA_WEB_BASE"];
+  const originalWebBaseEnv = Object.fromEntries(
+    webBaseEnvKeys.map((key) => [key, process.env[key]]),
+  );
+  for (const key of webBaseEnvKeys) {
+    delete process.env[key];
+  }
+
+  const instance = await startServer(false, {
+    resolveApiBase: () => "https://api.arenzyra.com",
+    resolveWidgetContext: async ({ instanceKey }) => {
+      const item = byCapability.get(instanceKey);
+      assert.ok(item, "the route must pass the exact instance capability");
+      return {
+        id: `instance-${item.widgetKey}`,
+        widgetKey: item.widgetKey,
+        match: { id: item.matchId },
+        organization: {
+          id: "org-live",
+          slug: "live-broadcast",
+          name: "Live Broadcast",
+        },
+      };
+    },
+  });
+
+  try {
+    for (const item of cases) {
+      const response = await fetch(
+        `${instance.baseUrl}/w/${encodeURIComponent(item.capability)}?matchAccessKey=query-leak&MATCHACCESSKEY=case-leak&access_token=query-leak&ACCESS_TOKEN=case-leak&token=query-leak&TOKEN=case-leak`,
+      );
+      assert.equal(response.status, 200);
+      const html = await response.text();
+      assert.match(html, new RegExp(`"widgetKey":"${item.widgetKey}"`));
+      const iframeSource = html
+        .match(/<iframe[\s\S]*?src="([^"]+)"/)?.[1]
+        ?.replace(/&amp;/g, "&");
+      assert.ok(iframeSource, `${item.widgetKey} iframe source must exist`);
+      const target = new URL(iframeSource);
+      assert.equal(target.origin, "https://arenzyra.com");
+      assert.equal(target.pathname, `/widgets/${item.widgetKey}`);
+      assert.equal(target.searchParams.get("orgSlug"), "live-broadcast");
+      assert.equal(target.searchParams.get("organizationId"), "org-live");
+      assert.equal(target.searchParams.get("matchId"), item.matchId);
+      assert.equal(target.searchParams.get("clean"), "1");
+      assert.equal(target.searchParams.has("matchAccessKey"), false);
+      assert.equal(target.searchParams.has("access_token"), false);
+      assert.equal(target.searchParams.has("token"), false);
+      assert.equal(
+        [...target.searchParams.keys()].some((name) =>
+          ["matchaccesskey", "access_token", "token"].includes(
+            name.toLowerCase(),
+          ),
+        ),
+        false,
+      );
+      assert.deepEqual(
+        [...new URLSearchParams(target.hash.slice(1)).entries()],
+        [["matchAccessKey", item.capability]],
+      );
+      assert.equal(target.href.split("#", 1)[0].includes(item.capability), false);
+    }
+
+    process.env.ARENZYRA_WEB_URL = "https://user@unrelated.example";
+    const rejectedOverride = await fetch(
+      `${instance.baseUrl}/w/${encodeURIComponent(cases[0].capability)}`,
+    );
+    const rejectedHtml = await rejectedOverride.text();
+    const rejectedSource = rejectedHtml
+      .match(/<iframe[\s\S]*?src="([^"]+)"/)?.[1]
+      ?.replace(/&amp;/g, "&");
+    assert.ok(rejectedSource);
+    assert.equal(new URL(rejectedSource).origin, "https://arenzyra.com");
+  } finally {
+    await stopServer(instance);
+    for (const key of webBaseEnvKeys) {
+      const originalValue = originalWebBaseEnv[key];
+      if (originalValue === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originalValue;
+      }
+    }
+  }
+});
+
+test("retired Web widget keys cannot select a remote-live renderer", async () => {
+  const retiredWidgetKeys = [
+    "teams-alive",
+    "kill-feed",
+    "player-card",
+    "map-overlay",
+    "winner",
+  ];
+  const instance = await startServer(false, {
+    resolveApiBase: () => "https://api.arenzyra.com",
+    resolveWidgetContext: async ({ instanceKey }) => ({
+      id: `instance-${instanceKey}`,
+      widgetKey: instanceKey,
+      organization: {
+        id: "org-retired",
+        slug: "retired-widget-test",
+        name: "Retired Widget Test",
+      },
+    }),
+  });
+
+  try {
+    for (const retiredWidgetKey of retiredWidgetKeys) {
+      const response = await fetch(
+        `${instance.baseUrl}/w/${encodeURIComponent(retiredWidgetKey)}`,
+      );
+      assert.equal(response.status, 501, retiredWidgetKey);
+      const html = await response.text();
+      assert.match(html, /Unsupported widget type/);
+      assert.doesNotMatch(html, /<iframe/i);
+      assert.doesNotMatch(
+        html,
+        new RegExp(`/widgets/${retiredWidgetKey}`),
+      );
+    }
+  } finally {
+    await stopServer(instance);
+  }
+});
+
 test("permanent widget resolve failures return a no-cache auto-retry page", async () => {
   const api = await startJsonServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");

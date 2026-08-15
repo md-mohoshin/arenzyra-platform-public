@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "databaseSchema": "public",
   "sourceDigests": {
-    "apiPrismaSchemaSha256": "363237b20e0c7050ef9e376f07b033d42505ab2cfe139757223d7e937141e174",
-    "apiMigrationTreeSha256": "e32676d65996077cf5eed7039e8527b0614427436c92be1bb363aafd58ae993a",
+    "apiPrismaSchemaSha256": "509a857090a431190cb295b8b79837018053bd46a282dc6f23e4b01d02dc61ed",
+    "apiMigrationTreeSha256": "b774755a0045e8f14864622e1c350cea2bdce2041e56db9c066406c1e059d404",
     "apiFunctionTriggerMigrationSha256": "3f7a501dba9fe89661c52ec5eaad973189b155763fe65214c6b055168c09f27b",
     "studioMigrationSha256": "efa1fc3bffec6b2ab3d044c10653e01aafee945c3cfcc041d81a206c81fb94bb"
   },

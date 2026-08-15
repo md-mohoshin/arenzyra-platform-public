@@ -56,6 +56,18 @@ export const widgets: ObsWidgetDefinition[] = [
     routeKind: "raw",
   },
   {
+    id: "gold_broadcast_final_five",
+    name: "Gold Broadcast - Final Five Alive",
+    category: "Desktop Raw Widgets",
+    description:
+      "Live final-five standings with native match telemetry and Rondo recall status.",
+    path: "/w/:widgetInstanceKey",
+    previewHeight: 180,
+    routeKind: "permanent",
+    widgetKey: "final-five-alive",
+    requiresWidgetInstanceKey: true,
+  },
+  {
     id: "next_zone_update",
     name: "Next Zone Update",
     category: "Desktop Raw Widgets",

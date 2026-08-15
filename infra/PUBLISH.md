@@ -282,6 +282,156 @@ production_entry() {
 production_entry deploy
 ```
 
+### Reviewed source transfer and activation from Windows
+
+Changing the reviewed Root/API/Web commits first requires an exact clean source
+assembly at `/opt/arenzyra`; a deploy cannot fetch or accept a dirty checkout.
+Use [`publish-production-reviewed-source.ps1`](../scripts/publish-production-reviewed-source.ps1)
+from the clean target Root checkout. It packages only the three explicit target
+commits into standalone Git repositories, proves each target contains the exact
+current production source commit, computes each transferred tar SHA-256, and
+creates a versioned local descriptor. The bundle directory and remote incoming
+directory are both no-overwrite. An interrupted transfer must use a new release
+ID; do not delete or reuse its partial incoming directory during deployment.
+
+The commands below show the reviewed direct-host profile. Replace every commit
+placeholder with a full 40-hex commit and use a new release ID. The `current`
+values are the exact clean Root/API/Web heads already installed under
+`/opt/arenzyra`, not merely the abbreviated `CURRENT` release-pointer values.
+For this one-time bridge the installed Web source is
+`2ee104f6fcc22ef0b37a5c1f8b0b42df2ad076aa`; do not substitute the separate
+Web release pointer `38cca5de4670ca123a4004e9fd6dfec6ccb48bcb`.
+No credential or application secret is accepted by this workflow.
+
+```powershell
+$sourceRelease = 'source-20260815-widget-latency-01'
+$sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
+$sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
+$targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
+$targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
+$targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
+
+$currentRoot = '4d18a9ad56d738e2992d0ca7564c4f8d553865a8'
+$currentApi = '428ca9d6dd20c065314a1787f5de92bc4f9d8646'
+$currentWeb = '2ee104f6fcc22ef0b37a5c1f8b0b42df2ad076aa'
+$targetRoot = '<40-hex-reviewed-target-root>'
+$targetApi = '<40-hex-reviewed-target-api>'
+$targetWeb = '<40-hex-reviewed-target-web>'
+
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+  -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
+  -File $sourcePublisher -Action SelfTest `
+  -BundleDirectory $targetRootRepository
+
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+  -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
+  -File $sourcePublisher -Action Package -BundleDirectory $sourceBundle `
+  -ReleaseId $sourceRelease `
+  -RootRepository $targetRootRepository `
+  -ApiRepository $targetApiRepository -WebRepository $targetWebRepository `
+  -CurrentRootCommit $currentRoot -CurrentApiCommit $currentApi `
+  -CurrentWebCommit $currentWeb -TargetRootCommit $targetRoot `
+  -TargetApiCommit $targetApi -TargetWebCommit $targetWeb
+```
+
+Review `source-transfer.json` and the three printed archive hashes. Transfer the
+unchanged bundle with the explicit pinned OpenSSH identity and known-host file:
+
+```powershell
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+  -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
+  -File $sourcePublisher -Action Transfer -BundleDirectory $sourceBundle `
+  -ProductionHost 'root@188.245.47.45' `
+  -IdentityFile 'C:\Users\mohos\.ssh\id_ed25519' `
+  -KnownHostsFile 'C:\Users\mohos\.ssh\known_hosts'
+```
+
+Before any connection, `Transfer` repeats the descriptor's exact clean target
+Root/API/Web and forward-history checks. Its committed clean-parent helper bytes
+are the reviewed outer Windows launcher for this staging-only action. The
+pre-existing `/opt/arenzyra-release-incoming` parent must be root-owned mode
+`0700`; the helper will not create or repair that host boundary.
+
+`Transfer` performs a read-only remote check of that parent and requires the
+release path to be absent. One SFTP batch then creates exactly
+`/opt/arenzyra-release-incoming/<release>/` at mode `0700`, uploads only
+`root.git.tar`, `api.git.tar`, and `web.git.tar`, and sets those new root-owned
+files to mode `0600`. The batch aborts if the directory already exists. A final
+read-only remote payload verifies exact names, regular-file/link/mount bounds,
+sizes, modes, ownership, and all three SHA-256 values. Thus no pre-activation
+remote shell mutates `/opt`; only the SFTP subsystem creates the closed incoming
+set. The shell transport's root-only temporary payload is confined to `/run`
+and removed on exit. Legacy SCP transport and its remote-shell fallback are not
+used. The helper clears the child-process environment and invokes the direct
+host with `-F NUL`, `BatchMode=yes`, `CheckHostIP=yes`,
+`ClearAllForwardings=yes`, `ConnectionAttempts=1`, `ConnectTimeout=10`,
+`ForwardAgent=no`, `GlobalKnownHostsFile=NUL`, `IdentitiesOnly=yes`,
+`PermitLocalCommand=no`, `StrictHostKeyChecking=yes`, the explicit
+`UserKnownHostsFile`, and one explicit identity. SSH payload invocations also
+use `-T`.
+
+After reviewing that transfer result, activate the clean assembly separately:
+
+```powershell
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+  -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
+  -File $sourcePublisher -Action Activate -BundleDirectory $sourceBundle `
+  -ProductionHost 'root@188.245.47.45' `
+  -IdentityFile 'C:\Users\mohos\.ssh\id_ed25519' `
+  -KnownHostsFile 'C:\Users\mohos\.ssh\known_hosts'
+```
+
+Never replace these invocations with `Get-Content ... | ssh`, a PowerShell
+string pipeline, or a pasted here-string. Windows pipeline encoding previously
+inserted hidden carriage returns into Bash arguments. The reviewed launcher
+converts generated payloads to canonical LF UTF-8, base64-transports the exact
+bytes, writes a root-only no-overwrite temporary file under `/run`, verifies its
+SHA-256 before Bash evaluates it, and rejects any remaining CR byte.
+
+The first activation from Root
+`4d18a9ad56d738e2992d0ca7564c4f8d553865a8` uses the committed one-time
+[`activate-production-reviewed-checkout-4d18-bridge.sh`](../scripts/activate-production-reviewed-checkout-4d18-bridge.sh).
+That bridge rejects every other current Root/API/Web assembly (the compatible
+API is `428ca9d6dd20c065314a1787f5de92bc4f9d8646` and compatible Web is
+`2ee104f6fcc22ef0b37a5c1f8b0b42df2ad076aa`). It loads the current lock helper,
+dispatcher, and checkout bootstrap only through absolute sanitized `git show`
+of `4d18a9a...`; acquires descriptor 8 before verifying the exact current
+Root/API/Web assembly; and retains that same descriptor through current-release
+inventory, hash-authenticated prepare, clean forward-ancestry checks, a repeated
+current inventory, atomic activation, and final inventories. After prepare, it
+also hashes the bridge blob from the exact staged target Root commit and
+requires it to equal the already-verified bytes being executed. Activation
+also requires current, staged, and archive paths to share one filesystem before
+either move, and preserves the complete prior source at
+`/opt/arenzyra-source-archives/<release>` and final `source-inventory` verifies
+that archive plus the completed incoming/staging pair.
+
+Both the one-time bridge and later dispatcher path require the current
+`/opt/arenzyra` directory to remain an exact root-owned, non-group/world-writable
+physical directory with no mount at or below it before prepare, then repeat the
+same attestation before the final current inventory and immediately before the
+atomic source swap.
+
+After that one-time bridge, the currently installed reviewed dispatcher owns
+the same sequence through its closed command:
+
+```bash
+production_entry source-activate \
+  <source-release-id> <target-root> <target-api> <target-web> \
+  <root-tar-sha256> <api-tar-sha256> <web-tar-sha256>
+```
+
+The Windows `Activate` action selects this normal path automatically whenever
+the current Root is not the one exact compatibility commit. Source activation
+does not build, migrate, restart, recreate, or deploy a service. After it
+completes, redefine `production_entry` with the new exact Root/API/Web commits,
+then run the intended allowlisted deployment; its mandatory production
+preflight and all release gates still apply.
+
+For this widget retirement release, run the `retired-widget-inventory` command
+documented below first and review its fixed aggregate output; do not start the
+service deployment when any count is nonzero.
+
 For a reviewed API source-only recovery with no schema change, use the narrow
 API activation. It builds and recreates only the API, fingerprints every other
 Compose container before and after activation, and still runs the mandatory
@@ -310,6 +460,37 @@ does not change customer state:
 ```bash
 production_entry protected-match-organizations
 ```
+
+This reviewed Root source removes the obsolete remote-live mappings for five
+keys that are absent from the reviewed Web release. It also removes the four
+formerly exposed hotkey choices; `player-card` was not exposed there. The
+candidate API enforces those retirements together with the pre-existing retired
+`style.focal` and `team-status` capabilities. The existing desktop
+`team-status` renderer and assets are deliberately preserved; this release does
+not broaden source cleanup beyond the reviewed stale launcher mappings. Source
+activation does not deploy a service or publish a desktop installer. After
+activating the reviewed source, but before a service deployment or any separate
+installer publication, run the fixed-key inventory:
+
+```bash
+production_entry retired-widget-inventory
+```
+
+`retired-widget-inventory` accepts no arguments and examines exactly
+`style.focal`, `team-status`, `teams-alive`, `kill-feed`, `player-card`,
+`map-overlay`, and `winner`. It uses the reviewed production database identity
+gate and a repeatable-read, read-only transaction. Output is limited to each
+fixed widget key and aggregate counts for widget-instance rows, active
+widget-instance rows, approval rows, and approved rows. It does not select
+organization, instance, approval, user, match, tournament, capability, or
+credential identifiers. The full and narrow API-recovery deployment paths
+repeat a zero-required version of this inventory at every activation boundary,
+including before build and at the final pre-recreate boundary, then verify zero
+again after health convergence. Any nonzero count blocks deployment. A nonzero
+count requires a separately reviewed compatibility or customer-state migration
+decision; the inventory and gate never change customer state. Desktop installer
+publication remains a separate workflow and is not authorized by the `/opt`
+source activation or service deployment.
 
 The following one-time recovery is deliberately restricted to the exact stale
 `Global Control` inventory remaining on 2026-08-12: exactly two old `COUNTDOWN`

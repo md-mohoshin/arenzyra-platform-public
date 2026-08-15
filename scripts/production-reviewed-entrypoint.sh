@@ -260,6 +260,25 @@ case "$command_id" in
     source scripts/acquire-production-deploy-lock.sh
     exec /bin/bash scripts/production-current-release-inventory.sh
     ;;
+  source-activate)
+    [ "$#" -eq 7 ] && \
+      [[ "$1" =~ ^[a-zA-Z0-9._-]{8,128}$ ]] && \
+      [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [[ "$3" =~ ^[0-9a-f]{40}$ ]] && \
+      [[ "$4" =~ ^[0-9a-f]{40}$ ]] && [[ "$5" =~ ^[0-9a-f]{64}$ ]] && \
+      [[ "$6" =~ ^[0-9a-f]{64}$ ]] && [[ "$7" =~ ^[0-9a-f]{64}$ ]] || \
+      block "source-activate requires one release ID, three target commits, and three archive hashes."
+    acquire_source_activation_lock() {
+      source scripts/acquire-production-deploy-lock.sh
+    }
+    acquire_source_activation_lock
+    production_verify_lock_descriptor || block "source-activate did not inherit the reviewed deployment lock."
+    # The outer launcher verifies Root before dispatch. Repeat the entire current
+    # assembly verification only after descriptor 8 is locked, then retain that
+    # descriptor continuously through prepare, activation, and final inventory.
+    verify_repository ROOT "$EXPECTED_ROOT" ARENZYRA_REVIEWED_ROOT_COMMIT
+    require_nested_assembly
+    exec /bin/bash scripts/activate-production-reviewed-checkout.sh "$@"
+    ;;
   source-inventory)
     [ "$#" -ge 1 ] && [ "$#" -le 8 ] || \
       block "source-inventory requires one to eight explicit release IDs."
@@ -360,6 +379,11 @@ case "$command_id" in
     [ "$#" -eq 0 ] || block "verify-api-render-runtime accepts no arguments."
     require_nested_assembly
     exec /bin/bash scripts/verify-production-api-render-runtime.sh
+    ;;
+  retired-widget-inventory)
+    [ "$#" -eq 0 ] || block "retired-widget-inventory accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/inspect-production-retired-widget-inventory.sh
     ;;
   protected-match-organizations)
     [ "$#" -eq 0 ] || block "protected-match-organizations accepts no arguments."

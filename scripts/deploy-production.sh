@@ -312,6 +312,10 @@ test -f scripts/verify-production-database-roles.sh
 test -f scripts/provision-production-database-roles.sh
 test -f scripts/production-api-data-volume-remediation.sh
 test -f scripts/production-database-writer-fence.sh
+test -f scripts/inspect-production-retired-widget-inventory.cjs
+test -f scripts/inspect-production-retired-widget-inventory.sh
+test -f scripts/verify-production-retired-widget-zero-inventory.sh
+test -f infra/sql/production-retired-widget-inventory.sql
 test -f scripts/verify-production-live-match-quiescence.sh
 test -f scripts/prepare-production-deploy-capacity.sh
 test -f scripts/validate-publish-release-env.cjs
@@ -357,6 +361,14 @@ warn_production_live_match_deployment() {
 }
 
 verify_production_activation_boundary() {
+  # This release removes five obsolete launcher mappings, while the candidate
+  # API rejects capabilities for those and two pre-existing retired keys.
+  # Recheck that exact seven-key aggregate inventory at every full/API
+  # activation boundary so a row created while a long build or backup is
+  # running still blocks activation.
+  if [ "$MODE" = "full" ] || [ "$MODE" = "api-recovery" ]; then
+    bash scripts/verify-production-retired-widget-zero-inventory.sh
+  fi
   if [ "$MODE" = "legacy-cutover" ]; then
     verify_production_live_match_quiescence
   fi
@@ -1203,6 +1215,7 @@ elif [ "$MODE" = "legacy-cutover" ]; then
 fi
 if [ "$MODE" = "full" ] || [ "$MODE" = "discord-bot" ] || \
   [ "$MODE" = "api-recovery" ] || [ "$MODE" = "web-recovery" ]; then
+  verify_production_activation_boundary
   ARENZYRA_DEPLOY_LOCK_INHERITED=1 \
     bash scripts/prepare-production-deploy-capacity.sh
   # Capacity preparation is the only automatic cleanup in the deployment

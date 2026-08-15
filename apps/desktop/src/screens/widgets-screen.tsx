@@ -45,6 +45,8 @@ const NEXT_ZONE_RADAR_SWEEP_WIDGET_ID = "next_zone_update_radar_sweep";
 const NEXT_ZONE_RADAR_SWEEP_WIDGET_KEY = "next-zone-update-radar-sweep";
 const NEXT_ZONE_FOLD_DOWN_WIDGET_ID = "next_zone_update_fold_down";
 const NEXT_ZONE_FOLD_DOWN_WIDGET_KEY = "next-zone-update-fold-down";
+const GOLD_FINAL_FIVE_WIDGET_ID = "gold_broadcast_final_five";
+const GOLD_FINAL_FIVE_WIDGET_KEY = "final-five-alive";
 const NEXT_ZONE_WIDGET_IDS = new Set([
   "next_zone_update",
   NEXT_ZONE_PRO_WIDGET_ID,
@@ -60,13 +62,6 @@ const APPROVAL_ONLY_WIDGET_KEYS = [
   HOTKEY_CONTROL_APPROVAL_KEY,
 ];
 const HOTKEY_WIDGET_OPTIONS: WidgetHotkeyControlSelection[] = [
-  {
-    id: "teams-alive",
-    widgetKey: "teams-alive",
-    label: "Teams Alive",
-    enabled: false,
-    direction: "right",
-  },
   {
     id: "leaderboard",
     widgetKey: "leaderboard",
@@ -96,20 +91,6 @@ const HOTKEY_WIDGET_OPTIONS: WidgetHotkeyControlSelection[] = [
     direction: "up",
   },
   {
-    id: "kill-feed",
-    widgetKey: "kill-feed",
-    label: "Kill Feed",
-    enabled: false,
-    direction: "right",
-  },
-  {
-    id: "map-overlay",
-    widgetKey: "map-overlay",
-    label: "Map Overlay",
-    enabled: false,
-    direction: "left",
-  },
-  {
     id: "player-photo",
     widgetKey: "player-photo",
     label: "Player Photo",
@@ -120,13 +101,6 @@ const HOTKEY_WIDGET_OPTIONS: WidgetHotkeyControlSelection[] = [
     id: "wwcd",
     widgetKey: "wwcd",
     label: "WWCD",
-    enabled: false,
-    direction: "up",
-  },
-  {
-    id: "winner",
-    widgetKey: "winner",
-    label: "Winner",
     enabled: false,
     direction: "up",
   },
@@ -421,6 +395,8 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     widgetCatalog?.items?.[NEXT_ZONE_RADAR_SWEEP_WIDGET_KEY] ?? null;
   const nextZoneFoldDownCatalogState =
     widgetCatalog?.items?.[NEXT_ZONE_FOLD_DOWN_WIDGET_KEY] ?? null;
+  const goldFinalFiveCatalogState =
+    widgetCatalog?.items?.[GOLD_FINAL_FIVE_WIDGET_KEY] ?? null;
   const hotkeyControlCatalogState =
     widgetCatalog?.items?.[HOTKEY_CONTROL_APPROVAL_KEY] ?? null;
   const liveMapApproved = liveMapCatalogState?.approved === true;
@@ -434,6 +410,7 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
     nextZoneRadarSweepCatalogState?.approved === true;
   const nextZoneFoldDownApproved =
     nextZoneFoldDownCatalogState?.approved === true;
+  const goldFinalFiveApproved = goldFinalFiveCatalogState?.approved === true;
   const hotkeyControlApproved = hotkeyControlCatalogState?.approved === true;
   const aiCasterApproved = aiCasterAccess?.approved === true;
   const availableWidgets = useMemo(
@@ -463,11 +440,15 @@ export function WidgetsScreen({ organizationId }: WidgetsScreenProps) {
         if (widget.id === NEXT_ZONE_FOLD_DOWN_WIDGET_ID) {
           return nextZoneFoldDownApproved;
         }
+        if (widget.id === GOLD_FINAL_FIVE_WIDGET_ID) {
+          return goldFinalFiveApproved;
+        }
         return true;
       }),
     [
       aiCasterApproved,
       commentatorDeskApproved,
+      goldFinalFiveApproved,
       liveMapApproved,
       nextZoneBladeApproved,
       nextZoneFoldDownApproved,

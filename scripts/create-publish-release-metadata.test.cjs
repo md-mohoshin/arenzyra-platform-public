@@ -83,6 +83,7 @@ test("release inputs cover every production Compose build component", () => {
     "infra/production-database-object-policy.json",
     "infra/sql/bootstrap-production-roles.sql",
     "infra/sql/production-entitlement-inventory.sql",
+    "infra/sql/production-retired-widget-inventory.sql",
     "scripts",
   ]) {
     assert.ok(

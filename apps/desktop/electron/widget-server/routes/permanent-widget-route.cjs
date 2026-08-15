@@ -2,6 +2,9 @@
 
 const crypto = require("node:crypto");
 const { getProcessDefaultApiBase } = require("../../apiBaseDefaults.cjs");
+const {
+  isWidgetCapability,
+} = require("../../widgetCapabilityStore.cjs");
 
 const DEFAULT_API_BASE =
   process.env.ARENZYRA_API_URL ||
@@ -10,16 +13,20 @@ const DEFAULT_API_BASE =
 const DEFAULT_WS_PATH = "/ws";
 const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v5";
 const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v14";
+const REMOTE_WEB_BASE_ENV_KEYS = ["ARENZYRA_WEB_URL", "ARENZYRA_WEB_BASE"];
+const PRIVATE_REMOTE_WIDGET_QUERY_KEYS = new Set([
+  "matchaccesskey",
+  "access_token",
+  "token",
+]);
 
 const LIVE_WIDGET_KEYS = new Set([
-  "teams-alive",
   "leaderboard",
+  "final-five-alive",
   "overall-live-ranking",
   "match-lower-third",
-  "kill-feed",
-  "player-card",
+  "match-start-notification",
   "player-photo",
-  "map-overlay",
   "next-zone-update",
   "next-zone-update-blade",
   "next-zone-update-fold-down",
@@ -27,7 +34,6 @@ const LIVE_WIDGET_KEYS = new Set([
   "next-zone-update-pro-sidebar",
   "next-zone-update-radar-sweep",
   "wwcd",
-  "winner",
   "fight-alert",
   "achievement-alert",
   "team-eliminated-alert",
@@ -61,6 +67,91 @@ function normalizeBaseUrl(value, fallback = DEFAULT_API_BASE) {
   const withProtocol = raw.includes("://") ? raw : `http://${raw}`;
   const parsed = new URL(withProtocol);
   return parsed.toString().replace(/\/$/, "");
+}
+
+function parseHttpOrigin(value) {
+  const raw = asString(value);
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function deriveRemoteWebOrigin(apiOrigin) {
+  const hostname = apiOrigin.hostname.toLowerCase();
+  if (hostname.startsWith("api.") && hostname.length > 4) {
+    const derived = new URL(apiOrigin.origin);
+    derived.hostname = hostname.slice(4);
+    return derived;
+  }
+
+  const isLocalHost =
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+  if (isLocalHost && apiOrigin.port === "3000") {
+    const derived = new URL(apiOrigin.origin);
+    derived.port = "3001";
+    return derived;
+  }
+
+  return new URL(apiOrigin.origin);
+}
+
+function isLoopbackHostname(hostname) {
+  const normalized = asString(hostname).toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "[::1]"
+  );
+}
+
+function isTrustedRemoteWebOrigin(apiOrigin, derivedOrigin, candidate) {
+  if (
+    candidate.origin === apiOrigin.origin ||
+    candidate.origin === derivedOrigin.origin
+  ) {
+    return true;
+  }
+
+  return (
+    isLoopbackHostname(apiOrigin.hostname) &&
+    isLoopbackHostname(candidate.hostname) &&
+    candidate.protocol === apiOrigin.protocol
+  );
+}
+
+function resolveRemoteWebBase(apiBase) {
+  const apiOrigin = parseHttpOrigin(apiBase);
+  if (!apiOrigin) {
+    return normalizeBaseUrl(apiBase);
+  }
+  const derivedOrigin = deriveRemoteWebOrigin(apiOrigin);
+
+  for (const key of REMOTE_WEB_BASE_ENV_KEYS) {
+    const explicit = parseHttpOrigin(process.env[key]);
+    if (
+      explicit &&
+      isTrustedRemoteWebOrigin(apiOrigin, derivedOrigin, explicit)
+    ) {
+      return explicit.origin;
+    }
+  }
+
+  return derivedOrigin.origin;
 }
 
 function asString(value) {
@@ -119,7 +210,7 @@ function buildCanonicalLocalPath(instanceKey, query) {
   return search ? `${path}?${search}` : path;
 }
 
-function buildRemoteWidgetUrl(apiBase, context, query) {
+function buildRemoteWidgetUrl(apiBase, context, query, instanceKey) {
   const widgetKey = asString(context?.widgetKey);
   const organizationSlug =
     asString(context?.organization?.slug) || asString(context?.organizationSlug);
@@ -127,9 +218,11 @@ function buildRemoteWidgetUrl(apiBase, context, query) {
     return null;
   }
 
+  const webBase = resolveRemoteWebBase(apiBase);
+
   let target = null;
   if (LIVE_WIDGET_KEYS.has(widgetKey)) {
-    target = new URL(`/widgets/${encodeURIComponent(widgetKey)}`, `${apiBase}/`);
+    target = new URL(`/widgets/${encodeURIComponent(widgetKey)}`, `${webBase}/`);
     target.searchParams.set("orgSlug", organizationSlug);
     if (!readQueryValue(query?.clean) && !readQueryValue(query?.preview)) {
       target.searchParams.set("clean", "1");
@@ -137,7 +230,7 @@ function buildRemoteWidgetUrl(apiBase, context, query) {
   } else if (ORGANIZER_WIDGET_KEYS.has(widgetKey)) {
     target = new URL(
       `/widgets/${encodeURIComponent(organizationSlug)}/${encodeURIComponent(widgetKey)}`,
-      `${apiBase}/`,
+      `${webBase}/`,
     );
   } else {
     return null;
@@ -148,13 +241,30 @@ function buildRemoteWidgetUrl(apiBase, context, query) {
   if (resolvedMatchId && !readQueryValue(query?.matchId)) {
     target.searchParams.set("matchId", resolvedMatchId);
   }
+  const resolvedOrganizationId =
+    asString(context?.organization?.id) || asString(context?.organizationId);
+  if (resolvedOrganizationId && !readQueryValue(query?.organizationId)) {
+    target.searchParams.set("organizationId", resolvedOrganizationId);
+  }
 
   for (const [name, value] of Object.entries(query || {})) {
+    if (PRIVATE_REMOTE_WIDGET_QUERY_KEYS.has(name.toLowerCase())) {
+      continue;
+    }
     const normalized = readQueryValue(value);
     if (!normalized) {
       continue;
     }
     target.searchParams.set(name, normalized);
+  }
+
+  // Browser fragments are not sent in the iframe's HTTP request. The remote
+  // runtime explicitly reads this match capability and forwards it only in the
+  // guarded x-match-access-key request header.
+  if (isWidgetCapability(instanceKey)) {
+    target.hash = new URLSearchParams({
+      matchAccessKey: instanceKey,
+    }).toString();
   }
 
   return target.toString();
@@ -1206,7 +1316,12 @@ async function handleCanonicalWidgetRequest(
   }
 
   if (renderer.kind === "remote-live" || renderer.kind === "remote-organizer") {
-    const targetUrl = buildRemoteWidgetUrl(apiBase, resolved, req.query);
+    const targetUrl = buildRemoteWidgetUrl(
+      apiBase,
+      resolved,
+      req.query,
+      instanceKey,
+    );
     if (!targetUrl) {
       sendStatePage(res, {
         status: 501,
