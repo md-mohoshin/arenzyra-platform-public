@@ -298,8 +298,8 @@ The commands below show the reviewed direct-host profile. Replace every commit
 placeholder with a full 40-hex commit and use a new release ID. The `current`
 values are the exact clean Root/API/Web heads already installed under
 `/opt/arenzyra`, not merely abbreviated release-pointer values. The successful
-`source-20260815-widget-latency-05` activation installed Root
-`1f50dd5b8b40cc6e32afff5df04d9f51d174f43e`, API
+`source-20260815-widget-latency-06` activation installed Root
+`d6390f2abb37f87e99988c49db31216c6187ffe1`, API
 `88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`; the successor descriptor must use
 those exact current values. Do not substitute the separate deployed Web release
@@ -314,19 +314,21 @@ command; that retired ID must never be reused. The prior successful
 `source-20260815-widget-latency-03` evidence remains preserved. The successfully activated
 `source-20260815-widget-latency-04` release also remains preserved; preserve its
 incoming, staging, archive, and source evidence. The successfully activated
-`source-20260815-widget-latency-05` release is the current source assembly;
+`source-20260815-widget-latency-05` release also remains preserved; preserve its
+incoming, staging, archive, and source evidence. The successfully activated
+`source-20260815-widget-latency-06` release is the current source assembly;
 preserve its incoming, staging, archive, and source evidence. This reviewed
 successor uses the next unique release ID below.
 
 ```powershell
-$sourceRelease = 'source-20260815-widget-latency-06'
+$sourceRelease = 'source-20260815-widget-latency-07'
 $sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
 $sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
 $targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
 $targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
 $targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
 
-$currentRoot = '1f50dd5b8b40cc6e32afff5df04d9f51d174f43e'
+$currentRoot = 'd6390f2abb37f87e99988c49db31216c6187ffe1'
 $currentApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
 $currentWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 $targetRoot = '<40-hex-reviewed-target-root>'
@@ -865,6 +867,58 @@ equivalent. Finally, free space must be at least 30 GiB and the ordinary
 no-exception production preflight must pass. If the cache command succeeds but
 30 GiB is not reached, the wrapper reports that the builder cache was already
 pruned and leaves deployment blocked; it does not try a broader cleanup.
+
+### Interrupted full-deploy inventory
+
+The full deployment launched after the reviewed builder-cache release outlived
+the local 30-minute SSH wait. Its remote process retained the deployment lock
+for approximately 34 minutes and then released it, but the buffered result was
+lost. `CURRENT` did not advance and the bounded post-run process inventory
+showed the same seven healthy containers and four pre-deploy application image
+IDs. Those facts do not identify whether the run stopped before metadata,
+during the build, or after archiving some or all immutable manifests. Do not
+blindly rerun `production_entry deploy`: a fresh run creates a new release,
+may rebuild images and consume more disk, and can repeat later deployment
+phases.
+
+After activating `source-20260815-widget-latency-07` from the exact source
+descriptor above and redefining `production_entry` with its new Root plus API
+`88efdad...` and Web `3d2cca1...`, run only this no-argument diagnostic:
+
+```bash
+production_entry interrupted-deploy-inventory
+```
+
+The dispatcher acquires descriptor 8 before repeating the exact clean nested
+assembly check and retains it throughout the inventory. The command is bound
+to the direct Root successor of `d6390f2...`, exact API/Web commits, the exact
+UTC candidate window from `2026-08-15T13:00:00Z` inclusive to
+`2026-08-15T14:00:00Z` exclusive, the unchanged exact `CURRENT`, and the four
+observed pre-deploy image IDs. It fails closed if the archive contains more
+than 4,096 release environments, more than 32 releases in that hour, more than
+eight exact d639/API88/Web3 candidates, any unsafe candidate evidence file, or
+any runtime/topology drift.
+
+The output contains only:
+
+- exact root free KiB before and after inspection;
+- `CURRENT` and optional `PREVIOUS` release IDs plus pointer/environment stat
+  identities and SHA-256 values;
+- the production environment stat identity and SHA-256, never its values;
+- bounded exact candidate IDs, environment stat/hash, and API/Web/media
+  manifest presence, stat/hash, validated immutable image ID, local image
+  availability, regenerated-inspect result, and readiness classification; and
+- the seven exact service/container/image/release-label/restart rows, after
+  requiring every container to remain running, healthy, non-restarting, and
+  on the reviewed restart policy.
+
+It repeats the complete metadata evidence and runtime snapshot and requires
+both copies to match before emitting a completion line. It reads no logs,
+database rows, customer data, backups, volumes, or environment contents and
+performs no filesystem, Docker, service, database, pointer, or metadata write.
+The resulting `metadata-only`, `incomplete`, or `immutable-build-complete`
+classification is evidence for a separately reviewed continuation; the
+diagnostic does not select or execute one.
 
 If an immutable candidate reaches the API and media startup step but the API
 remains non-ready before web, proxy, or Discord starts, first remove only the

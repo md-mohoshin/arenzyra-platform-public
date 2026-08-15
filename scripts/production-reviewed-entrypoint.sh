@@ -272,6 +272,15 @@ case "$command_id" in
     source scripts/acquire-production-deploy-lock.sh
     exec /bin/bash scripts/production-current-release-inventory.sh
     ;;
+  interrupted-deploy-inventory)
+    [ "$#" -eq 0 ] || block "interrupted-deploy-inventory accepts no arguments."
+    source scripts/acquire-production-deploy-lock.sh
+    production_verify_lock_descriptor || \
+      block "interrupted-deploy-inventory did not inherit the reviewed deployment lock."
+    verify_repository ROOT "$EXPECTED_ROOT" ARENZYRA_REVIEWED_ROOT_COMMIT
+    require_nested_assembly
+    exec /bin/bash scripts/production-interrupted-deploy-inventory.sh
+    ;;
   source-activate)
     [ "$#" -eq 7 ] && \
       [[ "$1" =~ ^[a-zA-Z0-9._-]{8,128}$ ]] && \

@@ -1510,6 +1510,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "backup-local-release",
       "backup-local-release-current",
       "current-release-inventory",
+      "interrupted-deploy-inventory",
       "source-activate",
       "source-inventory",
       "source-retention",
