@@ -4,15 +4,46 @@
 const { TextDecoder } = require("node:util");
 
 const MAX_INPUT_BYTES = 4 * 1024;
-const RETIRED_WIDGET_KEYS = Object.freeze([
-  "style.focal",
-  "team-status",
-  "teams-alive",
-  "kill-feed",
-  "player-card",
-  "map-overlay",
-  "winner",
+const RETIRED_WIDGET_COMPATIBILITY_POLICY = Object.freeze([
+  Object.freeze({
+    widgetKey: "style.focal",
+    policy: "strict",
+    maximumActiveWidgetInstances: 0,
+  }),
+  Object.freeze({
+    widgetKey: "team-status",
+    policy: "grandfathered",
+    maximumActiveWidgetInstances: 1,
+  }),
+  Object.freeze({
+    widgetKey: "teams-alive",
+    policy: "strict",
+    maximumActiveWidgetInstances: 0,
+  }),
+  Object.freeze({
+    widgetKey: "kill-feed",
+    policy: "grandfathered",
+    maximumActiveWidgetInstances: 1,
+  }),
+  Object.freeze({
+    widgetKey: "player-card",
+    policy: "strict",
+    maximumActiveWidgetInstances: 0,
+  }),
+  Object.freeze({
+    widgetKey: "map-overlay",
+    policy: "strict",
+    maximumActiveWidgetInstances: 0,
+  }),
+  Object.freeze({
+    widgetKey: "winner",
+    policy: "strict",
+    maximumActiveWidgetInstances: 0,
+  }),
 ]);
+const RETIRED_WIDGET_KEYS = Object.freeze(
+  RETIRED_WIDGET_COMPATIBILITY_POLICY.map(({ widgetKey }) => widgetKey),
+);
 const INVENTORY_KEYS = Object.freeze([
   "widgetKey",
   "widgetInstances",
@@ -86,13 +117,18 @@ function parseInventory(input) {
   return parsed;
 }
 
-function requireZeroInventory(inventory) {
-  const nonzero = inventory.retiredWidgets.filter((entry) =>
-    INVENTORY_KEYS.slice(1).some((countKey) => entry[countKey] !== 0),
-  );
-  if (nonzero.length > 0) {
+function requireDeployCompatibleInventory(inventory) {
+  const incompatible = inventory.retiredWidgets.filter((entry, index) => {
+    const policy = RETIRED_WIDGET_COMPATIBILITY_POLICY[index];
+    return (
+      entry.widgetKey !== policy.widgetKey ||
+      entry.activeWidgetInstances > policy.maximumActiveWidgetInstances ||
+      entry.approvedRows !== 0
+    );
+  });
+  if (incompatible.length > 0) {
     fail(
-      `Retired-widget inventory is not empty for: ${nonzero
+      `Retired-widget deploy compatibility failed for: ${incompatible
         .map((entry) => entry.widgetKey)
         .join(", ")}.`,
     );
@@ -122,14 +158,16 @@ async function main() {
   const args = process.argv.slice(2);
   if (
     args.length > 1 ||
-    (args.length === 1 && args[0] !== "--require-zero")
+    (args.length === 1 && args[0] !== "--require-deploy-compatible")
   ) {
     fail("Retired-widget inventory parser received unsupported arguments.");
   }
   const inventory = parseInventory(await readStdin());
-  if (args[0] === "--require-zero") {
-    requireZeroInventory(inventory);
-    process.stdout.write("RETIRED WIDGET ZERO INVENTORY VERIFIED keys=7\n");
+  if (args[0] === "--require-deploy-compatible") {
+    requireDeployCompatibleInventory(inventory);
+    process.stdout.write(
+      "RETIRED WIDGET DEPLOY COMPATIBILITY VERIFIED keys=7 strict=5 grandfathered=2\n",
+    );
     return;
   }
   process.stdout.write(`${JSON.stringify(inventory)}\n`);
@@ -146,6 +184,7 @@ if (require.main === module) {
 
 module.exports = {
   parseInventory,
-  requireZeroInventory,
+  requireDeployCompatibleInventory,
+  RETIRED_WIDGET_COMPATIBILITY_POLICY,
   RETIRED_WIDGET_KEYS,
 };

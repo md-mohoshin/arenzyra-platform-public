@@ -7,7 +7,8 @@ const path = require("node:path");
 const test = require("node:test");
 const {
   parseInventory,
-  requireZeroInventory,
+  requireDeployCompatibleInventory,
+  RETIRED_WIDGET_COMPATIBILITY_POLICY,
   RETIRED_WIDGET_KEYS,
 } = require("./inspect-production-retired-widget-inventory.cjs");
 
@@ -40,6 +41,29 @@ function sampleInventory() {
   };
 }
 
+function compatibleHistoricalInventory() {
+  const sample = sampleInventory();
+  sample.retiredWidgets[0] = inventoryRow("style.focal", {
+    widgetInstances: 3,
+    approvalRows: 4,
+  });
+  sample.retiredWidgets[1] = inventoryRow("team-status", {
+    widgetInstances: 4,
+    activeWidgetInstances: 1,
+    approvalRows: 2,
+  });
+  sample.retiredWidgets[2] = inventoryRow("teams-alive", {
+    widgetInstances: 2,
+    approvalRows: 3,
+  });
+  sample.retiredWidgets[3] = inventoryRow("kill-feed", {
+    widgetInstances: 5,
+    activeWidgetInstances: 1,
+    approvalRows: 6,
+  });
+  return sample;
+}
+
 test("accepts only the exact seven-key aggregate inventory", () => {
   const sample = sampleInventory();
   sample.retiredWidgets[0] = inventoryRow("style.focal", {
@@ -63,6 +87,13 @@ test("accepts only the exact seven-key aggregate inventory", () => {
     reordered.retiredWidgets[0],
   ];
   assert.throws(() => parseInventory(JSON.stringify(reordered)), /reordered/);
+
+  const unsupportedVersion = structuredClone(sample);
+  unsupportedVersion.schemaVersion = 2;
+  assert.throws(
+    () => parseInventory(JSON.stringify(unsupportedVersion)),
+    /unsupported version/,
+  );
 });
 
 test("rejects invalid or internally inconsistent aggregate counts", () => {
@@ -78,50 +109,116 @@ test("rejects invalid or internally inconsistent aggregate counts", () => {
   }
 });
 
-test("zero-required mode blocks every nonzero retired-widget aggregate", () => {
-  const zero = sampleInventory();
+test("deploy compatibility permits only reviewed inactive and grandfathered history", () => {
+  const compatible = compatibleHistoricalInventory();
   assert.deepEqual(
-    requireZeroInventory(parseInventory(JSON.stringify(zero))),
-    zero,
+    requireDeployCompatibleInventory(
+      parseInventory(JSON.stringify(compatible)),
+    ),
+    compatible,
   );
 
-  for (const countKey of [
-    "widgetInstances",
-    "activeWidgetInstances",
-    "approvalRows",
-    "approvedRows",
-  ]) {
-    const sample = sampleInventory();
-    const row = sample.retiredWidgets[4];
-    if (countKey === "activeWidgetInstances") row.widgetInstances = 1;
-    if (countKey === "approvedRows") row.approvalRows = 1;
-    row[countKey] = 1;
+  assert.deepEqual(
+    RETIRED_WIDGET_COMPATIBILITY_POLICY,
+    [
+      ["style.focal", "strict", 0],
+      ["team-status", "grandfathered", 1],
+      ["teams-alive", "strict", 0],
+      ["kill-feed", "grandfathered", 1],
+      ["player-card", "strict", 0],
+      ["map-overlay", "strict", 0],
+      ["winner", "strict", 0],
+    ].map(([widgetKey, policy, maximumActiveWidgetInstances]) => ({
+      widgetKey,
+      policy,
+      maximumActiveWidgetInstances,
+    })),
+  );
+  assert.equal(Object.isFrozen(RETIRED_WIDGET_COMPATIBILITY_POLICY), true);
+  assert.equal(
+    RETIRED_WIDGET_COMPATIBILITY_POLICY.every(Object.isFrozen),
+    true,
+  );
+});
+
+test("deploy compatibility rejects every active or approval policy violation", () => {
+  for (const index of [0, 2, 4, 5, 6]) {
+    const sample = compatibleHistoricalInventory();
+    sample.retiredWidgets[index].widgetInstances = Math.max(
+      sample.retiredWidgets[index].widgetInstances,
+      1,
+    );
+    sample.retiredWidgets[index].activeWidgetInstances = 1;
     assert.throws(
-      () => requireZeroInventory(parseInventory(JSON.stringify(sample))),
-      /player-card/,
+      () =>
+        requireDeployCompatibleInventory(
+          parseInventory(JSON.stringify(sample)),
+        ),
+      new RegExp(sample.retiredWidgets[index].widgetKey.replace(".", "\\.")),
+    );
+  }
+
+  for (const index of [1, 3]) {
+    const sample = compatibleHistoricalInventory();
+    sample.retiredWidgets[index].widgetInstances = Math.max(
+      sample.retiredWidgets[index].widgetInstances,
+      2,
+    );
+    sample.retiredWidgets[index].activeWidgetInstances = 2;
+    assert.throws(
+      () =>
+        requireDeployCompatibleInventory(
+          parseInventory(JSON.stringify(sample)),
+        ),
+      new RegExp(sample.retiredWidgets[index].widgetKey),
+    );
+  }
+
+  for (let index = 0; index < RETIRED_WIDGET_KEYS.length; index += 1) {
+    const sample = compatibleHistoricalInventory();
+    sample.retiredWidgets[index].approvalRows = Math.max(
+      sample.retiredWidgets[index].approvalRows,
+      1,
+    );
+    sample.retiredWidgets[index].approvedRows = 1;
+    assert.throws(
+      () =>
+        requireDeployCompatibleInventory(
+          parseInventory(JSON.stringify(sample)),
+        ),
+      new RegExp(sample.retiredWidgets[index].widgetKey.replace(".", "\\.")),
     );
   }
 });
 
-test("zero-required CLI has a closed argument and output contract", () => {
-  const accepted = spawnSync(process.execPath, [parserPath, "--require-zero"], {
-    input: JSON.stringify(sampleInventory()),
-    encoding: "utf8",
-    maxBuffer: 16 * 1024,
-  });
+test("deploy-compatibility CLI has a closed argument and output contract", () => {
+  const accepted = spawnSync(
+    process.execPath,
+    [parserPath, "--require-deploy-compatible"],
+    {
+      input: JSON.stringify(compatibleHistoricalInventory()),
+      encoding: "utf8",
+      maxBuffer: 16 * 1024,
+    },
+  );
   assert.equal(accepted.status, 0, accepted.stderr);
   assert.equal(
     accepted.stdout,
-    "RETIRED WIDGET ZERO INVENTORY VERIFIED keys=7\n",
+    "RETIRED WIDGET DEPLOY COMPATIBILITY VERIFIED keys=7 strict=5 grandfathered=2\n",
   );
 
-  const nonzero = sampleInventory();
-  nonzero.retiredWidgets[6].approvalRows = 1;
-  const blocked = spawnSync(process.execPath, [parserPath, "--require-zero"], {
-    input: JSON.stringify(nonzero),
-    encoding: "utf8",
-    maxBuffer: 16 * 1024,
-  });
+  const incompatible = compatibleHistoricalInventory();
+  incompatible.retiredWidgets[6].approvalRows = 1;
+  incompatible.retiredWidgets[6].approvedRows = 1;
+  const blocked = spawnSync(
+    process.execPath,
+    [parserPath, "--require-deploy-compatible"],
+    {
+      input: JSON.stringify(incompatible),
+      encoding: "utf8",
+      maxBuffer: 16 * 1024,
+    },
+  );
   assert.equal(blocked.status, 75);
   assert.match(blocked.stderr, /winner/);
   assert.doesNotMatch(blocked.stderr, /organization|capability|token/i);
@@ -139,8 +236,8 @@ test("production inspection is fixed-key, read-only, bounded, and separately all
   const sql = read("infra/sql/production-retired-widget-inventory.sql");
   const wrapper = read("scripts/inspect-production-retired-widget-inventory.sh");
   const parser = read("scripts/inspect-production-retired-widget-inventory.cjs");
-  const zeroGate = read(
-    "scripts/verify-production-retired-widget-zero-inventory.sh",
+  const compatibilityGate = read(
+    "scripts/verify-production-retired-widget-compatibility.sh",
   );
   const dispatcher = read("scripts/production-reviewed-entrypoint.sh");
   const metadata = read("scripts/create-publish-release-metadata.cjs");
@@ -169,11 +266,14 @@ test("production inspection is fixed-key, read-only, bounded, and separately all
     /docker\s+(?:compose|run|pull|restart|start|stop|rm)\b/,
   );
   assert.match(parser, /MAX_INPUT_BYTES = 4 \* 1024/);
-  assert.match(parser, /--require-zero/);
-  assert.match(zeroGate, /inspect-production-retired-widget-inventory\.sh/);
-  assert.match(zeroGate, /--require-zero/);
+  assert.match(parser, /--require-deploy-compatible/);
+  assert.match(
+    compatibilityGate,
+    /inspect-production-retired-widget-inventory\.sh/,
+  );
+  assert.match(compatibilityGate, /--require-deploy-compatible/);
   assert.doesNotMatch(
-    zeroGate,
+    compatibilityGate,
     /\b(?:INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP|docker|psql)\b/i,
   );
   assert.match(
@@ -183,7 +283,7 @@ test("production inspection is fixed-key, read-only, bounded, and separately all
   assert.match(metadata, /infra\/sql\/production-retired-widget-inventory\.sql/);
   assert.match(
     deploy,
-    /verify_production_activation_boundary\(\)[\s\S]*?MODE" = "full"[\s\S]*?MODE" = "api-recovery"[\s\S]*?verify-production-retired-widget-zero-inventory\.sh/,
+    /verify_production_activation_boundary\(\)[\s\S]*?MODE" = "full"[\s\S]*?MODE" = "api-recovery"[\s\S]*?verify-production-retired-widget-compatibility\.sh/,
   );
   const fullBuild = deploy.indexOf('"${compose[@]}" build api media-ai web');
   const capacity = deploy.indexOf(
@@ -214,6 +314,26 @@ test("production inspection is fixed-key, read-only, bounded, and separately all
     "verify_production_activation_boundary",
     finalHealth,
   );
+  const apiRecoveryStart = deploy.indexOf(
+    'elif [ "$MODE" = "api-recovery" ]',
+  );
+  const webRecoveryStart = deploy.indexOf(
+    'elif [ "$MODE" = "web-recovery" ]',
+    apiRecoveryStart,
+  );
+  const apiRecoveryBranch = deploy.slice(apiRecoveryStart, webRecoveryStart);
+  const apiBuild = apiRecoveryBranch.indexOf('"${compose[@]}" build api');
+  const apiActivation = apiRecoveryBranch.indexOf(
+    '"${compose[@]}" up --no-build -d --pull never --no-deps --force-recreate api',
+  );
+  const apiPreBuildBoundary = apiRecoveryBranch.lastIndexOf(
+    "verify_production_activation_boundary",
+    apiBuild,
+  );
+  const apiPreActivationBoundary = apiRecoveryBranch.lastIndexOf(
+    "verify_production_activation_boundary",
+    apiActivation,
+  );
   assert.ok(
     capacity >= 0 &&
       preCapacityBoundary >= 0 &&
@@ -224,4 +344,11 @@ test("production inspection is fixed-key, read-only, bounded, and separately all
   assert.ok(finalBoundary > fullBuild && finalBoundary < finalPreflight);
   assert.ok(finalPreflight < fullActivation);
   assert.ok(finalHealth > fullActivation && postHealthBoundary > finalHealth);
+  assert.ok(apiRecoveryStart >= 0 && webRecoveryStart > apiRecoveryStart);
+  assert.ok(apiBuild > 0 && apiActivation > apiBuild);
+  assert.ok(apiPreBuildBoundary >= 0 && apiPreBuildBoundary < apiBuild);
+  assert.ok(
+    apiPreActivationBoundary > apiBuild &&
+      apiPreActivationBoundary < apiActivation,
+  );
 });

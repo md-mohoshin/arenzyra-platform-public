@@ -314,7 +314,7 @@ test -f scripts/production-api-data-volume-remediation.sh
 test -f scripts/production-database-writer-fence.sh
 test -f scripts/inspect-production-retired-widget-inventory.cjs
 test -f scripts/inspect-production-retired-widget-inventory.sh
-test -f scripts/verify-production-retired-widget-zero-inventory.sh
+test -f scripts/verify-production-retired-widget-compatibility.sh
 test -f infra/sql/production-retired-widget-inventory.sql
 test -f scripts/verify-production-live-match-quiescence.sh
 test -f scripts/prepare-production-deploy-capacity.sh
@@ -361,13 +361,17 @@ warn_production_live_match_deployment() {
 }
 
 verify_production_activation_boundary() {
-  # This release removes five obsolete launcher mappings, while the candidate
-  # API rejects capabilities for those and two pre-existing retired keys.
-  # Recheck that exact seven-key aggregate inventory at every full/API
-  # activation boundary so a row created while a long build or backup is
-  # running still blocks activation.
+  # Apply one exact compatibility policy at every full/API activation boundary:
+  # five strict keys allow no active instance or approved row; grandfathered
+  # team-status and kill-feed allow at most one active instance each and no
+  # approved row. Historical inactive instances and unapproved approval rows do
+  # not authorize a capability and may remain. This aggregate envelope does not
+  # prove legacy capability provenance: only API-verified UUID generation-0
+  # rows can be grandfathered; generation-1+ and wgt_ rows remain unauthorized.
+  # Shape, key, and count drift fail closed through the same bounded parser
+  # before and after activation.
   if [ "$MODE" = "full" ] || [ "$MODE" = "api-recovery" ]; then
-    bash scripts/verify-production-retired-widget-zero-inventory.sh
+    bash scripts/verify-production-retired-widget-compatibility.sh
   fi
   if [ "$MODE" = "legacy-cutover" ]; then
     verify_production_live_match_quiescence

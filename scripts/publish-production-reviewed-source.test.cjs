@@ -20,6 +20,11 @@ const powershell = path.join(
   "v1.0",
   "powershell.exe",
 );
+const tar = path.join(
+  process.env.SystemRoot || "C:\\Windows",
+  "System32",
+  "tar.exe",
+);
 const git = "C:\\Program Files\\Git\\cmd\\git.exe";
 
 function run(executable, args, options = {}) {
@@ -36,7 +41,7 @@ function run(executable, args, options = {}) {
   return result;
 }
 
-function createLinkedReleaseRepository(testRoot, name) {
+function createLinkedReleaseRepository(testRoot, name, targetFiles = {}) {
   const source = path.join(testRoot, `${name}-source`);
   const checkout = path.join(testRoot, `${name}-target`);
   fs.mkdirSync(source);
@@ -68,6 +73,12 @@ function createLinkedReleaseRepository(testRoot, name) {
   ]);
   const current = run(git, ["-C", source, "rev-parse", "HEAD"]).stdout.trim();
   fs.writeFileSync(path.join(source, "release.txt"), "target\n", "utf8");
+  for (const [relativePath, content] of Object.entries(targetFiles)) {
+    const targetPath = path.join(source, relativePath);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, content, "utf8");
+  }
+  run(git, ["-C", source, "add", "--all"]);
   run(git, [
     "-c",
     "user.name=Arenzyra Test",
@@ -76,7 +87,7 @@ function createLinkedReleaseRepository(testRoot, name) {
     "-C",
     source,
     "commit",
-    "-am",
+    "-m",
     "target",
   ]);
   const target = run(git, ["-C", source, "rev-parse", "HEAD"]).stdout.trim();
@@ -101,7 +112,12 @@ test("Windows publisher packages three linked clean forward repositories", (t) =
     path.join(os.tmpdir(), "arenzyra-source-publisher-test-"),
   );
   t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
-  const root = createLinkedReleaseRepository(temporaryRoot, "root");
+  const compatibilityGatePath =
+    "scripts/verify-production-retired-widget-compatibility.sh";
+  const compatibilityGateBytes = "#!/usr/bin/env bash\nexit 0\n";
+  const root = createLinkedReleaseRepository(temporaryRoot, "root", {
+    [compatibilityGatePath]: compatibilityGateBytes,
+  });
   const api = createLinkedReleaseRepository(temporaryRoot, "api");
   const web = createLinkedReleaseRepository(temporaryRoot, "web");
   const bundle = path.join(temporaryRoot, "bundle");
@@ -149,6 +165,22 @@ test("Windows publisher packages three linked clean forward repositories", (t) =
       fs.statSync(path.join(bundle, `${component}.git.tar`)).size > 0,
     );
   }
+
+  const extractedRoot = path.join(temporaryRoot, "root-extracted.git");
+  fs.mkdirSync(extractedRoot);
+  run(tar, [
+    "-xf",
+    path.join(bundle, "root.git.tar"),
+    "-C",
+    extractedRoot,
+  ]);
+  const packagedGate = run(git, [
+    "-C",
+    extractedRoot,
+    "show",
+    `${root.target}:${compatibilityGatePath}`,
+  ]).stdout;
+  assert.equal(packagedGate, compatibilityGateBytes);
 });
 
 test("Windows publisher parses its exact LF/base64 payload wrapper and arguments", (t) => {

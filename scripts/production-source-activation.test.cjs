@@ -18,6 +18,10 @@ const dispatcher = read("scripts/production-reviewed-entrypoint.sh");
 const windowsPublisher = read(
   "scripts/publish-production-reviewed-source.ps1",
 );
+const releaseMetadata = read("scripts/create-publish-release-metadata.cjs");
+const retiredWidgetCompatibilityGate = read(
+  "scripts/verify-production-retired-widget-compatibility.sh",
+);
 const publishGuide = read("infra/PUBLISH.md");
 
 test("normal source activation locks before repeating exact current assembly verification", () => {
@@ -191,6 +195,51 @@ test("Windows publisher packages clean forward-only repositories and no-overwrit
   assert.doesNotMatch(windowsPublisher, /Remove-Item\s+-Recurse|git\s+clean/);
 });
 
+test("reviewed source packaging and activation preserve the committed compatibility gate", () => {
+  assert.match(releaseMetadata, /defaultIncludedPaths[\s\S]*?"scripts"/);
+  assert.match(
+    retiredWidgetCompatibilityGate,
+    /inspect-production-retired-widget-inventory\.sh[\s\S]*--require-deploy-compatible/,
+  );
+  assert.match(
+    windowsPublisher,
+    /fetch", "--no-tags", "--force",[\s\S]*\$Repository, "\$\{TargetCommit\}:refs\/heads\/reviewed"/,
+  );
+  assert.match(
+    bootstrap,
+    /clone --no-local "\$work\/repositories\/root\.git" "\$checkout"[\s\S]*checkout --detach "\$ARENZYRA_REVIEWED_ROOT_COMMIT"/,
+  );
+  assert.match(publishGuide, /Strict keys `style\.focal`/);
+  assert.match(
+    publishGuide,
+    /Grandfathered keys `team-status` and `kill-feed` permit at most one active/,
+  );
+  assert.match(
+    publishGuide,
+    /inventory gate itself grants or reauthorizes no capability/,
+  );
+  assert.match(
+    publishGuide,
+    /already-existing, active legacy UUID,\s+generation-0 `team-status` and `kill-feed` capabilities/,
+  );
+  assert.match(
+    publishGuide,
+    /generation-1-or-newer or `wgt_` capability[\s\S]*remains non-authorizing/,
+  );
+  assert.match(
+    publishGuide,
+    /explicit\s+`isApproved=false` row also remains non-authorizing/,
+  );
+  assert.match(
+    publishGuide,
+    /New issuance, rotation, and approval enabling\s+\(`isApproved=true`\) remain denied/,
+  );
+  assert.match(
+    publishGuide,
+    /Monotonic unapproval\/revocation\s+\(`isApproved=false`\) remains permitted and is non-authorizing/,
+  );
+});
+
 test("Windows publisher prevents PowerShell CRLF transport and pins strict OpenSSH", () => {
   assert.match(windowsPublisher, /StandardInput\.BaseStream\.Write/);
   assert.match(windowsPublisher, /Convert\]::ToBase64String/);
@@ -224,6 +273,27 @@ test("Windows publisher prevents PowerShell CRLF transport and pins strict OpenS
 
 test("runbook documents first-use trust, continuous lock, inventories, and preserved source", () => {
   assert.match(publishGuide, /Reviewed source transfer and activation from Windows/);
+  assert.match(
+    publishGuide,
+    /source-20260815-widget-latency-01[\s\S]*must not be deleted or reused/,
+  );
+  assert.match(
+    publishGuide,
+    /successfully activated\s+`source-20260815-widget-latency-02`[\s\S]*must not be reused/,
+  );
+  assert.match(
+    publishGuide,
+    /\$sourceRelease = 'source-20260815-widget-latency-03'/,
+  );
+  for (const [variable, commit] of [
+    ["currentRoot", "5d460d8a72570c711c3850b037bc546d908b6c54"],
+    ["currentApi", "d4c26bf4a0dfc0c11dd0af839439488fa18be089"],
+    ["currentWeb", "3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"],
+    ["targetApi", "88efdad94d65c09c6d3bd73e4b874db915629859"],
+    ["targetWeb", "3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"],
+  ]) {
+    assert.match(publishGuide, new RegExp(`\\$${variable} = '${commit}'`));
+  }
   assert.match(publishGuide, /4d18a9ad56d738e2992d0ca7564c4f8d553865a8/);
   assert.match(publishGuide, /428ca9d6dd20c065314a1787f5de92bc4f9d8646/);
   assert.match(publishGuide, /2ee104f6fcc22ef0b37a5c1f8b0b42df2ad076aa/);

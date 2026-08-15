@@ -297,26 +297,35 @@ ID; do not delete or reuse its partial incoming directory during deployment.
 The commands below show the reviewed direct-host profile. Replace every commit
 placeholder with a full 40-hex commit and use a new release ID. The `current`
 values are the exact clean Root/API/Web heads already installed under
-`/opt/arenzyra`, not merely the abbreviated `CURRENT` release-pointer values.
-For this one-time bridge the installed Web source is
-`2ee104f6fcc22ef0b37a5c1f8b0b42df2ad076aa`; do not substitute the separate
-Web release pointer `38cca5de4670ca123a4004e9fd6dfec6ccb48bcb`.
-No credential or application secret is accepted by this workflow.
+`/opt/arenzyra`, not merely abbreviated release-pointer values. The successful
+`source-20260815-widget-latency-02` activation installed Root
+`5d460d8a72570c711c3850b037bc546d908b6c54`, API
+`d4c26bf4a0dfc0c11dd0af839439488fa18be089`, and Web
+`3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`; the successor descriptor must use
+those exact current values. Do not substitute the separate deployed Web release
+pointer `38cca5de4670ca123a4004e9fd6dfec6ccb48bcb`; it is not the current Web
+source-checkout head. No credential or application secret is accepted by this
+workflow.
+The failed local `source-20260815-widget-latency-01` package remains preserved
+as evidence and must not be deleted or reused. The successfully activated
+`source-20260815-widget-latency-02` release and its incoming, staging, archive,
+and source evidence also remain preserved and must not be reused. This reviewed
+successor uses the next unique release ID below.
 
 ```powershell
-$sourceRelease = 'source-20260815-widget-latency-01'
+$sourceRelease = 'source-20260815-widget-latency-03'
 $sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
 $sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
 $targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
 $targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
 $targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
 
-$currentRoot = '4d18a9ad56d738e2992d0ca7564c4f8d553865a8'
-$currentApi = '428ca9d6dd20c065314a1787f5de92bc4f9d8646'
-$currentWeb = '2ee104f6fcc22ef0b37a5c1f8b0b42df2ad076aa'
+$currentRoot = '5d460d8a72570c711c3850b037bc546d908b6c54'
+$currentApi = 'd4c26bf4a0dfc0c11dd0af839439488fa18be089'
+$currentWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 $targetRoot = '<40-hex-reviewed-target-root>'
-$targetApi = '<40-hex-reviewed-target-api>'
-$targetWeb = '<40-hex-reviewed-target-web>'
+$targetApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
+$targetWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 
 & 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
   -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
@@ -429,8 +438,8 @@ then run the intended allowlisted deployment; its mandatory production
 preflight and all release gates still apply.
 
 For this widget retirement release, run the `retired-widget-inventory` command
-documented below first and review its fixed aggregate output; do not start the
-service deployment when any count is nonzero.
+documented below first and review its fixed aggregate output. Do not start the
+service deployment unless it satisfies the exact compatibility policy below.
 
 For a reviewed API source-only recovery with no schema change, use the narrow
 API activation. It builds and recreates only the API, fingerprints every other
@@ -483,14 +492,39 @@ gate and a repeatable-read, read-only transaction. Output is limited to each
 fixed widget key and aggregate counts for widget-instance rows, active
 widget-instance rows, approval rows, and approved rows. It does not select
 organization, instance, approval, user, match, tournament, capability, or
-credential identifiers. The full and narrow API-recovery deployment paths
-repeat a zero-required version of this inventory at every activation boundary,
-including before build and at the final pre-recreate boundary, then verify zero
-again after health convergence. Any nonzero count blocks deployment. A nonzero
-count requires a separately reviewed compatibility or customer-state migration
-decision; the inventory and gate never change customer state. Desktop installer
-publication remains a separate workflow and is not authorized by the `/opt`
-source activation or service deployment.
+credential identifiers.
+
+The deployment compatibility policy is closed and count-specific:
+
+- Strict keys `style.focal`, `teams-alive`, `player-card`, `map-overlay`, and
+  `winner` require `activeWidgetInstances=0` and `approvedRows=0`.
+- Grandfathered keys `team-status` and `kill-feed` permit at most one active
+  widget instance each and still require `approvedRows=0`.
+- Historical inactive widget-instance rows and unapproved approval rows may
+  remain. Their aggregate row counts are still parsed and consistency-checked;
+  they are not treated as active or approved capability authorization.
+
+The full and narrow API-recovery deployment paths apply the same parser and
+policy at every existing activation boundary, including before build and at the
+final pre-recreate boundary, then again after health convergence. Unexpected
+schema, keys, order, fields, unsafe counts, inconsistent subtotals, more than the
+reviewed active grandfathering, or any approved retired row blocks deployment.
+There is no override and the inventory and gate never change customer state.
+The inventory gate itself grants or reauthorizes no capability. The reviewed
+API separately grandfathers only already-existing, active legacy UUID,
+generation-0 `team-status` and `kill-feed` capabilities that pass the complete
+capability-access checks. The inventory is intentionally count-based: an active
+generation-1-or-newer or `wgt_` capability can fit within its aggregate count
+envelope, but it remains non-authorizing and the API rejects it. An explicit
+`isApproved=false` row also remains non-authorizing even when organization
+approval enforcement is disabled; enforcement-enabled organizations still
+require an approved row. New issuance, rotation, and approval enabling
+(`isApproved=true`) remain denied. Monotonic unapproval/revocation
+(`isApproved=false`) remains permitted and is non-authorizing. The retired Web
+routes and route aliases remain absent, and the preserved desktop `team-status`
+renderer and assets remain in place. Desktop installer publication remains a
+separate workflow and is not authorized by the `/opt` source activation or
+service deployment.
 
 The following one-time recovery is deliberately restricted to the exact stale
 `Global Control` inventory remaining on 2026-08-12: exactly two old `COUNTDOWN`

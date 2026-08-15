@@ -122,6 +122,13 @@ test("release inputs cover the entire scripts tree without a brittle helper list
       path.relative(repositoryRoot, filePath).replace(/\\/g, "/"),
     ),
   );
+  assert.equal(
+    collectedScripts.has(
+      "scripts/verify-production-retired-widget-compatibility.sh",
+    ),
+    true,
+    "the retired-widget compatibility gate must be a release digest input",
+  );
   const deploymentEntrypoints = [
     "scripts/deploy-production.sh",
     "scripts/rollback-production-images.sh",
