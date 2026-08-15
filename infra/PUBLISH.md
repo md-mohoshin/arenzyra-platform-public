@@ -298,8 +298,8 @@ The commands below show the reviewed direct-host profile. Replace every commit
 placeholder with a full 40-hex commit and use a new release ID. The `current`
 values are the exact clean Root/API/Web heads already installed under
 `/opt/arenzyra`, not merely abbreviated release-pointer values. The successful
-`source-20260815-widget-latency-03` activation installed Root
-`38ef097f5a542fa9685cd867001e337a884c3d0f`, API
+`source-20260815-widget-latency-04` activation installed Root
+`d14e120b1d354abe4cc2d6bf4addf3c2199e048a`, API
 `88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`; the successor descriptor must use
 those exact current values. Do not substitute the separate deployed Web release
@@ -310,20 +310,21 @@ The failed local `source-20260815-widget-latency-01` package remains preserved
 as evidence and must not be deleted or reused. The superseded
 `source-20260815-widget-latency-02` incoming, staging, archive, and prior-source
 copies were already verified and deleted through the reviewed source-retention
-command; that retired ID must never be reused. The successfully activated
-`source-20260815-widget-latency-03` release is the current source assembly;
+command; that retired ID must never be reused. The prior successful
+`source-20260815-widget-latency-03` evidence remains preserved. The successfully activated
+`source-20260815-widget-latency-04` release is the current source assembly;
 preserve its incoming, staging, archive, and source evidence. This reviewed
 successor uses the next unique release ID below.
 
 ```powershell
-$sourceRelease = 'source-20260815-widget-latency-04'
+$sourceRelease = 'source-20260815-widget-latency-05'
 $sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
 $sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
 $targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
 $targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
 $targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
 
-$currentRoot = '38ef097f5a542fa9685cd867001e337a884c3d0f'
+$currentRoot = 'd14e120b1d354abe4cc2d6bf4addf3c2199e048a'
 $currentApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
 $currentWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 $targetRoot = '<40-hex-reviewed-target-root>'
@@ -789,7 +790,7 @@ The failed immutable candidate
 `38ef097f5a542fa9685cd867001e337a884c3d0f`, API
 `88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`. After activating the fresh
-`source-20260815-widget-latency-04` source release above and redefining
+`source-20260815-widget-latency-05` source release above and redefining
 `production_entry` with that new Root plus the same exact API/Web commits, the
 only reviewed low-disk release for this candidate is:
 
@@ -801,14 +802,29 @@ This command accepts no arguments and is not a general cache-maintenance
 interface. The dispatcher acquires descriptor 8, repeats the exact clean
 Root/API/Web assembly verification under that lock, and retains it through all
 remaining checks. The wrapper requires the new Root to be the direct reviewed
-successor of `38ef097...`, with exact API `88efdad...` and Web `3d2cca1...`.
+successor of `d14e120...` (itself the reviewed child of `38ef097...`), with
+exact API `88efdad...` and Web `3d2cca1...`.
 The prior read-only inventory observed
 `CURRENT=git-20260814-192205642-e04672c95be2` and a healthy seven-service
 runtime after both stopped-before-recreate build attempts. That observation is
 context only: the fresh under-lock manifest, label, image-ID, and topology
-checks below are authoritative and fail closed on any difference. `CURRENT` is
-also hard-bound to that exact release ID, so any later successful deployment
-permanently disables this one-time command.
+checks below are authoritative and fail closed on any difference. Production
+is intentionally a mixed-release runtime after isolated service activations;
+`CURRENT` is the latest release pointer, not a claim that every application
+container was built by that release. The wrapper therefore hard-binds the four
+observed application image IDs and validates each container against the release
+ID in its own immutable label. It additionally requires running Web to match
+the exact `CURRENT` Web manifest. A later full/partial activation, an incomplete
+activation that changed an application image without advancing `CURRENT`, or a
+no-pointer Web candidate therefore permanently disables this one-time command.
+The fixed runtime image bindings are API
+`sha256:518ce5d035c9f6ebbd100ff570981cffa822484fa1971ec8649f808134095d9c`,
+media
+`sha256:9863f4cfa9defef7cfe7caf018c83bc277712df3c41fcc8baead1af2cbc0ec5f`,
+Web
+`sha256:23cfef8c359a60379d18d6736d2067c7c2a9a2bc82e08e1c37a6e53ac4745923`,
+and Discord
+`sha256:e2db68104d3cf5a4f3ce543853b81725135b14a0f40f0246179b8e59bc88b0df`.
 
 Before any mutation, it requires root free space to be strictly below 30 GiB
 while running the otherwise ordinary production environment, data-volume, and
@@ -820,14 +836,19 @@ the cache command:
 - the candidate API, Web, and media manifests are root-owned `0600`,
   single-link files, their immutable image IDs still exist, and fresh Docker
   image inspection regenerates each archived manifest byte-for-byte;
-- `CURRENT`, its archived release metadata and all four current application
-  image manifests remain exact;
+- `CURRENT`, its archived release metadata, its Web manifest, and the running
+  Web release label and image remain exact;
 - the production environment identity and digest are unchanged; and
 - the Compose project contains exactly one healthy, running, non-restarting
-  proxy, PostgreSQL, Redis, API, media, Web, and Discord container. Current
-  application container image IDs and release labels must match `CURRENT`, and
-  container IDs, dependency images, restart policies, and restart counts are
-  included in the drift fingerprint.
+  proxy, PostgreSQL, Redis, API, media, Web, and Discord container. API, media,
+  Web, and Discord must retain the exact observed immutable image IDs. Each
+  application label must select its own root-owned `0600`, single-link release
+  environment and service manifest; fresh image inspection must regenerate
+  that manifest byte-for-byte and its image ID must equal the running
+  container. Dependency services remain label-free. Container IDs, dependency
+  images, restart policies, restart counts, and every selected environment and
+  manifest identity plus digest are included in the drift fingerprint. A
+  second raw runtime inventory after evidence validation must equal the first.
 
 The one and only mutating command is `docker builder prune -af` with an
 explicit `0B` reserve. Reviewed Docker help detection selects

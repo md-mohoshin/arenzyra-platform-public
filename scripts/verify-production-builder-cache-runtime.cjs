@@ -28,7 +28,6 @@ const IMAGE_OPTIONS = Object.freeze({
 function parseArguments(argv) {
   const allowed = new Set([
     "--compose-project",
-    "--current-release",
     ...Object.values(IMAGE_OPTIONS),
   ]);
   const values = Object.create(null);
@@ -48,9 +47,6 @@ function parseArguments(argv) {
   if (!PROJECT.test(values["--compose-project"] ?? "")) {
     throw new Error("Compose project is invalid.");
   }
-  if (!RELEASE_ID.test(values["--current-release"] ?? "")) {
-    throw new Error("Current release ID is invalid.");
-  }
   for (const option of Object.values(IMAGE_OPTIONS)) {
     if (!IMAGE_ID.test(values[option] ?? "")) {
       throw new Error(`Immutable image ID is invalid for ${option}.`);
@@ -69,7 +65,6 @@ function verifyRuntimeInventory(text, options) {
   }
 
   const expectedProject = options["--compose-project"];
-  const expectedRelease = options["--current-release"];
   const byService = new Map();
   const containerIds = new Set();
   for (const line of lines) {
@@ -114,15 +109,15 @@ function verifyRuntimeInventory(text, options) {
     }
     if (Object.hasOwn(IMAGE_OPTIONS, service)) {
       if (
-        releaseId !== expectedRelease ||
+        !RELEASE_ID.test(releaseId) ||
         imageId !== options[IMAGE_OPTIONS[service]]
       ) {
-        throw new Error("Application runtime differs from the current release.");
+        throw new Error("Application runtime image or release label is not exact.");
       }
     } else if (releaseId !== "") {
       throw new Error("Dependency runtime unexpectedly carries a release label.");
     }
-    byService.set(service, { containerId, imageId, restartCount });
+    byService.set(service, { containerId, imageId, releaseId, restartCount });
   }
 
   for (const service of SERVICES) {
@@ -132,7 +127,10 @@ function verifyRuntimeInventory(text, options) {
   }
   return SERVICES.map((service) => {
     const row = byService.get(service);
-    return `${service}|${row.containerId}|${row.imageId}|restart-count=${row.restartCount}`;
+    const release = Object.hasOwn(IMAGE_OPTIONS, service)
+      ? `release=${row.releaseId}`
+      : "release=none";
+    return `${service}|${row.containerId}|${row.imageId}|${release}|restart-count=${row.restartCount}`;
   }).join("\n");
 }
 

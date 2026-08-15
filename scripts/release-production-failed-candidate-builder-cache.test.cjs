@@ -28,10 +28,16 @@ const {
   verifyRuntimeInventory,
 } = require("./verify-production-builder-cache-runtime.cjs");
 
-const releaseId = "git-20260814-010203004-aaaaaaaaaaaa";
+const APPLICATION_SERVICES = Object.freeze(Object.keys(IMAGE_OPTIONS));
 const project = "infra";
+const releaseIds = Object.freeze({
+  api: "git-20260813-010203004-aaaaaaaaaaaa",
+  "media-ai": "git-20260813-020304005-bbbbbbbbbbbb",
+  web: "git-20260814-030405006-cccccccccccc",
+  "discord-bot": "git-20260814-040506007-dddddddddddd",
+});
 const imageIds = Object.fromEntries(
-  Object.keys(IMAGE_OPTIONS).map((service, index) => [
+  APPLICATION_SERVICES.map((service, index) => [
     service,
     `sha256:${(index + 8).toString(16).repeat(64)}`,
   ]),
@@ -39,14 +45,12 @@ const imageIds = Object.fromEntries(
 const runtimeArguments = [
   "--compose-project",
   project,
-  "--current-release",
-  releaseId,
   "--api-image-id",
   imageIds.api,
-  "--web-image-id",
-  imageIds.web,
   "--media-ai-image-id",
   imageIds["media-ai"],
+  "--web-image-id",
+  imageIds.web,
   "--discord-bot-image-id",
   imageIds["discord-bot"],
 ];
@@ -68,7 +72,7 @@ function runtimeRows(overrides = {}) {
       restarting: "false",
       restartCount: String(index),
       restartPolicy: "unless-stopped",
-      releaseId: application ? releaseId : "",
+      releaseId: application ? releaseIds[service] : "",
       ...(overrides[service] ?? {}),
     };
     return [
@@ -131,11 +135,16 @@ test("reserve flag CLI rejects arguments, invalid UTF-8, and unbounded help", ()
   }
 });
 
-test("runtime verifier canonicalizes exactly seven healthy current-release services", () => {
+test("runtime verifier canonicalizes exactly seven healthy mixed-release services", () => {
   const fingerprint = verifyRuntimeInventory(runtimeRows(), runtimeOptions);
   assert.equal(fingerprint.split("\n").length, 7);
-  assert.match(fingerprint, /^proxy\|[0-9a-f]{64}\|sha256:/);
-  assert.match(fingerprint, /discord-bot\|[0-9a-f]{64}\|sha256:[0-9a-f]{64}\|restart-count=6$/);
+  assert.match(fingerprint, /^proxy\|[0-9a-f]{64}\|sha256:[0-9a-f]{64}\|release=none\|restart-count=0/);
+  for (const service of APPLICATION_SERVICES) {
+    assert.match(
+      fingerprint,
+      new RegExp(`${service}\\|[0-9a-f]{64}\\|sha256:[0-9a-f]{64}\\|release=${releaseIds[service]}\\|restart-count=`),
+    );
+  }
 });
 
 test("runtime verifier fails closed on every topology and drift boundary", () => {
@@ -145,12 +154,13 @@ test("runtime verifier fails closed on every topology and drift boundary", () =>
     runtimeRows({ proxy: { oneoff: "True" } }),
     runtimeRows({ postgres: { health: "unhealthy" } }),
     runtimeRows({ redis: { status: "restarting" } }),
+    runtimeRows({ api: { imageId: `sha256:${"f".repeat(63)}` } }),
     runtimeRows({ api: { imageId: `sha256:${"f".repeat(64)}` } }),
     runtimeRows({ web: { releaseId: "" } }),
     runtimeRows({ "media-ai": { project: "other" } }),
     runtimeRows({ "discord-bot": { restarting: "true" } }),
     runtimeRows({ api: { restartPolicy: "always" } }),
-    runtimeRows({ proxy: { releaseId } }),
+    runtimeRows({ proxy: { releaseId: releaseIds.api } }),
   ];
   for (const inventory of invalidInventories) {
     assert.throws(() => verifyRuntimeInventory(inventory, runtimeOptions));
@@ -176,6 +186,10 @@ test("one-time release is exactly candidate-bound and continuously attested", ()
   );
   assert.match(
     release,
+    /EXPECTED_PREVIOUS_ROOT="d14e120b1d354abe4cc2d6bf4addf3c2199e048a"/,
+  );
+  assert.match(
+    release,
     /EXPECTED_CURRENT_RELEASE="git-20260814-192205642-e04672c95be2"/,
   );
   assert.match(
@@ -186,6 +200,17 @@ test("one-time release is exactly candidate-bound and continuously attested", ()
     release,
     /EXPECTED_CURRENT_WEB="3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"/,
   );
+  for (const [name, imageId] of [
+    ["API", "sha256:518ce5d035c9f6ebbd100ff570981cffa822484fa1971ec8649f808134095d9c"],
+    ["MEDIA", "sha256:9863f4cfa9defef7cfe7caf018c83bc277712df3c41fcc8baead1af2cbc0ec5f"],
+    ["WEB", "sha256:23cfef8c359a60379d18d6736d2067c7c2a9a2bc82e08e1c37a6e53ac4745923"],
+    ["DISCORD", "sha256:e2db68104d3cf5a4f3ce543853b81725135b14a0f40f0246179b8e59bc88b0df"],
+  ]) {
+    assert.match(
+      release,
+      new RegExp(`EXPECTED_RUNTIME_${name}_IMAGE="${imageId}"`),
+    );
+  }
   assert.match(release, /\[ "\$#" -eq 0 \]/);
   const lock = release.indexOf("source scripts/acquire-production-deploy-lock.sh");
   const firstPreflight = release.indexOf("--allow-low-disk-builder-cache-release");
@@ -205,7 +230,7 @@ test("one-time release is exactly candidate-bound and continuously attested", ()
       prune < ordinaryPreflight &&
       ordinaryPreflight < finalSnapshot,
   );
-  assert.match(release, /root_parent" = "\$FAILED_CANDIDATE_ROOT/);
+  assert.match(release, /root_parent" = "\$EXPECTED_PREVIOUS_ROOT/);
   assert.match(
     release,
     /current_release" = "\$EXPECTED_CURRENT_RELEASE"[\s\S]*CURRENT is not the exact pre-candidate production release/,
@@ -244,11 +269,66 @@ test("candidate image evidence is regenerated before and after the sole mutation
   assert.doesNotMatch(release, /--max-used-space/);
 });
 
+test("mixed runtime is image-bound per service and anchored to the CURRENT Web manifest", () => {
+  for (const [option, variable] of [
+    ["api", "API"],
+    ["media-ai", "MEDIA"],
+    ["web", "WEB"],
+    ["discord-bot", "DISCORD"],
+  ]) {
+    assert.match(
+      release,
+      new RegExp(`--${option}-image-id "\\$EXPECTED_RUNTIME_${variable}_IMAGE"`),
+    );
+  }
+  assert.match(
+    release,
+    /verify_image_manifest "\$current_release" "\$current_env" web/,
+  );
+  assert.doesNotMatch(
+    release,
+    /verify_image_manifest "\$current_release" "\$current_env" (?:api|media-ai|discord-bot)/,
+  );
+  for (const service of APPLICATION_SERVICES) {
+    assert.match(
+      release,
+      new RegExp(`verify_running_app_evidence ${service} "\\$runtime"`),
+    );
+  }
+  assert.match(
+    release,
+    /verify_running_app_evidence web "\$runtime" "\$current_release"/,
+  );
+  assert.match(
+    release,
+    /expected_release[\s\S]*release_id" != "\$expected_release"[\s\S]*runtime release does not match the required pointer release/,
+  );
+  assert.match(
+    release,
+    /LAST_IMAGE_ID" = "\$observed_image"[\s\S]*runtime image differs from its exact release manifest/,
+  );
+  assert.match(
+    release,
+    /runtime-evidence\|%s\|release=%s\|env-identity=%s\|env-sha256=%s\|image=%s\|manifest-identity=%s\|manifest-sha256=%s/,
+  );
+  assert.match(
+    release,
+    /runtime_after="\$\(capture_runtime "\$compose_project"\)"[\s\S]*runtime_after" = "\$runtime"/,
+  );
+});
+
 test("every nested immutable capture propagates failure before printing a snapshot", () => {
   for (const capture of [
     "assembly",
     "current_env",
     "runtime",
+    "runtime_after",
+    "binding",
+    "release_env",
+    "api_evidence",
+    "media_evidence",
+    "web_evidence",
+    "discord_evidence",
     "candidate_env",
     "baseline_current",
     "baseline_candidate",
@@ -279,7 +359,7 @@ test("every nested immutable capture propagates failure before printing a snapsh
   );
   assert.doesNotMatch(
     release,
-    /^(?!\s*if ! )(?:baseline_current|baseline_candidate|assembly|current_env|runtime|candidate_env)=\"\$\(/m,
+    /^(?!\s*if ! )(?:baseline_current|baseline_candidate|assembly|current_env|runtime|runtime_after|binding|release_env|api_evidence|media_evidence|web_evidence|discord_evidence|candidate_env)=\"\$\(/m,
   );
 });
 
