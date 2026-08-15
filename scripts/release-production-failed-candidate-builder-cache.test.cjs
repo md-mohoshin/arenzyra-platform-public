@@ -13,10 +13,14 @@ const release = read(
   "scripts/release-production-failed-candidate-builder-cache.sh",
 );
 const dispatcher = read("scripts/production-reviewed-entrypoint.sh");
+const deploy = read("scripts/deploy-production.sh");
 const preflight = read("scripts/production-deploy-preflight.sh");
 const metadata = read("scripts/create-publish-release-metadata.cjs");
 const runtimeVerifierSource = read(
   "scripts/verify-production-builder-cache-runtime.cjs",
+);
+const imageManifestValidator = read(
+  "scripts/validate-release-image-manifest.cjs",
 );
 const {
   selectReserveFlag,
@@ -186,7 +190,7 @@ test("one-time release is exactly candidate-bound and continuously attested", ()
   );
   assert.match(
     release,
-    /EXPECTED_PREVIOUS_ROOT="d14e120b1d354abe4cc2d6bf4addf3c2199e048a"/,
+    /EXPECTED_PREVIOUS_ROOT="1f50dd5b8b40cc6e32afff5df04d9f51d174f43e"/,
   );
   assert.match(
     release,
@@ -269,7 +273,7 @@ test("candidate image evidence is regenerated before and after the sole mutation
   assert.doesNotMatch(release, /--max-used-space/);
 });
 
-test("mixed runtime is image-bound per service and anchored to the CURRENT Web manifest", () => {
+test("mixed runtime is image-bound and every service selects its own exact evidence", () => {
   for (const [option, variable] of [
     ["api", "API"],
     ["media-ai", "MEDIA"],
@@ -281,13 +285,9 @@ test("mixed runtime is image-bound per service and anchored to the CURRENT Web m
       new RegExp(`--${option}-image-id "\\$EXPECTED_RUNTIME_${variable}_IMAGE"`),
     );
   }
-  assert.match(
-    release,
-    /verify_image_manifest "\$current_release" "\$current_env" web/,
-  );
   assert.doesNotMatch(
     release,
-    /verify_image_manifest "\$current_release" "\$current_env" (?:api|media-ai|discord-bot)/,
+    /verify_image_manifest "\$current_release" "\$current_env" (?:api|media-ai|web|discord-bot)/,
   );
   for (const service of APPLICATION_SERVICES) {
     assert.match(
@@ -297,15 +297,31 @@ test("mixed runtime is image-bound per service and anchored to the CURRENT Web m
   }
   assert.match(
     release,
-    /verify_running_app_evidence web "\$runtime" "\$current_release"/,
+    /verify_running_app_evidence web "\$runtime"\)/,
   );
-  assert.match(
+  assert.doesNotMatch(
     release,
-    /expected_release[\s\S]*release_id" != "\$expected_release"[\s\S]*runtime release does not match the required pointer release/,
+    /runtime release does not match the required pointer release|current-web-image/,
   );
   assert.match(
     release,
     /LAST_IMAGE_ID" = "\$observed_image"[\s\S]*runtime image differs from its exact release manifest/,
+  );
+  assert.match(
+    release,
+    /verify_release_environment "\$release_id"[\s\S]*verify_image_manifest "\$release_id" "\$release_env" "\$service"/,
+  );
+  assert.match(
+    imageManifestValidator,
+    /imageReference = `\$\{SERVICES\[service\]\}:\$\{release\.ARENZYRA_RELEASE_ID\}`/,
+  );
+  assert.match(
+    imageManifestValidator,
+    /"org\.opencontainers\.image\.version": release\.ARENZYRA_RELEASE_ID/,
+  );
+  assert.match(
+    imageManifestValidator,
+    /image\.RepoTags\.includes\(context\.imageReference\)/,
   );
   assert.match(
     release,
@@ -314,6 +330,21 @@ test("mixed runtime is image-bound per service and anchored to the CURRENT Web m
   assert.match(
     release,
     /runtime_after="\$\(capture_runtime "\$compose_project"\)"[\s\S]*runtime_after" = "\$runtime"/,
+  );
+  const pointerUpdates = deploy.slice(
+    deploy.indexOf(
+      'if [ "$MODE" = "web-candidate" ]; then',
+      deploy.indexOf("verify_running_release_images"),
+    ),
+    deploy.indexOf("trap - ERR"),
+  );
+  assert.match(
+    pointerUpdates,
+    /if \[ "\$MODE" = "web-candidate" \]; then[\s\S]*elif \[ "\$MODE" = "api-recovery" \]; then[\s\S]*write_release_pointer CURRENT "\$new_release_id"[\s\S]*elif \[ "\$MODE" = "web-recovery" \]; then[\s\S]*write_release_pointer CURRENT "\$new_release_id"[\s\S]*else[\s\S]*write_release_pointer CURRENT "\$new_release_id"/,
+  );
+  assert.match(
+    deploy,
+    /MODE" = "web-candidate"[\s\S]*--force-recreate web/,
   );
 });
 

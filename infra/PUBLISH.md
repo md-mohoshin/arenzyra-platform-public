@@ -298,8 +298,8 @@ The commands below show the reviewed direct-host profile. Replace every commit
 placeholder with a full 40-hex commit and use a new release ID. The `current`
 values are the exact clean Root/API/Web heads already installed under
 `/opt/arenzyra`, not merely abbreviated release-pointer values. The successful
-`source-20260815-widget-latency-04` activation installed Root
-`d14e120b1d354abe4cc2d6bf4addf3c2199e048a`, API
+`source-20260815-widget-latency-05` activation installed Root
+`1f50dd5b8b40cc6e32afff5df04d9f51d174f43e`, API
 `88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`; the successor descriptor must use
 those exact current values. Do not substitute the separate deployed Web release
@@ -312,19 +312,21 @@ as evidence and must not be deleted or reused. The superseded
 copies were already verified and deleted through the reviewed source-retention
 command; that retired ID must never be reused. The prior successful
 `source-20260815-widget-latency-03` evidence remains preserved. The successfully activated
-`source-20260815-widget-latency-04` release is the current source assembly;
+`source-20260815-widget-latency-04` release also remains preserved; preserve its
+incoming, staging, archive, and source evidence. The successfully activated
+`source-20260815-widget-latency-05` release is the current source assembly;
 preserve its incoming, staging, archive, and source evidence. This reviewed
 successor uses the next unique release ID below.
 
 ```powershell
-$sourceRelease = 'source-20260815-widget-latency-05'
+$sourceRelease = 'source-20260815-widget-latency-06'
 $sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
 $sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
 $targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
 $targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
 $targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
 
-$currentRoot = 'd14e120b1d354abe4cc2d6bf4addf3c2199e048a'
+$currentRoot = '1f50dd5b8b40cc6e32afff5df04d9f51d174f43e'
 $currentApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
 $currentWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 $targetRoot = '<40-hex-reviewed-target-root>'
@@ -790,7 +792,7 @@ The failed immutable candidate
 `38ef097f5a542fa9685cd867001e337a884c3d0f`, API
 `88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`. After activating the fresh
-`source-20260815-widget-latency-05` source release above and redefining
+`source-20260815-widget-latency-06` source release above and redefining
 `production_entry` with that new Root plus the same exact API/Web commits, the
 only reviewed low-disk release for this candidate is:
 
@@ -802,7 +804,7 @@ This command accepts no arguments and is not a general cache-maintenance
 interface. The dispatcher acquires descriptor 8, repeats the exact clean
 Root/API/Web assembly verification under that lock, and retains it through all
 remaining checks. The wrapper requires the new Root to be the direct reviewed
-successor of `d14e120...` (itself the reviewed child of `38ef097...`), with
+successor of `1f50dd5...` (itself the reviewed child of `d14e120...`), with
 exact API `88efdad...` and Web `3d2cca1...`.
 The prior read-only inventory observed
 `CURRENT=git-20260814-192205642-e04672c95be2` and a healthy seven-service
@@ -813,10 +815,12 @@ is intentionally a mixed-release runtime after isolated service activations;
 `CURRENT` is the latest release pointer, not a claim that every application
 container was built by that release. The wrapper therefore hard-binds the four
 observed application image IDs and validates each container against the release
-ID in its own immutable label. It additionally requires running Web to match
-the exact `CURRENT` Web manifest. A later full/partial activation, an incomplete
-activation that changed an application image without advancing `CURRENT`, or a
-no-pointer Web candidate therefore permanently disables this one-time command.
+ID in its own immutable label. A later supported full or partial activation
+advances `CURRENT`; the sole no-pointer Web-candidate path necessarily changes
+the hard-bound Web image. An incomplete activation that changed any application
+image is likewise rejected. Those pointer and image bindings therefore disable
+this one-time command after any later runtime deployment without assuming that
+one mixed-runtime application was built by `CURRENT`.
 The fixed runtime image bindings are API
 `sha256:518ce5d035c9f6ebbd100ff570981cffa822484fa1971ec8649f808134095d9c`,
 media
@@ -836,8 +840,7 @@ the cache command:
 - the candidate API, Web, and media manifests are root-owned `0600`,
   single-link files, their immutable image IDs still exist, and fresh Docker
   image inspection regenerates each archived manifest byte-for-byte;
-- `CURRENT`, its archived release metadata, its Web manifest, and the running
-  Web release label and image remain exact;
+- `CURRENT` and its archived release metadata remain exact;
 - the production environment identity and digest are unchanged; and
 - the Compose project contains exactly one healthy, running, non-restarting
   proxy, PostgreSQL, Redis, API, media, Web, and Discord container. API, media,

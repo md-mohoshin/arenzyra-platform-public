@@ -13,7 +13,7 @@ MIN_FREE_KIB=$((30 * 1024 * 1024))
 # not parameterized so it cannot become a general production cache command.
 FAILED_CANDIDATE_RELEASE="git-20260815-113203955-8da6acb623a6"
 FAILED_CANDIDATE_ROOT="38ef097f5a542fa9685cd867001e337a884c3d0f"
-EXPECTED_PREVIOUS_ROOT="d14e120b1d354abe4cc2d6bf4addf3c2199e048a"
+EXPECTED_PREVIOUS_ROOT="1f50dd5b8b40cc6e32afff5df04d9f51d174f43e"
 EXPECTED_CURRENT_RELEASE="git-20260814-192205642-e04672c95be2"
 EXPECTED_CURRENT_API="88efdad94d65c09c6d3bd73e4b874db915629859"
 EXPECTED_CURRENT_WEB="3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"
@@ -292,7 +292,7 @@ runtime_app_binding() {
 }
 
 verify_running_app_evidence() {
-  local service="$1" runtime="$2" expected_release="${3:-}"
+  local service="$1" runtime="$2"
   local binding release_id observed_image extra="" release_env
   local release_env_hash release_env_identity
   if ! binding="$(runtime_app_binding "$runtime" "$service")"; then
@@ -302,9 +302,6 @@ verify_running_app_evidence() {
   [ -z "$extra" ] && [[ "$release_id" =~ ^git-[0-9]{8}-[0-9]{9}-[a-f0-9]{12}$ ]] && \
     [[ "$observed_image" =~ ^sha256:[0-9a-f]{64}$ ]] || \
     block "$service runtime binding is not canonical."
-  if [ -n "$expected_release" ] && [ "$release_id" != "$expected_release" ]; then
-    block "$service runtime release does not match the required pointer release."
-  fi
   if ! release_env="$(verify_release_environment "$release_id")"; then
     block "$service runtime release environment could not be verified."
   fi
@@ -329,7 +326,6 @@ current_snapshot() {
   local assembly current_env current_env_hash current_release pointer pointer_hash
   local compose_project current_env_identity env_hash env_identity pointer_identity runtime runtime_after
   local api_evidence web_evidence media_evidence discord_evidence
-  local current_web_image current_web_manifest current_web_manifest_identity
   if ! assembly="$(assembly_snapshot)"; then
     block "the exact clean source assembly snapshot failed."
   fi
@@ -367,13 +363,6 @@ current_snapshot() {
     [[ "$current_env_identity" =~ ^[0-9]+:[0-9]+:0:0:600:1:[1-9][0-9]*:[0-9]+$ ]] && \
     [[ "$pointer_identity" =~ ^[0-9]+:[0-9]+:0:0:600:1:[1-9][0-9]*:[0-9]+$ ]] || \
     block "the current release metadata fingerprint is invalid."
-  verify_image_manifest "$current_release" "$current_env" web
-  current_web_image="$LAST_IMAGE_ID"
-  current_web_manifest="$LAST_MANIFEST_HASH"
-  current_web_manifest_identity="$LAST_MANIFEST_IDENTITY"
-  [ "$current_web_image" = "$EXPECTED_RUNTIME_WEB_IMAGE" ] || \
-    block "the CURRENT Web manifest is not the exact observed runtime image."
-
   if ! compose_project="$("${sanitized[@]}" node scripts/read-dotenv-value.cjs \
     "$PUBLISH_ENV" ARENZYRA_DEPLOY_COMPOSE_PROJECT 2>/dev/null)"; then
     block "the production Compose project could not be read."
@@ -390,7 +379,7 @@ current_snapshot() {
   if ! media_evidence="$(verify_running_app_evidence media-ai "$runtime")"; then
     block "the media runtime evidence snapshot failed."
   fi
-  if ! web_evidence="$(verify_running_app_evidence web "$runtime" "$current_release")"; then
+  if ! web_evidence="$(verify_running_app_evidence web "$runtime")"; then
     block "the Web runtime evidence snapshot failed."
   fi
   if ! discord_evidence="$(verify_running_app_evidence discord-bot "$runtime")"; then
@@ -410,7 +399,6 @@ current_snapshot() {
     "publish-env|identity=$env_identity|sha256=$env_hash" \
     "current-pointer|identity=$pointer_identity|sha256=$pointer_hash|release=$current_release" \
     "current-env|identity=$current_env_identity|sha256=$current_env_hash" \
-    "current-web-image|$current_web_image|identity=$current_web_manifest_identity|sha256=$current_web_manifest" \
     "$api_evidence" \
     "$media_evidence" \
     "$web_evidence" \
