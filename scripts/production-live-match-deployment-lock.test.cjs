@@ -56,7 +56,7 @@ test("routine deploy warns without taking the activation advisory lock", () => {
   );
   assert.match(
     deploy,
-    /verify_production_activation_boundary\(\) \{\s+if \[ "\$MODE" = "legacy-cutover" \]; then\s+verify_production_live_match_quiescence/,
+    /verify_production_activation_boundary\(\) \{[\s\S]*?verify-production-retired-widget-compatibility\.sh\s+fi\s+if \[ "\$MODE" = "legacy-cutover" \]; then\s+verify_production_live_match_quiescence/,
   );
   assert.doesNotMatch(
     deploy,

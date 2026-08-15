@@ -1486,6 +1486,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "legacy-cutover-resume-interrupted-verified-backup",
       "legacy-cutover-resume-interrupted-candidate",
       "legacy-cutover-resume-transition-candidate",
+      "failed-candidate-builder-cache-release",
       "failed-candidate-remove",
       "redis-capacity-transition",
       "proxy-address-transition",

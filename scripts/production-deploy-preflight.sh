@@ -21,10 +21,11 @@ ALLOW_LOW_DISK_BACKUP_RELEASE=0
 ALLOW_LOW_DISK_BACKUP_RELEASE_CURRENT=0
 ALLOW_LOW_DISK_BACKUP_INVENTORY=0
 ALLOW_LOW_DISK_SOURCE_RELEASE=0
+ALLOW_LOW_DISK_BUILDER_CACHE_RELEASE=0
 
 usage() {
   cat <<'EOF'
-Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery | --allow-cutover-failed-candidate | --allow-cutover-proxy-collision | --allow-low-disk-backup-release | --allow-low-disk-backup-release-current | --allow-low-disk-backup-inventory | --allow-low-disk-source-release]
+Usage: production-deploy-preflight.sh [--skip-health | --allow-web-recovery | --allow-read-only-legacy-backup | --allow-legacy-cutover-stopped | --allow-legacy-cutover-interrupted | --allow-cutover-stopped | --allow-cutover-interrupted | --allow-cutover-transition | --allow-cutover-dependency-recovery | --allow-cutover-failed-candidate | --allow-cutover-proxy-collision | --allow-low-disk-backup-release | --allow-low-disk-backup-release-current | --allow-low-disk-backup-inventory | --allow-low-disk-source-release | --allow-low-disk-builder-cache-release]
 
 Read-only production deployment gate. It requires at least 30 GiB free by
 default and verifies existing containers in the production Compose project.
@@ -121,6 +122,12 @@ while [ "$#" -gt 0 ]; do
       # waives only the disk threshold adjacent to that source-only deletion.
       ALLOW_LOW_DISK_SOURCE_RELEASE=1
       ;;
+    --allow-low-disk-builder-cache-release)
+      # This exception is read-only. It is accepted only below the ordinary
+      # threshold and retains the normal environment, volume, and healthy
+      # service checks adjacent to the candidate-bound BuildKit-only wrapper.
+      ALLOW_LOW_DISK_BUILDER_CACHE_RELEASE=1
+      ;;
     --allow-stopped-idp-maintenance)
       printf '%s\n' \
         'DEPLOYMENT BLOCKED: IDP MUTATION PREFLIGHT MODE IS UNAVAILABLE' \
@@ -184,7 +191,8 @@ if [ "$ALLOW_LOW_DISK_BACKUP_INVENTORY" -eq 1 ] && \
   { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || \
     [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ] || [ "$cutover_mode_count" -ne 0 ] || \
     [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -eq 1 ] || \
-    [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -eq 1 ]; }; then
+    [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -eq 1 ] || \
+    [ "$ALLOW_LOW_DISK_BUILDER_CACHE_RELEASE" -eq 1 ]; }; then
   block "INCOMPATIBLE PREFLIGHT MODES" \
     "--allow-low-disk-backup-inventory must be the only preflight exception."
 fi
@@ -193,9 +201,20 @@ if [ "$ALLOW_LOW_DISK_BACKUP_RELEASE_CURRENT" -eq 1 ] && \
     [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ] || [ "$cutover_mode_count" -ne 0 ] || \
     [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -eq 1 ] || \
     [ "$ALLOW_LOW_DISK_BACKUP_INVENTORY" -eq 1 ] || \
-    [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -eq 1 ]; }; then
+    [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -eq 1 ] || \
+    [ "$ALLOW_LOW_DISK_BUILDER_CACHE_RELEASE" -eq 1 ]; }; then
   block "INCOMPATIBLE PREFLIGHT MODES" \
     "--allow-low-disk-backup-release-current must be the only preflight exception."
+fi
+if [ "$ALLOW_LOW_DISK_BUILDER_CACHE_RELEASE" -eq 1 ] && \
+  { [ "$SKIP_HEALTH" -eq 1 ] || [ "$ALLOW_WEB_RECOVERY" -eq 1 ] || \
+    [ "$ALLOW_READ_ONLY_LEGACY_BACKUP" -eq 1 ] || [ "$cutover_mode_count" -ne 0 ] || \
+    [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -eq 1 ] || \
+    [ "$ALLOW_LOW_DISK_BACKUP_RELEASE_CURRENT" -eq 1 ] || \
+    [ "$ALLOW_LOW_DISK_BACKUP_INVENTORY" -eq 1 ] || \
+    [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -eq 1 ]; }; then
+  block "INCOMPATIBLE PREFLIGHT MODES" \
+    "--allow-low-disk-builder-cache-release must be the only preflight exception."
 fi
 if [ "$cutover_mode_count" -gt 1 ] || \
   { [ "$cutover_mode_count" -eq 1 ] && \
@@ -264,7 +283,8 @@ if [ "$available_kib" -lt "$required_kib" ] && \
   [ "$ALLOW_LOW_DISK_BACKUP_RELEASE" -ne 1 ] && \
   [ "$ALLOW_LOW_DISK_BACKUP_RELEASE_CURRENT" -ne 1 ] && \
   [ "$ALLOW_LOW_DISK_BACKUP_INVENTORY" -ne 1 ] && \
-  [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -ne 1 ]; then
+  [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -ne 1 ] && \
+  [ "$ALLOW_LOW_DISK_BUILDER_CACHE_RELEASE" -ne 1 ]; then
   block "LOW DISK SPACE" \
     "Available: ${available_gib} GiB" \
     "Required:  ${MIN_FREE_GIB} GiB" \
@@ -285,6 +305,13 @@ fi
 if [ "$available_kib" -lt "$required_kib" ] && \
   [ "$ALLOW_LOW_DISK_SOURCE_RELEASE" -eq 1 ]; then
   printf '[deploy-preflight] low_disk_source_release=pass deployment_remains_blocked=true\n'
+fi
+if [ "$ALLOW_LOW_DISK_BUILDER_CACHE_RELEASE" -eq 1 ]; then
+  if [ "$available_kib" -ge "$required_kib" ]; then
+    block "BUILDER CACHE RELEASE IS NOT REQUIRED" \
+      "The one-time wrapper is valid only while free space is below ${MIN_FREE_GIB} GiB."
+  fi
+  printf '[deploy-preflight] low_disk_builder_cache_release=pass deployment_remains_blocked=true\n'
 fi
 
 if ! command -v docker >/dev/null 2>&1; then

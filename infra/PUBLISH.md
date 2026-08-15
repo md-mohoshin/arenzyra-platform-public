@@ -298,30 +298,33 @@ The commands below show the reviewed direct-host profile. Replace every commit
 placeholder with a full 40-hex commit and use a new release ID. The `current`
 values are the exact clean Root/API/Web heads already installed under
 `/opt/arenzyra`, not merely abbreviated release-pointer values. The successful
-`source-20260815-widget-latency-02` activation installed Root
-`5d460d8a72570c711c3850b037bc546d908b6c54`, API
-`d4c26bf4a0dfc0c11dd0af839439488fa18be089`, and Web
+`source-20260815-widget-latency-03` activation installed Root
+`38ef097f5a542fa9685cd867001e337a884c3d0f`, API
+`88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`; the successor descriptor must use
 those exact current values. Do not substitute the separate deployed Web release
 pointer `38cca5de4670ca123a4004e9fd6dfec6ccb48bcb`; it is not the current Web
 source-checkout head. No credential or application secret is accepted by this
 workflow.
 The failed local `source-20260815-widget-latency-01` package remains preserved
-as evidence and must not be deleted or reused. The successfully activated
-`source-20260815-widget-latency-02` release and its incoming, staging, archive,
-and source evidence also remain preserved and must not be reused. This reviewed
+as evidence and must not be deleted or reused. The superseded
+`source-20260815-widget-latency-02` incoming, staging, archive, and prior-source
+copies were already verified and deleted through the reviewed source-retention
+command; that retired ID must never be reused. The successfully activated
+`source-20260815-widget-latency-03` release is the current source assembly;
+preserve its incoming, staging, archive, and source evidence. This reviewed
 successor uses the next unique release ID below.
 
 ```powershell
-$sourceRelease = 'source-20260815-widget-latency-03'
+$sourceRelease = 'source-20260815-widget-latency-04'
 $sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
 $sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
 $targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
 $targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
 $targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
 
-$currentRoot = '5d460d8a72570c711c3850b037bc546d908b6c54'
-$currentApi = 'd4c26bf4a0dfc0c11dd0af839439488fa18be089'
+$currentRoot = '38ef097f5a542fa9685cd867001e337a884c3d0f'
+$currentApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
 $currentWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 $targetRoot = '<40-hex-reviewed-target-root>'
 $targetApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
@@ -778,6 +781,66 @@ The fresh-backup form runs the same dependency-recovery preflight before the
 read-only PostgreSQL dump and volume archives, requires immutable off-site
 upload verification, and only then recreates Redis and rejoins the same fenced
 cutover. It does not start an application writer or remove a named volume.
+
+### One-time failed-candidate BuildKit cache release
+
+The failed immutable candidate
+`git-20260815-113203955-8da6acb623a6` was built from Root
+`38ef097f5a542fa9685cd867001e337a884c3d0f`, API
+`88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
+`3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`. After activating the fresh
+`source-20260815-widget-latency-04` source release above and redefining
+`production_entry` with that new Root plus the same exact API/Web commits, the
+only reviewed low-disk release for this candidate is:
+
+```bash
+production_entry failed-candidate-builder-cache-release
+```
+
+This command accepts no arguments and is not a general cache-maintenance
+interface. The dispatcher acquires descriptor 8, repeats the exact clean
+Root/API/Web assembly verification under that lock, and retains it through all
+remaining checks. The wrapper requires the new Root to be the direct reviewed
+successor of `38ef097...`, with exact API `88efdad...` and Web `3d2cca1...`.
+The prior read-only inventory observed
+`CURRENT=git-20260814-192205642-e04672c95be2` and a healthy seven-service
+runtime after both stopped-before-recreate build attempts. That observation is
+context only: the fresh under-lock manifest, label, image-ID, and topology
+checks below are authoritative and fail closed on any difference. `CURRENT` is
+also hard-bound to that exact release ID, so any later successful deployment
+permanently disables this one-time command.
+
+Before any mutation, it requires root free space to be strictly below 30 GiB
+while running the otherwise ordinary production environment, data-volume, and
+healthy-service preflight. It then proves all of the following twice before
+the cache command:
+
+- the root-owned `0600`, single-link archived candidate metadata has the exact
+  candidate ID and Root/API/Web provenance above;
+- the candidate API, Web, and media manifests are root-owned `0600`,
+  single-link files, their immutable image IDs still exist, and fresh Docker
+  image inspection regenerates each archived manifest byte-for-byte;
+- `CURRENT`, its archived release metadata and all four current application
+  image manifests remain exact;
+- the production environment identity and digest are unchanged; and
+- the Compose project contains exactly one healthy, running, non-restarting
+  proxy, PostgreSQL, Redis, API, media, Web, and Discord container. Current
+  application container image IDs and release labels must match `CURRENT`, and
+  container IDs, dependency images, restart policies, and restart counts are
+  included in the drift fingerprint.
+
+The one and only mutating command is `docker builder prune -af` with an
+explicit `0B` reserve. Reviewed Docker help detection selects
+`--reserved-space 0B`, or the older equivalent `--keep-storage 0B`; it rejects
+`--max-used-space` and every Docker version exposing neither reserve-floor
+flag. It does not prune or otherwise change images, containers, volumes,
+networks, backups, logs, source, release metadata, databases, or environment
+files. After the command, candidate image inspection and the complete current
+source/environment/release/runtime fingerprint must remain byte-for-byte
+equivalent. Finally, free space must be at least 30 GiB and the ordinary
+no-exception production preflight must pass. If the cache command succeeds but
+30 GiB is not reached, the wrapper reports that the builder cache was already
+pruned and leaves deployment blocked; it does not try a broader cleanup.
 
 If an immutable candidate reaches the API and media startup step but the API
 remains non-ready before web, proxy, or Discord starts, first remove only the

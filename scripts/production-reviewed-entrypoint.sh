@@ -117,6 +117,18 @@ case "$command_id" in
       --legacy-cutover-resume-transition \
       --reuse-verified-backup "$2" --reuse-candidate-release "$1"
     ;;
+  failed-candidate-builder-cache-release)
+    [ "$#" -eq 0 ] || \
+      block "failed-candidate-builder-cache-release accepts no arguments."
+    source scripts/acquire-production-deploy-lock.sh
+    production_verify_lock_descriptor || \
+      block "failed-candidate-builder-cache-release did not inherit the reviewed deployment lock."
+    # Repeat the exact clean source assembly only after descriptor 8 is held,
+    # then retain that same descriptor through every before/after attestation.
+    verify_repository ROOT "$EXPECTED_ROOT" ARENZYRA_REVIEWED_ROOT_COMMIT
+    require_nested_assembly
+    exec /bin/bash scripts/release-production-failed-candidate-builder-cache.sh
+    ;;
   failed-candidate-remove)
     [ "$#" -eq 1 ] || block "failed-candidate-remove requires one release ID."
     require_nested_assembly

@@ -30,7 +30,7 @@ test("automatic capacity preparation runs only for build-producing routine modes
   const deploy = read("scripts/deploy-production.sh");
   assert.match(
     deploy,
-    /if \[ "\$MODE" = "full" \] \|\| \[ "\$MODE" = "discord-bot" \] \|\| \\\s+\[ "\$MODE" = "api-recovery" \] \|\| \[ "\$MODE" = "web-recovery" \]; then\s+ARENZYRA_DEPLOY_LOCK_INHERITED=1 \\\s+bash scripts\/prepare-production-deploy-capacity\.sh/,
+    /if \[ "\$MODE" = "full" \] \|\| \[ "\$MODE" = "discord-bot" \] \|\| \\\s+\[ "\$MODE" = "api-recovery" \] \|\| \[ "\$MODE" = "web-recovery" \]; then\s+verify_production_activation_boundary\s+ARENZYRA_DEPLOY_LOCK_INHERITED=1 \\\s+bash scripts\/prepare-production-deploy-capacity\.sh/,
   );
   const preparation = deploy.indexOf(
     "bash scripts/prepare-production-deploy-capacity.sh",
