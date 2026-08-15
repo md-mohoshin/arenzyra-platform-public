@@ -7,7 +7,7 @@ export PATH="$SAFE_PATH"
 EXPECTED_ROOT="/opt/arenzyra"
 RELEASE_ROOT="/opt/arenzyra-release-metadata"
 PUBLISH_ENV="$EXPECTED_ROOT/infra/.env.publish"
-EXPECTED_PREVIOUS_ROOT="d6390f2abb37f87e99988c49db31216c6187ffe1"
+EXPECTED_PREVIOUS_ROOT="e082abb1d69a2bf35f8e24c9a072b87d6742d1a8"
 EXPECTED_API="88efdad94d65c09c6d3bd73e4b874db915629859"
 EXPECTED_WEB="3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"
 EXPECTED_CURRENT_RELEASE="git-20260814-192205642-e04672c95be2"
@@ -131,7 +131,9 @@ verify_archive_file() {
 }
 
 verify_release_environment() {
-  local release_id="$1" file="$RELEASE_ROOT/$release_id.env"
+  local release_id file
+  release_id="$1"
+  file="$RELEASE_ROOT/$release_id.env"
   verify_archive_file "$file" "$release_id.env"
   "${sanitized[@]}" node scripts/validate-publish-release-env.cjs \
     --file "$file" --expected-release "$release_id" >/dev/null 2>&1 || \
@@ -148,9 +150,12 @@ read_release_value() {
 }
 
 pointer_snapshot() {
-  local name="$1" expected_release="${2:-}" pointer="$RELEASE_ROOT/$name"
+  local name expected_release pointer
   local pointer_identity pointer_hash release_id env_identity env_hash
   local -a lines=()
+  name="$1"
+  expected_release="${2:-}"
+  pointer="$RELEASE_ROOT/$name"
   if [ ! -e "$pointer" ] && [ ! -L "$pointer" ]; then
     [ "$name" = PREVIOUS ] || block "the CURRENT pointer is missing."
     printf 'POINTER name=PREVIOUS state=absent\n'
@@ -200,9 +205,12 @@ verify_publish_environment() {
 }
 
 manifest_snapshot() {
-  local release_id="$1" service="$2" env_file="$RELEASE_ROOT/$release_id.env"
-  local manifest="$RELEASE_ROOT/$release_id.${service}-image.json"
+  local release_id service env_file manifest
   local identity_before identity_after hash_before hash_after image_id image_available=0
+  release_id="$1"
+  service="$2"
+  env_file="$RELEASE_ROOT/$release_id.env"
+  manifest="$RELEASE_ROOT/$release_id.${service}-image.json"
   LAST_MANIFEST_PRESENT=0
   LAST_MANIFEST_READY=0
   if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then

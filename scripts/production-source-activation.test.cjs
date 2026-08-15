@@ -299,10 +299,14 @@ test("runbook documents first-use trust, continuous lock, inventories, and prese
   );
   assert.match(
     publishGuide,
-    /\$sourceRelease = 'source-20260815-widget-latency-07'/,
+    /successfully\s+activated\s+`source-20260815-widget-latency-07`[\s\S]*preserve its incoming, staging, archive, and source/,
+  );
+  assert.match(
+    publishGuide,
+    /\$sourceRelease = 'source-20260815-widget-latency-08'/,
   );
   for (const [variable, commit] of [
-    ["currentRoot", "d6390f2abb37f87e99988c49db31216c6187ffe1"],
+    ["currentRoot", "e082abb1d69a2bf35f8e24c9a072b87d6742d1a8"],
     ["currentApi", "88efdad94d65c09c6d3bd73e4b874db915629859"],
     ["currentWeb", "3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"],
     ["targetApi", "88efdad94d65c09c6d3bd73e4b874db915629859"],

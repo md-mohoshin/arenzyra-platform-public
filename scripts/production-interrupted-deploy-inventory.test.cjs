@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -15,7 +16,7 @@ const publishGuide = read("infra/PUBLISH.md");
 
 test("interrupted deploy inventory is one-time, source-bound, and window-bound", () => {
   for (const expected of [
-    'EXPECTED_PREVIOUS_ROOT="d6390f2abb37f87e99988c49db31216c6187ffe1"',
+    'EXPECTED_PREVIOUS_ROOT="e082abb1d69a2bf35f8e24c9a072b87d6742d1a8"',
     'EXPECTED_API="88efdad94d65c09c6d3bd73e4b874db915629859"',
     'EXPECTED_WEB="3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4"',
     'EXPECTED_CURRENT_RELEASE="git-20260814-192205642-e04672c95be2"',
@@ -38,6 +39,98 @@ test("interrupted deploy inventory is one-time, source-bound, and window-bound",
     inventory,
     /root_parent" = "\$EXPECTED_PREVIOUS_ROOT"[\s\S]*api_head" = "\$EXPECTED_API"[\s\S]*web_head" = "\$EXPECTED_WEB"/,
   );
+});
+
+test("strict Bash executes exact release, pointer, and manifest function bodies", () => {
+  const functionBody = (name, nextName) => {
+    const start = inventory.indexOf(`${name}() {`);
+    const end = inventory.indexOf(`\n${nextName}() {`, start);
+    assert.ok(start >= 0 && end > start, `${name} function body is missing`);
+    return inventory.slice(start, end).trimEnd();
+  };
+  const bash = process.platform === "win32"
+    ? path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe")
+    : "/bin/bash";
+  assert.ok(fs.existsSync(bash), `reviewed Bash executable is missing: ${bash}`);
+
+  const releaseId = "git-20260815-131234567-abcdefabcdef";
+  const imageId = `sha256:${"f".repeat(64)}`;
+  const harness = [
+    "set -Eeuo pipefail",
+    'RELEASE_ROOT="$(mktemp -d)"',
+    "trap 'rm -rf -- \"$RELEASE_ROOT\"' EXIT",
+    'LAST_FILE_IDENTITY=""',
+    'LAST_FILE_HASH=""',
+    "LAST_MANIFEST_PRESENT=0",
+    "LAST_MANIFEST_READY=0",
+    "block() { printf 'BLOCK: %s\\n' \"$1\" >&2; exit 75; }",
+    "verify_archive_file() {",
+    '  [ "$1" = "$RELEASE_ROOT/$2" ] || block "fixture archive path mismatch"',
+    "  LAST_FILE_IDENTITY='1:2:0:0:600:1:1:1'",
+    `  LAST_FILE_HASH='${"a".repeat(64)}'`,
+    "}",
+    "fake_sanitized() {",
+    '  if [[ " $* " == *" --print-image-id "* ]]; then',
+    `    printf '%s\\n' '${imageId}'`,
+    "  fi",
+    "  return 0",
+    "}",
+    "sanitized=(fake_sanitized)",
+    "docker() { return 1; }",
+    functionBody("verify_release_environment", "read_release_value"),
+    functionBody("pointer_snapshot", "verify_publish_environment"),
+    functionBody("manifest_snapshot", "candidate_evidence"),
+    `release_id='${releaseId}'`,
+    'printf \'%s\\n\' "$release_id" > "$RELEASE_ROOT/CURRENT"',
+    'printf \'%s\\n\' "$release_id" > "$RELEASE_ROOT/PREVIOUS"',
+    'verify_release_environment "$release_id"',
+    'current_output="$(pointer_snapshot CURRENT "$release_id")"',
+    '[[ "$current_output" == *"name=CURRENT state=present release=$release_id"* ]]',
+    'previous_output="$(pointer_snapshot PREVIOUS)"',
+    '[[ "$previous_output" == *"name=PREVIOUS state=present release=$release_id"* ]]',
+    ': > "$RELEASE_ROOT/$release_id.api-image.json"',
+    'present_output="$(manifest_snapshot "$release_id" api)"',
+    '[[ "$present_output" == *"service=api state=present"*"available=0 regenerated=0"* ]]',
+    'absent_output="$(manifest_snapshot "$release_id" web)"',
+    '[[ "$absent_output" == *"service=web state=absent"* ]]',
+    "printf 'STRICT_LOCAL_FIXTURE_OK\\n'",
+    "",
+  ].join("\n");
+  const result = spawnSync(bash, ["--noprofile", "--norc", "-s"], {
+    encoding: "utf8",
+    env: { ...process.env, BASH_ENV: "", ENV: "" },
+    input: harness,
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.equal(
+    result.status,
+    0,
+    `strict Bash fixture failed:\nstdout=${result.stdout}\nstderr=${result.stderr}`,
+  );
+  assert.equal(result.stdout, "STRICT_LOCAL_FIXTURE_OK\n");
+  assert.equal(result.stderr, "");
+});
+
+test("local declarations never expand a variable assigned earlier in that command", () => {
+  const assignment = /\b([A-Za-z_][A-Za-z0-9_]*)=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s]+)/g;
+  for (const [index, line] of inventory.split("\n").entries()) {
+    if (!/^\s*local\b/.test(line)) continue;
+    const earlier = [];
+    for (const match of line.matchAll(assignment)) {
+      const [, name] = match;
+      const expression = match[0].slice(match[0].indexOf("=") + 1);
+      for (const priorName of earlier) {
+        const dependent = new RegExp(`\\$(?:${priorName}\\b|\\{${priorName}(?:[}:]))`);
+        assert.doesNotMatch(
+          expression,
+          dependent,
+          `dependent local expansion on line ${index + 1}: ${line}`,
+        );
+      }
+      earlier.push(name);
+    }
+  }
 });
 
 test("dispatcher acquires the shared lock before the nested read-only inventory", () => {

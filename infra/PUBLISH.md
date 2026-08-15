@@ -298,8 +298,8 @@ The commands below show the reviewed direct-host profile. Replace every commit
 placeholder with a full 40-hex commit and use a new release ID. The `current`
 values are the exact clean Root/API/Web heads already installed under
 `/opt/arenzyra`, not merely abbreviated release-pointer values. The successful
-`source-20260815-widget-latency-06` activation installed Root
-`d6390f2abb37f87e99988c49db31216c6187ffe1`, API
+`source-20260815-widget-latency-07` activation installed Root
+`e082abb1d69a2bf35f8e24c9a072b87d6742d1a8`, API
 `88efdad94d65c09c6d3bd73e4b874db915629859`, and Web
 `3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4`; the successor descriptor must use
 those exact current values. Do not substitute the separate deployed Web release
@@ -316,19 +316,21 @@ command; that retired ID must never be reused. The prior successful
 incoming, staging, archive, and source evidence. The successfully activated
 `source-20260815-widget-latency-05` release also remains preserved; preserve its
 incoming, staging, archive, and source evidence. The successfully activated
-`source-20260815-widget-latency-06` release is the current source assembly;
+`source-20260815-widget-latency-06` release also remains preserved; preserve its
+incoming, staging, archive, and source evidence. The successfully activated
+`source-20260815-widget-latency-07` release is the current source assembly;
 preserve its incoming, staging, archive, and source evidence. This reviewed
 successor uses the next unique release ID below.
 
 ```powershell
-$sourceRelease = 'source-20260815-widget-latency-07'
+$sourceRelease = 'source-20260815-widget-latency-08'
 $sourceBundle = "C:\Arenzyra\deploy-artifacts\$sourceRelease"
 $sourcePublisher = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815\scripts\publish-production-reviewed-source.ps1'
 $targetRootRepository = 'C:\Arenzyra\.codex-worktrees\root-widget-latency-release-20260815'
 $targetApiRepository = 'C:\Arenzyra\.codex-worktrees\api-live-widget-latency-release-20260815'
 $targetWebRepository = 'C:\Arenzyra\.codex-worktrees\web-live-widget-latency-release-20260815'
 
-$currentRoot = 'd6390f2abb37f87e99988c49db31216c6187ffe1'
+$currentRoot = 'e082abb1d69a2bf35f8e24c9a072b87d6742d1a8'
 $currentApi = '88efdad94d65c09c6d3bd73e4b874db915629859'
 $currentWeb = '3d2cca1dd4267a7cb0e8b54a98ae4fbbee1289d4'
 $targetRoot = '<40-hex-reviewed-target-root>'
@@ -881,7 +883,16 @@ blindly rerun `production_entry deploy`: a fresh run creates a new release,
 may rebuild images and consume more disk, and can repeat later deployment
 phases.
 
-After activating `source-20260815-widget-latency-07` from the exact source
+The first `source-20260815-widget-latency-07` diagnostic invocation failed
+closed before reading `CURRENT`: under Bash `set -u`, one same-command `local`
+declaration expanded a dependent variable before that local assignment became
+visible. It acquired and released only the reviewed lock and attempted no
+production mutation. The source-08 successor splits every affected declaration
+from its ordered assignments and carries a real strict-mode Bash regression for
+the current/previous pointer, release-environment, and present/absent manifest
+paths.
+
+After activating `source-20260815-widget-latency-08` from the exact source
 descriptor above and redefining `production_entry` with its new Root plus API
 `88efdad...` and Web `3d2cca1...`, run only this no-argument diagnostic:
 
@@ -891,8 +902,10 @@ production_entry interrupted-deploy-inventory
 
 The dispatcher acquires descriptor 8 before repeating the exact clean nested
 assembly check and retains it throughout the inventory. The command is bound
-to the direct Root successor of `d6390f2...`, exact API/Web commits, the exact
-UTC candidate window from `2026-08-15T13:00:00Z` inclusive to
+to the direct Root successor of `e082abb...`, exact API/Web commits, the exact
+interrupted candidate provenance Root `d6390f2...`/API `88efdad...`/Web
+`3d2cca1...`, and the exact UTC candidate window from
+`2026-08-15T13:00:00Z` inclusive to
 `2026-08-15T14:00:00Z` exclusive, the unchanged exact `CURRENT`, and the four
 observed pre-deploy image IDs. It fails closed if the archive contains more
 than 4,096 release environments, more than 32 releases in that hour, more than
