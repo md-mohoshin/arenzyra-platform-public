@@ -15,12 +15,30 @@ function Assert-Sha256([string]$Value, [string]$Label) {
   }
 }
 
+function Test-FullyQualifiedWindowsPath([string]$PathValue) {
+  if ([string]::IsNullOrWhiteSpace($PathValue)) {
+    return $false
+  }
+  $isSeparator = {
+    param([char]$Character)
+    return $Character -eq [IO.Path]::DirectorySeparatorChar -or
+      $Character -eq [IO.Path]::AltDirectorySeparatorChar
+  }
+  if ($PathValue.Length -ge 2 -and (& $isSeparator $PathValue[0])) {
+    return (& $isSeparator $PathValue[1])
+  }
+  return $PathValue.Length -ge 3 -and
+    [char]::IsLetter($PathValue[0]) -and
+    $PathValue[1] -eq [IO.Path]::VolumeSeparatorChar -and
+    (& $isSeparator $PathValue[2])
+}
+
 function Assert-TrustedFile(
   [string]$FilePath,
   [string]$ExpectedSha256,
   [string]$Label
 ) {
-  if (-not [IO.Path]::IsPathFullyQualified($FilePath)) {
+  if (-not (Test-FullyQualifiedWindowsPath $FilePath)) {
     throw "$Label path must be absolute."
   }
   Assert-Sha256 $ExpectedSha256 "$Label hash"
@@ -170,13 +188,13 @@ if ($gitVersion -ne $windowsTools.git.version -or
   throw "Installed launcher tool versions differ from the reviewed policy."
 }
 
-if (-not [IO.Path]::IsPathFullyQualified($sourceRoot) -or
+if (-not (Test-FullyQualifiedWindowsPath $sourceRoot) -or
     -not (Test-Path -LiteralPath (Join-Path $sourceRoot ".git"))) {
   throw "Launcher release source root must be an absolute Git checkout."
 }
 if ($releaseAction -eq "stage" -and
     ([string]::IsNullOrWhiteSpace($stageRoot) -or
-     -not [IO.Path]::IsPathFullyQualified($stageRoot))) {
+     -not (Test-FullyQualifiedWindowsPath $stageRoot))) {
   throw "ARENZYRA_LAUNCHER_STAGING_ROOT must be absolute for staging."
 }
 $buildParent = Join-Path $env:ProgramData "Arenzyra\launcher-release-builds"

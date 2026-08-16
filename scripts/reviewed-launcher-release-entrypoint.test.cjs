@@ -62,6 +62,8 @@ test("reviewed Windows dispatcher binds clean checkout and pinned toolchain", ()
   assert.ok(detachedIndex < npmCiIndex);
   assert.ok(npmCiIndex < workerIndex);
   assert.match(source, /Get-ReviewedTreeDigest/);
+  assert.match(source, /Test-FullyQualifiedWindowsPath/);
+  assert.doesNotMatch(source, /\[IO\.Path\]::IsPathFullyQualified/);
   assert.match(source, /GIT_NO_REPLACE_OBJECTS/);
   assert.match(source, /fsck.*--full/s);
   assert.match(source, /"CSC_LINK".*"CSC_NAME".*"WIN_CSC_LINK"/s);
