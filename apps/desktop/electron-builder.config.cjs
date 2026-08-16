@@ -9,9 +9,14 @@ const {
 const {
   collectLocalDependencyFileSets,
 } = require("./release/local-dependency-file-policy.cjs");
+const {
+  listSharpNativeRuntimeExtraResources,
+} = require("./release/sharp-native-runtime-policy.cjs");
 
 const electronRuntimeFiles = listPackagedElectronRuntimeFiles();
 const localDependencyFileSets = collectLocalDependencyFileSets();
+const sharpNativeRuntimeExtraResources =
+  listSharpNativeRuntimeExtraResources();
 
 function assertProductionPackagingReady() {
   assertReleasePackagingReady();
@@ -21,11 +26,7 @@ module.exports = {
   appId: "com.arenzyra.observerlauncher",
   productName: "Arenzyra Observer Launcher",
   asar: true,
-  asarUnpack: [
-    "**/*.node",
-    "node_modules/sharp/**/*",
-    "node_modules/@img/**/*",
-  ],
+  asarUnpack: ["**/*.node"],
   disableSanityCheckAsar: false,
   electronFuses: {
     // The managed connector still requires ELECTRON_RUN_AS_NODE. Every other
@@ -62,6 +63,7 @@ module.exports = {
     ...localDependencyFileSets,
   ],
   extraResources: [
+    ...sharpNativeRuntimeExtraResources,
     { from: "../../ob.js", to: "connectors/ob.js" },
     {
       from: "electron/direct-observer-transport-payload.cjs",

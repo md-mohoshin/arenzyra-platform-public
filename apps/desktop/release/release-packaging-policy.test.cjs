@@ -18,6 +18,12 @@ const {
   DEFAULT_POLICY_PATH,
   assertReleasePackagingReady,
 } = require("./release-packaging-policy.cjs");
+const {
+  REQUIRED_SHARP_NATIVE_DLL_RELATIVE_PATHS,
+  REQUIRED_SHARP_NATIVE_RUNTIME_RELATIVE_PATHS,
+  listSharpNativeRuntimeExtraResources,
+  listSharpNativeRuntimeSourceFiles,
+} = require("./sharp-native-runtime-policy.cjs");
 
 function withCandidateArgv(callback) {
   const originalArgv = process.argv;
@@ -90,11 +96,25 @@ test("production packaging preserves root ob.js while the local candidate remain
 
 test("representative candidate config is ASAR-bound and non-publishable", () => {
   assert.equal(candidateConfig.asar, true);
-  assert.deepEqual(candidateConfig.asarUnpack, [
-    "**/*.node",
-    "node_modules/sharp/**/*",
-    "node_modules/@img/**/*",
-  ]);
+  assert.deepEqual(candidateConfig.asarUnpack, ["**/*.node"]);
+  assert.deepEqual(
+    listSharpNativeRuntimeSourceFiles().map((entry) => entry.relativePath),
+    REQUIRED_SHARP_NATIVE_RUNTIME_RELATIVE_PATHS,
+  );
+  const sharpNativeResources = listSharpNativeRuntimeExtraResources();
+  assert.deepEqual(
+    sharpNativeResources.map((entry) =>
+      entry.to.replace(
+        "app.asar.unpacked/node_modules/@img/sharp-win32-x64/",
+        "",
+      ),
+    ),
+    REQUIRED_SHARP_NATIVE_DLL_RELATIVE_PATHS,
+  );
+  assert.deepEqual(
+    candidateConfig.extraResources.slice(0, sharpNativeResources.length),
+    sharpNativeResources,
+  );
   assert.equal(candidateConfig.disableSanityCheckAsar, false);
   assert.equal(candidateConfig.forceCodeSigning, false);
   assert.equal(candidateConfig.npmRebuild, undefined);

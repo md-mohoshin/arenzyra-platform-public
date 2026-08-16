@@ -20,11 +20,7 @@ module.exports = {
   // verifier development. Its output names and directory cannot satisfy the
   // release verifier's canonical artifact lookup.
   asar: true,
-  asarUnpack: [
-    "**/*.node",
-    "node_modules/sharp/**/*",
-    "node_modules/@img/**/*",
-  ],
+  asarUnpack: [...sharedConfig.asarUnpack],
   disableSanityCheckAsar: false,
   forceCodeSigning: false,
   electronDist: "node_modules/electron/dist",

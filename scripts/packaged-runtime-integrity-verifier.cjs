@@ -8,6 +8,10 @@ const { spawnSync } = require("node:child_process");
 const asar = require("@electron/asar");
 const { NtExecutable, NtExecutableResource } = require("resedit");
 const { SENTINEL, FuseState } = require("@electron/fuses/dist/constants");
+const {
+  REQUIRED_SHARP_NATIVE_RUNTIME_RELATIVE_PATHS,
+  SHARP_NATIVE_PACKAGE_DESTINATION,
+} = require("../apps/desktop/release/sharp-native-runtime-policy.cjs");
 
 const DEFAULT_POLICY_PATH = path.resolve(
   __dirname,
@@ -356,6 +360,39 @@ function verifyAsarFileIntegrity(asarPath) {
   };
 }
 
+function verifySharpNativeRuntime(asarInspection, archiveFiles) {
+  const verified = [];
+  for (const relativePath of REQUIRED_SHARP_NATIVE_RUNTIME_RELATIVE_PATHS) {
+    const packagedPath = `${SHARP_NATIVE_PACKAGE_DESTINATION}/${relativePath}`;
+    const asarEntry = asarInspection.dependencies.find(
+      (entry) => entry.path === packagedPath,
+    );
+    if (
+      !asarEntry ||
+      (relativePath.endsWith(".node") && asarEntry.unpacked !== true)
+    ) {
+      throw new Error(
+        `Sharp native module must be unpacked beside app.asar: ${packagedPath}.`,
+      );
+    }
+
+    const externalPath = `resources/app.asar.unpacked/${packagedPath}`;
+    const externalEntry = archiveFiles.get(externalPath.toLowerCase());
+    if (
+      !externalEntry ||
+      externalEntry.path !== externalPath ||
+      externalEntry.size !== asarEntry.size ||
+      externalEntry.sha256 !== asarEntry.sha256
+    ) {
+      throw new Error(
+        `Sharp native runtime is missing or differs outside app.asar: ${externalPath}.`,
+      );
+    }
+    verified.push(packagedPath);
+  }
+  return verified;
+}
+
 function readFuseWire(executablePath) {
   const bytes = fs.readFileSync(executablePath);
   const first = bytes.indexOf(SENTINEL);
@@ -527,6 +564,7 @@ function inspectPackagedArchive({
       ) {
         throw new Error("Packaged ASAR package identity does not match the reviewed desktop package.");
       }
+      verifySharpNativeRuntime(asarInspection, files);
       const fuses = readFuseWire(executable.filePath);
       const embedded = readEmbeddedAsarIntegrity(
         executable.filePath,
@@ -701,5 +739,6 @@ module.exports = {
   readPeSignatureBlob,
   verifyAsarFileIntegrity,
   verifyCompletePackagedRuntime,
+  verifySharpNativeRuntime,
   withExtractedArchive,
 };

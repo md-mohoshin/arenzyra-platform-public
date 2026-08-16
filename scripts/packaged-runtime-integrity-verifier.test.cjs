@@ -14,7 +14,12 @@ const {
   readFuseWire,
   readPeCertificateTable,
   readPeSignatureBlob,
+  verifySharpNativeRuntime,
 } = require("./packaged-runtime-integrity-verifier.cjs");
+const {
+  REQUIRED_SHARP_NATIVE_RUNTIME_RELATIVE_PATHS,
+  SHARP_NATIVE_PACKAGE_DESTINATION,
+} = require("../apps/desktop/release/sharp-native-runtime-policy.cjs");
 
 function archiveListing(entries) {
   return [
@@ -32,6 +37,52 @@ function archiveListing(entries) {
     ]),
   ].join("\n");
 }
+
+test("Sharp native runtime requires every DLL and node binary outside app.asar", () => {
+  const dependencies = REQUIRED_SHARP_NATIVE_RUNTIME_RELATIVE_PATHS.map(
+    (relativePath, index) => ({
+      path: `${SHARP_NATIVE_PACKAGE_DESTINATION}/${relativePath}`,
+      size: index + 1,
+      sha256: String(index + 1).repeat(64),
+      unpacked: true,
+    }),
+  );
+  const archiveFiles = new Map(
+    dependencies.map((entry) => {
+      const externalPath = `resources/app.asar.unpacked/${entry.path}`;
+      return [
+        externalPath.toLowerCase(),
+        {
+          path: externalPath,
+          size: entry.size,
+          sha256: entry.sha256,
+        },
+      ];
+    }),
+  );
+
+  assert.deepEqual(
+    verifySharpNativeRuntime({ dependencies }, archiveFiles),
+    dependencies.map((entry) => entry.path),
+  );
+
+  const packedDependencies = dependencies.map((entry) => ({
+    ...entry,
+    unpacked: entry.path.endsWith(".node") ? false : entry.unpacked,
+  }));
+  assert.throws(
+    () => verifySharpNativeRuntime({ dependencies: packedDependencies }, archiveFiles),
+    /native module must be unpacked beside app\.asar/,
+  );
+
+  archiveFiles.delete(
+    `resources/app.asar.unpacked/${dependencies[1].path}`.toLowerCase(),
+  );
+  assert.throws(
+    () => verifySharpNativeRuntime({ dependencies }, archiveFiles),
+    /missing or differs outside app\.asar/,
+  );
+});
 
 test("complete archive inventory parsing is exact and case-collision safe", () => {
   const entries = parseSevenZipListing(
