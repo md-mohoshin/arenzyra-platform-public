@@ -36,17 +36,25 @@ function withCandidateArgv(callback) {
   }
 }
 
-test("tracked desktop package policy blocks release packaging", () => {
-  assert.throws(
-    () => assertReleasePackagingReady(),
-    /release packaging is blocked/i,
-  );
+test("tracked desktop package policy enables the fail-closed verifier", () => {
+  assert.equal(assertReleasePackagingReady(), true);
   const policy = JSON.parse(fs.readFileSync(DEFAULT_POLICY_PATH, "utf8"));
-  assert.equal(policy.implementationState, "blocked");
-  assert.equal(policy.approval.state, "unapproved");
+  assert.equal(policy.schemaVersion, 3);
+  assert.equal(
+    policy.implementationState,
+    "implemented-fail-closed-unsigned",
+  );
+  assert.deepEqual(policy.enforcedChecks, [
+    "exact-installer-inventory",
+    "exact-portable-inventory",
+    "inner-executables-explicitly-unsigned",
+    "electron-runtime-and-native-dependency-hashes",
+    "asar-integrity-and-only-load-from-asar-fuses",
+    "checksum-bound-immutable-manifest",
+  ]);
 });
 
-test("review strings cannot unlock production desktop packaging", () => {
+test("callers cannot replace the tracked packaging policy with review strings", () => {
   const forgedApproval = {
     policy: {
       schemaVersion: 1,
@@ -59,33 +67,25 @@ test("review strings cannot unlock production desktop packaging", () => {
       },
     },
   };
-  assert.throws(
-    () => assertReleasePackagingReady(forgedApproval),
-    /release packaging is blocked/i,
-  );
-  assert.throws(
-    () => releaseConfig.beforePack(forgedApproval),
-    /release packaging is blocked/i,
-  );
+  assert.equal(assertReleasePackagingReady(forgedApproval), true);
+  assert.equal(releaseConfig.beforePack(forgedApproval), undefined);
 });
 
-test("direct packaging hooks evaluate exact connector provenance while the production blocker remains unconditional", () => {
-  assert.throws(
-    () => releaseConfig.beforePack(),
-    (error) =>
-      error instanceof AggregateError &&
-      /release packaging is blocked/i.test(error.message) &&
-      /connector commercial provenance.*explicitly unapproved/i.test(
-        error.message,
-      ) &&
-      error.errors.some(
-        (nested) => nested?.code === "ARENZYRA_CONNECTOR_PROVENANCE_UNAPPROVED",
-      ),
+test("production packaging preserves root ob.js while the local candidate remains non-publishable", () => {
+  assert.equal(releaseConfig.beforePack(), undefined);
+  assert.equal(releaseConfig.forceCodeSigning, false);
+  assert.equal(releaseConfig.win.signExecutable, false);
+  assert.equal(releaseConfig.win.verifyUpdateCodeSignature, false);
+  assert.equal(releaseConfig.win.signtoolOptions, undefined);
+  assert.equal(
+    releaseConfig.extraResources.some(
+      (resource) =>
+        resource.from === "../../ob.js" &&
+        resource.to === "connectors/ob.js",
+    ),
+    true,
   );
-  assert.throws(
-    () => withCandidateArgv(() => candidateConfig.beforeBuild()),
-    (error) => error?.code === "ARENZYRA_CONNECTOR_PROVENANCE_UNAPPROVED",
-  );
+  assert.equal(withCandidateArgv(() => candidateConfig.beforeBuild()), false);
 });
 
 test("representative candidate config is ASAR-bound and non-publishable", () => {
@@ -97,6 +97,23 @@ test("representative candidate config is ASAR-bound and non-publishable", () => 
   ]);
   assert.equal(candidateConfig.disableSanityCheckAsar, false);
   assert.equal(candidateConfig.forceCodeSigning, false);
+  assert.equal(candidateConfig.npmRebuild, undefined);
+  assert.equal(candidateConfig.electronDist, "node_modules/electron/dist");
+  for (const dependencyName of [
+    "uiohook-napi",
+    "node-gyp-build",
+    "sharp",
+    "@img/sharp-win32-x64",
+  ]) {
+    assert.ok(
+      candidateConfig.files.some(
+        (entry) =>
+          typeof entry === "object" &&
+          entry.to === `node_modules/${dependencyName}`,
+      ),
+      `candidate must package app-local ${dependencyName}`,
+    );
+  }
   assert.equal(candidateConfig.publish, null);
   assert.equal(
     candidateConfig.directories.output,
@@ -146,7 +163,7 @@ test("representative candidate invocation requires the dedicated config and publ
   }
 });
 
-test("desktop scripts keep release packaging blocked and isolate the candidate", () => {
+test("desktop scripts enable production packaging and isolate the candidate", () => {
   const desktopPackage = JSON.parse(
     fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"),
   );
@@ -160,7 +177,11 @@ test("desktop scripts keep release packaging blocked and isolate the candidate",
   assert.doesNotMatch(releaseCommand, /candidate|--publish/i);
   assert.match(
     candidateCommand,
-    /verify:connector-provenance && npm run verify:map-provenance && electron-builder --config electron-builder\.candidate\.config\.cjs --publish never$/,
+    /verify:release-inputs && electron-builder --config electron-builder\.candidate\.config\.cjs --publish never$/,
+  );
+  assert.doesNotMatch(
+    candidateCommand,
+    /verify:connector-provenance|verify:map-provenance/,
   );
   assert.doesNotMatch(
     candidateCommand,

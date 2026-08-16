@@ -1,20 +1,13 @@
 {
-  "schemaVersion": 1,
-  "implementationState": "blocked",
-  "approval": {
-    "state": "unapproved",
-    "reviewedAt": null,
-    "reviewedBy": null,
-    "reviewReference": null
-  },
-  "notes": "Publication remains blocked in source code until the application is ASAR-sealed with integrity/loading fuses and the verifier checks the exact complete NSIS and portable inventories, both inner launcher executable signatures, Electron runtime/native dependency hashes, and a signed immutable digest manifest against a representative real package. Approval strings in this file cannot unlock the production builder.",
-  "requiredEvidence": [
-    "representative-real-nsis-fixture",
+  "schemaVersion": 3,
+  "implementationState": "implemented-fail-closed-unsigned",
+  "notes": "The production package is intentionally unsigned. The post-build verifier enforces complete NSIS/portable inventories, per-file ASAR integrity, the PE-embedded ASAR header digest, reviewed Electron fuses, dependency hashes, an absent Authenticode certificate table on the outer installer, explicit NotSigned status for both inner executables, and checksum-bound immutable staging. The existing root ob.js connector is packaged unchanged and verified byte-for-byte against the reviewed source checkout.",
+  "enforcedChecks": [
     "exact-installer-inventory",
     "exact-portable-inventory",
-    "inner-executable-authenticode",
+    "inner-executables-explicitly-unsigned",
     "electron-runtime-and-native-dependency-hashes",
     "asar-integrity-and-only-load-from-asar-fuses",
-    "signed-immutable-manifest"
+    "checksum-bound-immutable-manifest"
   ]
 }

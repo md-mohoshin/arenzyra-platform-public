@@ -135,12 +135,15 @@ function validateVerifiedRelease(verified) {
   const portableZip = validatedArtifact(verified?.portableZip, "portable ZIP");
   const signing = verified?.installer?.signing;
   if (
-    signing?.status !== "verified" ||
-    signing?.authenticodeStatus !== "Valid" ||
-    !/^[a-f0-9]{64}$/i.test(String(signing?.certificateSha256 || "")) ||
-    !/^[a-f0-9]{64}$/i.test(String(signing?.trustPolicy?.sha256 || ""))
+    signing?.status !== "unsigned" ||
+    signing?.authenticodeStatus !== "NotSigned" ||
+    signing?.publisher !== null ||
+    signing?.certificateSha256 !== null ||
+    !/^[a-f0-9]{64}$/i.test(String(signing?.policy?.sha256 || "")) ||
+    signing?.policy?.releaseMode !== "unsigned" ||
+    !String(signing?.warning || "").trim()
   ) {
-    throw new Error("Verified installer signing metadata is incomplete.");
+    throw new Error("Verified unsigned-installer metadata is incomplete.");
   }
   const mapProvenance = verified?.mapProvenance;
   const mapAssetCount = Number(mapProvenance?.assetCount);
@@ -241,7 +244,7 @@ function buildPendingOperatorTemplate({ releaseId, version }) {
     requiredIndependentChecks: [
       "Upload the versioned artifacts and manifest to one immutable HTTPS release prefix.",
       "Download every remote object independently and compare its SHA-256 and byte size with manifest.json.",
-      "Re-verify the remote installer and portable executable Authenticode identities and timestamps.",
+      "Re-verify every remote SHA-256 and confirm the installer and portable executable remain explicitly unsigned.",
       "Confirm the immutable manifest, installer, and portable ZIP URLs are independently reachable.",
       "Only then construct and review the schemaVersion 1 server configuration documented by the web application.",
     ],
@@ -258,7 +261,7 @@ function pendingInstructions(releaseId) {
     "as ARENZYRA_LAUNCHER_RELEASE_JSON.",
     "",
     "Upload the versioned files to an immutable HTTPS prefix, independently download",
-    "and verify them against manifest.json, re-check Authenticode, and confirm public",
+    "and verify them against manifest.json, confirm the artifacts remain unsigned, and verify public",
     "reachability. Only after those checks should an operator construct the reviewed",
     "server-only runtime JSON described in apps/arenzyra-web/docs/launcher-release-downloads.md.",
     "",

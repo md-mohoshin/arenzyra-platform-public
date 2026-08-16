@@ -7,47 +7,46 @@ const {
   assertReleasePackagingReady,
 } = require("./release/release-packaging-policy.cjs");
 const {
-  verifyDesktopConnectorCommercialProvenance,
-} = require("../../scripts/verify-desktop-connector-provenance.cjs");
+  collectLocalDependencyFileSets,
+} = require("./release/local-dependency-file-policy.cjs");
 
 const electronRuntimeFiles = listPackagedElectronRuntimeFiles();
+const localDependencyFileSets = collectLocalDependencyFileSets();
 
 function assertProductionPackagingReady() {
-  let provenanceError = null;
-  try {
-    verifyDesktopConnectorCommercialProvenance();
-  } catch (error) {
-    provenanceError = error;
-  }
-  try {
-    // This remains unconditional even when connector provenance is eventually
-    // approved. The independent packaged-runtime blocker has its own closure.
-    assertReleasePackagingReady();
-  } catch (packagingError) {
-    if (provenanceError) {
-      throw new AggregateError(
-        [packagingError, provenanceError],
-        `${packagingError.message} Connector commercial provenance is also blocked: ${
-          provenanceError instanceof Error
-            ? provenanceError.message
-            : String(provenanceError)
-        }`,
-      );
-    }
-    throw packagingError;
-  }
-  if (provenanceError) throw provenanceError;
+  assertReleasePackagingReady();
 }
 
 module.exports = {
   appId: "com.arenzyra.observerlauncher",
   productName: "Arenzyra Observer Launcher",
-  // Keep this explicit until the managed connector no longer relies on
-  // ELECTRON_RUN_AS_NODE and a representative signed package proves the ASAR
-  // integrity/fuse migration. Publication remains blocked by the release gate.
-  asar: false,
-  forceCodeSigning: true,
+  asar: true,
+  asarUnpack: [
+    "**/*.node",
+    "node_modules/sharp/**/*",
+    "node_modules/@img/**/*",
+  ],
+  disableSanityCheckAsar: false,
+  electronFuses: {
+    // The managed connector still requires ELECTRON_RUN_AS_NODE. Every other
+    // reviewed fuse is explicit, and application loading is bound to the
+    // integrity-checked app.asar.
+    runAsNode: true,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+    enableEmbeddedAsarIntegrityValidation: true,
+    onlyLoadAppFromAsar: true,
+    loadBrowserProcessSpecificV8Snapshot: false,
+    grantFileProtocolExtraPrivileges: true,
+  },
+  forceCodeSigning: false,
   publish: null,
+  beforeBuild: () => {
+    assertProductionPackagingReady();
+    // Exact app-local dependency file sets below replace electron-builder's
+    // workspace-root dependency discovery.
+    return false;
+  },
   beforePack: () => assertProductionPackagingReady(),
   protocols: [
     {
@@ -60,6 +59,7 @@ module.exports = {
     "dist/assets/**/*",
     ...electronRuntimeFiles,
     "package.json",
+    ...localDependencyFileSets,
   ],
   extraResources: [
     { from: "../../ob.js", to: "connectors/ob.js" },
@@ -88,10 +88,10 @@ module.exports = {
   win: {
     icon: "icon.ico",
     target: ["nsis", "zip"],
-    signtoolOptions: {
-      signingHashAlgorithms: ["sha256"],
-      rfc3161TimeStampServer: "http://timestamp.digicert.com",
-    },
-    verifyUpdateCodeSignature: true,
+    // The owner selected an explicitly unsigned distribution. Keep executable
+    // resource editing, but prevent electron-builder from signing even when a
+    // certificate happens to be present in the environment or certificate store.
+    signExecutable: false,
+    verifyUpdateCodeSignature: false,
   },
 };

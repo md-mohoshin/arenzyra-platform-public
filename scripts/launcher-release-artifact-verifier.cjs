@@ -23,6 +23,13 @@ const DEFAULT_TRUSTED_SIGNER_CONFIG_PATH = path.join(
   "release",
   "trusted-authenticode-signers.json",
 );
+const DEFAULT_UNSIGNED_RELEASE_POLICY_PATH = path.join(
+  repoRoot,
+  "apps",
+  "desktop",
+  "release",
+  "launcher-signing-policy.json",
+);
 const DEFAULT_RELEASE_TOOLCHAIN_PATH = path.join(
   repoRoot,
   "apps",
@@ -126,6 +133,67 @@ function readTrustedSignerConfig(configPath) {
     );
   }
   return { value, sha256: sha256Buffer(source) };
+}
+
+function readUnsignedReleasePolicy(policyPath = DEFAULT_UNSIGNED_RELEASE_POLICY_PATH) {
+  if (
+    !fs.existsSync(policyPath) ||
+    !assertReleaseSourcePath(
+      policyPath,
+      "Unsigned launcher release policy",
+    ).isFile()
+  ) {
+    throw new Error(`Unsigned launcher release policy is missing: ${policyPath}`);
+  }
+  let value;
+  let source;
+  try {
+    source = fs.readFileSync(policyPath);
+    value = JSON.parse(source.toString("utf8"));
+  } catch (error) {
+    throw new Error(`Unsigned launcher release policy is invalid: ${error.message}`);
+  }
+  return { value, sha256: sha256Buffer(source) };
+}
+
+function validateUnsignedReleasePolicy(
+  policy,
+  policySha256 = "",
+  verificationTime = new Date(),
+) {
+  const decision = policy?.decision;
+  const verificationTimeMs =
+    verificationTime instanceof Date
+      ? verificationTime.getTime()
+      : Number(verificationTime);
+  const decidedAtMs = Date.parse(String(decision?.decidedAt || ""));
+  if (
+    policy?.schemaVersion !== 1 ||
+    policy?.releaseMode !== "unsigned" ||
+    decision?.state !== "approved" ||
+    !String(decision?.decidedBy || "").trim() ||
+    !Number.isFinite(verificationTimeMs) ||
+    !Number.isFinite(decidedAtMs) ||
+    decidedAtMs > verificationTimeMs + 5 * 60 * 1000 ||
+    !String(decision?.reference || "").trim() ||
+    !String(decision?.warning || "").trim()
+  ) {
+    throw new Error(
+      "Unsigned launcher release policy is not explicitly approved or is incomplete.",
+    );
+  }
+  return {
+    schemaVersion: 1,
+    releaseMode: "unsigned",
+    policySha256:
+      policySha256 || sha256Buffer(Buffer.from(JSON.stringify(policy), "utf8")),
+    decision: {
+      decidedAt: decision.decidedAt,
+      decidedBy: decision.decidedBy,
+      reference: decision.reference,
+      warning: decision.warning,
+    },
+  };
 }
 
 function validateTrustedSignerConfig(
@@ -473,6 +541,133 @@ function verifyInstallerAuthenticode({
       reviewedAt: trustPolicy.approval.reviewedAt,
       reviewedBy: trustPolicy.approval.reviewedBy,
       reviewReference: trustPolicy.approval.reviewReference,
+    },
+  };
+}
+
+function verifyInstallerUnsigned({
+  installerPath,
+  platform = process.platform,
+  env = process.env,
+  spawnSyncImpl = spawnSync,
+  isFile,
+  processExecPath,
+  unsignedReleasePolicy,
+  unsignedReleasePolicyPath = DEFAULT_UNSIGNED_RELEASE_POLICY_PATH,
+  now = () => new Date(),
+} = {}) {
+  if (platform !== "win32") {
+    throw new Error(
+      `Unsigned Windows launcher verification is unsupported on ${platform}; publication requires a Windows NotSigned verdict.`,
+    );
+  }
+  const resolvedInstallerPath = path.resolve(String(installerPath || ""));
+  if (
+    !String(installerPath || "").trim() ||
+    !fs.existsSync(resolvedInstallerPath) ||
+    !assertReleaseSourcePath(
+      resolvedInstallerPath,
+      "Unsigned Windows launcher executable",
+    ).isFile()
+  ) {
+    throw new Error(
+      `Unsigned Windows launcher executable is missing: ${resolvedInstallerPath}`,
+    );
+  }
+
+  const loadedPolicy = unsignedReleasePolicy
+    ? {
+        value: unsignedReleasePolicy,
+        sha256: sha256Buffer(
+          Buffer.from(JSON.stringify(unsignedReleasePolicy), "utf8"),
+        ),
+      }
+    : readUnsignedReleasePolicy(unsignedReleasePolicyPath);
+  const verificationTime = now();
+  if (
+    !(verificationTime instanceof Date) ||
+    !Number.isFinite(verificationTime.getTime())
+  ) {
+    throw new Error("Unsigned launcher verification received an invalid review clock.");
+  }
+  const releasePolicy = validateUnsignedReleasePolicy(
+    loadedPolicy.value,
+    loadedPolicy.sha256,
+    verificationTime,
+  );
+  const powershell = resolveWindowsPowerShell({ env, isFile, processExecPath });
+  const result = spawnSyncImpl(
+    powershell.executablePath,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      AUTHENTICODE_INSPECTION_SCRIPT,
+    ],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      env: {
+        SystemRoot: powershell.systemRoot,
+        WINDIR: powershell.systemRoot,
+        [AUTHENTICODE_TARGET_ENV]: resolvedInstallerPath,
+      },
+    },
+  );
+  if (result?.error || result?.status !== 0) {
+    const detail = String(
+      result?.stderr || result?.error?.message || "",
+    ).trim();
+    throw new Error(
+      `Windows unsigned-status inspection failed${detail ? `: ${detail}` : "."}`,
+    );
+  }
+
+  let signature;
+  try {
+    signature = JSON.parse(
+      String(result.stdout || "")
+        .replace(/^\uFEFF/, "")
+        .trim(),
+    );
+  } catch (error) {
+    throw new Error(
+      `Windows unsigned-status inspection returned invalid data: ${error.message}`,
+    );
+  }
+  const unexpectedIdentity = [
+    signature?.subject,
+    signature?.issuer,
+    signature?.thumbprint,
+    signature?.certificateSha256,
+    signature?.serialNumber,
+    signature?.timestampSubject,
+    signature?.timestampThumbprint,
+    signature?.timestampCertificateSha256,
+  ].some((value) => String(value || "").trim());
+  if (signature?.status !== "NotSigned" || unexpectedIdentity) {
+    throw new Error(
+      `Windows launcher must be explicitly unsigned: expected NotSigned with no certificate identity, received ${signature?.status || "unknown"}.`,
+    );
+  }
+
+  return {
+    status: "unsigned",
+    authenticodeStatus: "NotSigned",
+    publisher: null,
+    certificateSha256: null,
+    checkedAt: verificationTime.toISOString(),
+    warning: releasePolicy.decision.warning,
+    policy: {
+      schemaVersion: releasePolicy.schemaVersion,
+      releaseMode: releasePolicy.releaseMode,
+      sha256: releasePolicy.policySha256,
+      decidedAt: releasePolicy.decision.decidedAt,
+      decidedBy: releasePolicy.decision.decidedBy,
+      reference: releasePolicy.decision.reference,
     },
   };
 }
@@ -1417,7 +1612,7 @@ function verifyLauncherReleaseArtifacts({
   packageJsonPath = path.join(repoRoot, "apps", "desktop", "package.json"),
   sourceEntries = defaultSourceEntries(),
   sevenZipPath,
-  authenticode = {},
+  unsignedVerification = {},
   mapProvenanceVerifier = verifyDesktopMapCommercialProvenance,
   mapProvenanceOptions = { repoRoot },
   completeRuntimeVerifier = blockIncompletePackagedRuntimeVerification,
@@ -1468,8 +1663,8 @@ function verifyLauncherReleaseArtifacts({
     assertReleaseSourcePath(installerSnapshot, "Launcher installer snapshot");
     assertReleaseSourcePath(portableZipSnapshot, "Launcher ZIP snapshot");
 
-    signingMetadata = verifyInstallerAuthenticode({
-      ...authenticode,
+    signingMetadata = verifyInstallerUnsigned({
+      ...unsignedVerification,
       installerPath: installerSnapshot,
     });
     installer = inspectLauncherArchive({
@@ -1503,6 +1698,8 @@ function verifyLauncherReleaseArtifacts({
         portableZipPath: portableZipSnapshot,
         sourceEntries,
         sevenZipPath,
+        unsignedVerification,
+        signingMetadata,
       }),
     );
   } finally {
@@ -1535,7 +1732,7 @@ function verifyLauncherReleaseArtifacts({
 
 function blockIncompletePackagedRuntimeVerification() {
   throw new Error(
-    "Launcher publication is blocked: ASAR integrity plus complete NSIS/portable runtime, dependency, inner-executable, and signed-manifest verification is not implemented and proven against a representative real package.",
+    "Launcher publication is blocked: ASAR integrity plus complete NSIS/portable runtime, dependency, explicit unsigned-executable, and checksum-manifest verification is not implemented and proven against a representative real package.",
   );
 }
 
@@ -1548,11 +1745,8 @@ function validatePackagedRuntimeIntegrity(value) {
     value?.inventories?.installerSha256,
     value?.inventories?.portableZipSha256,
     value?.innerExecutables?.installer?.sha256,
-    value?.innerExecutables?.installer?.certificateSha256,
     value?.innerExecutables?.portableZip?.sha256,
-    value?.innerExecutables?.portableZip?.certificateSha256,
-    value?.manifestSignature?.signatureSha256,
-    value?.manifestSignature?.signerCertificateSha256,
+    value?.outerInstaller?.sha256,
   ];
   if (
     value?.schemaVersion !== 1 ||
@@ -1563,10 +1757,15 @@ function validatePackagedRuntimeIntegrity(value) {
     value?.asarIntegrity?.onlyLoadAppFromAsar !== true ||
     value?.dependencies?.status !== "verified" ||
     value?.inventories?.status !== "verified" ||
-    value?.innerExecutables?.installer?.status !== "verified" ||
-    value?.innerExecutables?.portableZip?.status !== "verified" ||
-    value?.manifestSignature?.status !== "verified" ||
-    !String(value?.manifestSignature?.algorithm || "").trim()
+    value?.innerExecutables?.installer?.status !== "verified-unsigned" ||
+    value?.innerExecutables?.installer?.authenticodeStatus !== "NotSigned" ||
+    value?.innerExecutables?.portableZip?.status !== "verified-unsigned" ||
+    value?.innerExecutables?.portableZip?.authenticodeStatus !== "NotSigned" ||
+    value?.outerInstaller?.status !== "verified-unsigned" ||
+    value?.outerInstaller?.authenticodeStatus !== "NotSigned" ||
+    value?.outerInstaller?.certificateTablePresent !== false ||
+    value?.outerInstaller?.binding !==
+      "sha256-plus-complete-payload-inventory"
   ) {
     throw new Error(
       "Complete packaged-runtime integrity evidence is invalid or incomplete.",
@@ -1587,6 +1786,7 @@ module.exports = {
   AUTHENTICODE_TARGET_ENV,
   DEFAULT_RELEASE_TOOLCHAIN_PATH,
   DEFAULT_TRUSTED_SIGNER_CONFIG_PATH,
+  DEFAULT_UNSIGNED_RELEASE_POLICY_PATH,
   assertPackagedMapProvenance,
   assertReleaseSourcePath,
   blockIncompletePackagedRuntimeVerification,
@@ -1599,12 +1799,16 @@ module.exports = {
   normalizedCertificateSubject,
   normalizedThumbprint,
   readTrustedSignerConfig,
+  readUnsignedReleasePolicy,
   recursiveSourceEntries,
   resolveSevenZip,
   resolveWindowsPowerShell,
   sha256File,
   validateTrustedSignerConfig,
+  validateUnsignedReleasePolicy,
   validatePackagedRuntimeIntegrity,
   verifyInstallerAuthenticode,
+  verifyInstallerUnsigned,
+  verifyCompletePackagedRuntime,
   verifyLauncherReleaseArtifacts,
 };

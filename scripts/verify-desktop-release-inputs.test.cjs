@@ -70,11 +70,8 @@ function createFixture() {
     "scripts/sync-launcher-downloads.cjs",
     "module.exports = 1;\n",
   );
-  writeFile(
-    root,
-    "scripts/verify-desktop-connector-provenance.cjs",
-    "module.exports = 1;\n",
-  );
+  writeFile(root, "scripts/reviewed-launcher-release-entrypoint.ps1", "exit 0\n");
+  writeFile(root, "scripts/run-reviewed-launcher-release.cjs", "module.exports = 1;\n");
   writeFile(
     root,
     "scripts/verify-desktop-map-provenance.cjs",
@@ -146,7 +143,8 @@ for (const releaseInput of [
   "scripts/sync-brand-icons.cjs",
   "scripts/sync-desktop-maps.cjs",
   "scripts/blocked-launcher-release-entrypoint.cjs",
-  "scripts/verify-desktop-connector-provenance.cjs",
+  "scripts/reviewed-launcher-release-entrypoint.ps1",
+  "scripts/run-reviewed-launcher-release.cjs",
 ]) {
   fixtureTest(`rejects a dirty release dependency ${releaseInput}`, (root) => {
     writeFile(root, releaseInput, `dirty ${releaseInput}\n`);
@@ -203,6 +201,14 @@ fixtureTest("rejects a missing root connector", (root) => {
   assert.throws(
     () => assertDesktopReleaseInputsClean({ repoRoot: root }),
     /D ob\.js/,
+  );
+});
+
+fixtureTest("rejects modified root connector bytes", (root) => {
+  writeFile(root, "ob.js", "modified connector\n");
+  assert.throws(
+    () => assertDesktopReleaseInputsClean({ repoRoot: root }),
+    /M ob\.js/,
   );
 });
 
@@ -314,9 +320,6 @@ test("desktop release and candidate builds never import maps and guard inputs im
   ]) {
     const command = desktopPackage.scripts[scriptName];
     const firstGuard = command.indexOf("npm run verify:release-inputs");
-    const firstConnectorProvenanceGate = command.indexOf(
-      "npm run verify:connector-provenance",
-    );
     const brandSync = command.indexOf("npm run sync:branding");
     const secondGuard = command.indexOf(
       "npm run verify:release-inputs",
@@ -327,23 +330,23 @@ test("desktop release and candidate builds never import maps and guard inputs im
       "npm run verify:release-inputs",
       secondGuard + 1,
     );
-    const secondConnectorProvenanceGate = command.indexOf(
-      "npm run verify:connector-provenance",
-      firstConnectorProvenanceGate + 1,
-    );
     const provenanceGate = command.indexOf("npm run verify:map-provenance");
     const packager = command.indexOf("electron-builder");
 
     assert.doesNotMatch(command, /sync:maps/);
+    assert.doesNotMatch(command, /verify:connector-provenance/);
     assert.ok(firstGuard >= 0, scriptName);
-    assert.ok(firstGuard < firstConnectorProvenanceGate, scriptName);
-    assert.ok(firstConnectorProvenanceGate < brandSync, scriptName);
+    assert.ok(firstGuard < brandSync, scriptName);
     assert.ok(brandSync < secondGuard, scriptName);
     assert.ok(secondGuard < rendererBuild, scriptName);
     assert.ok(rendererBuild < thirdGuard, scriptName);
-    assert.ok(thirdGuard < secondConnectorProvenanceGate, scriptName);
-    assert.ok(secondConnectorProvenanceGate < provenanceGate, scriptName);
-    assert.ok(provenanceGate < packager, scriptName);
+    if (scriptName === "build:electron") {
+      assert.ok(thirdGuard < provenanceGate, scriptName);
+      assert.ok(provenanceGate < packager, scriptName);
+    } else {
+      assert.equal(provenanceGate, -1, scriptName);
+      assert.ok(thirdGuard < packager, scriptName);
+    }
     assert.match(
       command,
       new RegExp(`--config ${expectedConfig.replaceAll(".", "\\.")}`),

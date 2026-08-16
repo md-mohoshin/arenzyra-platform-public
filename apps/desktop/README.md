@@ -86,9 +86,10 @@ then start Arenzyra at normal integrity.
 
 ## Representative Packaging Scaffold
 
-`npm run build:electron` is the release-shaped command and is intentionally
-blocked in code before packaging. Editing approval strings in a JSON policy
-cannot unlock it.
+`npm run build:electron` is a release-shaped inner command. Do not invoke it as
+a production release entrypoint. The reviewed outer Windows launcher in
+`infra/PUBLISH.md` attests the parent environment and detached checkout before
+it invokes this command.
 
 `npm run build:electron:candidate` is a separate, non-publishable scaffold for
 future verifier development. It requires `--publish never`, writes only to
@@ -98,14 +99,11 @@ enables the supported ASAR-integrity/loading fuses. It is not a release or
 staging input.
 
 The release and candidate commands never run the development-only map importer.
-Both commands also verify the exact root `ob.js` connector against
-`release/ob-connector-commercial-provenance.json` before source generation and
-again immediately before packaging. Direct production, candidate, staging, and
-verification entrypoints apply the same connector gate. The current exact
-bytes are explicitly unapproved because the available local history and source
-header establish no commercial redistribution right. A future approval must
-supply the reviewed evidence-document bytes out of band and match their
-recorded SHA-256 values; editing approval metadata alone cannot pass the gate.
+They preserve the existing root `ob.js` connector and package it unchanged as
+`connectors/ob.js`. The clean-release-input guard binds the exact tracked source
+bytes before the build, and artifact verification compares the packaged bytes
+with that same source. The historical commercial-provenance verifier remains
+available for audit but is not an active technical release gate.
 
 The current source packages only the project-owned neutral
 `map-not-available.svg`; the 13 unproven commercial rasters were recoverably

@@ -2,6 +2,30 @@
   "schemaVersion": 1,
   "packageManager": "npm",
   "lockfile": "package-lock.json",
+  "windowsRelease": {
+    "git": {
+      "path": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe",
+      "version": "2.52.0.windows.1",
+      "sha256": "fc0f1cae1304fcdcf4d0749f421c5ed21471efc856301f92f56d4b844be84363"
+    },
+    "node": {
+      "path": "C:\\Program Files\\nodejs\\node.exe",
+      "version": "24.12.0",
+      "sha256": "2ffe3acc0458fdde999f50d11809bbe7c9b7ef204dcf17094e325d26ace101d8"
+    },
+    "npm": {
+      "cliPath": "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+      "rootPath": "C:\\Program Files\\nodejs\\node_modules\\npm",
+      "version": "11.6.2",
+      "treeFileCount": 2107,
+      "treeSha256": "7baa2d812245e6b0b1c175e6036e15b31ef5d3575d4200036dbff32fd2cb8b39"
+    },
+    "powershell": {
+      "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "version": "5.1.26100.9168",
+      "sha256": "7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5"
+    }
+  },
   "sevenZip": {
     "package": "7zip-bin",
     "version": "5.2.0",

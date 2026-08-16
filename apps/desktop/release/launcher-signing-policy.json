@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "releaseMode": "unsigned",
+  "decision": {
+    "state": "approved",
+    "decidedBy": "repository-owner",
+    "decidedAt": "2026-08-16T00:00:00.000Z",
+    "reference": "Owner-directed unsigned launcher publication",
+    "warning": "This launcher is intentionally unsigned. Windows may display an Unknown publisher warning; users must verify the published SHA-256 checksum before running it."
+  }
+}

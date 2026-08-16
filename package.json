@@ -13,7 +13,7 @@
     "verify:launcher-release": "node scripts/blocked-launcher-release-entrypoint.cjs verify",
     "verify:desktop-connector-provenance": "node scripts/verify-desktop-connector-provenance.cjs",
     "verify:desktop-map-provenance": "node scripts/verify-desktop-map-provenance.cjs",
-    "test:launcher-release": "node --test scripts/launcher-release-artifact-verifier.test.cjs scripts/verify-desktop-connector-provenance.test.cjs scripts/verify-desktop-map-provenance.test.cjs scripts/stage-launcher-release.test.cjs apps/desktop/release/runtime-file-policy.test.cjs apps/desktop/release/release-packaging-policy.test.cjs scripts/verify-desktop-release-inputs.test.cjs scripts/package-boundary.test.cjs scripts/desktop-machine-path-resolution.test.cjs",
+    "test:launcher-release": "node --test scripts/launcher-release-artifact-verifier.test.cjs scripts/packaged-runtime-integrity-verifier.test.cjs scripts/reviewed-launcher-release-entrypoint.test.cjs scripts/verify-desktop-connector-provenance.test.cjs scripts/verify-desktop-map-provenance.test.cjs scripts/stage-launcher-release.test.cjs apps/desktop/release/local-dependency-file-policy.test.cjs apps/desktop/release/runtime-file-policy.test.cjs apps/desktop/release/release-packaging-policy.test.cjs scripts/verify-desktop-release-inputs.test.cjs scripts/package-boundary.test.cjs scripts/desktop-machine-path-resolution.test.cjs",
     "test:production-api-maintenance": "node --test scripts/production-api-maintenance.test.cjs",
     "test:production-api-data-volumes": "node --test scripts/production-api-data-volumes.test.cjs",
     "test:historical-migration-ledger": "node --test scripts/parse-prisma-migration-ledger.test.cjs",

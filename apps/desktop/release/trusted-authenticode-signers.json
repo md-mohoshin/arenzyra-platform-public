@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "purpose": "Reviewed Authenticode signer allowlist for Arenzyra Windows launcher installers",
+  "purpose": "Inactive signed-mode Authenticode allowlist; active unsigned releases use launcher-signing-policy.json",
   "identityRequirements": {
     "subject": "Exact reviewed certificate subject",
     "certificateSha256": "64-hex SHA-256 of SignerCertificate.RawData (primary identity)",
@@ -12,7 +12,7 @@
     "reviewedBy": null,
     "reviewedAt": null,
     "reviewReference": null,
-    "notes": "No production code-signing certificate has been reviewed or approved. Publication must remain blocked."
+    "notes": "No production code-signing certificate is approved. Signed mode remains unavailable; this file does not block the active reviewed unsigned release mode."
   },
   "trustedSigners": [],
   "trustedTimestampAuthorities": []

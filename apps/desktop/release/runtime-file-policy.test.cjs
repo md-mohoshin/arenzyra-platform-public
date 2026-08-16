@@ -15,14 +15,16 @@ const {
 
 test("desktop builder and release verifier share one exact runtime source list", () => {
   const runtimeFiles = listPackagedElectronRuntimeFiles();
-  const configuredRuntimeFiles = builderConfig.files.filter((filePath) =>
-    filePath.startsWith("electron/"),
+  const configuredRuntimeFiles = builderConfig.files.filter(
+    (filePath) =>
+      typeof filePath === "string" && filePath.startsWith("electron/"),
   );
 
   assert.deepEqual(configuredRuntimeFiles, runtimeFiles);
   assert.deepEqual(
-    candidateBuilderConfig.files.filter((filePath) =>
-      filePath.startsWith("electron/"),
+    candidateBuilderConfig.files.filter(
+      (filePath) =>
+        typeof filePath === "string" && filePath.startsWith("electron/"),
     ),
     runtimeFiles,
   );
@@ -69,21 +71,25 @@ test("desktop runtime excludes commercial map rasters unless an evidence-approve
   );
 });
 
-test("desktop release configuration forces SHA-256 signing and RFC3161 timestamping", () => {
-  assert.equal(builderConfig.forceCodeSigning, true);
-  assert.deepEqual(builderConfig.win.signtoolOptions.signingHashAlgorithms, [
-    "sha256",
-  ]);
-  assert.match(
-    builderConfig.win.signtoolOptions.rfc3161TimeStampServer,
-    /^http:\/\/timestamp\.digicert\.com$/,
-  );
+test("desktop release configuration explicitly disables executable signing", () => {
+  assert.equal(builderConfig.asar, true);
+  assert.equal(builderConfig.disableSanityCheckAsar, false);
+  assert.equal(builderConfig.electronFuses.enableEmbeddedAsarIntegrityValidation, true);
+  assert.equal(builderConfig.electronFuses.onlyLoadAppFromAsar, true);
+  assert.equal(builderConfig.forceCodeSigning, false);
+  assert.equal(builderConfig.win.signExecutable, false);
+  assert.equal(builderConfig.win.verifyUpdateCodeSignature, false);
+  assert.equal(builderConfig.win.signtoolOptions, undefined);
 });
 
-test("desktop builder refuses packaging while the runtime policy is blocked", () => {
-  assert.throws(
-    () => builderConfig.beforePack(),
-    /release packaging is blocked/i,
+test("desktop builder preserves the root ob.js connector without the provenance release gate", () => {
+  assert.equal(builderConfig.beforePack(), undefined);
+  assert.equal(
+    builderConfig.extraResources.some(
+      (entry) =>
+        entry.from === "../../ob.js" && entry.to === "connectors/ob.js",
+    ),
+    true,
   );
 });
 

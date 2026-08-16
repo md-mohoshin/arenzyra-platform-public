@@ -1642,18 +1642,74 @@ Set `ASSET_BASE_URL` if uploaded/team media should resolve from a different publ
 
 Launcher downloads are disabled unless the optional server-only
 `ARENZYRA_LAUNCHER_RELEASE_JSON` value passes the web release validator. Keep
-the generated empty value until the installer is signed and the immutable
-artifacts, checksums, certificate fingerprint, and manifest have been reviewed.
+the generated empty value until the intentionally unsigned immutable artifacts,
+checksums, explicit publisher warning, and manifest have been reviewed.
 The schema and release checks are documented in
 `apps/arenzyra-web/docs/launcher-release-downloads.md`.
 
-Launcher publication has two separate phases, but the same-checkout npm commands
-`stage:launcher-release` and `verify:launcher-release` currently fail closed.
-Code loaded by Node/npm from the checkout cannot prove the trustworthiness of
-its own parent environment, Git configuration, toolchain, or source directory.
-A future reviewed outer Windows launcher must clear runtime and Git injection,
-pin absolute trusted Node/npm/Git and packaging tools, and build a clean detached
-checkout before invoking the underlying verifier or staging modules.
+Launcher publication has two separate phases. The same-checkout npm commands
+`stage:launcher-release` and `verify:launcher-release` fail closed because code
+loaded by Node/npm from that checkout cannot attest its
+own parent environment. Use the reviewed outer Windows launcher entry below. It loads
+the committed dispatcher with sanitized absolute Git, validates the pinned
+Windows PowerShell/Git/Node/npm toolchain, creates an independent detached
+checkout of the reviewed commit, installs from the committed lockfile, builds,
+and invokes the verifier or immutable local staging module.
+
+Run this from a trusted `-NoProfile` Windows PowerShell parent. Replace the
+commit with the exact reviewed 40-hex commit. The Git path and hash are the
+outer bootstrap identity also recorded in `release-toolchain.json`; a tool
+upgrade requires a new reviewed policy commit. The tracked release policy is
+explicitly unsigned. The dispatcher clears all `CSC_*`/`WIN_CSC_*` inputs and
+the builder sets `signExecutable: false`, so an ambient certificate cannot
+silently change the artifact identity.
+
+```powershell
+$reviewedCommit = '<40-hex-reviewed-root-commit>'
+$sourceRoot = 'C:\Arenzyra'
+$gitPath = 'C:\Program Files\Git\mingw64\bin\git.exe'
+$gitSha256 = 'fc0f1cae1304fcdcf4d0749f421c5ed21471efc856301f92f56d4b844be84363'
+
+foreach ($name in @(
+  'BASH_ENV', 'ENV', 'NODE_OPTIONS', 'NODE_PATH',
+  'CSC_LINK', 'CSC_NAME', 'CSC_KEY_PASSWORD',
+  'WIN_CSC_LINK', 'WIN_CSC_KEY_PASSWORD'
+)) {
+  [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+}
+Get-ChildItem Env: | Where-Object {
+  $_.Name -match '^GIT_' -or $_.Name -match '^npm_config_'
+} | ForEach-Object {
+  [Environment]::SetEnvironmentVariable($_.Name, $null, 'Process')
+}
+if ((Get-FileHash -LiteralPath $gitPath -Algorithm SHA256).Hash -ine $gitSha256) {
+  throw 'Reviewed outer Git hash mismatch.'
+}
+
+$env:ARENZYRA_LAUNCHER_RELEASE_ACTION = 'stage'
+$env:ARENZYRA_REVIEWED_ROOT_COMMIT = $reviewedCommit
+$env:ARENZYRA_RELEASE_SOURCE_ROOT = $sourceRoot
+$env:ARENZYRA_TRUSTED_GIT_PATH = $gitPath
+$env:ARENZYRA_TRUSTED_GIT_SHA256 = $gitSha256
+$env:ARENZYRA_LAUNCHER_STAGING_ROOT = 'C:\ArenzyraLauncherReleases'
+
+$dispatcher = & $gitPath `
+  -c core.fsmonitor=false `
+  -c core.hooksPath=NUL `
+  -C $sourceRoot `
+  show "${reviewedCommit}:scripts/reviewed-launcher-release-entrypoint.ps1"
+if ($LASTEXITCODE -ne 0) { throw 'Could not load reviewed launcher dispatcher.' }
+$encoded = [Convert]::ToBase64String(
+  [Text.Encoding]::Unicode.GetBytes(($dispatcher -join "`n"))
+)
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+  -NoProfile -NonInteractive -EncodedCommand $encoded
+if ($LASTEXITCODE -ne 0) { throw 'Reviewed launcher release failed.' }
+```
+
+Use action `verify` to build and verify without staging. A successful `stage`
+retains the detached checkout for audit and writes the no-overwrite bundle only
+to the absolute staging root. It performs no upload or production mutation.
 
 After that bootstrap exists, the first phase may create a no-overwrite,
 versioned local bundle under
@@ -1663,26 +1719,28 @@ test remote reachability, create mutable aliases, or generate a usable runtime
 environment value. Its `pending-runtime-config.json` deliberately uses schema
 version 0 and must never be copied into the publish environment.
 
-The staging command is intentionally blocked until all release policies are
-reviewed and the verifier is complete. In particular, the tracked Authenticode
-signer and timestamp-authority allowlists must be approved; commercial map
-redistribution must be supported by the exact reviewed evidence bytes; and a
-representative real NSIS/portable package must prove complete inventories,
-inner executable signatures, dependency hashes, ASAR integrity, and a signed
-immutable digest manifest. Do not weaken or mock those checks to obtain an
-artifact. The current `packaged-runtime-verification.json` state is a release
-blocker, not an operator acknowledgement.
+The packaged-runtime verifier is implemented fail-closed for the tracked
+unsigned release mode. Publication requires Windows to report `NotSigned`, no
+certificate identity, and no PE Authenticode certificate table for the outer
+installer and packaged launcher executables. It also requires the reviewed
+unsigned-policy digest and complete runtime/checksum evidence.
+The production package preserves the existing root `ob.js` connector unchanged,
+packages it as `connectors/ob.js`, and verifies the packaged hash against the
+reviewed checkout. The release workflow does not rewrite or substitute the
+connector. Commercial map redistribution, if added later, still requires exact
+reviewed evidence bytes. Do not weaken or mock any integrity check to obtain an
+artifact.
 
 Independently upload the staged artifacts and manifest to one immutable HTTPS
 release prefix. Download all three remote objects again, compare sizes and
-SHA-256 values with the staged manifest, re-verify Authenticode identity and
-timestamp information, and confirm the exact URLs are publicly reachable. Only
-after those checks may an operator construct and review the schema-version-1
+SHA-256 values with the staged manifest, confirm the files remain explicitly
+unsigned, and confirm the exact URLs are publicly reachable. Only after those
+checks may an operator construct and review the schema-version-2
 server configuration described in the web launcher release documentation.
 
 When enabling a remotely verified release, encode the independently constructed
 compact JSON on one line as a single-quoted dotenv value, for example
-`ARENZYRA_LAUNCHER_RELEASE_JSON='{"schemaVersion":1,...}'`. The JSON must be no
+`ARENZYRA_LAUNCHER_RELEASE_JSON='{"schemaVersion":2,...}'`. The JSON must be no
 larger than 16 KiB and must contain neither a literal apostrophe nor `$`; these
 restrictions keep the reviewed value literal across dotenv and Compose parsing.
 Do not export it through a `NEXT_PUBLIC_` variable or add it as a Docker build

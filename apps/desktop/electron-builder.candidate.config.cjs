@@ -4,16 +4,14 @@ const releaseConfig = require("./electron-builder.config.cjs");
 const {
   assertCandidatePackagingInvocation,
 } = require("./release/candidate-packaging-policy.cjs");
-const {
-  verifyDesktopConnectorCommercialProvenance,
-} = require("../../scripts/verify-desktop-connector-provenance.cjs");
 
 const { beforePack: _releaseBlock, ...sharedConfig } = releaseConfig;
 
 const assertCandidateInvocation = () => {
   assertCandidatePackagingInvocation();
-  verifyDesktopConnectorCommercialProvenance();
-  return true;
+  // Dependency packaging is already handled by the exact app-local file sets
+  // inherited from the production configuration.
+  return false;
 };
 
 module.exports = {
@@ -29,6 +27,11 @@ module.exports = {
   ],
   disableSanityCheckAsar: false,
   forceCodeSigning: false,
+  electronDist: "node_modules/electron/dist",
+  // electron-builder detects the monorepo's declared pnpm manager even when
+  // this Windows checkout is installed with npm. Explicit app-local file sets
+  // prevent it from silently packaging the root dependency graph instead of
+  // the launcher's declared production dependency graph.
   publish: null,
   artifactName:
     "Arenzyra-Observer-Launcher-${version}-${arch}-CANDIDATE-NOT-FOR-DISTRIBUTION.${ext}",

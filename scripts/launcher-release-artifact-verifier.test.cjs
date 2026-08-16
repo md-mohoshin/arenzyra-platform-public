@@ -11,6 +11,7 @@ const {
   AUTHENTICODE_INSPECTION_SCRIPT,
   AUTHENTICODE_TARGET_ENV,
   DEFAULT_TRUSTED_SIGNER_CONFIG_PATH,
+  DEFAULT_UNSIGNED_RELEASE_POLICY_PATH,
   assertPackagedMapProvenance,
   defaultSourceEntries,
   extractArchiveEntries,
@@ -18,7 +19,9 @@ const {
   recursiveSourceEntries,
   validatePackagedRuntimeIntegrity,
   validateTrustedSignerConfig,
+  validateUnsignedReleasePolicy,
   verifyInstallerAuthenticode,
+  verifyInstallerUnsigned,
   verifyLauncherReleaseArtifacts,
 } = require("./launcher-release-artifact-verifier.cjs");
 
@@ -78,8 +81,56 @@ function validAuthenticodeResult(patch = {}) {
   };
 }
 
+function approvedUnsignedReleasePolicy() {
+  return {
+    schemaVersion: 1,
+    releaseMode: "unsigned",
+    decision: {
+      state: "approved",
+      decidedBy: "Fixture Release Owner",
+      decidedAt: "2026-08-09T10:00:00.000Z",
+      reference: "FIXTURE-UNSIGNED-DECISION",
+      warning:
+        "This launcher is intentionally unsigned. Verify its SHA-256 checksum before running it.",
+    },
+  };
+}
+
+function notSignedAuthenticodeResult(patch = {}) {
+  return {
+    status: "NotSigned",
+    statusMessage: "The file is not digitally signed.",
+    subject: null,
+    issuer: null,
+    thumbprint: null,
+    certificateSha256: null,
+    serialNumber: null,
+    certificateNotBefore: null,
+    certificateNotAfter: null,
+    timestampSubject: null,
+    timestampThumbprint: null,
+    timestampCertificateSha256: null,
+    ...patch,
+  };
+}
+
 function mockReleaseGates(calls = []) {
   return {
+    unsignedVerification: {
+      platform: "win32",
+      env: { SystemRoot: "C:\\Windows", WINDIR: "C:\\WINDOWS" },
+      isFile: () => true,
+      unsignedReleasePolicy: approvedUnsignedReleasePolicy(),
+      now: () => new Date("2026-08-09T12:00:00.000Z"),
+      spawnSyncImpl: (command, args, options) => {
+        calls.push({ command, args, options });
+        return {
+          status: 0,
+          stdout: JSON.stringify(notSignedAuthenticodeResult()),
+          stderr: "",
+        };
+      },
+    },
     authenticode: {
       platform: "win32",
       env: { SystemRoot: "C:\\Windows", WINDIR: "C:\\WINDOWS" },
@@ -129,21 +180,24 @@ function mockReleaseGates(calls = []) {
       },
       innerExecutables: {
         installer: {
-          status: "verified",
+          status: "verified-unsigned",
           sha256: "5".repeat(64),
-          certificateSha256: "a".repeat(64),
+          authenticodeStatus: "NotSigned",
+          certificateTablePresent: false,
         },
         portableZip: {
-          status: "verified",
+          status: "verified-unsigned",
           sha256: "6".repeat(64),
-          certificateSha256: "a".repeat(64),
+          authenticodeStatus: "NotSigned",
+          certificateTablePresent: false,
         },
       },
-      manifestSignature: {
-        status: "verified",
-        algorithm: "sha256WithRSAEncryption",
-        signatureSha256: "7".repeat(64),
-        signerCertificateSha256: "a".repeat(64),
+      outerInstaller: {
+        status: "verified-unsigned",
+        sha256: "7".repeat(64),
+        authenticodeStatus: "NotSigned",
+        certificateTablePresent: false,
+        binding: "sha256-plus-complete-payload-inventory",
       },
     }),
   };
@@ -216,7 +270,7 @@ test("packaged map resources bind the explicit exact zero-raster provenance stat
   );
 });
 
-test("packaged runtime evidence requires ASAR, inventory, dependency, executable, and signature proof", () => {
+test("packaged runtime evidence requires ASAR, inventory, dependency, executable, and unsigned proof", () => {
   const evidence = mockReleaseGates().completeRuntimeVerifier();
   assert.equal(validatePackagedRuntimeIntegrity(evidence), evidence);
   evidence.asarIntegrity.onlyLoadAppFromAsar = false;
@@ -331,19 +385,11 @@ test("verifies exact-version installer and ZIP contents against source", (t) => 
     result.installer.resources["resources/connectors/ob.js"].sha256,
     result.portableZip.resources["resources/connectors/ob.js"].sha256,
   );
-  assert.equal(result.installer.signing.authenticodeStatus, "Valid");
-  assert.equal(
-    result.installer.signing.trustedSignerId,
-    "arenzyra-fixture-signing",
-  );
-  assert.equal(
-    result.installer.signing.certificateSha256,
-    FIXTURE_SIGNER_CERTIFICATE_SHA256,
-  );
-  assert.equal(
-    result.installer.signing.trustedTimestampAuthorityId,
-    "fixture-rfc3161",
-  );
+  assert.equal(result.installer.signing.status, "unsigned");
+  assert.equal(result.installer.signing.authenticodeStatus, "NotSigned");
+  assert.equal(result.installer.signing.publisher, null);
+  assert.equal(result.installer.signing.certificateSha256, null);
+  assert.equal(result.installer.signing.policy.releaseMode, "unsigned");
   assert.equal(
     result.installer.path,
     path.join(
@@ -860,7 +906,61 @@ test("Authenticode verification rejects an unreviewed timestamp authority", (t) 
   );
 });
 
-test("tracked production Authenticode policy remains empty and unapproved", () => {
+test("unsigned release verification requires NotSigned with no certificate identity", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "arenzyra-unsigned-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const installerPath = path.join(root, "launcher.exe");
+  writeFile(installerPath, "unsigned-fixture");
+  const base = mockReleaseGates().unsignedVerification;
+  const result = verifyInstallerUnsigned({ installerPath, ...base });
+  assert.equal(result.status, "unsigned");
+  assert.equal(result.authenticodeStatus, "NotSigned");
+  assert.equal(result.publisher, null);
+  assert.match(result.policy.sha256, /^[a-f0-9]{64}$/);
+
+  assert.throws(
+    () =>
+      verifyInstallerUnsigned({
+        installerPath,
+        ...base,
+        spawnSyncImpl: () => ({
+          status: 0,
+          stdout: JSON.stringify(validAuthenticodeResult()),
+        }),
+      }),
+    /must be explicitly unsigned.*received Valid/i,
+  );
+  assert.throws(
+    () =>
+      verifyInstallerUnsigned({
+        installerPath,
+        ...base,
+        spawnSyncImpl: () => ({
+          status: 0,
+          stdout: JSON.stringify(
+            notSignedAuthenticodeResult({ subject: "CN=Unexpected" }),
+          ),
+        }),
+      }),
+    /must be explicitly unsigned/i,
+  );
+});
+
+test("tracked unsigned release policy records the explicit owner decision", () => {
+  const policy = JSON.parse(
+    fs.readFileSync(DEFAULT_UNSIGNED_RELEASE_POLICY_PATH, "utf8"),
+  );
+  const validated = validateUnsignedReleasePolicy(
+    policy,
+    "a".repeat(64),
+    new Date("2026-08-16T12:00:00.000Z"),
+  );
+  assert.equal(validated.releaseMode, "unsigned");
+  assert.equal(validated.decision.decidedBy, "repository-owner");
+  assert.match(validated.decision.warning, /Unknown publisher/i);
+});
+
+test("inactive signed-mode Authenticode policy remains empty and unapproved", () => {
   const config = JSON.parse(
     fs.readFileSync(DEFAULT_TRUSTED_SIGNER_CONFIG_PATH, "utf8"),
   );
@@ -887,7 +987,7 @@ test("Authenticode policy rejects future-dated approval metadata", () => {
   );
 });
 
-test("launcher publication manifest includes verified signer and map provenance metadata", () => {
+test("launcher publication manifest includes explicit unsigned and map provenance metadata", () => {
   const syncSource = fs.readFileSync(
     path.resolve(__dirname, "sync-launcher-downloads.cjs"),
     "utf8",

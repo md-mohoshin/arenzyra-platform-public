@@ -23,7 +23,7 @@ function writeFile(filePath, value) {
 function createVerifiedFixture(root, version = "1.2.3") {
   const installerPath = path.join(root, "source", "installer.exe");
   const portableZipPath = path.join(root, "source", "portable.zip");
-  writeFile(installerPath, "signed-installer-fixture");
+  writeFile(installerPath, "unsigned-installer-fixture");
   writeFile(portableZipPath, "portable-zip-fixture");
   return {
     version,
@@ -32,18 +32,20 @@ function createVerifiedFixture(root, version = "1.2.3") {
       size: fs.statSync(installerPath).size,
       sha256: sha256File(installerPath),
       signing: {
-        status: "verified",
-        authenticodeStatus: "Valid",
-        trustedSignerId: "arenzyra-release-fixture",
-        subject: "CN=Arenzyra Release Fixture",
-        certificateSha256: "a".repeat(64),
-        timestampCertificateSha256: "b".repeat(64),
-        trustPolicy: {
+        status: "unsigned",
+        authenticodeStatus: "NotSigned",
+        publisher: null,
+        certificateSha256: null,
+        checkedAt: FIXED_TIME,
+        warning:
+          "This launcher is intentionally unsigned. Verify its SHA-256 checksum before running it.",
+        policy: {
           schemaVersion: 1,
           sha256: "c".repeat(64),
-          reviewedAt: FIXED_TIME,
-          reviewedBy: "release-reviewer",
-          reviewReference: "RELEASE-REVIEW-1",
+          releaseMode: "unsigned",
+          decidedAt: FIXED_TIME,
+          decidedBy: "repository-owner",
+          reference: "OWNER-UNSIGNED-1",
         },
       },
       resources: {
@@ -91,21 +93,24 @@ function createVerifiedFixture(root, version = "1.2.3") {
       },
       innerExecutables: {
         installer: {
-          status: "verified",
+          status: "verified-unsigned",
           sha256: "5".repeat(64),
-          certificateSha256: "a".repeat(64),
+          authenticodeStatus: "NotSigned",
+          certificateTablePresent: false,
         },
         portableZip: {
-          status: "verified",
+          status: "verified-unsigned",
           sha256: "6".repeat(64),
-          certificateSha256: "a".repeat(64),
+          authenticodeStatus: "NotSigned",
+          certificateTablePresent: false,
         },
       },
-      manifestSignature: {
-        status: "verified",
-        algorithm: "sha256WithRSAEncryption",
-        signatureSha256: "7".repeat(64),
-        signerCertificateSha256: "a".repeat(64),
+      outerInstaller: {
+        status: "verified-unsigned",
+        sha256: "7".repeat(64),
+        authenticodeStatus: "NotSigned",
+        certificateTablePresent: false,
+        binding: "sha256-plus-complete-payload-inventory",
       },
     },
   };
@@ -150,7 +155,7 @@ fixtureTest(
     );
     assert.equal(
       fs.readFileSync(staged.files.installer, "utf8"),
-      "signed-installer-fixture",
+      "unsigned-installer-fixture",
     );
     assert.equal(
       fs.readFileSync(staged.files.portableZip, "utf8"),
@@ -175,8 +180,8 @@ fixtureTest(
       verified.portableZip.sha256,
     );
     assert.equal(
-      manifest.artifacts.installer.signing.certificateSha256,
-      verified.installer.signing.certificateSha256,
+      manifest.artifacts.installer.signing.status,
+      "unsigned",
     );
     assert.match(
       manifest.artifacts.installer.signingMetadataSha256,
@@ -366,7 +371,6 @@ test("same-checkout npm release entrypoints are blocked and the adapter has no w
     assert.equal(result.status, 1);
     assert.match(result.stderr, /launcher-release-blocked/);
     assert.match(result.stderr, /reviewed outer Windows launcher/i);
-    assert.match(result.stderr, /connector commercial provenance.*unapproved/i);
   }
   for (const directModule of [
     "sync-launcher-downloads.cjs",
@@ -380,7 +384,6 @@ test("same-checkout npm release entrypoints are blocked and the adapter has no w
     assert.equal(result.status, 1);
     assert.match(result.stderr, /launcher-release-blocked/);
     assert.match(result.stderr, /reviewed outer Windows launcher/i);
-    assert.match(result.stderr, /connector commercial provenance.*unapproved/i);
   }
   assert.doesNotMatch(source, /public[\\/]downloads/i);
   assert.doesNotMatch(source, /["'`]\/downloads\/launcher\//i);
