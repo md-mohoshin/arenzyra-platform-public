@@ -28,6 +28,9 @@ const {
   registerObsPlayerPhotoRoute,
 } = require("./routes/obs-player-photo-route.cjs");
 const {
+  registerGoldFocusedWidgetRoute,
+} = require("./routes/gold-focused-widget-route.cjs");
+const {
   registerTeamEliminatedRoute,
 } = require("./routes/team-eliminated-route.cjs");
 const {
@@ -146,6 +149,30 @@ function getPlayerAssetsVersion(playerAssetsRoot) {
   }
 
   return `${assetCount}:${newestMtime}`;
+}
+
+function observerSnapshotTimestamp(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric > 0 && numeric < 1e12 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function selectFresherObserverSnapshot(primary, fallback) {
+  if (!primary) return fallback || null;
+  if (!fallback) return primary;
+  const primaryAt = observerSnapshotTimestamp(
+    primary.receivedAt ?? primary.timestamp ?? primary.updatedAt,
+  );
+  const fallbackAt = observerSnapshotTimestamp(
+    fallback.receivedAt ?? fallback.timestamp ?? fallback.updatedAt,
+  );
+  if (primaryAt === null) return fallbackAt === null ? primary : fallback;
+  if (fallbackAt === null) return primary;
+  return fallbackAt > primaryAt ? fallback : primary;
 }
 
 function readFileTail(filePath, maxBytes) {
@@ -409,6 +436,22 @@ function startWidgetsServer(options = {}) {
     ...DEFAULT_WIDGET_VISIBILITY,
     updatedAt: Date.now(),
   };
+  let latestGoldFocusedObserverSnapshot = null;
+  function retainGoldFocusedObserverSnapshot(snapshot) {
+    const hasRosterSignal =
+      (Array.isArray(snapshot?.players) && snapshot.players.length > 0) ||
+      (Array.isArray(snapshot?.teams) && snapshot.teams.length > 0);
+    if (!hasRosterSignal) {
+      return latestGoldFocusedObserverSnapshot;
+    }
+    latestGoldFocusedObserverSnapshot = {
+      ...snapshot,
+      observer:
+        snapshot?.observer ?? latestGoldFocusedObserverSnapshot?.observer ?? null,
+      receivedAt: Date.now(),
+    };
+    return latestGoldFocusedObserverSnapshot;
+  }
   const telemetryBridge = createMapTelemetryBridge({
     engine,
     registry,
@@ -442,10 +485,12 @@ function startWidgetsServer(options = {}) {
           ? options.shouldPollDirectObserver
           : () => true,
     getForcedMapKey: resolveForcedMapKey,
-    onSnapshot: (snapshot) =>
+    onSnapshot: (snapshot) => {
+      retainGoldFocusedObserverSnapshot(snapshot);
       telemetryBridge.ingestSnapshot(snapshot, {
         skipZoneUpdate: snapshot?.zoneHandledByFastLane === true,
-      }),
+      });
+    },
     onZoneSnapshot: (snapshot) => telemetryBridge.ingestSnapshot(snapshot),
     log,
   });
@@ -612,6 +657,7 @@ function startWidgetsServer(options = {}) {
       typeof options.getObserverAccessToken === "function"
         ? options.getObserverAccessToken
         : () => "",
+    getLocalWidgetSnapshot: () => engine.getSnapshot(null),
     getPlayerAssetsVersion: () => getPlayerAssetsVersion(playerAssetsRoot),
     requestPlayerPhotoRefresh:
       typeof options.requestPlayerPhotoRefresh === "function"
@@ -619,6 +665,19 @@ function startWidgetsServer(options = {}) {
         : null,
     getOrganizationBranding: () => organizationBranding,
     log,
+  });
+  registerGoldFocusedWidgetRoute(app, {
+    getCurrentMatchContext:
+      typeof options.getCurrentMatchContext === "function"
+        ? options.getCurrentMatchContext
+        : () => null,
+    getLocalObserverSnapshot: () =>
+      selectFresherObserverSnapshot(
+        latestGoldFocusedObserverSnapshot,
+        directObserverPoller.getLatestSnapshot(),
+      ),
+    getLocalWidgetSnapshot: () => engine.getSnapshot(null),
+    getPlayerAssetsVersion: () => getPlayerAssetsVersion(playerAssetsRoot),
   });
   registerTeamEliminatedRoute(app, {
     log,
@@ -1298,6 +1357,7 @@ function startWidgetsServer(options = {}) {
       if (typeof telemetryBridge.reset === "function") {
         telemetryBridge.reset();
       }
+      latestGoldFocusedObserverSnapshot = null;
       if (typeof engine.clearRuntimeState === "function") {
         engine.clearRuntimeState({ reason });
       }
@@ -1322,6 +1382,7 @@ function startWidgetsServer(options = {}) {
     },
     host: networkBaseUrl ? lanIp : host,
     ingestTelemetrySnapshot(snapshot) {
+      retainGoldFocusedObserverSnapshot(snapshot);
       telemetryBridge.ingestSnapshot(snapshot, {
         skipZoneUpdate:
           directObserverPoller.hasHandledCirclePayload(
@@ -1418,5 +1479,6 @@ function startWidgetsServer(options = {}) {
 }
 
 module.exports = {
+  selectFresherObserverSnapshot,
   startWidgetsServer,
 };

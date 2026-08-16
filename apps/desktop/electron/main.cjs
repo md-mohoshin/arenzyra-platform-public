@@ -2055,12 +2055,16 @@ const EXPLICIT_WIDGET_APPROVAL_KEYS = new Set([
 ]);
 
 const INCLUDED_WIDGET_KEYS = new Set([
+  "style.gold-broadcast",
+  "gold-broadcast-focused-roster",
+  "gold-broadcast-player-stats",
   "next-zone-update",
   "next-zone-update-pro-sidebar",
   "next-zone-update-kinetic-hud",
   "next-zone-update-blade",
   "next-zone-update-radar-sweep",
   "next-zone-update-fold-down",
+  "next-zone-update-gold-ring",
 ]);
 
 function isWidgetApprovedForCatalog(approval, enforced, widgetKey) {

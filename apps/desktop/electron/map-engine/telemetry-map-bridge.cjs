@@ -2765,6 +2765,7 @@ function createMapTelemetryBridge({ engine, registry, log: _log = () => {} }) {
             ]) ??
             pickFirstNumber(snapshot?.circle, ["circleIndex"]) ??
             null,
+          aliveTeams: snapshot?.aliveTeams ?? null,
           matchPhase,
           circlesVisible,
           status:

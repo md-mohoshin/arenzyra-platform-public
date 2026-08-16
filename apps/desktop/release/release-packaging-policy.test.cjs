@@ -24,6 +24,23 @@ const {
   listSharpNativeRuntimeExtraResources,
   listSharpNativeRuntimeSourceFiles,
 } = require("./sharp-native-runtime-policy.cjs");
+const {
+  listPackagedElectronRuntimeFiles,
+} = require("./runtime-file-policy.cjs");
+
+const REQUIRED_GOLD_WIDGET_IDS = [
+  "gold_broadcast_roster",
+  "gold_broadcast_final_five",
+  "next_zone_update_gold_ring",
+  "gold_broadcast_player_stats",
+];
+
+const REQUIRED_GOLD_RUNTIME_FILES = [
+  "electron/widget-server/public/gold-focused-widget.css",
+  "electron/widget-server/public/gold-focused-widget.js",
+  "electron/widget-server/routes/gold-focused-widget-route.cjs",
+  "electron/widget-server/routes/gold-focused-widget-state.cjs",
+];
 
 function withCandidateArgv(callback) {
   const originalArgv = process.argv;
@@ -92,6 +109,29 @@ test("production packaging preserves root ob.js while the local candidate remain
     true,
   );
   assert.equal(withCandidateArgv(() => candidateConfig.beforeBuild()), false);
+});
+
+test("production packaging includes all four reviewed Gold widgets and their local runtime", () => {
+  const widgetConfig = fs.readFileSync(
+    path.join(__dirname, "..", "src", "widgets", "widgets.config.ts"),
+    "utf8",
+  );
+  for (const widgetId of REQUIRED_GOLD_WIDGET_IDS) {
+    assert.equal(
+      widgetConfig.match(new RegExp(`id: "${widgetId}"`, "g"))?.length,
+      1,
+      `${widgetId} must have exactly one launcher registry entry`,
+    );
+  }
+
+  const packagedRuntimeFiles = new Set(listPackagedElectronRuntimeFiles());
+  for (const relativePath of REQUIRED_GOLD_RUNTIME_FILES) {
+    assert.equal(
+      packagedRuntimeFiles.has(relativePath),
+      true,
+      `${relativePath} must remain inside the packaged Electron runtime`,
+    );
+  }
 });
 
 test("representative candidate config is ASAR-bound and non-publishable", () => {

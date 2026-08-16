@@ -57,6 +57,54 @@ test("widget resolution uses the canonical authenticated request path", async ()
   }
 });
 
+test("widget catalog access uses the canonical authenticated request path", async () => {
+  const observed = [];
+  const server = http.createServer((req, res) => {
+    observed.push({
+      authorization: req.headers.authorization,
+      url: req.url,
+    });
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        organizationId: "org-1",
+        organizationSlug: "test-org",
+        enforced: true,
+        approvals: [],
+      }),
+    );
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  try {
+    const address = server.address();
+    const apiBase = `http://127.0.0.1:${address.port}`;
+    const client = createLauncherApiClient({
+      resolveApiBase: (value) => value,
+    });
+
+    const catalog = await client.getWidgetAccessList({
+      apiBase,
+      token: "current-access-token",
+      organizationId: "org-1",
+    });
+
+    assert.equal(catalog.organizationId, "org-1");
+    assert.deepEqual(observed, [
+      {
+        authorization: "Bearer current-access-token",
+        url: "/api/widgets/access-list?organizationId=org-1",
+      },
+    ]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("production widget server wiring supplies the authenticated resolver", () => {
   const source = require("node:fs").readFileSync(
     require("node:path").join(__dirname, "main.cjs"),
@@ -76,5 +124,13 @@ test("production widget server wiring supplies the authenticated resolver", () =
   assert.match(
     source,
     /capabilityStatus === "ACTIVE"[\s\S]{0,220}widgetCapabilityStore\.get\(/,
+  );
+  assert.match(
+    source,
+    /accessList\s*=\s*await apiClient\.getWidgetAccessList\(\{[\s\S]{0,260}token:\s*session\.token\s*\|\|\s*session\.accessToken,[\s\S]{0,160}refreshToken:\s*session\.refreshToken,[\s\S]{0,160}organizationId,/,
+  );
+  assert.doesNotMatch(
+    source,
+    /axios\.get\([^)]*\/api\/widgets\/access-list/,
   );
 });

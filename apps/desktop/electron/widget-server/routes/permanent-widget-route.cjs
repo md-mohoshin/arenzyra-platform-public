@@ -12,7 +12,9 @@ const DEFAULT_API_BASE =
   getProcessDefaultApiBase();
 const DEFAULT_WS_PATH = "/ws";
 const PLAYER_PHOTO_WIDGET_ASSET_VERSION = "player-photo-clean-v5";
-const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v14";
+const NEXT_ZONE_WIDGET_ASSET_VERSION = "next-zone-launcher-v17";
+const GOLD_FOCUSED_WIDGET_ASSET_VERSION = "gold-focused-local-v4";
+const WIDGET_VISIBILITY_ASSET_VERSION = "widget-hotkey-v2";
 const REMOTE_WEB_BASE_ENV_KEYS = ["ARENZYRA_WEB_URL", "ARENZYRA_WEB_BASE"];
 const PRIVATE_REMOTE_WIDGET_QUERY_KEYS = new Set([
   "matchaccesskey",
@@ -33,6 +35,7 @@ const LIVE_WIDGET_KEYS = new Set([
   "next-zone-update-kinetic-hud",
   "next-zone-update-pro-sidebar",
   "next-zone-update-radar-sweep",
+  "next-zone-update-gold-ring",
   "wwcd",
   "fight-alert",
   "achievement-alert",
@@ -244,6 +247,9 @@ function buildRemoteWidgetUrl(apiBase, context, query, instanceKey) {
   const resolvedOrganizationId =
     asString(context?.organization?.id) || asString(context?.organizationId);
   if (resolvedOrganizationId && !readQueryValue(query?.organizationId)) {
+    // Let the browser start its match-control read in parallel with context
+    // discovery. The capability remains in the fragment and is never copied
+    // into this network-visible query string.
     target.searchParams.set("organizationId", resolvedOrganizationId);
   }
 
@@ -444,7 +450,7 @@ function renderWidgetHostPage({
       referrerpolicy="no-referrer-when-downgrade"
     ></iframe>
     <script>window.__ARENZYRA_WIDGET_VISIBILITY_BOOTSTRAP__ = ${visibilityBootstrap};</script>
-    <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
+    <script src="/obs/static/widget-visibility-client.js?v=${WIDGET_VISIBILITY_ASSET_VERSION}"></script>
   </body>
 </html>`;
 }
@@ -516,13 +522,13 @@ function renderLocalWidgetPage({
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
     <title>${safeTitle}</title>
     <link rel="stylesheet" href="${safeStylePath}" />
-    <link rel="stylesheet" href="/obs/static/widget-branding-bridge.css?v=widget-branding-v1" />
+    <link rel="stylesheet" href="/obs/static/widget-branding-bridge.css?v=widget-branding-v2" />
   </head>
   <body>
     ${markup}
     <script>window.__ARENZYRA_LOCAL_WIDGET_BOOTSTRAP__ = ${payload};</script>
-    <script src="/obs/static/widget-branding-client.js?v=widget-branding-v1"></script>
-    <script src="/obs/static/widget-visibility-client.js?v=widget-hotkey-v1"></script>
+    <script src="/obs/static/widget-branding-client.js?v=widget-branding-v2"></script>
+    <script src="/obs/static/widget-visibility-client.js?v=${WIDGET_VISIBILITY_ASSET_VERSION}"></script>
     ${extraScripts || ""}
     <script src="${safeScriptPath}"></script>
   </body>
@@ -922,6 +928,53 @@ function buildLocalWidgetPage({
     });
   }
 
+  if (widgetKey === "next-zone-update-gold-ring") {
+    return renderLocalWidgetPage({
+      widgetTitle: "Arenzyra Next Zone Update Gold Ring",
+      stylePath:
+        `/obs/static/obs-zone-closing-widget.css?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      scriptPath:
+        `/obs/static/obs-zone-closing-widget.js?v=${NEXT_ZONE_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode: "next-zone-update",
+        styleVariant: "gold-ring",
+        revealWindowMs: 20_000,
+        brandingRefreshPath: `/obs/widget-context/${encodeURIComponent(instanceKey)}`,
+      },
+      markup: `
+    <main
+      class="obs-next-zone-update-root obs-next-zone-update-root--gold-ring"
+      id="next-zone-update-root"
+      data-stale="false"
+      data-offline="false"
+      data-style="gold-ring"
+      data-gold-metric="alive"
+      hidden
+    >
+      <section class="next-zone-update-card next-zone-update-card--gold-ring" role="status" aria-live="polite" aria-atomic="true">
+        <div class="next-zone-update-gold-face">
+          <div class="next-zone-update-gold-ring" aria-hidden="true"></div>
+          <strong class="next-zone-update-gold-metric" id="next-zone-update-alive">--</strong>
+          <span class="next-zone-update-gold-metric-label" id="next-zone-update-metric-label">ALIVE</span>
+        </div>
+        <div class="next-zone-update-gold-footer">
+          <span class="next-zone-update-countdown next-zone-update-countdown--gold-ring" id="next-zone-update-countdown">--:--</span>
+          <strong class="next-zone-update-phase-block next-zone-update-phase-block--gold-ring">
+            <span id="next-zone-update-phase">STAGE --</span>
+          </strong>
+        </div>
+        <div class="next-zone-update-status next-zone-update-status--gold-ring" id="next-zone-update-status" hidden>
+          WS OFFLINE
+        </div>
+      </section>
+      <div class="next-zone-update-progress next-zone-update-progress--gold-ring" aria-hidden="true">
+        <span id="next-zone-update-progress"></span>
+      </div>
+    </main>`,
+    });
+  }
+
   if (widgetKey === "zone-closing") {
     return renderLocalWidgetPage({
       widgetTitle: "Arenzyra Zone Closing Alert Banner",
@@ -1015,6 +1068,101 @@ function buildLocalWidgetPage({
         </div>
       </article>
     </div>`,
+    });
+  }
+
+  if (
+    widgetKey === "gold-broadcast-focused-roster" ||
+    widgetKey === "gold-broadcast-player-stats"
+  ) {
+    const displayMode =
+      widgetKey === "gold-broadcast-focused-roster" ? "roster" : "player-stats";
+    const goldBroadcastAssetBase = resolveRemoteWebBase(apiBase);
+    const stateUrl = bootstrap.matchId
+      ? `/obs/gold-focused/state?matchId=${encodeURIComponent(bootstrap.matchId)}`
+      : "/obs/gold-focused/state";
+    const rosterRows = [0, 1, 2, 3]
+      .map(
+        (index) => `
+        <article class="gold-roster-player" data-player-index="${index}" data-status="unknown" data-utility-available="false" style="--health:0%;--row-delay:${220 + index * 75}ms" hidden>
+          <div class="gold-player-copy">
+            <strong id="gold-player-${index}-name">PLAYER</strong>
+            <div class="gold-player-meta">
+              <span aria-label="kills">
+                <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 3C9.1 3 4 7.4 4 14c0 4.5 2.2 7.5 5.8 9v5h4v-3h4.4v3h4v-5c3.6-1.5 5.8-4.5 5.8-9C28 7.4 22.9 3 16 3Zm-5 14.5A3.5 3.5 0 1 1 11 10a3.5 3.5 0 0 1 0 7.5Zm10 0A3.5 3.5 0 1 1 21 10a3.5 3.5 0 0 1 0 7.5ZM13 21h6l-3 3-3-3Z" fill="currentColor"/></svg>
+                <b id="gold-player-${index}-kills">--</b>
+              </span>
+              <span aria-label="knockouts">&#9670; <b id="gold-player-${index}-knockouts">--</b></span>
+              <span aria-label="utility total">&#9679; <b id="gold-player-${index}-utility">--</b></span>
+            </div>
+          </div>
+          <div class="gold-roster-portrait">
+            <img id="gold-player-${index}-photo" alt="" draggable="false" />
+          </div>
+          <div class="gold-health-block">
+            <b id="gold-player-${index}-health">--</b>
+            <span><i></i></span>
+          </div>
+        </article>`,
+      )
+      .join("");
+    const markup =
+      displayMode === "roster"
+        ? `
+    <main class="gold-focused-root" id="gold-focused-root" data-gold-panel="roster" data-offline="true" data-stale="false" hidden>
+      <section class="gold-roster gold-enter-left" data-utility-available="false" aria-live="polite" aria-atomic="false">
+        <header class="gold-roster-header">
+          <span class="gold-team-mark"><img id="gold-team-logo" alt="" draggable="false" /></span>
+          <strong id="gold-team-name">TEAM</strong>
+          <span class="gold-header-kills">
+            <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 3C9.1 3 4 7.4 4 14c0 4.5 2.2 7.5 5.8 9v5h4v-3h4.4v3h4v-5c3.6-1.5 5.8-4.5 5.8-9C28 7.4 22.9 3 16 3Zm-5 14.5A3.5 3.5 0 1 1 11 10a3.5 3.5 0 0 1 0 7.5Zm10 0A3.5 3.5 0 1 1 21 10a3.5 3.5 0 0 1 0 7.5ZM13 21h6l-3 3-3-3Z" fill="currentColor"/></svg>
+            <b id="gold-team-kills">--</b>
+          </span>
+        </header>
+        <div class="gold-roster-rows">${rosterRows}</div>
+      </section>
+    </main>`
+        : `
+    <main class="gold-focused-root" id="gold-focused-root" data-gold-panel="player-stats" data-offline="true" data-stale="false" hidden>
+      <section class="gold-player-stats gold-enter-bottom" aria-live="polite" aria-atomic="false">
+        <div class="gold-player-stat-row">
+          <span><small>DAMAGE DEALT</small><strong id="gold-stat-damage">--</strong></span>
+          <i>
+            <img data-gold-static-asset="/assets/pubg/asset-hud/flaregun.png" alt="" draggable="false" referrerpolicy="no-referrer" />
+            <svg class="gold-stat-icon-fallback" aria-hidden="true" viewBox="0 0 64 64"><path d="M8 28h28l9-8 5 4-7 9 13 6-3 7-16-5-7 9h-8l4-11H8zM15 21l20-9 3 7-21 9z" fill="currentColor"/></svg>
+          </i>
+        </div>
+        <div class="gold-player-stat-row">
+          <span><small>LONGEST ELIM DIST.</small><strong id="gold-stat-distance">--</strong></span>
+          <i><svg aria-hidden="true" viewBox="0 0 64 64"><circle cx="32" cy="32" r="20" fill="none" stroke="currentColor" stroke-width="5"/><circle cx="32" cy="32" r="5" fill="currentColor"/><path d="M32 2v16M32 46v16M2 32h16M46 32h16" stroke="currentColor" stroke-width="5"/></svg></i>
+        </div>
+        <div class="gold-player-stat-row">
+          <span><small>AIRDROPS LOOTED</small><strong id="gold-stat-airdrops">--</strong></span>
+          <i>
+            <img data-gold-static-asset="/assets/pubg/asset-hud/parachute.png" alt="" draggable="false" referrerpolicy="no-referrer" />
+            <svg class="gold-stat-icon-fallback" aria-hidden="true" viewBox="0 0 64 64"><path d="M7 21C10 9 20 3 32 3s22 6 25 18L44 16 32 21 20 16 7 21Zm13-2 10 5v11h4V24l10-5-5 19H25l-5-19Zm7 23h10l3 18H24l3-18Z" fill="currentColor"/></svg>
+          </i>
+        </div>
+      </section>
+    </main>`;
+    return renderLocalWidgetPage({
+      widgetTitle:
+        displayMode === "roster"
+          ? "Arenzyra Gold Broadcast Focused Roster"
+          : "Arenzyra Gold Broadcast Player Stats",
+      stylePath: `/obs/static/gold-focused-widget.css?v=${GOLD_FOCUSED_WIDGET_ASSET_VERSION}`,
+      scriptPath: `/obs/static/gold-focused-widget.js?v=${GOLD_FOCUSED_WIDGET_ASSET_VERSION}`,
+      bootstrap: {
+        ...bootstrap,
+        displayMode,
+        direction: displayMode === "roster" ? "left" : "down",
+        localStateUrl: stateUrl,
+        staleAfterMs: 2_500,
+        goldBroadcastAssetBase,
+        defaultPlayerPhoto: "/assets/default-player.svg",
+        defaultTeamLogo: "/assets/default-team.png",
+      },
+      markup,
     });
   }
 
@@ -1193,9 +1341,12 @@ function chooseWidgetRenderer(widgetKey) {
     widgetKey === "next-zone-update-kinetic-hud" ||
     widgetKey === "next-zone-update-pro-sidebar" ||
     widgetKey === "next-zone-update-radar-sweep" ||
+    widgetKey === "next-zone-update-gold-ring" ||
     widgetKey === "zone-closing" ||
     widgetKey === "team-status" ||
     widgetKey === "player-photo" ||
+    widgetKey === "gold-broadcast-focused-roster" ||
+    widgetKey === "gold-broadcast-player-stats" ||
     widgetKey === "fight-alert" ||
     widgetKey === "replay-marker" ||
     widgetKey === "team-eliminated"

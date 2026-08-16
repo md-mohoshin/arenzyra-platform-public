@@ -1,6 +1,6 @@
 {
   "name": "arenzyra-observer-launcher",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "private": true,
   "type": "module",
   "description": "Arenzyra Observer Launcher for ShadowTracker operations",

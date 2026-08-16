@@ -63,10 +63,12 @@ function createSnapshot({
   matchPhase = "parachuting",
   timeRemaining = 60,
   circleStatus = null,
+  aliveTeams = null,
 } = {}) {
   return {
     source: "direct-observer",
     phase: matchPhase,
+    aliveTeams,
     circlePayload: {
       mapName: "erangel",
       safeZone: {
@@ -351,6 +353,7 @@ test("telemetry map bridge maps numeric circle status 2 to closing mode", () => 
       matchPhase: "combat",
       timeRemaining: 18,
       circleStatus: "2",
+      aliveTeams: 12,
     }),
   );
 
@@ -358,6 +361,7 @@ test("telemetry map bridge maps numeric circle status 2 to closing mode", () => 
   assert.equal(engine.calls.zoneUpdates[0].status, "2");
   assert.equal(engine.calls.zoneUpdates[0].mode, "closing");
   assert.equal(engine.calls.zoneUpdates[0].zoneMode, "closing");
+  assert.equal(engine.calls.zoneUpdates[0].aliveTeams, 12);
 });
 
 test("telemetry map bridge maps numeric number circle status 2 to closing mode", () => {

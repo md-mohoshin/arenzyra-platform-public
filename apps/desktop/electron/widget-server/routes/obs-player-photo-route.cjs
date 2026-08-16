@@ -94,17 +94,170 @@ function firstUsefulPlayerPhotoUrl(...values) {
 function collectPlayerLookupIds(player) {
   return [
     player?.playerId,
+    player?.playerID,
+    player?.PlayerId,
+    player?.PlayerID,
     player?.id,
+    player?.ID,
+    player?.uId,
+    player?.uid,
+    player?.UID,
     player?.playerKey,
+    player?.PlayerKey,
     player?.externalPlayerId,
     player?.pubgPlayerId,
     player?.pubgAccountId,
     player?.playerOpenId,
+    player?.playerOpenID,
+    player?.PlayerOpenId,
+    player?.PlayerOpenID,
     player?.openId,
+    player?.OpenId,
     player?.inGameId,
   ]
     .map(normalizeLookup)
     .filter(Boolean);
+}
+
+function resolveLocalWidgetSnapshot(getLocalWidgetSnapshot) {
+  if (typeof getLocalWidgetSnapshot !== "function") {
+    return null;
+  }
+
+  try {
+    return asRecord(getLocalWidgetSnapshot());
+  } catch {
+    return null;
+  }
+}
+
+function getLocalSnapshotPlayers(localWidgetSnapshot) {
+  if (Array.isArray(localWidgetSnapshot?.players)) {
+    return localWidgetSnapshot.players;
+  }
+
+  return Array.isArray(localWidgetSnapshot?.players?.players)
+    ? localWidgetSnapshot.players.players
+    : [];
+}
+
+function findFocusedLocalPlayer(localWidgetSnapshot, focus) {
+  if (!focus) {
+    return null;
+  }
+
+  const players = getLocalSnapshotPlayers(localWidgetSnapshot);
+  const focusIds = collectPlayerLookupIds(focus);
+  if (focusIds.length > 0) {
+    const matchedById = players.find((player) =>
+      collectPlayerLookupIds(player).some((id) => focusIds.includes(id)),
+    );
+    if (matchedById) {
+      return matchedById;
+    }
+  }
+
+  const focusName = normalizeLookup(focus.playerName || focus.name);
+  return (
+    players.find(
+      (player) =>
+        focusName &&
+        focusName === normalizeLookup(player?.playerName || player?.name),
+    ) ?? null
+  );
+}
+
+function enrichObserverFocusFromLocalSnapshot(focus, localWidgetSnapshot) {
+  if (!focus) {
+    return null;
+  }
+
+  const player = findFocusedLocalPlayer(localWidgetSnapshot, focus);
+  if (!player) {
+    return focus;
+  }
+
+  return {
+    ...focus,
+    playerId:
+      focus.playerId ??
+      player.playerId ??
+      player.id ??
+      player.playerKey ??
+      null,
+    playerName:
+      focus.playerName ?? player.playerName ?? player.name ?? null,
+    teamId: focus.teamId ?? player.teamId ?? null,
+    teamName: focus.teamName ?? player.teamName ?? null,
+    teamTag: focus.teamTag ?? player.teamTag ?? null,
+    slot: focus.slot ?? player.teamSlot ?? player.slot ?? null,
+    avatarUrl: firstUsefulPlayerPhotoUrl(
+      focus.avatarUrl,
+      player.avatarUrl,
+      player.photoUrl,
+      player.picUrl,
+    ),
+  };
+}
+
+function buildLocalCircle(localWidgetSnapshot) {
+  const zone = asRecord(localWidgetSnapshot?.zone);
+  if (!zone) {
+    return null;
+  }
+
+  const currentCircle = asRecord(zone.currentCircle);
+  const nextCircle = asRecord(zone.nextCircle);
+  return {
+    phase: zone.phase ?? null,
+    nextShrinkAt: zone.targetEndAt ?? null,
+    safeZone: currentCircle
+      ? {
+          x: currentCircle.centerX ?? currentCircle.x ?? null,
+          y: currentCircle.centerY ?? currentCircle.y ?? null,
+          radius: currentCircle.radius ?? null,
+        }
+      : null,
+    nextZone: nextCircle
+      ? {
+          x: nextCircle.centerX ?? nextCircle.x ?? null,
+          y: nextCircle.centerY ?? nextCircle.y ?? null,
+          radius: nextCircle.radius ?? null,
+        }
+      : null,
+  };
+}
+
+function mergeLocalWidgetSnapshot(observerState, localWidgetSnapshot) {
+  const currentState = asRecord(observerState);
+  const localPlayers = getLocalSnapshotPlayers(localWidgetSnapshot);
+  const localCircle = buildLocalCircle(localWidgetSnapshot);
+  if (!currentState && localPlayers.length === 0 && !localCircle) {
+    return observerState;
+  }
+
+  const state = currentState ? { ...currentState } : {};
+  if (!Array.isArray(state.leaderboard) || state.leaderboard.length === 0) {
+    const rowsByTeam = new Map();
+    for (const player of localPlayers) {
+      const teamId = asString(player?.teamId) || "unknown";
+      if (!rowsByTeam.has(teamId)) {
+        rowsByTeam.set(teamId, {
+          teamId: teamId === "unknown" ? null : teamId,
+          teamName: null,
+          teamTag: null,
+          players: [],
+        });
+      }
+      rowsByTeam.get(teamId).players.push({ ...player });
+    }
+    state.leaderboard = Array.from(rowsByTeam.values());
+  }
+  if (!asRecord(state.circle) && localCircle) {
+    state.circle = localCircle;
+  }
+
+  return state;
 }
 
 function resolveNestedRecord(payload, keys) {
@@ -303,18 +456,21 @@ function findFocusedLeaderboardMatch(observerState, focus) {
   return null;
 }
 
-function applyLocalObserverFocus(observerState, focus) {
-  const state = asRecord(observerState);
-  if (!state || !focus) {
-    return observerState;
+function applyLocalObserverFocus(observerState, focus, localWidgetSnapshot = null) {
+  const state = mergeLocalWidgetSnapshot(observerState, localWidgetSnapshot);
+  if (!asRecord(state) || !focus) {
+    return state;
   }
 
   const matched = findFocusedLeaderboardMatch(state, focus);
   const row = matched?.row ?? null;
   const player = matched?.player ?? null;
+  const existingPlayerCard = asRecord(state.playerCard);
   const realPhotoUrl = firstUsefulPlayerPhotoUrl(
     player?.avatarUrl,
     player?.photoUrl,
+    existingPlayerCard?.avatarUrl,
+    existingPlayerCard?.photoUrl,
     focus.avatarUrl,
   );
 
@@ -325,34 +481,54 @@ function applyLocalObserverFocus(observerState, focus) {
         player?.playerId ??
         player?.id ??
         player?.playerKey ??
+        existingPlayerCard?.playerId ??
+        existingPlayerCard?.id ??
         focus.playerId ??
         null,
-      externalPlayerId: player?.externalPlayerId ?? null,
-      pubgPlayerId: player?.pubgPlayerId ?? null,
+      externalPlayerId:
+        player?.externalPlayerId ?? existingPlayerCard?.externalPlayerId ?? null,
+      pubgPlayerId:
+        player?.pubgPlayerId ?? existingPlayerCard?.pubgPlayerId ?? null,
       name:
         player?.playerName ??
         player?.name ??
+        existingPlayerCard?.playerName ??
+        existingPlayerCard?.name ??
         focus.playerName ??
         null,
       avatarUrl:
         realPhotoUrl,
       photoUrl:
         realPhotoUrl,
-      teamId: row?.teamId ?? focus.teamId ?? null,
-      teamName: row?.teamName ?? focus.teamName ?? null,
-      teamTag: row?.teamTag ?? focus.teamTag ?? null,
-      logoUrl: row?.logoUrl ?? null,
-      color: row?.color ?? null,
-      kills: Number.isFinite(Number(player?.kills)) ? Number(player.kills) : 0,
+      teamId: row?.teamId ?? existingPlayerCard?.teamId ?? focus.teamId ?? null,
+      teamName:
+        row?.teamName ?? existingPlayerCard?.teamName ?? focus.teamName ?? null,
+      teamTag:
+        row?.teamTag ?? existingPlayerCard?.teamTag ?? focus.teamTag ?? null,
+      logoUrl: row?.logoUrl ?? existingPlayerCard?.logoUrl ?? null,
+      color: row?.color ?? existingPlayerCard?.color ?? null,
+      kills: Number.isFinite(Number(player?.kills))
+        ? Number(player.kills)
+        : Number.isFinite(Number(existingPlayerCard?.kills))
+          ? Number(existingPlayerCard.kills)
+          : 0,
       alive:
         typeof player?.alive === "boolean"
           ? player.alive
-          : true,
+          : typeof existingPlayerCard?.alive === "boolean"
+            ? existingPlayerCard.alive
+            : true,
       knocked:
         typeof player?.knocked === "boolean"
           ? player.knocked
-          : false,
-      damage: Number.isFinite(Number(player?.damage)) ? Number(player.damage) : null,
+          : typeof existingPlayerCard?.knocked === "boolean"
+            ? existingPlayerCard.knocked
+            : false,
+      damage: Number.isFinite(Number(player?.damage))
+        ? Number(player.damage)
+        : Number.isFinite(Number(existingPlayerCard?.damage))
+          ? Number(existingPlayerCard.damage)
+          : null,
     },
   };
 }
@@ -436,6 +612,7 @@ function registerObsPlayerPhotoRoute(
     getPlayerAssetsVersion = () => null,
     resolveObserverBaseUrl = () => null,
     getObserverAccessToken = () => "",
+    getLocalWidgetSnapshot = () => null,
     requestPlayerPhotoRefresh = null,
     getOrganizationBranding = () => null,
     log = () => {},
@@ -490,9 +667,12 @@ function registerObsPlayerPhotoRoute(
     const playerAssetsVersion = asString(getPlayerAssetsVersion()) || null;
 
     try {
-      const focus = await fetchLocalObserverFocus(
-        resolveObserverBaseUrl(),
-        getObserverAccessToken(),
+      const focus = enrichObserverFocusFromLocalSnapshot(
+        await fetchLocalObserverFocus(
+          resolveObserverBaseUrl(),
+          getObserverAccessToken(),
+        ),
+        resolveLocalWidgetSnapshot(getLocalWidgetSnapshot),
       );
       res.json({
         ok: true,
@@ -525,6 +705,9 @@ function registerObsPlayerPhotoRoute(
     const requestedMatchId = readQueryValue(req.query?.matchId);
     const matchId = requestedMatchId || currentMatchContext.matchId;
     const playerAssetsVersion = asString(getPlayerAssetsVersion()) || null;
+    const localWidgetSnapshot = resolveLocalWidgetSnapshot(
+      getLocalWidgetSnapshot,
+    );
 
     if (!matchId) {
       res.json({
@@ -540,6 +723,13 @@ function registerObsPlayerPhotoRoute(
       return;
     }
 
+    const localObserverFocusPromise = fetchLocalObserverFocus(
+      resolveObserverBaseUrl(),
+      getObserverAccessToken(),
+    ).then((focus) =>
+      enrichObserverFocusFromLocalSnapshot(focus, localWidgetSnapshot),
+    );
+
     try {
       const [response, localObserverFocus] = await Promise.all([
         axios.get(
@@ -551,14 +741,12 @@ function registerObsPlayerPhotoRoute(
           },
         },
         ),
-        fetchLocalObserverFocus(
-          resolveObserverBaseUrl(),
-          getObserverAccessToken(),
-        ),
+        localObserverFocusPromise,
       ]);
       const observerState = applyLocalObserverFocus(
         response?.data ?? null,
         localObserverFocus,
+        localWidgetSnapshot,
       );
 
       res.json({
@@ -572,9 +760,29 @@ function registerObsPlayerPhotoRoute(
       });
     } catch (error) {
       const failure = resolveStateError(error);
+      const localObserverFocus = await localObserverFocusPromise;
+      const localObserverState = applyLocalObserverFocus(
+        null,
+        localObserverFocus,
+        localWidgetSnapshot,
+      );
       log(
         `[widget-server] local player-photo state failure status=${failure.status || "unknown"} matchId=${matchId} detail=${failure.message}`,
       );
+
+      if (asRecord(localObserverState)) {
+        res.json({
+          ok: true,
+          matchId,
+          observerState: localObserverState,
+          playerAssetsVersion,
+          reason: "backend unavailable; using local observer telemetry",
+          source: currentMatchContext.source,
+          workflowState: currentMatchContext.workflowState,
+          productionStatus: currentMatchContext.productionStatus,
+        });
+        return;
+      }
 
       if (failure.status === 404) {
         res.json({

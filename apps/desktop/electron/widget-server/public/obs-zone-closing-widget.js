@@ -16,6 +16,10 @@
   const nextZoneCountdownEl = document.getElementById("next-zone-update-countdown");
   const nextZoneProgressEl = document.getElementById("next-zone-update-progress");
   const nextZoneStatusEl = document.getElementById("next-zone-update-status");
+  const nextZoneAliveEl = document.getElementById("next-zone-update-alive");
+  const nextZoneMetricLabelEl = document.getElementById(
+    "next-zone-update-metric-label",
+  );
 
   if (
     !timerRoot &&
@@ -30,6 +34,9 @@
   const NEXT_ZONE_REVEAL_MS = 20 * 1000;
   const NEXT_ZONE_DISPLAY_LATENCY_COMPENSATION_MS = 0;
   const BRANDING_REFRESH_MS = 5000;
+  const GOLD_RING_WIDGET_KEY = "next-zone-update-gold-ring";
+  const GOLD_SOLID_FALLBACK = "#eedd77";
+  const GOLD_OBS_REPLAY_EVENT = "arenzyra:gold-obs-replay";
   const TIMER_RESYNC_DRIFT_MS = 500;
   const INFERRED_MODE_STABILIZE_MS = 140;
   const COUNTDOWN_CLAMP_LOG_THRESHOLD_MS = 250;
@@ -71,6 +78,8 @@
     brandingRefreshTimer: null,
     brandingRefreshInFlight: false,
     nextZoneExitTimer: null,
+    goldRingFrameOne: null,
+    goldRingFrameTwo: null,
   };
 
   function asString(value) {
@@ -115,8 +124,91 @@
     node.classList.toggle("is-visible", visible);
   }
 
+  function prefersReducedMotion() {
+    return Boolean(
+      typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    );
+  }
+
+  function scheduleGoldRingFrame(callback) {
+    if (typeof window.requestAnimationFrame === "function") {
+      return window.requestAnimationFrame(callback);
+    }
+    return window.setTimeout(callback, 16);
+  }
+
+  function cancelGoldRingFrame(frame) {
+    if (frame === null) {
+      return;
+    }
+    if (typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(frame);
+      return;
+    }
+    window.clearTimeout(frame);
+  }
+
+  function cancelGoldRingReveal() {
+    cancelGoldRingFrame(state.goldRingFrameOne);
+    cancelGoldRingFrame(state.goldRingFrameTwo);
+    state.goldRingFrameOne = null;
+    state.goldRingFrameTwo = null;
+  }
+
+  function stageGoldRingReveal(reducedMotion) {
+    if (!nextZoneRoot || nextZoneRoot.dataset.style !== "gold-ring") {
+      return;
+    }
+
+    cancelGoldRingReveal();
+    nextZoneRoot.hidden = false;
+    nextZoneRoot.classList.toggle("is-visible", false);
+    if (reducedMotion === true || prefersReducedMotion()) {
+      nextZoneRoot.dataset.goldObsMotion = "reduced";
+      nextZoneRoot.classList.toggle("is-visible", true);
+      return;
+    }
+
+    nextZoneRoot.dataset.goldObsMotion = "preparing";
+    state.goldRingFrameOne = scheduleGoldRingFrame(function () {
+      state.goldRingFrameOne = null;
+      state.goldRingFrameTwo = scheduleGoldRingFrame(function () {
+        state.goldRingFrameTwo = null;
+        nextZoneRoot.dataset.goldObsMotion = "playing";
+        nextZoneRoot.classList.toggle("is-visible", true);
+      });
+    });
+  }
+
+  function replayGoldRing(reducedMotion) {
+    if (
+      !nextZoneRoot ||
+      nextZoneRoot.hidden ||
+      nextZoneRoot.dataset.style !== "gold-ring"
+    ) {
+      return;
+    }
+    stageGoldRingReveal(reducedMotion);
+  }
+
   function setNextZoneVisible(visible) {
     if (!nextZoneRoot) {
+      return;
+    }
+
+    const goldRing = nextZoneRoot.dataset.style === "gold-ring";
+    if (goldRing) {
+      if (!visible) {
+        cancelGoldRingReveal();
+        nextZoneRoot.classList.toggle("is-visible", false);
+        nextZoneRoot.hidden = true;
+        nextZoneRoot.dataset.goldObsMotion = "idle";
+        return;
+      }
+      if (nextZoneRoot.hidden) {
+        stageGoldRingReveal(false);
+      }
       return;
     }
 
@@ -202,6 +294,35 @@
       }
     }
     return fallback;
+  }
+
+  function normalizeGoldHex(value) {
+    const raw = asString(value).replace(/^#/, "");
+    if (/^[0-9a-f]{3}$/i.test(raw)) {
+      return `#${raw
+        .split("")
+        .map((part) => `${part}${part}`)
+        .join("")
+        .toLowerCase()}`;
+    }
+    return /^[0-9a-f]{6}$/i.test(raw) ? `#${raw.toLowerCase()}` : "";
+  }
+
+  function getCapabilityOrganizationBranding() {
+    const organization = parseMaybeJsonObject(bootstrap.organization);
+    return parseMaybeJsonObject(organization && organization.branding);
+  }
+
+  function applyGoldSolidFromBootstrap() {
+    if (asString(bootstrap.widgetKey) !== GOLD_RING_WIDGET_KEY) {
+      return;
+    }
+    const branding = getCapabilityOrganizationBranding();
+    const goldSolid =
+      normalizeGoldHex(branding && branding.primaryColor) ||
+      normalizeGoldHex(branding && branding.primary) ||
+      GOLD_SOLID_FALLBACK;
+    document.documentElement.style.setProperty("--gold-solid", goldSolid);
   }
 
   function hexToRgb(value) {
@@ -299,6 +420,7 @@
       return;
     }
 
+    applyGoldSolidFromBootstrap();
     const branding = getBrandingSource();
     const primary = pickBrandingColor(
       branding,
@@ -588,6 +710,15 @@
     return String(phase).toUpperCase();
   }
 
+  function formatStagePhaseLabel(phase) {
+    if (phase === null) {
+      return "STAGE --";
+    }
+
+    const numeric = toFiniteNumber(phase);
+    return `STAGE ${numeric === null ? String(phase).toUpperCase() : Math.trunc(numeric)}`;
+  }
+
   function resolveCircle(payload, prefix) {
     const directCircle = payload && payload[`${prefix}Circle`];
     const rawCircle =
@@ -772,6 +903,14 @@
     return {
       phase,
       phaseKey,
+      aliveTeams: (() => {
+        const value = pickFinite(
+          payload.aliveTeams,
+          payload.teamsAlive,
+          payload.aliveTeamCount,
+        );
+        return value === null ? null : Math.max(0, Math.trunc(value));
+      })(),
       matchPhase: asString(payload.matchPhase).toLowerCase() || null,
       targetEndAt,
       mode: modeResolution.mode,
@@ -847,6 +986,14 @@
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function formatCountdownSeconds(remainingMs) {
+    if (remainingMs === null) {
+      return "--";
+    }
+
+    return String(Math.max(0, Math.ceil(remainingMs / 1000)));
   }
 
   function getTimerModeLabel(zone) {
@@ -1159,6 +1306,15 @@
     const displayRemainingMs = getNextZoneDisplayRemainingMs(zone, remainingMs);
     updateNextZoneProgress(displayRemainingMs, revealWindowMs, visible);
     const countdownText = formatCountdown(displayRemainingMs);
+    const goldRing = nextZoneRoot.dataset.style === "gold-ring";
+    const hasAliveTeams = goldRing && zone && zone.aliveTeams !== null;
+    const goldMetricText = hasAliveTeams
+      ? String(zone.aliveTeams)
+      : formatCountdownSeconds(displayRemainingMs);
+    const goldMetricLabel = hasAliveTeams ? "ALIVE" : "SECONDS";
+    const phaseText = goldRing
+      ? formatStagePhaseLabel(zone ? zone.phase : null)
+      : formatCompactPhaseLabel(zone ? zone.phase : null);
     const statusText = getConnectionLabel(zone);
     const signature = [
       visible ? "1" : "0",
@@ -1166,6 +1322,9 @@
       zone ? zone.matchPhase || "" : "",
       zone ? zone.mode : "",
       countdownText,
+      goldRing ? goldMetricText : "",
+      goldRing ? goldMetricLabel : "",
+      phaseText,
       statusText,
       zone && zone.stale ? "1" : "0",
       state.wsConnected ? "1" : "0",
@@ -1184,7 +1343,12 @@
 
     setElementData(nextZoneRoot, "stale", zone && zone.stale ? "true" : "false");
     setElementData(nextZoneRoot, "offline", state.wsConnected ? "false" : "true");
-    setText(nextZonePhaseEl, formatCompactPhaseLabel(zone.phase));
+    if (goldRing) {
+      setElementData(nextZoneRoot, "goldMetric", hasAliveTeams ? "alive" : "seconds");
+      setText(nextZoneAliveEl, goldMetricText);
+      setText(nextZoneMetricLabelEl, goldMetricLabel);
+    }
+    setText(nextZonePhaseEl, phaseText);
     setText(nextZoneCountdownEl, countdownText);
     setText(nextZoneStatusEl, statusText);
     setHidden(nextZoneStatusEl, !statusText);
@@ -1388,7 +1552,12 @@
   scheduleRender();
   connect();
 
+  window.addEventListener(GOLD_OBS_REPLAY_EVENT, function (event) {
+    replayGoldRing(Boolean(event && event.detail && event.detail.reducedMotion));
+  });
+
   window.addEventListener("beforeunload", function () {
+    cancelGoldRingReveal();
     clearRenderFrame();
     clearStaleTimer();
     if (state.reconnectTimer !== null) {

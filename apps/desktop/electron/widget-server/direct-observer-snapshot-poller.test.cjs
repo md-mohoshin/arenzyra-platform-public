@@ -131,7 +131,12 @@ test("direct observer poller stop prevents direct-mode runtime polling", async (
   try {
     poller.start();
     await waitFor(() => snapshots.length >= 1);
+    const latest = poller.getLatestSnapshot();
+    assert.equal(latest.source, "direct-observer");
+    assert.ok(Number.isFinite(latest.receivedAt));
+    assert.equal(latest.players.length, 1);
     await poller.stop();
+    assert.equal(poller.getLatestSnapshot(), null);
 
     // Requests already accepted by the OS before AbortController cancellation
     // may still reach the local test server. Let that bounded in-flight batch
@@ -141,6 +146,7 @@ test("direct observer poller stop prevents direct-mode runtime polling", async (
     await sleep(100);
     assert.equal(requests.length, requestsAtStop);
     assert.equal(snapshots[0].source, "direct-observer");
+    assert.equal(snapshots[0].aliveTeams, 1);
     assert.deepEqual(snapshots[0].observer, {
       "0": "533228770",
       isAds: true,

@@ -713,9 +713,10 @@ async function fetchObserverSnapshot(
   const effectiveObserverSnapshot = applyEffectiveMap(observerSnapshot);
 
   const circleInfo = normalizeCircleInfo(effectiveCirclePayload);
+  const aliveTeams = countAliveTeams(teams);
   const phase = detectMatchPhase({
     gameTime: circleInfo.gameTime,
-    aliveTeams: countAliveTeams(teams),
+    aliveTeams,
     circleIndex: circleInfo.circleIndex,
     circleStatus: circleInfo.circleStatus,
     previousPhase,
@@ -731,6 +732,7 @@ async function fetchObserverSnapshot(
     routePayloads,
     observerSnapshot: effectiveObserverSnapshot,
     observer,
+    aliveTeams,
     phase,
     source: "direct-observer",
     empty: !hasSourceData,
@@ -767,6 +769,7 @@ function createDirectObserverSnapshotPoller({
   let lastPhase = null;
   let latestCircleSnapshot = null;
   let latestCircleReceivedAt = 0;
+  let latestObserverSnapshot = null;
   let lastCircleSignature = "";
   let latestCirclePayloadSignature = "";
   const handledCircleSignatures = new Map();
@@ -779,6 +782,7 @@ function createDirectObserverSnapshotPoller({
     lastPhase = null;
     latestCircleSnapshot = null;
     latestCircleReceivedAt = 0;
+    latestObserverSnapshot = null;
     lastCircleSignature = "";
     latestCirclePayloadSignature = "";
     handledCircleSignatures.clear();
@@ -874,9 +878,13 @@ function createDirectObserverSnapshotPoller({
         fastCircleStillFresh &&
           wasCirclePayloadHandled(snapshot.circlePayload),
       );
-      onSnapshot(snapshot);
-
       const ingestedAt = Date.now();
+      latestObserverSnapshot = {
+        ...snapshot,
+        receivedAt: ingestedAt,
+      };
+      onSnapshot(latestObserverSnapshot);
+
       if (ingestedAt - lastStatusAt >= 5_000) {
         log("observer snapshot ingested", {
           players: snapshot.players.length,
@@ -1061,6 +1069,20 @@ function createDirectObserverSnapshotPoller({
   }
 
   return {
+    getLatestSnapshot() {
+      if (!latestObserverSnapshot) {
+        return null;
+      }
+      return {
+        ...latestObserverSnapshot,
+        players: Array.isArray(latestObserverSnapshot.players)
+          ? [...latestObserverSnapshot.players]
+          : [],
+        teams: Array.isArray(latestObserverSnapshot.teams)
+          ? [...latestObserverSnapshot.teams]
+          : [],
+      };
+    },
     hasHandledCirclePayload(circlePayload) {
       return wasCirclePayloadHandled(circlePayload);
     },
