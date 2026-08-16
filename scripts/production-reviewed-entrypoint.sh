@@ -216,6 +216,11 @@ case "$command_id" in
     require_nested_assembly
     exec /bin/bash scripts/configure-production-openai-key.sh
     ;;
+  launcher-release-configure)
+    [ "$#" -eq 0 ] || block "launcher-release-configure accepts no arguments."
+    require_nested_assembly
+    exec /bin/bash scripts/configure-production-launcher-release.sh
+    ;;
   recover-fix-esports-training-results)
     if [ "$#" -eq 1 ]; then
       case "$1" in

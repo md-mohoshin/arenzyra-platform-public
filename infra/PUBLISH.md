@@ -1747,6 +1747,20 @@ Do not export it through a `NEXT_PUBLIC_` variable or add it as a Docker build
 argument. The publish preflight rejects malformed, oversized, or interpolation-
 capable values.
 
+Install that one reviewed JSON line only through the allowlisted configuration
+action below. It reads exactly one line on descriptor 3, validates the complete
+schema and immutable URL boundary, holds the shared deployment lock, runs the
+standard production preflight before and after the atomic env replacement, and
+restores the original env if the installed-value preflight fails. It does not
+build, restart, or recreate a service. After it succeeds, use the reviewed
+Web-only deployment so API, media, proxy, Discord, PostgreSQL, Redis, and their
+volumes remain untouched:
+
+```bash
+production_entry launcher-release-configure 3<<<"$reviewed_launcher_release_json"
+production_entry deploy-web-recovery
+```
+
 Studio requires its dedicated `STUDIO_DATABASE_URL` runtime role. The guarded
 deployment requires that URL and `STUDIO_MIGRATION_DATABASE_URL` to use the same
 backed-up `postgres:5432` database and schema as the API URLs; a separate Studio

@@ -1502,6 +1502,7 @@ test("one reviewed production entrypoint exposes only the closed command allowli
       "backup",
       "backup-configure",
       "openai-key-configure",
+      "launcher-release-configure",
       "recover-fix-esports-training-results",
       "repair-fix-esports-team-logos",
       "backup-inventory",
