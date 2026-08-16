@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { isDeepStrictEqual } = require("node:util");
+const asar = require("@electron/asar");
 const {
   NO_BUNDLED_COMMERCIAL_ASSETS_STATE,
   verifyDesktopMapCommercialProvenance,
@@ -864,6 +865,10 @@ function parseArchiveListing(output, limits) {
       flush();
       continue;
     }
+    if (/^Warnings:\s+\d+\s*$/.test(line)) {
+      flush();
+      continue;
+    }
     const separator = line.indexOf(" = ");
     if (separator <= 0) {
       throw new Error("Launcher archive listing contains malformed metadata.");
@@ -923,12 +928,17 @@ function parseArchiveListing(output, limits) {
     }
 
     const folder = String(record.get("Folder") || "").trim();
-    if (folder !== "+" && folder !== "-") {
+    const attributeDirectory = windowsAttributes.includes("D");
+    if (
+      !["", "+", "-"].includes(folder) ||
+      (folder === "+" && !attributeDirectory) ||
+      (folder === "-" && attributeDirectory)
+    ) {
       throw new Error(
         `Launcher archive entry has incomplete folder metadata: ${entryPath}.`,
       );
     }
-    const isDirectory = folder === "+";
+    const isDirectory = folder === "+" || (folder === "" && attributeDirectory);
     const sizeText = String(record.get("Size") || "").trim();
     if (!/^\d+$/.test(sizeText) || sizeText.length > 20) {
       throw new Error(
@@ -1454,16 +1464,53 @@ function inspectLauncherArchive({
   sevenZipPath,
 }) {
   assertReleaseSourcePath(archivePath, "Launcher release artifact");
+  const resolvedSevenZipPath = sevenZipPath || resolveSevenZip();
+  const limits = archiveLimits();
+  const listedEntries = listArchiveEntries(archivePath, {
+    sevenZipPath: resolvedSevenZipPath,
+    spawnSyncImpl: spawnSync,
+    limits,
+  });
+  const packagedWithAsar = listedEntries.has("resources/app.asar");
+  const appSourceEntries = sourceEntries.filter((entry) =>
+    entry.entryPath.startsWith("resources/app/"),
+  );
+  const outerSourceEntries = sourceEntries.filter(
+    (entry) => !entry.entryPath.startsWith("resources/app/"),
+  );
   const entryPaths = Array.from(
-    new Set([
-      "resources/app/package.json",
-      ...sourceEntries.map((entry) => entry.entryPath),
-    ]),
+    new Set(
+      packagedWithAsar
+        ? [
+            "resources/app.asar",
+            ...outerSourceEntries.map((entry) => entry.entryPath),
+          ]
+        : [
+            "resources/app/package.json",
+            ...sourceEntries.map((entry) => entry.entryPath),
+          ],
+    ),
   );
   const packagedEntries = extractArchiveEntries(archivePath, entryPaths, {
-    sevenZipPath,
+    sevenZipPath: resolvedSevenZipPath,
   });
-  const packageBuffer = packagedEntries.get("resources/app/package.json");
+  let packageBuffer;
+  let appAsarPath = null;
+  let appAsarRoot = null;
+  if (packagedWithAsar) {
+    appAsarRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "arenzyra-launcher-asar-"),
+    );
+    appAsarPath = path.join(appAsarRoot, "app.asar");
+    fs.writeFileSync(
+      appAsarPath,
+      packagedEntries.get("resources/app.asar"),
+      { flag: "wx" },
+    );
+    packageBuffer = asar.extractFile(appAsarPath, "package.json", false);
+  } else {
+    packageBuffer = packagedEntries.get("resources/app/package.json");
+  }
   let packaged;
   try {
     packaged = JSON.parse(packageBuffer.toString("utf8"));
@@ -1493,35 +1540,53 @@ function inspectLauncherArchive({
   }
 
   const resources = {};
-  for (const sourceEntry of sourceEntries) {
-    if (
-      !fs.existsSync(sourceEntry.sourcePath) ||
-      !assertReleaseSourcePath(
-        sourceEntry.sourcePath,
-        "Launcher release source",
-      ).isFile()
-    ) {
-      throw new Error(
-        `Launcher release source is missing: ${sourceEntry.sourcePath}`,
-      );
+  try {
+    for (const sourceEntry of sourceEntries) {
+      if (
+        !fs.existsSync(sourceEntry.sourcePath) ||
+        !assertReleaseSourcePath(
+          sourceEntry.sourcePath,
+          "Launcher release source",
+        ).isFile()
+      ) {
+        throw new Error(
+          `Launcher release source is missing: ${sourceEntry.sourcePath}`,
+        );
+      }
+      const expectedHash = sha256File(sourceEntry.sourcePath);
+      const packagedBuffer = packagedWithAsar
+        ? sourceEntry.entryPath.startsWith("resources/app/")
+          ? asar.extractFile(
+              appAsarPath,
+              sourceEntry.entryPath
+                .slice("resources/app/".length)
+                .split("/")
+                .join(path.sep),
+              false,
+            )
+          : packagedEntries.get(sourceEntry.entryPath)
+        : packagedEntries.get(sourceEntry.entryPath);
+      if (!packagedBuffer) {
+        throw new Error(
+          `Launcher archive entry is missing: ${sourceEntry.entryPath}`,
+        );
+      }
+      const packagedHash = sha256Buffer(packagedBuffer);
+      if (packagedHash !== expectedHash) {
+        throw new Error(
+          `Stale launcher resource in ${archivePath}: ${sourceEntry.entryPath} expected ${expectedHash}, received ${packagedHash}`,
+        );
+      }
+      resources[sourceEntry.entryPath] = {
+        sha256: packagedHash,
+        size: packagedBuffer.length,
+      };
     }
-    const expectedHash = sha256File(sourceEntry.sourcePath);
-    const packagedBuffer = packagedEntries.get(sourceEntry.entryPath);
-    if (!packagedBuffer) {
-      throw new Error(
-        `Launcher archive entry is missing: ${sourceEntry.entryPath}`,
-      );
+  } finally {
+    if (appAsarRoot) {
+      asar.uncache(appAsarPath);
+      fs.rmSync(appAsarRoot, { recursive: true, force: true });
     }
-    const packagedHash = sha256Buffer(packagedBuffer);
-    if (packagedHash !== expectedHash) {
-      throw new Error(
-        `Stale launcher resource in ${archivePath}: ${sourceEntry.entryPath} expected ${expectedHash}, received ${packagedHash}`,
-      );
-    }
-    resources[sourceEntry.entryPath] = {
-      sha256: packagedHash,
-      size: packagedBuffer.length,
-    };
   }
 
   const stat = fs.statSync(archivePath);
@@ -1615,7 +1680,7 @@ function verifyLauncherReleaseArtifacts({
   unsignedVerification = {},
   mapProvenanceVerifier = verifyDesktopMapCommercialProvenance,
   mapProvenanceOptions = { repoRoot },
-  completeRuntimeVerifier = blockIncompletePackagedRuntimeVerification,
+  completeRuntimeVerifier = verifyCompletePackagedRuntime,
 } = {}) {
   const mapProvenance = mapProvenanceVerifier(mapProvenanceOptions);
   assertReleaseSourcePath(packageJsonPath, "Desktop package.json");
@@ -1734,6 +1799,11 @@ function blockIncompletePackagedRuntimeVerification() {
   throw new Error(
     "Launcher publication is blocked: ASAR integrity plus complete NSIS/portable runtime, dependency, explicit unsigned-executable, and checksum-manifest verification is not implemented and proven against a representative real package.",
   );
+}
+
+function verifyCompletePackagedRuntime(options) {
+  return require("./packaged-runtime-integrity-verifier.cjs")
+    .verifyCompletePackagedRuntime(options);
 }
 
 function validatePackagedRuntimeIntegrity(value) {

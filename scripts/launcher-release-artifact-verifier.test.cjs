@@ -421,13 +421,13 @@ test("rejects a stale packaged resource", (t) => {
   );
 });
 
-test("default release verification blocks incomplete packaged runtime evidence", (t) => {
+test("default release verification requires a sealed ASAR runtime", (t) => {
   const fixture = createFixture();
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
   delete fixture.completeRuntimeVerifier;
   assert.throws(
     () => verifyLauncherReleaseArtifacts(fixture),
-    /complete NSIS\/portable runtime.*not implemented/i,
+    /requires the launcher executable and resources\/app\.asar/i,
   );
 });
 

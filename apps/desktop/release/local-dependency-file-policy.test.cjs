@@ -41,7 +41,11 @@ test("maps npm-ci workspace-hoisted dependencies into packaged app node_modules"
       { beta: "1.0.0" },
     );
     writePackage(path.join(workspaceRoot, "node_modules", "beta"), "beta");
-    const fileSets = collectLocalDependencyFileSets({ desktopRoot, workspaceRoot });
+
+    const fileSets = collectLocalDependencyFileSets({
+      desktopRoot,
+      workspaceRoot,
+    });
     assert.deepEqual(
       fileSets.map(({ from, to }) => ({
         from: path.relative(workspaceRoot, from).replaceAll(path.sep, "/"),
@@ -59,7 +63,11 @@ test("prefers an app-local dependency over a workspace-hoisted copy", () => {
   withFixture(({ workspaceRoot, desktopRoot }) => {
     writePackage(path.join(workspaceRoot, "node_modules", "alpha"), "alpha");
     writePackage(path.join(desktopRoot, "node_modules", "alpha"), "alpha");
-    const [fileSet] = collectLocalDependencyFileSets({ desktopRoot, workspaceRoot });
+
+    const [fileSet] = collectLocalDependencyFileSets({
+      desktopRoot,
+      workspaceRoot,
+    });
     assert.equal(
       path.relative(desktopRoot, fileSet.from).replaceAll(path.sep, "/"),
       "node_modules/alpha",
@@ -90,7 +98,11 @@ test("nests a conflicting hoisted version before it can resolve to the wrong pac
       { debug: "2.0.0" },
     );
     writePackage(path.join(desktopRoot, "node_modules", "debug"), "debug");
-    const fileSets = collectLocalDependencyFileSets({ desktopRoot, workspaceRoot });
+
+    const fileSets = collectLocalDependencyFileSets({
+      desktopRoot,
+      workspaceRoot,
+    });
     const debugSets = fileSets
       .filter(({ to }) => to.endsWith("/debug"))
       .map(({ from, to }) => ({
