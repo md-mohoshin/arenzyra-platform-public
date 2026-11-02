@@ -1,0 +1,102 @@
+diff --git a/apps/desktop/electron/widget-server/gold-branding-computed-style.test.cjs b/apps/desktop/electron/widget-server/gold-branding-computed-style.test.cjs
+index 81e13f12..f10d06dd 100644
+--- a/apps/desktop/electron/widget-server/gold-branding-computed-style.test.cjs
++++ b/apps/desktop/electron/widget-server/gold-branding-computed-style.test.cjs
+@@ -251,19 +251,27 @@ function buildSolarPlayerHudHtml(scale = 1) {
+ </html>`;
+ }
+ 
+-function buildSolarZoneHtml(scale = 1) {
++function buildSolarZoneHtml(scale = 1, progress = 1) {
+   const css = readPublicAsset("obs-zone-closing-widget.css");
+   return `<!doctype html>
+ <html>
+   <head><style>${css}</style></head>
+   <body>
+-    <main class="obs-next-zone-update-root obs-next-zone-update-root--solar-strike is-visible" id="next-zone-update-root" data-style="solar-strike" data-solar-obs-motion="reduced" style="--solar-canvas-scale:${scale}">
+-      <section class="next-zone-update-card next-zone-update-card--solar-strike" id="solar-zone-card">
+-        <i class="next-zone-update-solar-edge"></i>
+-        <b class="next-zone-update-solar-message">CIRCLE CLOSING IN&nbsp;&nbsp; <strong>00:20</strong></b>
+-        <span class="next-zone-update-solar-sponsor" id="solar-zone-sponsor">POWERED BY ARENZYRA<small>STAGE 9</small></span>
++    <main class="obs-next-zone-update-root obs-next-zone-update-root--solar-strike is-visible" id="next-zone-update-root" data-style="solar-strike" data-solar-obs-motion="reduced" style="--solar-canvas-scale:${scale};--solar-fill-inset:${(1 - progress) * 50}%;--solar-fill-slant:${progress * 2}%">
++      <section class="next-zone-update-card next-zone-update-card--solar-strike" id="solar-zone-card" role="status" aria-live="polite" aria-atomic="true">
++        <div class="next-zone-update-progress next-zone-update-progress--solar-strike" id="solar-zone-track" aria-hidden="true"><span id="solar-zone-fill" style="transform:scaleX(${progress})"></span></div>
++        <i class="next-zone-update-solar-edge" aria-hidden="true"></i>
++        <div class="next-zone-update-solar-copy-layer">
++          <small class="next-zone-update-solar-phase" id="solar-zone-phase">STAGE 9</small>
++          <b class="next-zone-update-solar-message" id="solar-zone-message">CIRCLE CLOSING IN&nbsp;&nbsp; <strong>00:20</strong></b>
++          <div class="next-zone-update-status next-zone-update-status--solar-strike" hidden>WS OFFLINE</div>
++        </div>
++        <div class="next-zone-update-solar-copy-layer next-zone-update-solar-copy-layer--fill" id="solar-zone-fill-copy" aria-hidden="true">
++          <small class="next-zone-update-solar-phase">STAGE 9</small>
++          <b class="next-zone-update-solar-message" id="solar-zone-fill-message">CIRCLE CLOSING IN&nbsp;&nbsp; <strong>00:20</strong></b>
++          <div class="next-zone-update-status next-zone-update-status--solar-strike" hidden>WS OFFLINE</div>
++        </div>
+       </section>
+-      <div class="next-zone-update-progress next-zone-update-progress--solar-strike"><span></span></div>
+     </main>
+   </body>
+ </html>`;
+@@ -287,6 +295,8 @@ async function computedSnapshot(window, html, selectors, captureName = "") {
+         filter: style.filter,
+         fontSize: style.fontSize,
+         objectFit: style.objectFit,
++        afterContent: window.getComputedStyle(element, "::after").content,
++        clipPath: style.clipPath,
+         rect: (() => {
+           const rect = element.getBoundingClientRect();
+           return {
+@@ -526,10 +536,21 @@ async function runElectronAudit() {
+     {
+       root: "#next-zone-update-root",
+       card: "#solar-zone-card",
+-      sponsor: "#solar-zone-sponsor",
++      phase: "#solar-zone-phase",
++      track: "#solar-zone-track",
++      fill: "#solar-zone-fill",
++      message: "#solar-zone-message",
++      fillCopy: "#solar-zone-fill-copy",
++      fillMessage: "#solar-zone-fill-message",
+     },
+     "launcher-solar-next-zone-1920x1080",
+   );
++  results.solarZoneHalf = await computedSnapshot(window, buildSolarZoneHtml(1, 0.5), {
++    card: "#solar-zone-card", track: "#solar-zone-track", fill: "#solar-zone-fill", message: "#solar-zone-message", fillCopy: "#solar-zone-fill-copy", fillMessage: "#solar-zone-fill-message",
++  });
++  results.solarZoneEmpty = await computedSnapshot(window, buildSolarZoneHtml(1, 0), {
++    card: "#solar-zone-card", fill: "#solar-zone-fill", message: "#solar-zone-message", fillCopy: "#solar-zone-fill-copy", fillMessage: "#solar-zone-fill-message",
++  });
+   results.solarFight1920 = await computedSnapshot(
+     window,
+     buildSolarFightHtml(),
+@@ -788,10 +809,26 @@ if (process.versions.electron) {
+       "Solar circle banner",
+     );
+     assertRect(
+-      result.solarZone.sponsor.rect,
+-      { top: 119, left: 883.5, width: 154, height: 74 },
+-      "Solar circle sponsor",
+-    );
++      result.solarZone.phase.rect,
++      { top: 97, left: 560, width: 44.828, height: 8 },
++      "Solar circle phase",
++    );
++    assertRect(result.solarZone.track.rect, result.solarZone.card.rect, "Solar full banner progress track");
++    assertRect(result.solarZone.fill.rect, result.solarZone.card.rect, "Solar full banner fill");
++    assert.equal(result.solarZone.fill.afterContent, "none", "the retired shine effect stays absent");
++    assert.match(result.solarZone.fill.backgroundImage, /linear-gradient/);
++    assert.equal(result.solarZoneHalf.fill.rect.width, 448.5);
++    assert.equal(result.solarZoneEmpty.fill.rect.width, 0);
++    for (const snapshot of [result.solarZoneHalf, result.solarZoneEmpty]) {
++      assertRect(snapshot.card.rect, result.solarZone.card.rect, "Solar countdown keeps banner geometry");
++      assertRect(snapshot.message.rect, result.solarZone.message.rect, "Solar countdown does not squeeze the text");
++    }
++    for (const snapshot of [result.solarZone, result.solarZoneHalf, result.solarZoneEmpty]) {
++      assert.equal(compactColor(snapshot.message.color), "rgb(255,255,255)", "track text keeps its light ink");
++      assert.equal(compactColor(snapshot.fillMessage.color), "rgb(0,0,0)", "fill text keeps its dark ink");
++      assert.notEqual(snapshot.fillCopy.clipPath, "none", "fill text stays clipped to the progress surface");
++      assertRect(snapshot.fillMessage.rect, snapshot.message.rect, "Solar text layers stay aligned");
++    }
+     assertRect(
+       result.solarFight1920.panel.rect,
+       { top: 118, left: 736, width: 448, height: 96 },
